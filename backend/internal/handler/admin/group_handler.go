@@ -13,6 +13,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/platform/liveattestation"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -105,7 +107,7 @@ type CreateGroupRequest struct {
 	DailyLimitUSD             optionalLimitField            `json:"daily_limit_usd"`
 	WeeklyLimitUSD            optionalLimitField            `json:"weekly_limit_usd"`
 	MonthlyLimitUSD           optionalLimitField            `json:"monthly_limit_usd"`
-	LongContextPricingEnabled bool                          `json:"long_context_pricing_enabled"`
+	LongContextPricingEnabled *bool                         `json:"long_context_pricing_enabled"`
 	ModelPricing              []service.ChannelModelPricing `json:"model_pricing"`
 	// 图片生成计费配置（antigravity 和 gemini 平台使用，负数表示清除配置）
 	AllowImageGeneration            bool                          `json:"allow_image_generation"`
@@ -520,7 +522,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		DailyLimitUSD:                   req.DailyLimitUSD.ToServiceInput(),
 		WeeklyLimitUSD:                  req.WeeklyLimitUSD.ToServiceInput(),
 		MonthlyLimitUSD:                 req.MonthlyLimitUSD.ToServiceInput(),
-		LongContextPricingEnabled:       req.LongContextPricingEnabled,
+		LongContextPricingEnabled:       req.LongContextPricingEnabled == nil || *req.LongContextPricingEnabled,
 		ModelPricing:                    req.ModelPricing,
 		AllowImageGeneration:            req.AllowImageGeneration,
 		AllowBatchImageGeneration:       req.AllowBatchImageGeneration,
@@ -751,9 +753,27 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 // GetUsageSummary returns today's, yesterday's, and cumulative cost for all groups.
 // GET /api/v1/admin/groups/usage-summary
 func (h *GroupHandler) GetUsageSummary(c *gin.Context) {
+	// Owners use the rollup's single server-timezone definition. Vendors keep
+	// the historical request-timezone behavior, but the repository still scopes
+	// every amount to the vendor workspace before aggregating.
 	todayStart := service.GroupUsageTodayStart(time.Now())
+	if scope, ok := service.ScopeFromContext(c.Request.Context()); ok && scope.IsVendor() {
+		todayStart = timezone.StartOfDayInUserLocation(
+			timezone.NowInUserLocation(c.Query("timezone")),
+			c.Query("timezone"),
+		)
+	}
 
 	results, err := h.dashboardService.GetGroupUsageSummary(c.Request.Context(), todayStart)
+	if err != nil {
+		response.Error(c, 500, "Failed to get group usage summary")
+		return
+	}
+
+	// 该汇总天然是全站口径，vendor 只应看到已授权分组的那几行。
+	results, err = filterByGroupScope(c, h.adminService, results, func(r usagestats.GroupUsageSummary) int64 {
+		return r.GroupID
+	})
 	if err != nil {
 		response.Error(c, 500, "Failed to get group usage summary")
 		return
@@ -770,7 +790,51 @@ func (h *GroupHandler) GetCapacitySummary(c *gin.Context) {
 		response.Error(c, 500, "Failed to get group capacity summary")
 		return
 	}
+
+	// 同 usage-summary：容量含并发/会话/RPM，是别家供应商的运营数据。
+	results, err = filterByGroupScope(c, h.adminService, results, func(r service.GroupCapacitySummary) int64 {
+		return r.GroupID
+	})
+	if err != nil {
+		response.Error(c, 500, "Failed to get group capacity summary")
+		return
+	}
 	response.Success(c, results)
+}
+
+// filterByGroupScope 按调用者作用域剔除未授权分组的行。
+//
+// 泛型而非各自手写循环：两个汇总端点的行类型不同但语义一致，
+// 日后再加汇总端点时照抄一行即可，不会漏掉过滤。
+func filterByGroupScope[T any](
+	c *gin.Context,
+	adminService service.AdminService,
+	rows []T,
+	groupIDOf func(T) int64,
+) ([]T, error) {
+	ids := make([]int64, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, groupIDOf(r))
+	}
+	allowed, err := adminService.FilterGroupIDsByScope(c.Request.Context(), ids)
+	if err != nil {
+		return nil, err
+	}
+	// 站长路径原样返回，避免为不受限视角白跑一遍集合运算。
+	if len(allowed) == len(ids) {
+		return rows, nil
+	}
+	allowedSet := make(map[int64]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = struct{}{}
+	}
+	out := make([]T, 0, len(allowed))
+	for _, r := range rows {
+		if _, ok := allowedSet[groupIDOf(r)]; ok {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // GetGroupAPIKeys handles getting API keys in a group

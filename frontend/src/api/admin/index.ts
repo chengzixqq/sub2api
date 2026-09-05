@@ -35,6 +35,7 @@ import affiliatesAPI from './affiliates'
 import riskControlAPI from './riskControl'
 import adminComplianceAPI from './compliance'
 import auditAPI from './audit'
+import userAdjustmentsAPI from './userAdjustments'
 import pluginsAPI from './plugins'
 
 /**
@@ -73,6 +74,7 @@ export const adminAPI = {
   riskControl: riskControlAPI,
   compliance: adminComplianceAPI,
   audit: auditAPI,
+  userAdjustments: userAdjustmentsAPI,
   plugins: pluginsAPI
 }
 
@@ -109,6 +111,7 @@ export {
   riskControlAPI,
   adminComplianceAPI,
   auditAPI,
+  userAdjustmentsAPI,
   pluginsAPI
 }
 
@@ -117,6 +120,17 @@ export default adminAPI
 // Re-export types used by components
 export type { AuditLog, AuditLogQuery, AuditLogListResponse } from './audit'
 export type { BalanceHistoryItem } from './users'
+export type {
+  UserAdjustment,
+  UserAdjustmentDirection,
+  UserAdjustmentExportQuery,
+  UserAdjustmentKind,
+  UserAdjustmentListResponse,
+  UserAdjustmentOperation,
+  UserAdjustmentPagination,
+  UserAdjustmentQuery,
+  UserAdjustmentSummary
+} from './userAdjustments'
 export type { ErrorPassthroughRule, CreateRuleRequest, UpdateRuleRequest } from './errorPassthrough'
 export type { BackupAgentHealth, DataManagementConfig } from './dataManagement'
 export type { TLSFingerprintProfile, CreateProfileRequest, UpdateProfileRequest } from './tlsFingerprintProfile'

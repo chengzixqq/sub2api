@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -11,6 +13,23 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
+
+// resolveAccountCostRate 返回本次请求应记账的账号成本倍率。
+//
+// 就是账号自身的 rate_multiplier，不掺任何工作区逻辑 —— 供应商与站长的
+// 结算倍率**就是这一列**：供应商在账号管理里改它，改的即是结算价。
+// 站长设的可调区间（workspaces.settlement_rate_min/max）只在写入时校验，
+// 计费读到的永远是已落库的值，因此热路径上没有工作区查询、没有缓存、
+// 也没有「取不到授权怎么办」这类回退分支。
+//
+// 别把区间校验搬到这里：账单必须复现当时写下的值，事后调窄区间不能
+// 追改历史账单。
+func resolveAccountCostRate(account *Account) float64 {
+	if account == nil {
+		return 1.0
+	}
+	return account.BillingRateMultiplier()
+}
 
 func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID, groupID int64, groupDefaultMultiplier float64) float64 {
 	if s == nil {
@@ -52,6 +71,7 @@ type RecordUsageInput struct {
 	ForceCacheBilling  bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
 	APIKeyService      APIKeyQuotaUpdater // 可选：用于更新API Key配额
 	QuotaPlatform      string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
+	BillingProvenance  *string            // 计费来源与成败标记，nil = 成功且用量来自上游（与历史行一致）
 
 	ChannelUsageFields // 渠道映射信息（由 handler 在 Forward 前解析）
 }
@@ -72,16 +92,24 @@ type usageLogBestEffortWriter interface {
 
 // postUsageBillingParams 统一扣费所需的参数
 type postUsageBillingParams struct {
-	Cost                  *CostBreakdown
-	User                  *User
-	APIKey                *APIKey
-	Account               *Account
-	Subscription          *UserSubscription
-	RequestPayloadHash    string
-	IsSubscriptionBill    bool
-	AccountRateMultiplier float64
-	APIKeyService         APIKeyQuotaUpdater
-	Platform              string // 来自 APIKey 关联 Group 的平台标识
+	Cost                       *CostBreakdown
+	User                       *User
+	APIKey                     *APIKey
+	Account                    *Account
+	Subscription               *UserSubscription
+	RequestPayloadHash         string
+	IsSubscriptionBill         bool
+	AccountRateMultiplier      float64
+	APIKeyService              APIKeyQuotaUpdater
+	Platform                   string // 来自 APIKey 关联 Group 的平台标识
+	ProbeCoalesced             bool
+	ProviderCostRecorded       bool
+	RequireUsageLogPersistence bool
+	// usageLogPersisted is set when the billing repository inserted the usage
+	// row in the same transaction as the user/provider effects. In that case
+	// recordUsageCore must not perform a second post-commit insert which could
+	// turn a successful charge into a false failure during a transient outage.
+	usageLogPersisted bool
 }
 
 // PlatformFromAPIKey 从 APIKey 关联的 Group 推导 platform 名称。
@@ -129,6 +157,31 @@ func (p *postUsageBillingParams) shouldUpdateAccountQuota() bool {
 	return p.Cost.TotalCost > 0 && p.Account.IsAPIKeyOrBedrock() && p.Account.HasAnyQuotaLimit()
 }
 
+func quantizedAccountBillingCost(p *postUsageBillingParams) float64 {
+	if p == nil || p.Cost == nil {
+		return 0
+	}
+	return QuantizeUsageBillingAmount(p.Cost.TotalCost * p.AccountRateMultiplier)
+}
+
+// normalizePostUsageBillingAmounts runs only after the idempotency fingerprint
+// has been derived from the raw amounts. All downstream mutable state and the
+// usage log then share the same NUMERIC(20,8)-compatible amount.
+func normalizePostUsageBillingAmounts(usageLog *UsageLog, p *postUsageBillingParams) {
+	if p == nil || p.Cost == nil {
+		return
+	}
+	p.Cost.ActualCost = QuantizeUsageBillingAmount(p.Cost.ActualCost)
+	if usageLog != nil {
+		usageLog.TotalCost = QuantizeUsageBillingAmount(p.Cost.TotalCost)
+		usageLog.ActualCost = p.Cost.ActualCost
+		if usageLog.AccountStatsCost != nil {
+			accountStatsCost := QuantizeUsageBillingAmount(*usageLog.AccountStatsCost)
+			usageLog.AccountStatsCost = &accountStatsCost
+		}
+	}
+}
+
 // postUsageBilling is the legacy fallback billing path used when the unified
 // billing repo is unavailable (nil). Production uses applyUsageBilling → repo.Apply
 // for atomic billing. This path only runs in tests or degraded mode.
@@ -170,8 +223,8 @@ func postUsageBilling(ctx context.Context, p *postUsageBillingParams, deps *bill
 		}
 	}
 
-	if p.shouldUpdateAccountQuota() {
-		accountCost := cost.TotalCost * p.AccountRateMultiplier
+	if p.ProviderCostRecorded && p.shouldUpdateAccountQuota() {
+		accountCost := quantizedAccountBillingCost(p)
 		if err := deps.accountRepo.IncrementQuotaUsed(billingCtx, p.Account.ID, accountCost); err != nil {
 			slog.Error("increment account quota used failed", "account_id", p.Account.ID, "cost", accountCost, "error", err)
 		}
@@ -212,6 +265,12 @@ func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID string)
 		}
 	}
 	if ctx != nil {
+		// Probe IDs are server-generated per-request keys. They must take
+		// precedence over a reused client request ID so leader/follower rows do
+		// not collapse into one billing event.
+		if probeRequestID, _ := ctx.Value(ctxkey.ProbeRequestID).(string); strings.TrimSpace(probeRequestID) != "" {
+			return strings.TrimSpace(probeRequestID)
+		}
 		if clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
 			return "client:" + strings.TrimSpace(clientRequestID)
 		}
@@ -230,7 +289,8 @@ func isForcedUsageBillingRequestID(requestID string) bool {
 	return strings.HasPrefix(id, "web_search:") ||
 		strings.HasPrefix(id, "grok-video:") ||
 		strings.HasPrefix(id, "grok_audio:") ||
-		strings.HasPrefix(id, "grok_realtime:")
+		strings.HasPrefix(id, "grok_realtime:") ||
+		strings.HasPrefix(id, "probe:")
 }
 
 // StableGrokAudioBillingRequestID is the durable usage_logs / dedup key for one
@@ -323,7 +383,7 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 	if p.shouldUpdateRateLimits() {
 		cmd.APIKeyRateLimitCost = p.Cost.ActualCost
 	}
-	if p.shouldUpdateAccountQuota() {
+	if p.ProviderCostRecorded && p.shouldUpdateAccountQuota() {
 		cmd.AccountQuotaCost = p.Cost.TotalCost * p.AccountRateMultiplier
 	}
 
@@ -333,11 +393,25 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 
 func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog, p *postUsageBillingParams, deps *billingDeps, repo UsageBillingRepository) (bool, error) {
 	if p == nil || deps == nil {
+		if p != nil && p.RequireUsageLogPersistence {
+			return false, ErrSyntheticProbeBillingUnavailable
+		}
 		return false, nil
+	}
+	// Existing callers predate probe attribution. A false zero value is only a
+	// provider-cost exclusion when the request is explicitly marked coalesced.
+	if !p.ProbeCoalesced {
+		p.ProviderCostRecorded = true
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
+	// buildUsageBillingCommand.Normalize derives the fingerprint before it
+	// quantizes command fields. Do not move this normalization above that call.
+	normalizePostUsageBillingAmounts(usageLog, p)
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
+		if p.RequireUsageLogPersistence {
+			return false, ErrSyntheticProbeBillingUnavailable
+		}
 		postUsageBilling(ctx, p, deps)
 		return true, nil
 	}
@@ -345,13 +419,33 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
-	result, err := repo.Apply(billingCtx, cmd)
+	var result *UsageBillingApplyResult
+	var err error
+	// Strict synthetic probes prefer the production repository extension that
+	// inserts the usage row in this same transaction. That successful atomic
+	// call is the persistence barrier; recordUsageCore skips a second
+	// post-commit insert. Test doubles and legacy repositories continue through
+	// Apply and the existing post-commit strict write.
+	if p.RequireUsageLogPersistence {
+		if atomicRepo, ok := repo.(UsageBillingWithUsageLogRepository); ok {
+			result, err = atomicRepo.ApplyWithUsageLog(billingCtx, cmd, usageLog)
+			if err == nil && result != nil && result.UsageLogPersisted {
+				p.usageLogPersisted = true
+			}
+		} else {
+			result, err = repo.Apply(billingCtx, cmd)
+		}
+	} else {
+		result, err = repo.Apply(billingCtx, cmd)
+	}
 	if err != nil {
 		return false, err
 	}
 
 	if result == nil || !result.Applied {
-		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		if p.ProviderCostRecorded {
+			deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+		}
 		return false, nil
 	}
 
@@ -382,7 +476,9 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 		deps.billingCacheService.QueueUpdateAPIKeyRateLimitUsage(p.APIKey.ID, p.Cost.ActualCost)
 	}
 
-	deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	if p.ProviderCostRecorded {
+		deps.deferredService.ScheduleLastUsedUpdate(p.Account.ID)
+	}
 
 	// Platform quota 累加：仅在 standard（余额）模式生效；订阅模式豁免；仅对有 limit 的用户写
 	// Redis 同步写 + DB 异步持久化（flag=false 降级）或 flusher 异步刷（flag=true）:
@@ -492,16 +588,17 @@ func notifyAccountQuota(p *postUsageBillingParams, deps *billingDeps, result *Us
 			slog.Error("panic in notifyAccountQuota", "recover", r)
 		}
 	}()
-	if p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
+	if !p.ProviderCostRecorded || p.Cost.TotalCost <= 0 || p.Account == nil || !p.Account.IsAPIKeyOrBedrock() || deps.balanceNotifyService == nil {
 		slog.Debug("notifyAccountQuota: skipped",
 			"total_cost", p.Cost.TotalCost,
+			"provider_cost_recorded", p.ProviderCostRecorded,
 			"account_nil", p.Account == nil,
 			"is_apikey_or_bedrock", p.Account != nil && p.Account.IsAPIKeyOrBedrock(),
 			"service_nil", deps.balanceNotifyService == nil,
 		)
 		return
 	}
-	accountCost := p.Cost.TotalCost * p.AccountRateMultiplier
+	accountCost := quantizedAccountBillingCost(p)
 	var quotaState *AccountQuotaState
 	if result != nil {
 		quotaState = result.QuotaState
@@ -596,25 +693,129 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	}
 }
 
+// writeUsageLogRequired is the strict counterpart used by synthetic probes.
+// Ordinary gateway traffic intentionally keeps the historical best-effort
+// behavior, but a locally synthesized response must not be acknowledged until
+// its usage row (or the repository's durable batch path) has succeeded.
+func writeUsageLogRequired(ctx context.Context, repo UsageLogRepository, usageLog *UsageLog) error {
+	if repo == nil {
+		return fmt.Errorf("%w: repository is unavailable", ErrSyntheticProbeUsagePersistence)
+	}
+	if usageLog == nil {
+		return fmt.Errorf("%w: usage log is nil", ErrSyntheticProbeUsagePersistence)
+	}
+	usageCtx, cancel := detachedBillingContext(ctx)
+	defer cancel()
+
+	if writer, ok := repo.(usageLogBestEffortWriter); ok {
+		if err := writer.CreateBestEffort(usageCtx, usageLog); err == nil {
+			return nil
+		} else {
+			fallbackCtx := usageCtx
+			if usageCtx.Err() != nil {
+				var fallbackCancel context.CancelFunc
+				fallbackCtx, fallbackCancel = detachedBillingContext(context.Background())
+				defer fallbackCancel()
+			}
+			if _, syncErr := repo.Create(fallbackCtx, usageLog); syncErr != nil {
+				return fmt.Errorf("%w: best-effort: %v; sync fallback: %v", ErrSyntheticProbeUsagePersistence, err, syncErr)
+			}
+			return nil
+		}
+	}
+	if _, err := repo.Create(usageCtx, usageLog); err != nil {
+		return fmt.Errorf("%w: %v", ErrSyntheticProbeUsagePersistence, err)
+	}
+	return nil
+}
+
+// recordUsageOpts 内部选项，参数化普通计费与长上下文计费的差异点。
+type recordUsageOpts struct {
+	// 长上下文计费（仅 Gemini 路径需要）
+	LongContextThreshold  int
+	LongContextMultiplier float64
+}
+
 // RecordUsage 记录使用量并扣费（或更新订阅用量）
 func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInput) error {
+	requireUsageLogPersistence := false
+	if ctx != nil {
+		requireUsageLogPersistence, _ = ctx.Value(ctxkey.ProbeUsagePersistenceRequired).(bool)
+	}
 	return s.recordUsageCore(ctx, &recordUsageCoreInput{
-		Result:             input.Result,
-		APIKey:             input.APIKey,
-		User:               input.User,
-		Account:            input.Account,
-		Subscription:       input.Subscription,
-		PricingAt:          input.PricingAt,
-		InboundEndpoint:    input.InboundEndpoint,
-		UpstreamEndpoint:   input.UpstreamEndpoint,
-		UserAgent:          input.UserAgent,
-		IPAddress:          input.IPAddress,
-		SessionID:          input.SessionID,
-		RequestPayloadHash: input.RequestPayloadHash,
-		ForceCacheBilling:  input.ForceCacheBilling,
-		APIKeyService:      input.APIKeyService,
-		QuotaPlatform:      input.QuotaPlatform,
-		ChannelUsageFields: input.ChannelUsageFields,
+		Result:                     input.Result,
+		APIKey:                     input.APIKey,
+		User:                       input.User,
+		Account:                    input.Account,
+		Subscription:               input.Subscription,
+		PricingAt:                  input.PricingAt,
+		InboundEndpoint:            input.InboundEndpoint,
+		UpstreamEndpoint:           input.UpstreamEndpoint,
+		UserAgent:                  input.UserAgent,
+		IPAddress:                  input.IPAddress,
+		SessionID:                  input.SessionID,
+		RequestPayloadHash:         input.RequestPayloadHash,
+		ForceCacheBilling:          input.ForceCacheBilling,
+		APIKeyService:              input.APIKeyService,
+		QuotaPlatform:              input.QuotaPlatform,
+		BillingProvenance:          input.BillingProvenance,
+		ProviderCostRecorded:       true,
+		RequireUsageLogPersistence: requireUsageLogPersistence,
+		ChannelUsageFields:         input.ChannelUsageFields,
+	}, &recordUsageOpts{})
+}
+
+// RecordUsageLongContextInput 记录使用量的输入参数（支持长上下文双倍计费）
+type RecordUsageLongContextInput struct {
+	Result                *ForwardResult
+	APIKey                *APIKey
+	User                  *User
+	Account               *Account
+	Subscription          *UserSubscription  // 可选：订阅信息
+	PricingAt             time.Time          // token 售价固定时刻；零值保持既有的记录时刻语义
+	InboundEndpoint       string             // 入站端点（客户端请求路径）
+	UpstreamEndpoint      string             // 上游端点（标准化后的上游路径）
+	UserAgent             string             // 请求的 User-Agent
+	IPAddress             string             // 请求的客户端 IP 地址
+	SessionID             string             // 客户端显式会话标识（session_id / X-Session-Id 等请求头），仅用于用量行会话关联
+	RequestPayloadHash    string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
+	LongContextThreshold  int                // 长上下文阈值（如 200000）
+	LongContextMultiplier float64            // 超出阈值部分的倍率（如 2.0）
+	ForceCacheBilling     bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
+	APIKeyService         APIKeyQuotaUpdater // API Key 配额服务（可选）
+	QuotaPlatform         string             // user×platform 配额计量平台：handler 在请求 ctx 内经 QuotaPlatform() 算定后传入（后扣运行在 worker 池 background ctx 上，取不到 ForcePlatform）
+
+	ChannelUsageFields // 渠道映射信息（由 handler 在 Forward 前解析）
+}
+
+// RecordUsageWithLongContext 记录使用量并扣费，支持长上下文双倍计费（用于 Gemini）
+func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *RecordUsageLongContextInput) error {
+	requireUsageLogPersistence := false
+	if ctx != nil {
+		requireUsageLogPersistence, _ = ctx.Value(ctxkey.ProbeUsagePersistenceRequired).(bool)
+	}
+	return s.recordUsageCore(ctx, &recordUsageCoreInput{
+		Result:                     input.Result,
+		APIKey:                     input.APIKey,
+		User:                       input.User,
+		Account:                    input.Account,
+		Subscription:               input.Subscription,
+		PricingAt:                  input.PricingAt,
+		InboundEndpoint:            input.InboundEndpoint,
+		UpstreamEndpoint:           input.UpstreamEndpoint,
+		UserAgent:                  input.UserAgent,
+		IPAddress:                  input.IPAddress,
+		SessionID:                  input.SessionID,
+		RequestPayloadHash:         input.RequestPayloadHash,
+		ForceCacheBilling:          input.ForceCacheBilling,
+		APIKeyService:              input.APIKeyService,
+		QuotaPlatform:              input.QuotaPlatform,
+		ProviderCostRecorded:       true,
+		RequireUsageLogPersistence: requireUsageLogPersistence,
+		ChannelUsageFields:         input.ChannelUsageFields,
+	}, &recordUsageOpts{
+		LongContextThreshold:  input.LongContextThreshold,
+		LongContextMultiplier: input.LongContextMultiplier,
 	})
 }
 
@@ -635,6 +836,16 @@ type recordUsageCoreInput struct {
 	ForceCacheBilling  bool
 	APIKeyService      APIKeyQuotaUpdater
 	QuotaPlatform      string
+	BillingProvenance  *string
+	// Probe attribution is orthogonal to user billing. A follower remains a
+	// normal billable request while ProviderCostRecorded is false.
+	ProbeCoalesced       bool
+	ProbeLeaderRequestID string
+	ProviderCostRecorded bool
+	// RequireUsageLogPersistence is set only for synthetic probe billing. It
+	// keeps the legacy best-effort semantics unchanged for ordinary traffic.
+	RequireUsageLogPersistence bool
+
 	ChannelUsageFields
 }
 
@@ -712,8 +923,18 @@ func logResponseModelBillingApplied(component string, account *Account, requestI
 	slog.Info("billing.response_model_applied", attrs...)
 }
 
-// recordUsageCore 是 RecordUsage 的核心实现。
-func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsageCoreInput) error {
+// recordUsageCore 是 RecordUsage 和 RecordUsageWithLongContext 的统一实现。
+// LongContextThreshold > 0 时 Token 计费回退走 CalculateCostWithLongContext。
+func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsageCoreInput, opts *recordUsageOpts) error {
+	if input == nil {
+		return errors.New("usage billing input is nil")
+	}
+	// Keep legacy callers on the real-provider path. Synthetic attribution is
+	// opt-in via ProbeCoalesced; only then can ProviderCostRecorded=false mean a
+	// follower that must not inflate provider/account cost.
+	if !input.ProbeCoalesced {
+		input.ProviderCostRecorded = true
+	}
 	result := input.Result
 	apiKey := input.APIKey
 	user := input.User
@@ -784,6 +1005,23 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 	// 计算费用
 	cost := s.calculateRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, imageMultiplier, pricingAt)
+	// The legacy global-token path (including long-context billing) returns a
+	// valid CostBreakdown without setting BillingMode.  Strict probe billing
+	// still needs to distinguish that deterministic token price from an empty
+	// pricing placeholder; normalize only this guarded path so ordinary billing
+	// compatibility remains unchanged.
+	if input.RequireUsageLogPersistence && cost != nil && cost.BillingMode == "" &&
+		s.hasResolvableTokenPricing(ctx, billingModel, apiKey) {
+		cost.BillingMode = string(BillingModeToken)
+	}
+	if input.RequireUsageLogPersistence && (cost == nil || cost.BillingMode == "") {
+		// Legacy callers receive a zero-cost placeholder when pricing lookup
+		// fails; synthetic probes must fail closed instead of becoming free.
+		return ErrSyntheticProbePricingUnavailable
+	}
+	if input.RequireUsageLogPersistence && !syntheticCostCoversUsage(cost, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.CacheCreationInputTokens, result.Usage.CacheReadInputTokens) {
+		return ErrSyntheticProbePricingUnavailable
+	}
 	// response_model：按上游成功响应自报的模型计费（渠道显式开启才生效）。
 	// 采纳条件见 responseModelBillingDeclaration + hasIdentifiedResponseModelPricing
 	// + responseModelBillingAdoptable。任一条件不满足都静默回落基线，即开启本模式前的
@@ -814,12 +1052,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	// 创建使用日志
-	accountRateMultiplier := account.BillingRateMultiplier()
+	accountRateMultiplier := resolveAccountCostRate(account)
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost)
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
-	if apiKey.GroupID != nil {
+	if apiKey.GroupID != nil && input.ProviderCostRecorded {
 		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
 			// Anthropic's input_tokens excludes cache_read and cache_creation (billed separately);
@@ -836,9 +1074,17 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		if input.RequireUsageLogPersistence {
+			if err := writeUsageLogRequired(ctx, s.usageLogRepo, usageLog); err != nil {
+				return err
+			}
+		} else {
+			writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
+		}
 		logger.LegacyPrintf("service.gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
-		s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		if input.ProviderCostRecorded {
+			s.deferredService.ScheduleLastUsedUpdate(account.ID)
+		}
 		return nil
 	}
 
@@ -853,23 +1099,41 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		}
 	}
 	requestID := usageLog.RequestID
-	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
-		Cost:                  cost,
-		User:                  user,
-		APIKey:                apiKey,
-		Account:               account,
-		Subscription:          subscription,
-		RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
-		IsSubscriptionBill:    isSubscriptionBilling,
-		AccountRateMultiplier: accountRateMultiplier,
-		APIKeyService:         input.APIKeyService,
-		Platform:              quotaPlatform,
-	}, s.billingDeps(), s.usageBillingRepo)
+	billingParams := &postUsageBillingParams{
+		Cost:                       cost,
+		User:                       user,
+		APIKey:                     apiKey,
+		Account:                    account,
+		Subscription:               subscription,
+		RequestPayloadHash:         resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
+		IsSubscriptionBill:         isSubscriptionBilling,
+		AccountRateMultiplier:      accountRateMultiplier,
+		APIKeyService:              input.APIKeyService,
+		Platform:                   quotaPlatform,
+		ProbeCoalesced:             input.ProbeCoalesced,
+		ProviderCostRecorded:       input.ProviderCostRecorded,
+		RequireUsageLogPersistence: input.RequireUsageLogPersistence,
+	}
+	_, billingErr := applyUsageBilling(ctx, requestID, usageLog, billingParams, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
+		if input.RequireUsageLogPersistence {
+			// Do not poison the request-id unique key with a zero-cost row. A
+			// later retry may apply the charge successfully and write the row.
+			return billingErr
+		}
 		usageLog.ActualCost = 0
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 		return billingErr
+	}
+	if input.RequireUsageLogPersistence {
+		// The atomic repository path already committed the usage row with the
+		// billing effects. Never issue a second post-commit insert that could
+		// turn a durable charge into a false failure during a transient outage.
+		if billingParams.usageLogPersisted {
+			return nil
+		}
+		return writeUsageLogRequired(ctx, s.usageLogRepo, usageLog)
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 
@@ -1181,7 +1445,13 @@ func (s *GatewayService) buildRecordUsageLog(
 		SessionID:                optionalTrimmedStringPtr(input.SessionID),
 		GroupID:                  apiKey.GroupID,
 		SubscriptionID:           optionalSubscriptionID(subscription),
+		BillingProvenance:        input.BillingProvenance,
+		ProbeCoalesced:           input.ProbeCoalesced,
+		ProviderCostRecorded:     input.ProviderCostRecorded,
 		CreatedAt:                time.Now(),
+	}
+	if leaderID := strings.TrimSpace(input.ProbeLeaderRequestID); leaderID != "" {
+		usageLog.ProbeLeaderRequestID = &leaderID
 	}
 	if result.ImageCount > 0 && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = imageMultiplier
@@ -1193,7 +1463,7 @@ func (s *GatewayService) buildRecordUsageLog(
 		usageLog.CacheCreationCost = cost.CacheCreationCost
 		usageLog.CacheReadCost = cost.CacheReadCost
 		usageLog.TotalCost = cost.TotalCost
-		usageLog.ActualCost = cost.ActualCost
+		usageLog.ActualCost = QuantizeUsageBillingAmount(cost.ActualCost)
 		usageLog.LongContextBillingApplied = cost.LongContextBillingApplied
 	}
 

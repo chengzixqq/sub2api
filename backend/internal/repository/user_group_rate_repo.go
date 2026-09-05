@@ -3,8 +3,10 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
 )
@@ -174,15 +176,19 @@ func (r *userGroupRateRepository) GetRPMOverrideByUserAndGroup(ctx context.Conte
 //   - 值为 nil：清空对应行的 rate_multiplier（保留 rpm_override）。
 //   - 值非 nil：upsert rate_multiplier（保留已有 rpm_override）。
 func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID int64, rates map[int64]*float64) error {
+	exec, err := r.userGroupRateMutationExecutor(ctx)
+	if err != nil {
+		return err
+	}
 	if len(rates) == 0 {
-		if _, err := r.sql.ExecContext(ctx, `
+		if _, err := exec.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
 			SET rate_multiplier = NULL, updated_at = NOW()
 			WHERE user_id = $1
 		`, userID); err != nil {
 			return err
 		}
-		_, err := r.sql.ExecContext(ctx,
+		_, err := exec.ExecContext(ctx,
 			`DELETE FROM user_group_rate_multipliers WHERE user_id = $1 AND rate_multiplier IS NULL AND rpm_override IS NULL`,
 			userID)
 		return err
@@ -201,14 +207,14 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 	}
 
 	if len(clearGroupIDs) > 0 {
-		if _, err := r.sql.ExecContext(ctx, `
+		if _, err := exec.ExecContext(ctx, `
 			UPDATE user_group_rate_multipliers
 			SET rate_multiplier = NULL, updated_at = NOW()
 			WHERE user_id = $1 AND group_id = ANY($2)
 		`, userID, pq.Array(clearGroupIDs)); err != nil {
 			return err
 		}
-		if _, err := r.sql.ExecContext(ctx,
+		if _, err := exec.ExecContext(ctx,
 			`DELETE FROM user_group_rate_multipliers WHERE user_id = $1 AND group_id = ANY($2) AND rate_multiplier IS NULL AND rpm_override IS NULL`,
 			userID, pq.Array(clearGroupIDs)); err != nil {
 			return err
@@ -217,7 +223,7 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 
 	if len(upsertGroupIDs) > 0 {
 		now := time.Now()
-		_, err := r.sql.ExecContext(ctx, `
+		_, err := exec.ExecContext(ctx, `
 			INSERT INTO user_group_rate_multipliers (user_id, group_id, rate_multiplier, created_at, updated_at)
 			SELECT
 				$1::bigint,
@@ -237,6 +243,20 @@ func (r *userGroupRateRepository) SyncUserGroupRates(ctx context.Context, userID
 	}
 
 	return nil
+}
+
+func (r *userGroupRateRepository) userGroupRateMutationExecutor(ctx context.Context) (sqlQueryExecutor, error) {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		exec := sqlExecutorFromEntClient(tx.Client())
+		if exec == nil {
+			return nil, fmt.Errorf("user group rate transaction executor is not configured")
+		}
+		return exec, nil
+	}
+	if r.sql == nil {
+		return nil, fmt.Errorf("user group rate SQL executor is not configured")
+	}
+	return r.sql, nil
 }
 
 // SyncGroupRateMultipliers 同步分组的 rate_multiplier 部分（不触动 rpm_override）。

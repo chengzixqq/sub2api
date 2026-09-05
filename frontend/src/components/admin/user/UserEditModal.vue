@@ -3,7 +3,7 @@
     :show="show"
     :title="t('admin.users.editUser')"
     width="normal"
-    @close="$emit('close')"
+    @close="handleClose"
   >
     <form v-if="user" id="edit-user-form" @submit.prevent="handleUpdateUser" class="space-y-5">
       <div>
@@ -55,6 +55,18 @@
         <p class="input-hint">{{ t('admin.users.form.concurrencyHint') }}</p>
       </div>
       <div>
+        <label class="input-label">{{ t('admin.users.adjustmentNotes') }}</label>
+        <textarea
+          v-model="form.adjustment_notes"
+          rows="2"
+          class="input"
+          :disabled="!concurrencyChanged"
+          :placeholder="t('admin.users.adjustmentNotesPlaceholder')"
+          data-test="adjustment-notes"
+        ></textarea>
+        <p class="input-hint">{{ t('admin.users.adjustmentNotesHint') }}</p>
+      </div>
+      <div>
         <label class="input-label">{{ t('admin.users.form.rpmLimit') }}</label>
         <input
           v-model.number="form.rpm_limit"
@@ -70,7 +82,7 @@
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button @click="$emit('close')" type="button" class="btn btn-secondary">{{ t('common.cancel') }}</button>
+        <button @click="handleClose" type="button" class="btn btn-secondary">{{ t('common.cancel') }}</button>
         <button type="submit" form="edit-user-form" :disabled="submitting" class="btn btn-primary">
           {{ submitting ? t('admin.users.updating') : t('common.update') }}
         </button>
@@ -88,7 +100,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { useClipboard } from '@/composables/useClipboard'
 import { adminAPI } from '@/api/admin'
-import type { AdminUser, UserAttributeValuesMap } from '@/types'
+import type { AdminUser, UpdateUserRequest, UserAttributeValuesMap } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import UserAttributeForm from '@/components/user/UserAttributeForm.vue'
@@ -103,25 +115,47 @@ const { t } = useI18n(); const appStore = useAppStore(); const { copyToClipboard
 const submitting = ref(false); const passwordCopied = ref(false)
 const roleOptions = computed(() => [
   { value: 'user', label: t('admin.users.roles.user') },
+  { value: 'vendor', label: t('admin.users.roles.vendor') },
   { value: 'admin', label: t('admin.users.roles.admin') }
 ])
-const form = reactive({
-  email: '',
-  password: '',
-  username: '',
-  notes: '',
-  role: 'user' as AdminUser['role'],
-  concurrency: 1,
-  rpm_limit: 0,
-  customAttributes: {} as UserAttributeValuesMap
-})
+const form = reactive({ email: '', password: '', username: '', notes: '', adjustment_notes: '', role: 'user' as AdminUser['role'], concurrency: 1, rpm_limit: 0, customAttributes: {} as UserAttributeValuesMap })
+const pendingAdjustment = ref<{ fingerprint: string, idempotencyKey: string } | null>(null)
+
+const clearPendingAdjustment = () => { pendingAdjustment.value = null }
+const getAdjustmentOptions = (fingerprint: string) => {
+  if (pendingAdjustment.value?.fingerprint !== fingerprint) {
+    pendingAdjustment.value = {
+      fingerprint,
+      idempotencyKey: adminAPI.users.createAdjustmentIdempotencyKey()
+    }
+  }
+  return { idempotencyKey: pendingAdjustment.value.idempotencyKey }
+}
+const handleClose = () => {
+  clearPendingAdjustment()
+  emit('close')
+}
 
 watch(() => props.user, (u) => {
   if (u) {
-    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', role: u.role || 'user', concurrency: u.concurrency, rpm_limit: u.rpm_limit ?? 0, customAttributes: {} })
+    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', adjustment_notes: '', role: u.role || 'user', concurrency: u.concurrency, rpm_limit: u.rpm_limit ?? 0, customAttributes: {} })
     passwordCopied.value = false
+    clearPendingAdjustment()
   }
 }, { immediate: true })
+
+watch(() => props.show, (show) => {
+  if (show) {
+    form.adjustment_notes = ''
+    clearPendingAdjustment()
+  } else {
+    clearPendingAdjustment()
+  }
+})
+
+const concurrencyChanged = computed(() =>
+  props.user !== null && Number(form.concurrency) !== Number(props.user.concurrency)
+)
 
 const generatePassword = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*'
@@ -149,11 +183,20 @@ const handleUpdateUser = async () => {
   const userId = props.user.id
   submitting.value = true
   try {
-    const data: any = { email: form.email, username: form.username, notes: form.notes, role: form.role, concurrency: form.concurrency, rpm_limit: form.rpm_limit }
+    const data: UpdateUserRequest = { email: form.email, username: form.username, notes: form.notes, role: form.role as UpdateUserRequest['role'], concurrency: form.concurrency, rpm_limit: form.rpm_limit }
+    const adjustmentNotes = form.adjustment_notes.trim()
+    if (concurrencyChanged.value && adjustmentNotes) data.adjustment_notes = adjustmentNotes
     if (form.password.trim()) data.password = form.password.trim()
+    const options = concurrencyChanged.value
+      ? getAdjustmentOptions(JSON.stringify([userId, data]))
+      : undefined
+    if (!concurrencyChanged.value) clearPendingAdjustment()
     // 提升为管理员属敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 验证并重试
-    await stepUp.run(() => adminAPI.users.update(userId, data))
+    await stepUp.run(() => options
+      ? adminAPI.users.update(userId, data, options)
+      : adminAPI.users.update(userId, data))
     if (Object.keys(form.customAttributes).length > 0) await adminAPI.userAttributes.updateUserAttributeValues(userId, form.customAttributes)
+    clearPendingAdjustment()
     appStore.showSuccess(t('admin.users.userUpdated'))
     emit('success'); emit('close')
   } catch (e: any) {

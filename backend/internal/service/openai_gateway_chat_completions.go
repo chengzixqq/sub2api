@@ -722,8 +722,16 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
+		// 投递标记独立门控：firstTokenMs 是 TTFT 指标（既有语义，任何首帧都算），
+		// 而「上游已投递」决定失败请求是否计费，只有真实内容帧才可置位。
+		// 上游只回 response.failed / 裸 error / 前导帧时若一并标记，零投递请求会被计费 = 多算。
+		if openAIResponsesStreamEventDeliversRealContent(
+			payload, strings.TrimSpace(gjson.Get(payload, "type").String()),
+		) {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+		}
 		if countSearch {
-			searchCount += countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen)
+			searchCount = AccumulateSearchCount(searchCount, countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen), "chat_completions_stream")
 		}
 
 		var event apicompat.ResponsesStreamEvent

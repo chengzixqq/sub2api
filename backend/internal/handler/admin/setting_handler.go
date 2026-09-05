@@ -11,6 +11,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -62,6 +63,14 @@ type SettingHandler struct {
 	notificationEmailService *service.NotificationEmailService
 	totpService              *service.TotpService
 	userService              *service.UserService
+}
+
+func settingActorIsOwner(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	role, ok := middleware2.GetUserRoleFromContext(c)
+	return ok && role == service.RoleAdmin
 }
 
 // NewSettingHandler 创建系统设置处理器
@@ -376,6 +385,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
 		ChannelMonitorHideThroughput:         settings.ChannelMonitorHideThroughput,
 		ChannelMonitorShowQuota:              settings.ChannelMonitorShowQuota,
+		ProbeCoalescingMode:                  settings.ProbeCoalescingMode,
+		ProbeCoalescingWindowSeconds:         settings.ProbeCoalescingWindowSeconds,
+		ProbeCoalescingLeaderTimeoutSeconds:  settings.ProbeCoalescingLeaderTimeoutSeconds,
+		ProbeCoalescingAttemptBudget:         settings.ProbeCoalescingAttemptBudget,
 
 		GrokDefaultTextModel:           settings.GrokDefaultTextModel,
 		GrokCrossClientModelMapEnabled: settings.GrokCrossClientModelMapEnabled,
@@ -390,8 +403,18 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 
 		AffiliateEnabled: settings.AffiliateEnabled,
 
-		AccountSchedulingThresholds: settings.AccountSchedulingThresholds,
-		AllowUserViewErrorRequests:  settings.AllowUserViewErrorRequests,
+		AccountSchedulingThresholds:     settings.AccountSchedulingThresholds,
+		AllowUserViewErrorRequests:      settings.AllowUserViewErrorRequests,
+		FailureBillingUpstreamUsageOnly: settings.FailureBillingUpstreamUsageOnly,
+	}
+	if !settingActorIsOwner(c) {
+		// Probe coalescing is an owner-controlled operational switch. Keep the
+		// rest of the legacy settings document available to existing admin
+		// roles, but do not disclose or round-trip these fields to vendors.
+		payload.ProbeCoalescingMode = ""
+		payload.ProbeCoalescingWindowSeconds = 0
+		payload.ProbeCoalescingLeaderTimeoutSeconds = 0
+		payload.ProbeCoalescingAttemptBudget = 0
 	}
 
 	// OpenAI fast policy (stored under a dedicated setting key)

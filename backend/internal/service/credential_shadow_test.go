@@ -18,6 +18,14 @@ func (s *stubCredRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
 	return s.parent, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (s *stubCredRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return s.GetByID(ctx, id)
+}
+
 func newStubCredRepo(parent *Account) AccountRepository {
 	return &stubCredRepo{parent: parent}
 }

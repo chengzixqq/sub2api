@@ -125,6 +125,11 @@ func ExpiryWarnDays(v int) predicate.Proxy {
 	return predicate.Proxy(sql.FieldEQ(FieldExpiryWarnDays, v))
 }
 
+// WorkspaceID applies equality check predicate on the "workspace_id" field. It's identical to WorkspaceIDEQ.
+func WorkspaceID(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldWorkspaceID, v))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.Proxy {
 	return predicate.Proxy(sql.FieldEQ(FieldCreatedAt, v))
@@ -888,6 +893,46 @@ func ExpiryWarnDaysLT(v int) predicate.Proxy {
 // ExpiryWarnDaysLTE applies the LTE predicate on the "expiry_warn_days" field.
 func ExpiryWarnDaysLTE(v int) predicate.Proxy {
 	return predicate.Proxy(sql.FieldLTE(FieldExpiryWarnDays, v))
+}
+
+// WorkspaceIDEQ applies the EQ predicate on the "workspace_id" field.
+func WorkspaceIDEQ(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldEQ(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDNEQ applies the NEQ predicate on the "workspace_id" field.
+func WorkspaceIDNEQ(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNEQ(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDIn applies the In predicate on the "workspace_id" field.
+func WorkspaceIDIn(vs ...int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldIn(FieldWorkspaceID, vs...))
+}
+
+// WorkspaceIDNotIn applies the NotIn predicate on the "workspace_id" field.
+func WorkspaceIDNotIn(vs ...int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldNotIn(FieldWorkspaceID, vs...))
+}
+
+// WorkspaceIDGT applies the GT predicate on the "workspace_id" field.
+func WorkspaceIDGT(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGT(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDGTE applies the GTE predicate on the "workspace_id" field.
+func WorkspaceIDGTE(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldGTE(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDLT applies the LT predicate on the "workspace_id" field.
+func WorkspaceIDLT(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLT(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDLTE applies the LTE predicate on the "workspace_id" field.
+func WorkspaceIDLTE(v int64) predicate.Proxy {
+	return predicate.Proxy(sql.FieldLTE(FieldWorkspaceID, v))
 }
 
 // HasAccounts applies the HasEdge predicate on the "accounts" edge.

@@ -1,23 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { post } = vi.hoisted(() => ({
+const { post, put } = vi.hoisted(() => ({
   post: vi.fn(),
+  put: vi.fn(),
 }))
 
 vi.mock('@/api/client', () => ({
   apiClient: {
     post,
+    put,
   },
 }))
 
 import {
   batchUpdateLimits,
   bindUserAuthIdentity,
+  createAdjustmentIdempotencyKey,
+  updateBalance,
+  updateConcurrency,
   type AdminBindAuthIdentityRequest,
   type AdminBoundAuthIdentity,
   type BatchUpdateUserLimitsRequest,
   type BatchUpdateUserLimitsResponse,
 } from '@/api/admin/users'
+import type { UpdateUserRequest } from '@/types'
 
 type Assert<T extends true> = T
 type IsExact<T, U> = (
@@ -74,6 +80,7 @@ const batchRequestContractExact: Assert<
       all?: boolean
       concurrency?: number
       rpm_limit?: number
+      notes?: string
     }
   >
 > = true
@@ -84,6 +91,7 @@ const batchResponseContractExact: Assert<
 describe('admin users api auth identity binding', () => {
   beforeEach(() => {
     post.mockReset()
+    put.mockReset()
   })
 
   it('posts the backend-compatible auth identity bind payload and returns the backend response shape', async () => {
@@ -137,14 +145,74 @@ describe('admin users api auth identity binding', () => {
       user_ids: [4, 7],
       all: false,
       rpm_limit: 0,
+      notes: 'planned limit update',
     }
     post.mockResolvedValue({ data: { affected: 2 } satisfies BatchUpdateUserLimitsResponse })
 
     const result = await batchUpdateLimits(request)
 
-    expect(post).toHaveBeenCalledWith('/admin/users/batch-limits', request)
+    expect(post).toHaveBeenCalledWith('/admin/users/batch-limits', request, {
+      headers: { 'Idempotency-Key': expect.any(String) },
+    })
     expect(result).toEqual({ affected: 2 })
     expect(batchRequestContractExact).toBe(true)
     expect(batchResponseContractExact).toBe(true)
+  })
+
+  it('sends a concurrency adjustment note through the typed user update request', async () => {
+    const typedRequest: UpdateUserRequest = {
+      concurrency: 6,
+      adjustment_notes: 'capacity correction',
+    }
+    put.mockResolvedValue({ data: { id: 9 } })
+
+    await updateConcurrency(9, typedRequest.concurrency!, typedRequest.adjustment_notes)
+
+    expect(put).toHaveBeenCalledWith('/admin/users/9', typedRequest, {
+      headers: { 'Idempotency-Key': expect.any(String) },
+    })
+  })
+
+  it('reuses an explicitly owned single-user concurrency key after an uncertain failure', async () => {
+    const options = { idempotencyKey: createAdjustmentIdempotencyKey() }
+    put.mockRejectedValueOnce(new Error('network result unknown'))
+
+    await expect(updateConcurrency(11, 8, 'capacity correction', options)).rejects.toThrow('network result unknown')
+    const firstHeaders = put.mock.calls[0][2].headers
+
+    put.mockResolvedValueOnce({ data: { id: 11, concurrency: 8 } })
+    await updateConcurrency(11, 8, 'capacity correction', options)
+
+    expect(put.mock.calls[1][2].headers).toEqual(firstHeaders)
+    expect(firstHeaders['Idempotency-Key']).toMatch(/^admin-adjustment-/)
+  })
+
+  it('reuses an explicitly owned balance adjustment key after an uncertain failure', async () => {
+    const options = { idempotencyKey: createAdjustmentIdempotencyKey() }
+    post.mockRejectedValueOnce(new Error('network result unknown'))
+
+    await expect(updateBalance(9, 5, 'add', 'manual correction', options)).rejects.toThrow('network result unknown')
+    const firstHeaders = post.mock.calls[0][2].headers
+
+    post.mockResolvedValueOnce({ data: { id: 9, balance: 15 } })
+    await updateBalance(9, 5, 'add', 'manual correction', options)
+
+    expect(post.mock.calls[1][2].headers).toEqual(firstHeaders)
+    expect(firstHeaders['Idempotency-Key']).toMatch(/^admin-adjustment-/)
+  })
+
+  it('uses distinct keys for independent concurrent adjustments with identical payloads', async () => {
+    post.mockResolvedValue({ data: { id: 9, balance: 15 } })
+
+    await Promise.all([
+      updateBalance(9, 5, 'add', 'manual correction'),
+      updateBalance(9, 5, 'add', 'manual correction'),
+    ])
+
+    const firstKey = post.mock.calls[0][2].headers['Idempotency-Key']
+    const secondKey = post.mock.calls[1][2].headers['Idempotency-Key']
+    expect(firstKey).toMatch(/^admin-adjustment-/)
+    expect(secondKey).toMatch(/^admin-adjustment-/)
+    expect(secondKey).not.toBe(firstKey)
   })
 })

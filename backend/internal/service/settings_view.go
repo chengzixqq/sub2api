@@ -202,6 +202,10 @@ type SystemSettings struct {
 	ChannelMonitorDefaultIntervalSeconds int    `json:"channel_monitor_default_interval_seconds"`
 	ChannelMonitorHideThroughput         bool   `json:"channel_monitor_hide_throughput"`
 	ChannelMonitorShowQuota              bool   `json:"channel_monitor_show_quota"`
+	ProbeCoalescingMode                  string `json:"probe_coalescing_mode"`
+	ProbeCoalescingWindowSeconds         int    `json:"probe_coalescing_window_seconds"`
+	ProbeCoalescingLeaderTimeoutSeconds  int    `json:"probe_coalescing_leader_timeout_seconds"`
+	ProbeCoalescingAttemptBudget         int    `json:"probe_coalescing_attempt_budget"`
 
 	// Grok model mapping policy (admin settings; empty mapping falls back to these).
 	GrokDefaultTextModel           string `json:"grok_default_text_model"`
@@ -308,6 +312,9 @@ type SystemSettings struct {
 
 	// 允许终端用户在用量页查看自己的失败请求
 	AllowUserViewErrorRequests bool
+
+	// 失败请求仅按上游明确 usage/可计费动作结算；关闭时保留已投递流的估算兜底。
+	FailureBillingUpstreamUsageOnly bool
 }
 
 type DefaultSubscriptionSetting struct {

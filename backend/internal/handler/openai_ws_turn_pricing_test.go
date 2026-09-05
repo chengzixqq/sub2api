@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,4 +36,18 @@ func TestOpenAIWSTurnPricingFreezePerTurn(t *testing.T) {
 
 	p.freeze(turn2)
 	require.Equal(t, turn2, p.currentOr(time.Time{}), "后续 turn 必须使用自己的定价时刻")
+}
+
+func TestOpenAIWSTurnPayloadFingerprintChangesPerTurn(t *testing.T) {
+	var fingerprint openAIWSTurnPayloadFingerprint
+	turn1 := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":"first"}`)
+	turn2 := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":"second"}`)
+
+	require.Empty(t, fingerprint.current())
+	fingerprint.freeze(turn1)
+	require.Equal(t, service.HashUsageRequestPayload(turn1), fingerprint.current())
+
+	fingerprint.freeze(turn2)
+	require.Equal(t, service.HashUsageRequestPayload(turn2), fingerprint.current())
+	require.NotEqual(t, service.HashUsageRequestPayload(turn1), fingerprint.current())
 }

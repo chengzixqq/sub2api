@@ -119,6 +119,24 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	routingStart := time.Now()
 
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(service.PlatformOpenAI, body)
+		},
+		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			APIKey:              apiKey,
+			Subscription:        subscription,
+			ReqModel:            requestedModel,
+			ChannelUsageFields:  channelMapping.ToUsageFields(requestedModel, ""),
+			RequestPayloadBytes: body,
+			Component:           "handler.openai_gateway.alpha_search",
+		}),
+	})
+	defer guard.Flush()
 	// 分组利润控制：alpha search 文本入口请求级装门并固定 pricingAt
 	//（记录路径经 service.OpenAIPricingAtFromContext 从请求 ctx 回读）。
 	asPricingCtx, _ := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
@@ -175,6 +193,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			return
 		}
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		guard.ObserveAttempt(account)
 		writerSizeBeforeForward := c.Writer.Size()
 		forwardStart := time.Now()
 		var result *service.OpenAIForwardResult
@@ -187,12 +206,18 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, time.Since(forwardStart).Milliseconds())
 
 		if err == nil {
+			// 转发成功即认定结算归正常路径所有，无条件 MarkSettled。
+			// 不能只在 result != nil 时标记：result 为 nil 的成功转发若不标记，
+			// defer guard.Flush() 会把一次成功请求按失败兜底再记一笔，属多算方向。
+			guard.MarkSettled()
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestedModel, false, result), true, nil)
 			if result != nil {
 				h.recordAlphaSearchUsage(c, apiKey, account, subscription, channelMapping, requestedModel, body, result, subject.UserID)
 			}
 			return
 		}
+		guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+		guard.ObserveOpenAIForwardResult(result)
 
 		var failoverErr *service.UpstreamFailoverError
 		if !errors.As(err, &failoverErr) {

@@ -79,6 +79,14 @@ func (r *upstreamCostCountingAccountRepo) GetByID(_ context.Context, accountID i
 	return &cloned, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *upstreamCostCountingAccountRepo) GetByIDScoped(ctx context.Context, accountID int64) (*Account, error) {
+	return r.GetByID(ctx, accountID)
+}
+
 func (r *upstreamCostCountingAccountRepo) calls() int {
 	return r.getCalls
 }

@@ -659,7 +659,7 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 ||
 		u.CacheCreationInputTokens > 0 || u.CacheReadInputTokens > 0 ||
 		u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0 ||
-		u.ImageOutputTokens > 0
+		u.ImageInputTokens > 0 || u.ImageOutputTokens > 0
 }
 
 // partialStreamUsageResult 在流式转发中途出错时，把已观测到 usage 的部分结果包装为
@@ -667,14 +667,11 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 // input/cache token 就已计量，直接丢弃会让请求完全漏记漏计费（issue #5148）。
 // 无已观测 usage 时返回 nil。
 //
-// 不变式：UpstreamFailoverError 必须保持 result=nil——failover 重试成功后按成功请求
-// 计费，若同时返回部分 usage 会造成双重计费，此处显式拦截兜底。
+// failover 错误同样返回已观测 usage。handler 的 settlement guard 会在下一次尝试前
+// 清空它，重试成功后由 MarkSettled 抑制失败结算；只有重试耗尽时最后一次 usage
+// 才会进入失败结算。
 func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
 	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
-		return nil
-	}
-	var failoverErr *UpstreamFailoverError
-	if errors.As(err, &failoverErr) {
 		return nil
 	}
 	return &ForwardResult{
@@ -1072,7 +1069,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					if clientDisconnected {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 					}
-					return nil, err
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, err
 				}
 
 				for _, block := range outputBlocks {
@@ -1094,6 +1091,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						if firstTokenMs == nil && data != "[DONE]" {
 							ms := int(time.Since(startTime).Milliseconds())
 							firstTokenMs = &ms
+							c.Set(GatewayUpstreamDeliveredKey, true)
 						}
 						if usagePatch != nil {
 							mergeSSEUsagePatch(usage, usagePatch)

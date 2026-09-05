@@ -607,6 +607,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if !equalAccountSchedulingThresholds(before.AccountSchedulingThresholds, after.AccountSchedulingThresholds) {
 		changed = append(changed, service.SettingKeyAccountSchedulingThresholds)
 	}
+	if before.FailureBillingUpstreamUsageOnly != after.FailureBillingUpstreamUsageOnly {
+		changed = append(changed, service.SettingKeyFailureBillingUpstreamUsageOnly)
+	}
 	changed = appendAuthSourceDefaultChanges(changed, beforeAuthSourceDefaults, afterAuthSourceDefaults)
 	return changed
 }

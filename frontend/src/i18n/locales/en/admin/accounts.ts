@@ -328,6 +328,9 @@ export default {
       subscriptionExpires: 'Expires',
       // Capacity status tooltips
       capacity: {
+        realConcurrency: 'Real concurrency',
+        probeConcurrency: 'Strict upstream probe concurrency',
+        probeShort: 'Probe',
         windowCost: {
           blocked: '5h window cost exceeded, account scheduling paused',
           stickyOnly: '5h window cost at threshold, only sticky sessions allowed',

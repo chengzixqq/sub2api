@@ -45,6 +45,8 @@ type Proxy struct {
 	BackupProxyID *int64 `json:"backup_proxy_id,omitempty"`
 	// Days before expiry to flag as expiring-soon (per proxy).
 	ExpiryWarnDays int `json:"expiry_warn_days,omitempty"`
+	// Owning workspace; 1 = platform-managed.
+	WorkspaceID int64 `json:"workspace_id,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
 	// The values are being populated by the ProxyQuery when eager-loading is set.
 	Edges        ProxyEdges `json:"edges"`
@@ -87,7 +89,7 @@ func (*Proxy) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays:
+		case proxy.FieldID, proxy.FieldPort, proxy.FieldBackupProxyID, proxy.FieldExpiryWarnDays, proxy.FieldWorkspaceID:
 			values[i] = new(sql.NullInt64)
 		case proxy.FieldName, proxy.FieldProtocol, proxy.FieldHost, proxy.FieldUsername, proxy.FieldPassword, proxy.FieldStatus, proxy.FieldFallbackMode:
 			values[i] = new(sql.NullString)
@@ -203,6 +205,12 @@ func (_m *Proxy) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ExpiryWarnDays = int(value.Int64)
 			}
+		case proxy.FieldWorkspaceID:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field workspace_id", values[i])
+			} else if value.Valid {
+				_m.WorkspaceID = value.Int64
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -300,6 +308,9 @@ func (_m *Proxy) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("expiry_warn_days=")
 	builder.WriteString(fmt.Sprintf("%v", _m.ExpiryWarnDays))
+	builder.WriteString(", ")
+	builder.WriteString("workspace_id=")
+	builder.WriteString(fmt.Sprintf("%v", _m.WorkspaceID))
 	builder.WriteByte(')')
 	return builder.String()
 }

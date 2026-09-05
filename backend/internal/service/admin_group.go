@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -19,9 +20,27 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
+// vendorGroupScanPageSize 是全量拉取分组时的页大小上限。
+//
+// 分组数量在实际部署里是「几十条」量级，取一万足以一次取尽。
+// 该值同时用于站长的「含停用分组」列表，两处保持同一口径。
+const vendorGroupScanPageSize = 10000
+
 // Group management implementations
 func (s *adminServiceImpl) ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool, sortBy, sortOrder string) ([]Group, int64, error) {
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: sortBy, SortOrder: sortOrder}
+	// 供应商视角改走全量拉取后过滤：分组归属是 workspace_group_grants 里的
+	// 多对多授权，不是 groups 表上的列，仓储层的分页 SQL 无从表达该谓词。
+	// 分组总量是「几十条」量级（GetAllGroupsIncludingInactive 已按此假设
+	// 写死 PageSize 10000），一次全量读的代价可接受；换成 SQL 内联子查询
+	// 才是把授权规则复制进仓储层，反而多一处口径漂移的来源。
+	granted, err := s.grantedGroupIDs(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	if granted != nil {
+		return s.listGroupsForVendor(ctx, params, platform, status, search, isExclusive, granted)
+	}
 	groups, result, err := s.groupRepo.ListWithFilters(ctx, params, platform, status, search, isExclusive)
 	if err != nil {
 		return nil, 0, err
@@ -29,28 +48,155 @@ func (s *adminServiceImpl) ListGroups(ctx context.Context, page, pageSize int, p
 	return groups, result.Total, nil
 }
 
+// listGroupsForVendor 在已授权分组内完成过滤与分页。
+//
+// total 必须是过滤后的条数，而非仓储返回的全站条数：前端据它算页数，
+// 用全站条数会显示出翻不到内容的空页。
+func (s *adminServiceImpl) listGroupsForVendor(
+	ctx context.Context,
+	params pagination.PaginationParams,
+	platform, status, search string,
+	isExclusive *bool,
+	granted map[int64]struct{},
+) ([]Group, int64, error) {
+	if len(granted) == 0 {
+		return []Group{}, 0, nil
+	}
+	all, _, err := s.groupRepo.ListWithFilters(
+		ctx,
+		pagination.PaginationParams{
+			Page:      1,
+			PageSize:  vendorGroupScanPageSize,
+			SortBy:    params.SortBy,
+			SortOrder: params.SortOrder,
+		},
+		platform, status, search, isExclusive,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	visible := make([]Group, 0, len(granted))
+	for _, g := range all {
+		if _, ok := granted[g.ID]; ok {
+			visible = append(visible, g)
+		}
+	}
+
+	total := int64(len(visible))
+	page, pageSize := params.Page, params.PageSize
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = len(visible)
+	}
+	start := (page - 1) * pageSize
+	if start >= len(visible) {
+		return []Group{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(visible) {
+		end = len(visible)
+	}
+	pageSlice := visible[start:end]
+	if err := s.rescopeGroupAccountCounts(ctx, pageSlice); err != nil {
+		return nil, 0, err
+	}
+	if err := s.markSharedGroupBillingLocks(ctx, pageSlice); err != nil {
+		return nil, 0, err
+	}
+	return pageSlice, total, nil
+}
+
+// rescopeGroupAccountCounts 把分组行内的账号计数改写为本工作区口径。
+//
+// 共享分组的 account_count 由仓储按全分组聚合得出，泄露的是别家的账号规模。
+// 行级过滤只管「看得到哪些分组」，管不到行内数字，因此必须在这里重算。
+//
+// 就地改写切片元素：Group 是值类型，range 的副本改了不算，只能按下标写回。
+func (s *adminServiceImpl) rescopeGroupAccountCounts(ctx context.Context, groups []Group) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	scope, ok := ScopeFromContext(ctx)
+	if !ok || !scope.IsVendor() {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, g.ID)
+	}
+	counts, err := s.groupRepo.LoadAccountCountsScoped(ctx, ids, scope.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	for i := range groups {
+		c := counts[groups[i].ID]
+		groups[i].AccountCount = c.Total
+		groups[i].ActiveAccountCount = c.Active
+		groups[i].RateLimitedAccountCount = c.RateLimited
+	}
+	return nil
+}
+
 func (s *adminServiceImpl) GetAllGroups(ctx context.Context) ([]Group, error) {
-	return s.groupRepo.ListActive(ctx)
+	groups, err := s.groupRepo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterGroupsByScope(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetAllGroupsByPlatform(ctx context.Context, platform string) ([]Group, error) {
-	return s.groupRepo.ListActiveByPlatform(ctx, platform)
+	groups, err := s.groupRepo.ListActiveByPlatform(ctx, platform)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterGroupsByScope(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetAllGroupsIncludingInactive(ctx context.Context) ([]Group, error) {
 	// ListWithFilters with empty status = no status filter, so active + disabled groups are returned.
 	// PageSize 10000 is intentionally large; group count is O(dozens) in practice.
-	groups, _, err := s.groupRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: 10000}, "", "", "", nil)
-	return groups, err
+	groups, _, err := s.groupRepo.ListWithFilters(ctx, pagination.PaginationParams{Page: 1, PageSize: vendorGroupScanPageSize}, "", "", "", nil)
+	if err != nil {
+		return nil, err
+	}
+	return s.filterGroupsByScope(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetGroup(ctx context.Context, id int64) (*Group, error) {
-	return s.groupRepo.GetByID(ctx, id)
+	// 先判授权再读库：未授权分组一律 404，不泄露其是否存在。
+	if err := s.requireGroupAccess(ctx, id); err != nil {
+		return nil, err
+	}
+	group, err := s.groupRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// 详情页与列表同源：GetByID 的计数来自共享的 loadAccountCounts，
+	// 共享分组下那是各家合计。用单元素切片走同一条重算路径，
+	// 免得两处口径各写一遍而漂移。
+	one := []Group{*group}
+	if err := s.rescopeGroupAccountCounts(ctx, one); err != nil {
+		return nil, err
+	}
+	if err := s.markSharedGroupBillingLocks(ctx, one); err != nil {
+		return nil, err
+	}
+	return &one[0], nil
 }
 
 func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id int64, platform string) ([]string, error) {
 	platform = strings.TrimSpace(platform)
 	if id > 0 {
+		// 候选来自该分组下账号的实际可用模型，等于一份上游能力清单：
+		// 不校验授权，供应商填任意分组 ID 即可探知别家上游的模型覆盖。
+		if err := s.requireGroupAccess(ctx, id); err != nil {
+			return nil, err
+		}
 		group, err := s.groupRepo.GetByIDLite(ctx, id)
 		if err != nil {
 			return nil, err
@@ -72,6 +218,10 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 	if err != nil {
 		return nil, err
 	}
+	// 共享分组必须再按账号归属收窄：上面的 requireGroupAccess 只保证
+	// 「这个分组对我可见」，而共享给多家工作区时组内账号是各家的总和，
+	// 候选模型由账号聚合而来，不收窄就等于交出别家上游的能力清单。
+	accounts = s.filterAccountValuesByScope(ctx, accounts)
 
 	seen := make(map[string]struct{}, len(candidates))
 	for _, model := range candidates {
@@ -181,6 +331,10 @@ func (s *adminServiceImpl) PreviewCompositeRoute(ctx context.Context, groupID in
 }
 
 func (s *adminServiceImpl) requireCompositeGroup(ctx context.Context, groupID int64) error {
+	// 复合路由的增删改查都经此，作用域校验放这里可一次覆盖全部子操作。
+	if err := s.requireGroupAccess(ctx, groupID); err != nil {
+		return err
+	}
 	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
 	if err != nil {
 		return err
@@ -657,6 +811,16 @@ func (s *adminServiceImpl) validateFallbackGroupOnInvalidRequest(ctx context.Con
 }
 
 func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *UpdateGroupInput) (*Group, error) {
+	// 未授权分组不可改：路由白名单只按权限档放行 PUT/PATCH，
+	// 拦不住「拿着授权档去改别家分组 ID」。
+	if err := s.requireGroupAccess(ctx, id); err != nil {
+		return nil, err
+	}
+	// 字段级隔离：路由层只判定「能否发起更新」，GroupOps 与 GroupBilling
+	// 的实际分野必须在这里落地，否则任一档都等于整组配置全开。
+	if err := s.applyGroupUpdateScope(ctx, id, input); err != nil {
+		return nil, err
+	}
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -701,16 +865,7 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if input.SubscriptionType != "" {
 		group.SubscriptionType = input.SubscriptionType
 	}
-	// 限额字段：nil 表示不修改，负数表示"无限制"，0 表示"不允许用量"，正数表示具体限额。
-	if input.DailyLimitUSD != nil {
-		group.DailyLimitUSD = normalizeLimit(input.DailyLimitUSD)
-	}
-	if input.WeeklyLimitUSD != nil {
-		group.WeeklyLimitUSD = normalizeLimit(input.WeeklyLimitUSD)
-	}
-	if input.MonthlyLimitUSD != nil {
-		group.MonthlyLimitUSD = normalizeLimit(input.MonthlyLimitUSD)
-	}
+	applyGroupLimitUpdates(group, input)
 	// 图片生成计费配置：负数表示清除（使用默认价格）
 	if input.AllowImageGeneration != nil {
 		group.AllowImageGeneration = *input.AllowImageGeneration
@@ -1021,6 +1176,24 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	return group, nil
 }
 
+// applyGroupLimitUpdates treats a nil input as "not in the update mask". The
+// HTTP layer uses a pointer to zero for an explicit zero limit (no usage), so
+// denied or omitted fields can safely remain nil without erasing persisted limits.
+func applyGroupLimitUpdates(group *Group, input *UpdateGroupInput) {
+	if group == nil || input == nil {
+		return
+	}
+	if input.DailyLimitUSD != nil {
+		group.DailyLimitUSD = normalizeLimit(input.DailyLimitUSD)
+	}
+	if input.WeeklyLimitUSD != nil {
+		group.WeeklyLimitUSD = normalizeLimit(input.WeeklyLimitUSD)
+	}
+	if input.MonthlyLimitUSD != nil {
+		group.MonthlyLimitUSD = normalizeLimit(input.MonthlyLimitUSD)
+	}
+}
+
 func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) ([]ChannelModelPricing, error) {
 	out := make([]ChannelModelPricing, len(pricing))
 	for i := range pricing {
@@ -1086,7 +1259,14 @@ func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+// GetGroupAPIKeys 列出分组下的终端用户密钥。
+//
+// 这是站长统管的客户名单，vendor 一律不可读 —— 即便分组已授权给他。
+// 路由层已排除该端点，这里再挡一次，避免日后有人复用该方法时漏掉。
 func (s *adminServiceImpl) GetGroupAPIKeys(ctx context.Context, groupID int64, page, pageSize int) ([]APIKey, int64, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, 0, domain.ErrWorkspaceScopeViolation
+	}
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
 	keys, result, err := s.apiKeyRepo.ListByGroupID(ctx, groupID, params)
 	if err != nil {
@@ -1095,7 +1275,16 @@ func (s *adminServiceImpl) GetGroupAPIKeys(ctx context.Context, groupID int64, p
 	return keys, result.Total, nil
 }
 
+// 以下按 user_id 维度读写的分组配置一律对 vendor 关闭。
+//
+// 它们的键是终端用户，暴露出去等于交出客户名单与各自的议价结果，
+// 与「用户、API Key、余额仍由站长统管」的设计前提直接冲突。
+// 这不随分组是否授权而变，故不走 requireGroupAccess。
+
 func (s *adminServiceImpl) GetGroupRateMultipliers(ctx context.Context, groupID int64) ([]UserGroupRateEntry, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
 	if s.userGroupRateRepo == nil {
 		return nil, nil
 	}
@@ -1103,6 +1292,9 @@ func (s *adminServiceImpl) GetGroupRateMultipliers(ctx context.Context, groupID 
 }
 
 func (s *adminServiceImpl) ClearGroupRateMultipliers(ctx context.Context, groupID int64) error {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return domain.ErrWorkspaceScopeViolation
+	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1110,6 +1302,9 @@ func (s *adminServiceImpl) ClearGroupRateMultipliers(ctx context.Context, groupI
 }
 
 func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, groupID int64, entries []GroupRateMultiplierInput) error {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return domain.ErrWorkspaceScopeViolation
+	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1122,6 +1317,9 @@ func (s *adminServiceImpl) BatchSetGroupRateMultipliers(ctx context.Context, gro
 }
 
 func (s *adminServiceImpl) ClearGroupRPMOverrides(ctx context.Context, groupID int64) error {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return domain.ErrWorkspaceScopeViolation
+	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1136,6 +1334,9 @@ func (s *adminServiceImpl) ClearGroupRPMOverrides(ctx context.Context, groupID i
 }
 
 func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupID int64, entries []GroupRPMOverrideInput) error {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return domain.ErrWorkspaceScopeViolation
+	}
 	if s.userGroupRateRepo == nil {
 		return nil
 	}
@@ -1155,6 +1356,14 @@ func (s *adminServiceImpl) BatchSetGroupRPMOverrides(ctx context.Context, groupI
 }
 
 func (s *adminServiceImpl) UpdateGroupSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
+	// 逐条校验授权：排序虽只写 sort_order，但 sort_order 决定分组在
+	// 用户可领取列表里的排位，供应商借此可把自己的分组顶到别家之前。
+	// 整批拒绝而非跳过越权项 —— 部分生效的排序会得到一个谁都没要的顺序。
+	for _, u := range updates {
+		if err := s.requireGroupAccess(ctx, u.ID); err != nil {
+			return err
+		}
+	}
 	return s.groupRepo.UpdateSortOrders(ctx, updates)
 }
 

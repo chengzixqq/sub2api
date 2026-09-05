@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import AccountActionMenu from '../AccountActionMenu.vue'
 import type { Account } from '@/types'
@@ -49,6 +50,13 @@ const getBodyText = () => document.body.textContent ?? ''
 const getBodyButtons = () => Array.from(document.body.querySelectorAll('button'))
 
 describe('AccountActionMenu — spark shadow 按钮可见性', () => {
+  // 菜单通过 useWorkspacePerms 读 auth store 判定结算入口的显隐，
+  // 未激活 pinia 会在 setup 阶段就抛错，本文件断言的按钮一个都挂不出来。
+  // 默认身份即站长（store 初始态无 workspace），与本文件的断言口径一致。
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
   it('普通账号显示「复制账号」按钮', () => {
     const account = makeAccount({ platform: 'anthropic', type: 'apikey', parent_account_id: null })
     const wrapper = mount(AccountActionMenu, {

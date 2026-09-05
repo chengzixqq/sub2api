@@ -28,6 +28,11 @@ type GroupRepository interface {
 
 	ExistsByName(ctx context.Context, name string) (bool, error)
 	GetAccountCount(ctx context.Context, groupID int64) (total int64, active int64, err error)
+
+	// LoadAccountCountsScoped 只统计归属指定工作区的账号数量。
+	// 供管理端列表在 vendor 视角下重算共享分组的计数，
+	// 避免行内数字暴露别家的账号规模。
+	LoadAccountCountsScoped(ctx context.Context, groupIDs []int64, workspaceID int64) (map[int64]GroupAccountCounts, error)
 	DeleteAccountGroupsByGroupID(ctx context.Context, groupID int64) (int64, error)
 	// GetAccountIDsByGroupIDs 获取多个分组的所有账号 ID（去重）
 	GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error)
@@ -57,6 +62,16 @@ type AdminGroupRepository interface {
 type GroupSortOrderUpdate struct {
 	ID        int64 `json:"id"`
 	SortOrder int   `json:"sort_order"`
+}
+
+// GroupAccountCounts 是单个分组的账号数量三联。
+//
+// 与 Group 上的同名字段一一对应，作为 LoadAccountCountsScoped 的返回单元：
+// vendor 视角下用它覆盖列表里的全站计数。
+type GroupAccountCounts struct {
+	Total       int64
+	Active      int64
+	RateLimited int64
 }
 
 // CreateGroupRequest 创建分组请求

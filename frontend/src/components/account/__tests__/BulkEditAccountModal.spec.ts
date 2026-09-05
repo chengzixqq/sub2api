@@ -19,6 +19,13 @@ vi.mock('@/stores/app', () => ({
   })
 }))
 
+// 弹窗通过 useWorkspacePerms 决定优先级与账号倍率两栏的显隐，
+// 并以同一判据作为提交守卫。本文件断言的是站长视角的完整 payload，
+// 故以站长身份 mock；与同文件其余 store 一致走 vi.mock，不引入真实 pinia。
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ isOwner: true, isVendor: false, workspace: null })
+}))
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {

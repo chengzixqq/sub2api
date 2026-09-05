@@ -151,6 +151,11 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 	openAIAPIKeyHealthBreakerCache    atomic.Value // *cachedOpenAIAPIKeyHealthBreakerSettings
 
+	// failureBillingUpstreamUsageOnlyCache keeps the failure settlement policy
+	// available to gateway guards without a database read on every request.
+	failureBillingUpstreamUsageOnlyCache atomic.Value // *cachedFailureBillingUpstreamUsageOnly
+	failureBillingUpstreamUsageOnlySF    singleflight.Group
+
 	channelMonitorRuntimeListenersMu sync.Mutex
 	channelMonitorRuntimeListeners   []func()
 }

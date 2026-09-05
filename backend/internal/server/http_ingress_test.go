@@ -55,6 +55,76 @@ func TestProvideHTTPServerEnablesBoundedH2C(t *testing.T) {
 	require.True(t, srv.Protocols.HTTP1())
 }
 
+func TestHTTPServerH2CKeepsActiveStreamPastReadHeaderTimeout(t *testing.T) {
+	r := gin.New()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	r.GET("/slow", func(c *gin.Context) {
+		close(started)
+		<-release
+		c.String(http.StatusOK, "ok")
+	})
+
+	cfg := ingressTestConfig()
+	cfg.Server.H2C = config.H2CConfig{
+		Enabled:                      true,
+		MaxConcurrentStreams:         10,
+		IdleTimeout:                  10,
+		MaxReadFrameSize:             64 * 1024,
+		MaxUploadBufferPerConnection: 1024 * 1024,
+		MaxUploadBufferPerStream:     256 * 1024,
+	}
+	srv := ProvideHTTPServer(cfg, r)
+	addr, stop := serveIngressTestServer(t, srv)
+	defer stop()
+
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	client := &http.Client{
+		Transport: &http.Transport{Protocols: protocols},
+		Timeout:   5 * time.Second,
+	}
+	defer client.CloseIdleConnections()
+
+	responseCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := client.Get("http://" + addr + "/slow")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		responseCh <- resp
+	}()
+
+	select {
+	case <-started:
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("h2c request did not reach the handler")
+	}
+
+	// The request remains active beyond ReadHeaderTimeout. Go 1.26.6 left
+	// that connection deadline armed after h2c handoff, which caused the
+	// production-wide EOF/502 burst; the fixed toolchain must keep it alive.
+	time.Sleep(1200 * time.Millisecond)
+	close(release)
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case resp := <-responseCh:
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, "ok", string(body))
+	case <-time.After(2 * time.Second):
+		t.Fatal("h2c request did not complete")
+	}
+}
+
 func TestConfigureTrustedProxies(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {

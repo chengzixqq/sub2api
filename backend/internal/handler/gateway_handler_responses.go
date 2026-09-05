@@ -153,6 +153,47 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	var probeLease *ProbeLease
+	probeCandidateDetected := false
+	probeLeaderInstalled := false
+	probeTarget := effectiveAPIKeyPlatform(c, apiKey)
+	if candidate, ok := probeCandidateForRequest(c, body, reqModel, optionalGroupID(apiKey.GroupID), probeTarget, channelMapping.ChannelID); ok {
+		probeCandidateDetected = true
+		requestCtx = c.Request.Context()
+		syncProbeCoalescerSettings(h.probeCoalescer, h.settingService, requestCtx)
+		probeCtx, probeID := prepareProbeAdmission(c, h.probeCoalescer)
+		requestCtx = probeCtx
+		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeID)
+		if probeLease.IsExhausted() {
+			h.responsesErrorResponse(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted")
+			return
+		}
+		if probeLease.IsFollower() {
+			handled, promoted, probeErr := resolveProbeFollower(c, probeLease, func(ctx context.Context, candidate ProbeCandidate, account *service.Account, leaderID string) error {
+				return h.billSyntheticProbe(c, apiKey, subscription, body, candidate, account, leaderID, channelMapping)
+			})
+			if handled {
+				if probeErr != nil {
+					status, code, message := probeResolutionError(probeErr)
+					h.responsesErrorResponse(c, status, code, message)
+				}
+				return
+			}
+			if promoted {
+				defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+				probeLeaderInstalled = true
+			}
+		}
+		if probeLease.IsLeader() && !probeLeaderInstalled {
+			defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+		}
+	}
+	markProbeAccountConcurrency(c, probeLease, probeCandidateDetected)
+	// installProbeLeader binds a cancellable lease context synchronously. Keep
+	// all subsequent selection/forward/failover work on that context so a
+	// timed-out leader is actually canceled before a follower takes over.
+	requestCtx = c.Request.Context()
+
 	// Parse request for session hash
 	bodyRef := service.NewRequestBodyRef(body)
 	parsedReq, _ := service.ParseGatewayRequest(bodyRef, "responses")
@@ -168,6 +209,17 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 
 	// 3. Account selection + failover loop
 	fs := NewFailoverState(h.maxAccountSwitches, false)
+
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), h.settingService),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(effectiveAPIKeyPlatform(c, apiKey), body)
+		},
+		sink: h.claudeFailureSink(c, apiKey, subscription, reqModel, channelMapping, body),
+	})
+	defer guard.Flush()
 
 	for {
 		if requestCtx.Err() != nil {
@@ -206,6 +258,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setProbeLeaderAccount(c, account)
 
 		// 4. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc
@@ -248,12 +301,15 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 		account = latest
 		selection.Account = latest
+		setProbeLeaderAccount(c, account)
 		if selection.ProfitGateActive() {
 			if err := h.gatewayService.BindStickySessionAfterProfitAdmission(admissionCtx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 				reqLog.Warn("gateway.responses.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			}
 		}
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+
+		guard.ObserveAttempt(account)
 
 		// 5. Forward request
 		writerSizeBeforeForward := c.Writer.Size()
@@ -282,6 +338,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		}
 
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveForwardResult(result)
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				// Can't failover if streaming content already sent
@@ -325,8 +383,9 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
 		stampForwardRequestedReasoningEffort(result, service.RequestedReasoningEffortFromContext(c.Request.Context()))
-		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+		guard.MarkSettled()
+		recordUsage := func(ctx context.Context) error {
+			return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
 				QuotaPlatform:      quotaPlatform,
 				APIKey:             apiKey,
@@ -342,13 +401,25 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-			}); err != nil {
+			})
+		}
+		if probeLease != nil && probeLease.IsLeader() {
+			if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 				reqLog.Error("gateway.responses.record_usage_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
 				)
 			}
-		})
+		} else {
+			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if err := recordUsage(ctx); err != nil {
+					reqLog.Error("gateway.responses.record_usage_failed",
+						zap.Int64("account_id", account.ID),
+						zap.Error(err),
+					)
+				}
+			})
+		}
 		return
 	}
 }

@@ -37,6 +37,15 @@ type readStartSpyFrameConn struct {
 	startOnce sync.Once
 }
 
+type writeReturnGateFrameConn struct {
+	base         FrameConn
+	blockWrite   int32
+	writeCount   atomic.Int32
+	delivered    chan struct{}
+	release      chan struct{}
+	deliveredOne sync.Once
+}
+
 type closeSpyFrameConn struct {
 	closeCalls atomic.Int32
 }
@@ -165,6 +174,30 @@ func (c *readStartSpyFrameConn) WriteFrame(ctx context.Context, msgType coderws.
 }
 
 func (c *readStartSpyFrameConn) Close() error {
+	return c.base.Close()
+}
+
+func (c *writeReturnGateFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	return c.base.ReadFrame(ctx)
+}
+
+func (c *writeReturnGateFrameConn) WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error {
+	if err := c.base.WriteFrame(ctx, msgType, payload); err != nil {
+		return err
+	}
+	if c.writeCount.Add(1) != c.blockWrite {
+		return nil
+	}
+	c.deliveredOne.Do(func() { close(c.delivered) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.release:
+		return nil
+	}
+}
+
+func (c *writeReturnGateFrameConn) Close() error {
 	return c.base.Close()
 }
 
@@ -572,18 +605,18 @@ func TestRelay_MultipleUpstreamMessages(t *testing.T) {
 	require.Len(t, clientWrites, 3)
 }
 
-func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
+func TestRelay_OnTurnComplete_OncePerAcceptedTurn(t *testing.T) {
 	t.Parallel()
 
 	clientConn := newPassthroughTestFrameConn(nil, false)
 	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
 		{
 			msgType: coderws.MessageText,
-			payload: []byte(`{"type":"response.completed","response":{"id":"resp_turn_1","usage":{"input_tokens":2,"output_tokens":1}}}`),
+			payload: []byte(`{"type":"response.completed","response":{"id":"resp_once","usage":{"input_tokens":2,"output_tokens":1}}}`),
 		},
 		{
 			msgType: coderws.MessageText,
-			payload: []byte(`{"type":"response.failed","response":{"id":"resp_turn_2","usage":{"input_tokens":3,"output_tokens":4}}}`),
+			payload: []byte(`{"type":"response.failed","response":{"id":"resp_once","usage":{"input_tokens":3,"output_tokens":4}}}`),
 		},
 	}, true)
 
@@ -598,17 +631,46 @@ func TestRelay_OnTurnComplete_PerTerminalEvent(t *testing.T) {
 		},
 	})
 	require.Nil(t, relayExit)
-	require.Len(t, turns, 2)
-	require.Equal(t, "resp_turn_1", turns[0].RequestID)
+	require.Len(t, turns, 1)
+	require.Equal(t, "resp_once", turns[0].RequestID)
 	require.Equal(t, "response.completed", turns[0].TerminalEventType)
 	require.Equal(t, 2, turns[0].Usage.InputTokens)
 	require.Equal(t, 1, turns[0].Usage.OutputTokens)
-	require.Equal(t, "resp_turn_2", turns[1].RequestID)
-	require.Equal(t, "response.failed", turns[1].TerminalEventType)
-	require.Equal(t, 3, turns[1].Usage.InputTokens)
-	require.Equal(t, 4, turns[1].Usage.OutputTokens)
+	// The relay still observes/forwards the duplicate frame, but it must not
+	// create another billing callback for the same accepted response.create.
 	require.Equal(t, 5, result.Usage.InputTokens)
 	require.Equal(t, 5, result.Usage.OutputTokens)
+}
+
+func TestRelay_SecondEmptyTerminalTerminatesAmbiguousSession(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn([]passthroughTestFrame{
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}`),
+		},
+		{
+			msgType: coderws.MessageText,
+			payload: []byte(`{"type":"response.failed","response":{"usage":{"input_tokens":3,"output_tokens":4}}}`),
+		},
+	}, true)
+
+	turns := make([]RelayTurnResult, 0, 2)
+	_, relayExit := Relay(
+		context.Background(),
+		clientConn,
+		upstreamConn,
+		[]byte(`{"type":"response.create","model":"gpt-5.3-codex","input":[]}`),
+		RelayOptions{OnTurnComplete: func(turn RelayTurnResult) { turns = append(turns, turn) }},
+	)
+
+	require.NotNil(t, relayExit)
+	require.Equal(t, "ambiguous_terminal_identity", relayExit.Stage)
+	require.ErrorIs(t, relayExit.Err, ErrAmbiguousTerminalIdentity)
+	require.Len(t, turns, 1)
+	require.Len(t, clientConn.Writes(), 2, "ambiguous terminal must be forwarded before the relay closes")
 }
 
 func TestRelay_OnTurnComplete_BareErrorWithoutIDBeforeLaterCompleted(t *testing.T) {
@@ -721,6 +783,182 @@ func TestRelay_OnTurnComplete_UsesCurrentResponseCreateModel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay did not stop after client close")
 	}
+}
+
+func TestRelay_OnTurnComplete_FastTerminalBeforeWriteReturns(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamBase := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := &writeReturnGateFrameConn{
+		base:       upstreamBase,
+		blockWrite: 2,
+		delivered:  make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	releaseWrite := func() { releaseOnce.Do(func() { close(upstreamConn.release) }) }
+	defer releaseWrite()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	turns := make(chan RelayTurnResult, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Relay(
+			ctx,
+			clientConn,
+			upstreamConn,
+			[]byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[]}`),
+			RelayOptions{OnTurnComplete: func(turn RelayTurnResult) { turns <- turn }},
+		)
+	}()
+
+	require.Eventually(t, func() bool { return len(upstreamBase.Writes()) == 1 }, time.Second, 10*time.Millisecond)
+	upstreamBase.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_sol","usage":{"input_tokens":1,"output_tokens":1}}}`),
+	}
+	select {
+	case turn := <-turns:
+		require.Equal(t, "gpt-5.6-sol", turn.RequestModel)
+	case <-time.After(time.Second):
+		t.Fatal("first turn was not observed")
+	}
+
+	clientConn.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.create","model":"gpt-5.6-terra","input":[]}`),
+	}
+	select {
+	case <-upstreamConn.delivered:
+	case <-time.After(time.Second):
+		t.Fatal("second response.create was not delivered upstream")
+	}
+
+	upstreamBase.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_terra","usage":{"input_tokens":2,"output_tokens":1}}}`),
+	}
+	select {
+	case turn := <-turns:
+		require.Equal(t, "gpt-5.6-terra", turn.RequestModel)
+		require.Equal(t, "resp_terra", turn.RequestID)
+	case <-time.After(time.Second):
+		t.Fatal("fast terminal was lost while response.create write was returning")
+	}
+
+	releaseWrite()
+	_ = clientConn.Close()
+	_ = upstreamBase.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not stop after race regression test")
+	}
+}
+
+func TestRelay_OnTurnComplete_DelayedDuplicateDoesNotClaimNextTurn(t *testing.T) {
+	t.Parallel()
+
+	clientConn := newPassthroughTestFrameConn(nil, false)
+	upstreamConn := newPassthroughTestFrameConn(nil, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	turns := make(chan RelayTurnResult, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = Relay(
+			ctx,
+			clientConn,
+			upstreamConn,
+			[]byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[]}`),
+			RelayOptions{OnTurnComplete: func(turn RelayTurnResult) { turns <- turn }},
+		)
+	}()
+
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 1 }, time.Second, 10*time.Millisecond)
+	firstTerminal := passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_sol","usage":{"input_tokens":1,"output_tokens":1}}}`),
+	}
+	upstreamConn.readCh <- firstTerminal
+	select {
+	case turn := <-turns:
+		require.Equal(t, "resp_sol", turn.RequestID)
+	case <-time.After(time.Second):
+		t.Fatal("first turn was not observed")
+	}
+
+	clientConn.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.create","model":"gpt-5.6-terra","input":[]}`),
+	}
+	require.Eventually(t, func() bool { return len(upstreamConn.Writes()) == 2 }, time.Second, 10*time.Millisecond)
+	upstreamConn.readCh <- firstTerminal
+	select {
+	case turn := <-turns:
+		t.Fatalf("delayed duplicate claimed the next turn: %+v", turn)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	upstreamConn.readCh <- passthroughTestFrame{
+		msgType: coderws.MessageText,
+		payload: []byte(`{"type":"response.completed","response":{"id":"resp_terra","usage":{"input_tokens":2,"output_tokens":1}}}`),
+	}
+	select {
+	case turn := <-turns:
+		require.Equal(t, "gpt-5.6-terra", turn.RequestModel)
+		require.Equal(t, "resp_terra", turn.RequestID)
+	case <-time.After(time.Second):
+		t.Fatal("real second terminal was suppressed by a delayed duplicate")
+	}
+
+	_ = clientConn.Close()
+	_ = upstreamConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not stop after delayed duplicate regression test")
+	}
+}
+
+func TestRelayState_EmptyTerminalRequiresSessionTerminationAfterFirstTurn(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{}
+	state.beginResponseCreate("gpt-5.6-sol")
+	_, disposition := state.claimTurnCompletion("")
+	require.Equal(t, turnCompletionAccepted, disposition)
+
+	state.beginResponseCreate("gpt-5.6-terra")
+	_, disposition = state.claimTurnCompletion("")
+	require.Equal(t, turnCompletionAmbiguous, disposition)
+	_, disposition = state.claimTurnCompletion("resp_terra")
+	require.Equal(t, turnCompletionIgnored, disposition)
+}
+
+func TestRelayState_ResponseCreateRollbackIsSequenceScoped(t *testing.T) {
+	t.Parallel()
+
+	state := &relayState{}
+	failedSequence := state.beginResponseCreate("gpt-5.6-sol")
+	state.rollbackResponseCreate(failedSequence)
+	_, disposition := state.claimTurnCompletion("resp-failed")
+	require.Equal(t, turnCompletionIgnored, disposition)
+
+	staleSequence := state.beginResponseCreate("gpt-5.6-sol")
+	currentSequence := state.beginResponseCreate("gpt-5.6-terra")
+	state.rollbackResponseCreate(staleSequence)
+	model, disposition := state.claimTurnCompletion("resp-current")
+	require.Equal(t, turnCompletionAccepted, disposition)
+	require.Equal(t, "gpt-5.6-terra", model)
+
+	state.rollbackResponseCreate(currentSequence)
+	_, disposition = state.claimTurnCompletion("resp-late")
+	require.Equal(t, turnCompletionIgnored, disposition)
 }
 
 func TestRelay_OnTurnComplete_ProvidesTurnMetrics(t *testing.T) {

@@ -280,6 +280,21 @@ func CacheTTLOverridden(v bool) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldCacheTTLOverridden, v))
 }
 
+// ProbeCoalesced applies equality check predicate on the "probe_coalesced" field. It's identical to ProbeCoalescedEQ.
+func ProbeCoalesced(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProbeCoalesced, v))
+}
+
+// ProbeLeaderRequestID applies equality check predicate on the "probe_leader_request_id" field. It's identical to ProbeLeaderRequestIDEQ.
+func ProbeLeaderRequestID(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProbeLeaderRequestID, v))
+}
+
+// ProviderCostRecorded applies equality check predicate on the "provider_cost_recorded" field. It's identical to ProviderCostRecordedEQ.
+func ProviderCostRecorded(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProviderCostRecorded, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldCreatedAt, v))
@@ -2458,6 +2473,101 @@ func CacheTTLOverriddenEQ(v bool) predicate.UsageLog {
 // CacheTTLOverriddenNEQ applies the NEQ predicate on the "cache_ttl_overridden" field.
 func CacheTTLOverriddenNEQ(v bool) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldNEQ(FieldCacheTTLOverridden, v))
+}
+
+// ProbeCoalescedEQ applies the EQ predicate on the "probe_coalesced" field.
+func ProbeCoalescedEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProbeCoalesced, v))
+}
+
+// ProbeCoalescedNEQ applies the NEQ predicate on the "probe_coalesced" field.
+func ProbeCoalescedNEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldProbeCoalesced, v))
+}
+
+// ProbeLeaderRequestIDEQ applies the EQ predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDNEQ applies the NEQ predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDNEQ(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDIn applies the In predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldProbeLeaderRequestID, vs...))
+}
+
+// ProbeLeaderRequestIDNotIn applies the NotIn predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDNotIn(vs ...string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldProbeLeaderRequestID, vs...))
+}
+
+// ProbeLeaderRequestIDGT applies the GT predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDGT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDGTE applies the GTE predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDGTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDLT applies the LT predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDLT(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDLTE applies the LTE predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDLTE(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDContains applies the Contains predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDContains(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContains(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDHasPrefix applies the HasPrefix predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDHasPrefix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasPrefix(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDHasSuffix applies the HasSuffix predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDHasSuffix(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldHasSuffix(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDIsNil applies the IsNil predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldProbeLeaderRequestID))
+}
+
+// ProbeLeaderRequestIDNotNil applies the NotNil predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldProbeLeaderRequestID))
+}
+
+// ProbeLeaderRequestIDEqualFold applies the EqualFold predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDEqualFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEqualFold(FieldProbeLeaderRequestID, v))
+}
+
+// ProbeLeaderRequestIDContainsFold applies the ContainsFold predicate on the "probe_leader_request_id" field.
+func ProbeLeaderRequestIDContainsFold(v string) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldContainsFold(FieldProbeLeaderRequestID, v))
+}
+
+// ProviderCostRecordedEQ applies the EQ predicate on the "provider_cost_recorded" field.
+func ProviderCostRecordedEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldProviderCostRecorded, v))
+}
+
+// ProviderCostRecordedNEQ applies the NEQ predicate on the "provider_cost_recorded" field.
+func ProviderCostRecordedNEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldProviderCostRecorded, v))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

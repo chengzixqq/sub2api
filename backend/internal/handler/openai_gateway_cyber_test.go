@@ -1,14 +1,27 @@
 package handler
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type cyberUsageCaptureRepo struct {
+	service.UsageLogRepository
+	logs chan *service.UsageLog
+}
+
+func (r *cyberUsageCaptureRepo) Create(_ context.Context, log *service.UsageLog) (bool, error) {
+	r.logs <- log
+	return true, nil
+}
 
 // newTestGinContext builds a bare gin.Context backed by an httptest recorder.
 func newTestGinContext() *gin.Context {
@@ -78,6 +91,135 @@ func TestRecordCyberPolicyIfMarked_ForwardSuccessSkipsUsageLog(t *testing.T) {
 		h.recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", false /* forwardErrored=false */, nil, service.ChannelUsageFields{}, "")
 	})
 	require.True(t, c.GetBool(cyberPolicyRecordedKey))
+}
+
+// TestRecordCyberPolicyIfMarked_ReportsWhetherCyberUsageRowWasSubmitted 锁定返回值
+// 语义：调用方（chat/completions、/v1/responses、/v1/messages）用它决定
+// billingSettlementGuard.MarkSettled()。返回 true 必须严格等价于「真的提交了 cyber 计费
+// 行」——放宽会让本该兜底的普通失败被标成已结算（少算），收紧会在 cyber 那笔之外再兜底记一
+// 笔（多算，即首轮复审报出的 Critical）。
+func TestRecordCyberPolicyIfMarked_ReportsWhetherCyberUsageRowWasSubmitted(t *testing.T) {
+	usageRepo := &fakeFailureSinkUsageLogRepo{}
+	newHandler := func() *OpenAIGatewayHandler {
+		return &OpenAIGatewayHandler{gatewayService: newCyberUsageTestGatewayService(usageRepo)}
+	}
+	apiKey := &service.APIKey{ID: 7, User: &service.User{ID: 9}}
+	account := &service.Account{ID: 3, Platform: service.PlatformOpenAI}
+
+	t.Run("no mark", func(t *testing.T) {
+		c := newTestGinContext()
+		require.False(t, newHandler().recordCyberPolicyIfMarked(c, apiKey, account, nil, "gpt-5", true, "", service.ChannelUsageFields{}, ""),
+			"没有 cyber 标记就没有 cyber 计费行，必须返回 false，否则兜底被错误跳过（少算）")
+	})
+
+	t.Run("forward succeeded", func(t *testing.T) {
+		c := newTestGinContext()
+		service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "flagged", UpstreamStatus: 200})
+		require.False(t, newHandler().recordCyberPolicyIfMarked(c, apiKey, account, nil, "gpt-5", false, "", service.ChannelUsageFields{}, ""),
+			"forward 成功时 cyber 不写计费行（由正常 RecordUsage 负责），必须返回 false")
+	})
+
+	t.Run("second call is deduped", func(t *testing.T) {
+		c := newTestGinContext()
+		service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "flagged", UpstreamStatus: 200})
+		h := newHandler()
+		require.True(t, h.recordCyberPolicyIfMarked(c, apiKey, account, nil, "gpt-5", true, "", service.ChannelUsageFields{}, ""))
+		require.False(t, h.recordCyberPolicyIfMarked(c, apiKey, account, nil, "gpt-5", true, "", service.ChannelUsageFields{}, ""),
+			"重复调用被 cyberPolicyRecordedKey 短路、没有第二条计费行，必须返回 false")
+	})
+
+	t.Run("incomplete input records nothing", func(t *testing.T) {
+		c := newTestGinContext()
+		service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{Message: "flagged", UpstreamStatus: 200})
+		require.False(t, newHandler().recordCyberPolicyIfMarked(c, nil, nil, nil, "gpt-5", true, "", service.ChannelUsageFields{}, ""),
+			"入参不足以落账（apiKey/account 为 nil）时 RecordCyberPolicyUsageLog 会 return，必须返回 false")
+	})
+
+	t.Run("cyber usage row submitted", func(t *testing.T) {
+		c := newTestGinContext()
+		service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{
+			Message: "flagged", UpstreamStatus: 200, UpstreamInTok: 120, UpstreamOutTok: 8,
+		})
+		require.True(t, newHandler().recordCyberPolicyIfMarked(c, apiKey, account, nil, "gpt-5", true, "", service.ChannelUsageFields{}, ""),
+			"cyber 按上游真实 usage 记了账，必须返回 true 让请求级兜底让路，否则同一请求计费两次")
+	})
+}
+
+func TestRecordCyberPolicyIfMarked_PreservesPartialImageInCyberRow(t *testing.T) {
+	repo := &cyberUsageCaptureRepo{logs: make(chan *service.UsageLog, 1)}
+	h := &OpenAIGatewayHandler{gatewayService: newCyberUsageTestGatewayService(repo)}
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{}`))
+	service.MarkOpsCyberPolicy(c, service.CyberPolicyMark{
+		Message:        "flagged",
+		UpstreamStatus: 400,
+		UpstreamInTok:  12,
+		UpstreamOutTok: 3,
+	})
+	apiKey := &service.APIKey{ID: 7, User: &service.User{ID: 9}}
+	account := &service.Account{ID: 3, Platform: service.PlatformOpenAI}
+	result := &service.OpenAIForwardResult{
+		RequestID:     "cyber-image-request",
+		Model:         "draw-alias",
+		BillingModel:  "gpt-image-1",
+		UpstreamModel: "gpt-image-1",
+		Usage: service.OpenAIUsage{
+			ImageInputTokens:  5,
+			ImageOutputTokens: 7,
+		},
+		ImageCount:         2,
+		ImageSize:          "1024x1024",
+		ImageOutputSize:    "1024x1024",
+		ImageOutputSizes:   []string{"1024x1024", "1024x1024"},
+		ImageSizeSource:    "output",
+		ImageSizeBreakdown: map[string]int{"1024x1024": 2},
+	}
+
+	require.True(t, h.recordCyberPolicyIfMarked(
+		c,
+		apiKey,
+		account,
+		nil,
+		"draw-alias",
+		true,
+		"",
+		service.ChannelUsageFields{},
+		service.HashUsageRequestPayload([]byte(`{}`)),
+		cyberUsageObservation{SearchCount: 4, Result: result},
+	))
+
+	select {
+	case log := <-repo.logs:
+		require.Equal(t, "cyber-image-request", log.RequestID)
+		require.Equal(t, service.RequestTypeCyberBlocked, log.RequestType)
+		require.Equal(t, 2, log.ImageCount)
+		require.Equal(t, 5, log.ImageInputTokens)
+		require.Equal(t, 7, log.ImageOutputTokens)
+		require.NotNil(t, log.ImageSize)
+		require.Equal(t, "1K", *log.ImageSize)
+		require.Equal(t, map[string]int{"1K": 2}, log.ImageSizeBreakdown)
+		require.NotNil(t, log.UpstreamModel)
+		require.Equal(t, "gpt-image-1", *log.UpstreamModel)
+		require.NotNil(t, log.BillingProvenance)
+		require.Equal(t, string(service.BillingProvenanceFailedUpstream), *log.BillingProvenance)
+		require.Greater(t, log.TotalCost, 0.0)
+	case <-time.After(time.Second):
+		t.Fatal("cyber partial-image usage row was not recorded")
+	}
+}
+
+// newCyberUsageTestGatewayService 构造一个足以让 RecordCyberPolicyUsageLog 的入参校验
+// 通过的最小 OpenAIGatewayService（本测试只断言返回值语义，不断言落库内容）。
+func newCyberUsageTestGatewayService(usageRepo service.UsageLogRepository) *service.OpenAIGatewayService {
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	return service.NewOpenAIGatewayService(
+		nil, usageRepo, nil, &fakeFailureSinkUserRepo{}, &fakeFailureSinkSubRepo{},
+		nil, nil, cfg, nil, nil, service.NewBillingService(cfg, nil), nil,
+		&service.BillingCacheService{}, nil, &service.DeferredService{},
+		nil, nil, nil, nil, nil, nil, nil,
+		nil, // workspaceService
+	)
 }
 
 // TestClearCyberPolicyTurnState verifies F1 at the handler level: after a turn

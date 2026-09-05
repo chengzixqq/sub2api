@@ -259,6 +259,7 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			if firstTokenMs == nil && len(line) > 0 {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
+				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
 
 			// 尝试从 message_delta 或 message_stop 事件提取 usage

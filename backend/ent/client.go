@@ -17,6 +17,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adminuseradjustment"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -54,6 +55,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/workspace"
+	"github.com/Wei-Shaw/sub2api/ent/workspacegroupgrant"
+	"github.com/Wei-Shaw/sub2api/ent/workspacemember"
 
 	stdsql "database/sql"
 )
@@ -69,6 +73,8 @@ type Client struct {
 	Account *AccountClient
 	// AccountGroup is the client for interacting with the AccountGroup builders.
 	AccountGroup *AccountGroupClient
+	// AdminUserAdjustment is the client for interacting with the AdminUserAdjustment builders.
+	AdminUserAdjustment *AdminUserAdjustmentClient
 	// Announcement is the client for interacting with the Announcement builders.
 	Announcement *AnnouncementClient
 	// AnnouncementRead is the client for interacting with the AnnouncementRead builders.
@@ -141,6 +147,12 @@ type Client struct {
 	UserPlatformQuota *UserPlatformQuotaClient
 	// UserSubscription is the client for interacting with the UserSubscription builders.
 	UserSubscription *UserSubscriptionClient
+	// Workspace is the client for interacting with the Workspace builders.
+	Workspace *WorkspaceClient
+	// WorkspaceGroupGrant is the client for interacting with the WorkspaceGroupGrant builders.
+	WorkspaceGroupGrant *WorkspaceGroupGrantClient
+	// WorkspaceMember is the client for interacting with the WorkspaceMember builders.
+	WorkspaceMember *WorkspaceMemberClient
 }
 
 // NewClient creates a new client configured with the given options.
@@ -155,6 +167,7 @@ func (c *Client) init() {
 	c.APIKey = NewAPIKeyClient(c.config)
 	c.Account = NewAccountClient(c.config)
 	c.AccountGroup = NewAccountGroupClient(c.config)
+	c.AdminUserAdjustment = NewAdminUserAdjustmentClient(c.config)
 	c.Announcement = NewAnnouncementClient(c.config)
 	c.AnnouncementRead = NewAnnouncementReadClient(c.config)
 	c.AuthIdentity = NewAuthIdentityClient(c.config)
@@ -191,6 +204,9 @@ func (c *Client) init() {
 	c.UserAttributeValue = NewUserAttributeValueClient(c.config)
 	c.UserPlatformQuota = NewUserPlatformQuotaClient(c.config)
 	c.UserSubscription = NewUserSubscriptionClient(c.config)
+	c.Workspace = NewWorkspaceClient(c.config)
+	c.WorkspaceGroupGrant = NewWorkspaceGroupGrantClient(c.config)
+	c.WorkspaceMember = NewWorkspaceMemberClient(c.config)
 }
 
 type (
@@ -286,6 +302,7 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AdminUserAdjustment:           NewAdminUserAdjustmentClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -322,6 +339,9 @@ func (c *Client) Tx(ctx context.Context) (*Tx, error) {
 		UserAttributeValue:            NewUserAttributeValueClient(cfg),
 		UserPlatformQuota:             NewUserPlatformQuotaClient(cfg),
 		UserSubscription:              NewUserSubscriptionClient(cfg),
+		Workspace:                     NewWorkspaceClient(cfg),
+		WorkspaceGroupGrant:           NewWorkspaceGroupGrantClient(cfg),
+		WorkspaceMember:               NewWorkspaceMemberClient(cfg),
 	}, nil
 }
 
@@ -344,6 +364,7 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		APIKey:                        NewAPIKeyClient(cfg),
 		Account:                       NewAccountClient(cfg),
 		AccountGroup:                  NewAccountGroupClient(cfg),
+		AdminUserAdjustment:           NewAdminUserAdjustmentClient(cfg),
 		Announcement:                  NewAnnouncementClient(cfg),
 		AnnouncementRead:              NewAnnouncementReadClient(cfg),
 		AuthIdentity:                  NewAuthIdentityClient(cfg),
@@ -380,6 +401,9 @@ func (c *Client) BeginTx(ctx context.Context, opts *sql.TxOptions) (*Tx, error) 
 		UserAttributeValue:            NewUserAttributeValueClient(cfg),
 		UserPlatformQuota:             NewUserPlatformQuotaClient(cfg),
 		UserSubscription:              NewUserSubscriptionClient(cfg),
+		Workspace:                     NewWorkspaceClient(cfg),
+		WorkspaceGroupGrant:           NewWorkspaceGroupGrantClient(cfg),
+		WorkspaceMember:               NewWorkspaceMemberClient(cfg),
 	}, nil
 }
 
@@ -409,17 +433,18 @@ func (c *Client) Close() error {
 // In order to add hooks to a specific client, call: `client.Node.Use(...)`.
 func (c *Client) Use(hooks ...Hook) {
 	for _, n := range []interface{ Use(...Hook) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
-		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
-		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.APIKey, c.Account, c.AccountGroup, c.AdminUserAdjustment, c.Announcement,
+		c.AnnouncementRead, c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent,
+		c.BatchImageItem, c.BatchImageJob, c.ChannelMonitor,
+		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
+		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
+		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
+		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
+		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
+		c.UserPlatformQuota, c.UserSubscription, c.Workspace, c.WorkspaceGroupGrant,
+		c.WorkspaceMember,
 	} {
 		n.Use(hooks...)
 	}
@@ -429,17 +454,18 @@ func (c *Client) Use(hooks ...Hook) {
 // In order to add interceptors to a specific client, call: `client.Node.Intercept(...)`.
 func (c *Client) Intercept(interceptors ...Interceptor) {
 	for _, n := range []interface{ Intercept(...Interceptor) }{
-		c.APIKey, c.Account, c.AccountGroup, c.Announcement, c.AnnouncementRead,
-		c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent, c.BatchImageItem,
-		c.BatchImageJob, c.ChannelMonitor, c.ChannelMonitorDailyRollup,
-		c.ChannelMonitorHistory, c.ChannelMonitorRequestTemplate,
-		c.CompositeModelRoute, c.ErrorPassthroughRule, c.Group, c.IdempotencyRecord,
-		c.IdentityAdoptionDecision, c.PaymentAuditLog, c.PaymentOrder,
-		c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode, c.PromoCodeUsage,
-		c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting, c.SubscriptionPlan,
-		c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog, c.User,
-		c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
-		c.UserPlatformQuota, c.UserSubscription,
+		c.APIKey, c.Account, c.AccountGroup, c.AdminUserAdjustment, c.Announcement,
+		c.AnnouncementRead, c.AuthIdentity, c.AuthIdentityChannel, c.BatchImageEvent,
+		c.BatchImageItem, c.BatchImageJob, c.ChannelMonitor,
+		c.ChannelMonitorDailyRollup, c.ChannelMonitorHistory,
+		c.ChannelMonitorRequestTemplate, c.CompositeModelRoute, c.ErrorPassthroughRule,
+		c.Group, c.IdempotencyRecord, c.IdentityAdoptionDecision, c.PaymentAuditLog,
+		c.PaymentOrder, c.PaymentProviderInstance, c.PendingAuthSession, c.PromoCode,
+		c.PromoCodeUsage, c.Proxy, c.RedeemCode, c.SecuritySecret, c.Setting,
+		c.SubscriptionPlan, c.TLSFingerprintProfile, c.UsageCleanupTask, c.UsageLog,
+		c.User, c.UserAllowedGroup, c.UserAttributeDefinition, c.UserAttributeValue,
+		c.UserPlatformQuota, c.UserSubscription, c.Workspace, c.WorkspaceGroupGrant,
+		c.WorkspaceMember,
 	} {
 		n.Intercept(interceptors...)
 	}
@@ -454,6 +480,8 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.Account.mutate(ctx, m)
 	case *AccountGroupMutation:
 		return c.AccountGroup.mutate(ctx, m)
+	case *AdminUserAdjustmentMutation:
+		return c.AdminUserAdjustment.mutate(ctx, m)
 	case *AnnouncementMutation:
 		return c.Announcement.mutate(ctx, m)
 	case *AnnouncementReadMutation:
@@ -526,6 +554,12 @@ func (c *Client) Mutate(ctx context.Context, m Mutation) (Value, error) {
 		return c.UserPlatformQuota.mutate(ctx, m)
 	case *UserSubscriptionMutation:
 		return c.UserSubscription.mutate(ctx, m)
+	case *WorkspaceMutation:
+		return c.Workspace.mutate(ctx, m)
+	case *WorkspaceGroupGrantMutation:
+		return c.WorkspaceGroupGrant.mutate(ctx, m)
+	case *WorkspaceMemberMutation:
+		return c.WorkspaceMember.mutate(ctx, m)
 	default:
 		return nil, fmt.Errorf("ent: unknown mutation type %T", m)
 	}
@@ -1058,6 +1092,139 @@ func (c *AccountGroupClient) mutate(ctx context.Context, m *AccountGroupMutation
 		return (&AccountGroupDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
 	default:
 		return nil, fmt.Errorf("ent: unknown AccountGroup mutation op: %q", m.Op())
+	}
+}
+
+// AdminUserAdjustmentClient is a client for the AdminUserAdjustment schema.
+type AdminUserAdjustmentClient struct {
+	config
+}
+
+// NewAdminUserAdjustmentClient returns a client for the AdminUserAdjustment from the given config.
+func NewAdminUserAdjustmentClient(c config) *AdminUserAdjustmentClient {
+	return &AdminUserAdjustmentClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `adminuseradjustment.Hooks(f(g(h())))`.
+func (c *AdminUserAdjustmentClient) Use(hooks ...Hook) {
+	c.hooks.AdminUserAdjustment = append(c.hooks.AdminUserAdjustment, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `adminuseradjustment.Intercept(f(g(h())))`.
+func (c *AdminUserAdjustmentClient) Intercept(interceptors ...Interceptor) {
+	c.inters.AdminUserAdjustment = append(c.inters.AdminUserAdjustment, interceptors...)
+}
+
+// Create returns a builder for creating a AdminUserAdjustment entity.
+func (c *AdminUserAdjustmentClient) Create() *AdminUserAdjustmentCreate {
+	mutation := newAdminUserAdjustmentMutation(c.config, OpCreate)
+	return &AdminUserAdjustmentCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of AdminUserAdjustment entities.
+func (c *AdminUserAdjustmentClient) CreateBulk(builders ...*AdminUserAdjustmentCreate) *AdminUserAdjustmentCreateBulk {
+	return &AdminUserAdjustmentCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *AdminUserAdjustmentClient) MapCreateBulk(slice any, setFunc func(*AdminUserAdjustmentCreate, int)) *AdminUserAdjustmentCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &AdminUserAdjustmentCreateBulk{err: fmt.Errorf("calling to AdminUserAdjustmentClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*AdminUserAdjustmentCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &AdminUserAdjustmentCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for AdminUserAdjustment.
+func (c *AdminUserAdjustmentClient) Update() *AdminUserAdjustmentUpdate {
+	mutation := newAdminUserAdjustmentMutation(c.config, OpUpdate)
+	return &AdminUserAdjustmentUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *AdminUserAdjustmentClient) UpdateOne(_m *AdminUserAdjustment) *AdminUserAdjustmentUpdateOne {
+	mutation := newAdminUserAdjustmentMutation(c.config, OpUpdateOne, withAdminUserAdjustment(_m))
+	return &AdminUserAdjustmentUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *AdminUserAdjustmentClient) UpdateOneID(id int64) *AdminUserAdjustmentUpdateOne {
+	mutation := newAdminUserAdjustmentMutation(c.config, OpUpdateOne, withAdminUserAdjustmentID(id))
+	return &AdminUserAdjustmentUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for AdminUserAdjustment.
+func (c *AdminUserAdjustmentClient) Delete() *AdminUserAdjustmentDelete {
+	mutation := newAdminUserAdjustmentMutation(c.config, OpDelete)
+	return &AdminUserAdjustmentDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *AdminUserAdjustmentClient) DeleteOne(_m *AdminUserAdjustment) *AdminUserAdjustmentDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *AdminUserAdjustmentClient) DeleteOneID(id int64) *AdminUserAdjustmentDeleteOne {
+	builder := c.Delete().Where(adminuseradjustment.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &AdminUserAdjustmentDeleteOne{builder}
+}
+
+// Query returns a query builder for AdminUserAdjustment.
+func (c *AdminUserAdjustmentClient) Query() *AdminUserAdjustmentQuery {
+	return &AdminUserAdjustmentQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeAdminUserAdjustment},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a AdminUserAdjustment entity by its id.
+func (c *AdminUserAdjustmentClient) Get(ctx context.Context, id int64) (*AdminUserAdjustment, error) {
+	return c.Query().Where(adminuseradjustment.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *AdminUserAdjustmentClient) GetX(ctx context.Context, id int64) *AdminUserAdjustment {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// Hooks returns the client hooks.
+func (c *AdminUserAdjustmentClient) Hooks() []Hook {
+	return c.hooks.AdminUserAdjustment
+}
+
+// Interceptors returns the client interceptors.
+func (c *AdminUserAdjustmentClient) Interceptors() []Interceptor {
+	return c.inters.AdminUserAdjustment
+}
+
+func (c *AdminUserAdjustmentClient) mutate(ctx context.Context, m *AdminUserAdjustmentMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&AdminUserAdjustmentCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&AdminUserAdjustmentUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&AdminUserAdjustmentUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&AdminUserAdjustmentDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown AdminUserAdjustment mutation op: %q", m.Op())
 	}
 }
 
@@ -6822,31 +6989,514 @@ func (c *UserSubscriptionClient) mutate(ctx context.Context, m *UserSubscription
 	}
 }
 
+// WorkspaceClient is a client for the Workspace schema.
+type WorkspaceClient struct {
+	config
+}
+
+// NewWorkspaceClient returns a client for the Workspace from the given config.
+func NewWorkspaceClient(c config) *WorkspaceClient {
+	return &WorkspaceClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `workspace.Hooks(f(g(h())))`.
+func (c *WorkspaceClient) Use(hooks ...Hook) {
+	c.hooks.Workspace = append(c.hooks.Workspace, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `workspace.Intercept(f(g(h())))`.
+func (c *WorkspaceClient) Intercept(interceptors ...Interceptor) {
+	c.inters.Workspace = append(c.inters.Workspace, interceptors...)
+}
+
+// Create returns a builder for creating a Workspace entity.
+func (c *WorkspaceClient) Create() *WorkspaceCreate {
+	mutation := newWorkspaceMutation(c.config, OpCreate)
+	return &WorkspaceCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of Workspace entities.
+func (c *WorkspaceClient) CreateBulk(builders ...*WorkspaceCreate) *WorkspaceCreateBulk {
+	return &WorkspaceCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *WorkspaceClient) MapCreateBulk(slice any, setFunc func(*WorkspaceCreate, int)) *WorkspaceCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &WorkspaceCreateBulk{err: fmt.Errorf("calling to WorkspaceClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*WorkspaceCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &WorkspaceCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for Workspace.
+func (c *WorkspaceClient) Update() *WorkspaceUpdate {
+	mutation := newWorkspaceMutation(c.config, OpUpdate)
+	return &WorkspaceUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *WorkspaceClient) UpdateOne(_m *Workspace) *WorkspaceUpdateOne {
+	mutation := newWorkspaceMutation(c.config, OpUpdateOne, withWorkspace(_m))
+	return &WorkspaceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *WorkspaceClient) UpdateOneID(id int64) *WorkspaceUpdateOne {
+	mutation := newWorkspaceMutation(c.config, OpUpdateOne, withWorkspaceID(id))
+	return &WorkspaceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for Workspace.
+func (c *WorkspaceClient) Delete() *WorkspaceDelete {
+	mutation := newWorkspaceMutation(c.config, OpDelete)
+	return &WorkspaceDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *WorkspaceClient) DeleteOne(_m *Workspace) *WorkspaceDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *WorkspaceClient) DeleteOneID(id int64) *WorkspaceDeleteOne {
+	builder := c.Delete().Where(workspace.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &WorkspaceDeleteOne{builder}
+}
+
+// Query returns a query builder for Workspace.
+func (c *WorkspaceClient) Query() *WorkspaceQuery {
+	return &WorkspaceQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeWorkspace},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a Workspace entity by its id.
+func (c *WorkspaceClient) Get(ctx context.Context, id int64) (*Workspace, error) {
+	return c.Query().Where(workspace.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *WorkspaceClient) GetX(ctx context.Context, id int64) *Workspace {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryMembers queries the members edge of a Workspace.
+func (c *WorkspaceClient) QueryMembers(_m *Workspace) *WorkspaceMemberQuery {
+	query := (&WorkspaceMemberClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(workspace.Table, workspace.FieldID, id),
+			sqlgraph.To(workspacemember.Table, workspacemember.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, workspace.MembersTable, workspace.MembersColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *WorkspaceClient) Hooks() []Hook {
+	hooks := c.hooks.Workspace
+	return append(hooks[:len(hooks):len(hooks)], workspace.Hooks[:]...)
+}
+
+// Interceptors returns the client interceptors.
+func (c *WorkspaceClient) Interceptors() []Interceptor {
+	inters := c.inters.Workspace
+	return append(inters[:len(inters):len(inters)], workspace.Interceptors[:]...)
+}
+
+func (c *WorkspaceClient) mutate(ctx context.Context, m *WorkspaceMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&WorkspaceCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&WorkspaceUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&WorkspaceUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&WorkspaceDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown Workspace mutation op: %q", m.Op())
+	}
+}
+
+// WorkspaceGroupGrantClient is a client for the WorkspaceGroupGrant schema.
+type WorkspaceGroupGrantClient struct {
+	config
+}
+
+// NewWorkspaceGroupGrantClient returns a client for the WorkspaceGroupGrant from the given config.
+func NewWorkspaceGroupGrantClient(c config) *WorkspaceGroupGrantClient {
+	return &WorkspaceGroupGrantClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `workspacegroupgrant.Hooks(f(g(h())))`.
+func (c *WorkspaceGroupGrantClient) Use(hooks ...Hook) {
+	c.hooks.WorkspaceGroupGrant = append(c.hooks.WorkspaceGroupGrant, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `workspacegroupgrant.Intercept(f(g(h())))`.
+func (c *WorkspaceGroupGrantClient) Intercept(interceptors ...Interceptor) {
+	c.inters.WorkspaceGroupGrant = append(c.inters.WorkspaceGroupGrant, interceptors...)
+}
+
+// Create returns a builder for creating a WorkspaceGroupGrant entity.
+func (c *WorkspaceGroupGrantClient) Create() *WorkspaceGroupGrantCreate {
+	mutation := newWorkspaceGroupGrantMutation(c.config, OpCreate)
+	return &WorkspaceGroupGrantCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of WorkspaceGroupGrant entities.
+func (c *WorkspaceGroupGrantClient) CreateBulk(builders ...*WorkspaceGroupGrantCreate) *WorkspaceGroupGrantCreateBulk {
+	return &WorkspaceGroupGrantCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *WorkspaceGroupGrantClient) MapCreateBulk(slice any, setFunc func(*WorkspaceGroupGrantCreate, int)) *WorkspaceGroupGrantCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &WorkspaceGroupGrantCreateBulk{err: fmt.Errorf("calling to WorkspaceGroupGrantClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*WorkspaceGroupGrantCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &WorkspaceGroupGrantCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for WorkspaceGroupGrant.
+func (c *WorkspaceGroupGrantClient) Update() *WorkspaceGroupGrantUpdate {
+	mutation := newWorkspaceGroupGrantMutation(c.config, OpUpdate)
+	return &WorkspaceGroupGrantUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *WorkspaceGroupGrantClient) UpdateOne(_m *WorkspaceGroupGrant) *WorkspaceGroupGrantUpdateOne {
+	mutation := newWorkspaceGroupGrantMutation(c.config, OpUpdateOne, withWorkspaceGroupGrant(_m))
+	return &WorkspaceGroupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *WorkspaceGroupGrantClient) UpdateOneID(id int64) *WorkspaceGroupGrantUpdateOne {
+	mutation := newWorkspaceGroupGrantMutation(c.config, OpUpdateOne, withWorkspaceGroupGrantID(id))
+	return &WorkspaceGroupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for WorkspaceGroupGrant.
+func (c *WorkspaceGroupGrantClient) Delete() *WorkspaceGroupGrantDelete {
+	mutation := newWorkspaceGroupGrantMutation(c.config, OpDelete)
+	return &WorkspaceGroupGrantDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *WorkspaceGroupGrantClient) DeleteOne(_m *WorkspaceGroupGrant) *WorkspaceGroupGrantDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *WorkspaceGroupGrantClient) DeleteOneID(id int64) *WorkspaceGroupGrantDeleteOne {
+	builder := c.Delete().Where(workspacegroupgrant.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &WorkspaceGroupGrantDeleteOne{builder}
+}
+
+// Query returns a query builder for WorkspaceGroupGrant.
+func (c *WorkspaceGroupGrantClient) Query() *WorkspaceGroupGrantQuery {
+	return &WorkspaceGroupGrantQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeWorkspaceGroupGrant},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a WorkspaceGroupGrant entity by its id.
+func (c *WorkspaceGroupGrantClient) Get(ctx context.Context, id int64) (*WorkspaceGroupGrant, error) {
+	return c.Query().Where(workspacegroupgrant.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *WorkspaceGroupGrantClient) GetX(ctx context.Context, id int64) *WorkspaceGroupGrant {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryWorkspace queries the workspace edge of a WorkspaceGroupGrant.
+func (c *WorkspaceGroupGrantClient) QueryWorkspace(_m *WorkspaceGroupGrant) *WorkspaceQuery {
+	query := (&WorkspaceClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(workspacegroupgrant.Table, workspacegroupgrant.FieldID, id),
+			sqlgraph.To(workspace.Table, workspace.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, workspacegroupgrant.WorkspaceTable, workspacegroupgrant.WorkspaceColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryGroup queries the group edge of a WorkspaceGroupGrant.
+func (c *WorkspaceGroupGrantClient) QueryGroup(_m *WorkspaceGroupGrant) *GroupQuery {
+	query := (&GroupClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(workspacegroupgrant.Table, workspacegroupgrant.FieldID, id),
+			sqlgraph.To(group.Table, group.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, workspacegroupgrant.GroupTable, workspacegroupgrant.GroupColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *WorkspaceGroupGrantClient) Hooks() []Hook {
+	return c.hooks.WorkspaceGroupGrant
+}
+
+// Interceptors returns the client interceptors.
+func (c *WorkspaceGroupGrantClient) Interceptors() []Interceptor {
+	return c.inters.WorkspaceGroupGrant
+}
+
+func (c *WorkspaceGroupGrantClient) mutate(ctx context.Context, m *WorkspaceGroupGrantMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&WorkspaceGroupGrantCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&WorkspaceGroupGrantUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&WorkspaceGroupGrantUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&WorkspaceGroupGrantDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown WorkspaceGroupGrant mutation op: %q", m.Op())
+	}
+}
+
+// WorkspaceMemberClient is a client for the WorkspaceMember schema.
+type WorkspaceMemberClient struct {
+	config
+}
+
+// NewWorkspaceMemberClient returns a client for the WorkspaceMember from the given config.
+func NewWorkspaceMemberClient(c config) *WorkspaceMemberClient {
+	return &WorkspaceMemberClient{config: c}
+}
+
+// Use adds a list of mutation hooks to the hooks stack.
+// A call to `Use(f, g, h)` equals to `workspacemember.Hooks(f(g(h())))`.
+func (c *WorkspaceMemberClient) Use(hooks ...Hook) {
+	c.hooks.WorkspaceMember = append(c.hooks.WorkspaceMember, hooks...)
+}
+
+// Intercept adds a list of query interceptors to the interceptors stack.
+// A call to `Intercept(f, g, h)` equals to `workspacemember.Intercept(f(g(h())))`.
+func (c *WorkspaceMemberClient) Intercept(interceptors ...Interceptor) {
+	c.inters.WorkspaceMember = append(c.inters.WorkspaceMember, interceptors...)
+}
+
+// Create returns a builder for creating a WorkspaceMember entity.
+func (c *WorkspaceMemberClient) Create() *WorkspaceMemberCreate {
+	mutation := newWorkspaceMemberMutation(c.config, OpCreate)
+	return &WorkspaceMemberCreate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// CreateBulk returns a builder for creating a bulk of WorkspaceMember entities.
+func (c *WorkspaceMemberClient) CreateBulk(builders ...*WorkspaceMemberCreate) *WorkspaceMemberCreateBulk {
+	return &WorkspaceMemberCreateBulk{config: c.config, builders: builders}
+}
+
+// MapCreateBulk creates a bulk creation builder from the given slice. For each item in the slice, the function creates
+// a builder and applies setFunc on it.
+func (c *WorkspaceMemberClient) MapCreateBulk(slice any, setFunc func(*WorkspaceMemberCreate, int)) *WorkspaceMemberCreateBulk {
+	rv := reflect.ValueOf(slice)
+	if rv.Kind() != reflect.Slice {
+		return &WorkspaceMemberCreateBulk{err: fmt.Errorf("calling to WorkspaceMemberClient.MapCreateBulk with wrong type %T, need slice", slice)}
+	}
+	builders := make([]*WorkspaceMemberCreate, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		builders[i] = c.Create()
+		setFunc(builders[i], i)
+	}
+	return &WorkspaceMemberCreateBulk{config: c.config, builders: builders}
+}
+
+// Update returns an update builder for WorkspaceMember.
+func (c *WorkspaceMemberClient) Update() *WorkspaceMemberUpdate {
+	mutation := newWorkspaceMemberMutation(c.config, OpUpdate)
+	return &WorkspaceMemberUpdate{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOne returns an update builder for the given entity.
+func (c *WorkspaceMemberClient) UpdateOne(_m *WorkspaceMember) *WorkspaceMemberUpdateOne {
+	mutation := newWorkspaceMemberMutation(c.config, OpUpdateOne, withWorkspaceMember(_m))
+	return &WorkspaceMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// UpdateOneID returns an update builder for the given id.
+func (c *WorkspaceMemberClient) UpdateOneID(id int64) *WorkspaceMemberUpdateOne {
+	mutation := newWorkspaceMemberMutation(c.config, OpUpdateOne, withWorkspaceMemberID(id))
+	return &WorkspaceMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// Delete returns a delete builder for WorkspaceMember.
+func (c *WorkspaceMemberClient) Delete() *WorkspaceMemberDelete {
+	mutation := newWorkspaceMemberMutation(c.config, OpDelete)
+	return &WorkspaceMemberDelete{config: c.config, hooks: c.Hooks(), mutation: mutation}
+}
+
+// DeleteOne returns a builder for deleting the given entity.
+func (c *WorkspaceMemberClient) DeleteOne(_m *WorkspaceMember) *WorkspaceMemberDeleteOne {
+	return c.DeleteOneID(_m.ID)
+}
+
+// DeleteOneID returns a builder for deleting the given entity by its id.
+func (c *WorkspaceMemberClient) DeleteOneID(id int64) *WorkspaceMemberDeleteOne {
+	builder := c.Delete().Where(workspacemember.ID(id))
+	builder.mutation.id = &id
+	builder.mutation.op = OpDeleteOne
+	return &WorkspaceMemberDeleteOne{builder}
+}
+
+// Query returns a query builder for WorkspaceMember.
+func (c *WorkspaceMemberClient) Query() *WorkspaceMemberQuery {
+	return &WorkspaceMemberQuery{
+		config: c.config,
+		ctx:    &QueryContext{Type: TypeWorkspaceMember},
+		inters: c.Interceptors(),
+	}
+}
+
+// Get returns a WorkspaceMember entity by its id.
+func (c *WorkspaceMemberClient) Get(ctx context.Context, id int64) (*WorkspaceMember, error) {
+	return c.Query().Where(workspacemember.ID(id)).Only(ctx)
+}
+
+// GetX is like Get, but panics if an error occurs.
+func (c *WorkspaceMemberClient) GetX(ctx context.Context, id int64) *WorkspaceMember {
+	obj, err := c.Get(ctx, id)
+	if err != nil {
+		panic(err)
+	}
+	return obj
+}
+
+// QueryUser queries the user edge of a WorkspaceMember.
+func (c *WorkspaceMemberClient) QueryUser(_m *WorkspaceMember) *UserQuery {
+	query := (&UserClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(workspacemember.Table, workspacemember.FieldID, id),
+			sqlgraph.To(user.Table, user.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, false, workspacemember.UserTable, workspacemember.UserColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// QueryWorkspace queries the workspace edge of a WorkspaceMember.
+func (c *WorkspaceMemberClient) QueryWorkspace(_m *WorkspaceMember) *WorkspaceQuery {
+	query := (&WorkspaceClient{config: c.config}).Query()
+	query.path = func(context.Context) (fromV *sql.Selector, _ error) {
+		id := _m.ID
+		step := sqlgraph.NewStep(
+			sqlgraph.From(workspacemember.Table, workspacemember.FieldID, id),
+			sqlgraph.To(workspace.Table, workspace.FieldID),
+			sqlgraph.Edge(sqlgraph.M2O, true, workspacemember.WorkspaceTable, workspacemember.WorkspaceColumn),
+		)
+		fromV = sqlgraph.Neighbors(_m.driver.Dialect(), step)
+		return fromV, nil
+	}
+	return query
+}
+
+// Hooks returns the client hooks.
+func (c *WorkspaceMemberClient) Hooks() []Hook {
+	return c.hooks.WorkspaceMember
+}
+
+// Interceptors returns the client interceptors.
+func (c *WorkspaceMemberClient) Interceptors() []Interceptor {
+	return c.inters.WorkspaceMember
+}
+
+func (c *WorkspaceMemberClient) mutate(ctx context.Context, m *WorkspaceMemberMutation) (Value, error) {
+	switch m.Op() {
+	case OpCreate:
+		return (&WorkspaceMemberCreate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdate:
+		return (&WorkspaceMemberUpdate{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpUpdateOne:
+		return (&WorkspaceMemberUpdateOne{config: c.config, hooks: c.Hooks(), mutation: m}).Save(ctx)
+	case OpDelete, OpDeleteOne:
+		return (&WorkspaceMemberDelete{config: c.config, hooks: c.Hooks(), mutation: m}).Exec(ctx)
+	default:
+		return nil, fmt.Errorf("ent: unknown WorkspaceMember mutation op: %q", m.Op())
+	}
+}
+
 // hooks and interceptors per client, for fast access.
 type (
 	hooks struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
-		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
-		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
-		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
-		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
-		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
-		UserAttributeDefinition, UserAttributeValue, UserPlatformQuota,
-		UserSubscription []ent.Hook
+		APIKey, Account, AccountGroup, AdminUserAdjustment, Announcement,
+		AnnouncementRead, AuthIdentity, AuthIdentityChannel, BatchImageEvent,
+		BatchImageItem, BatchImageJob, ChannelMonitor, ChannelMonitorDailyRollup,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CompositeModelRoute,
+		ErrorPassthroughRule, Group, IdempotencyRecord, IdentityAdoptionDecision,
+		PaymentAuditLog, PaymentOrder, PaymentProviderInstance, PendingAuthSession,
+		PromoCode, PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting,
+		SubscriptionPlan, TLSFingerprintProfile, UsageCleanupTask, UsageLog, User,
+		UserAllowedGroup, UserAttributeDefinition, UserAttributeValue,
+		UserPlatformQuota, UserSubscription, Workspace, WorkspaceGroupGrant,
+		WorkspaceMember []ent.Hook
 	}
 	inters struct {
-		APIKey, Account, AccountGroup, Announcement, AnnouncementRead, AuthIdentity,
-		AuthIdentityChannel, BatchImageEvent, BatchImageItem, BatchImageJob,
-		ChannelMonitor, ChannelMonitorDailyRollup, ChannelMonitorHistory,
-		ChannelMonitorRequestTemplate, CompositeModelRoute, ErrorPassthroughRule,
-		Group, IdempotencyRecord, IdentityAdoptionDecision, PaymentAuditLog,
-		PaymentOrder, PaymentProviderInstance, PendingAuthSession, PromoCode,
-		PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting, SubscriptionPlan,
-		TLSFingerprintProfile, UsageCleanupTask, UsageLog, User, UserAllowedGroup,
-		UserAttributeDefinition, UserAttributeValue, UserPlatformQuota,
-		UserSubscription []ent.Interceptor
+		APIKey, Account, AccountGroup, AdminUserAdjustment, Announcement,
+		AnnouncementRead, AuthIdentity, AuthIdentityChannel, BatchImageEvent,
+		BatchImageItem, BatchImageJob, ChannelMonitor, ChannelMonitorDailyRollup,
+		ChannelMonitorHistory, ChannelMonitorRequestTemplate, CompositeModelRoute,
+		ErrorPassthroughRule, Group, IdempotencyRecord, IdentityAdoptionDecision,
+		PaymentAuditLog, PaymentOrder, PaymentProviderInstance, PendingAuthSession,
+		PromoCode, PromoCodeUsage, Proxy, RedeemCode, SecuritySecret, Setting,
+		SubscriptionPlan, TLSFingerprintProfile, UsageCleanupTask, UsageLog, User,
+		UserAllowedGroup, UserAttributeDefinition, UserAttributeValue,
+		UserPlatformQuota, UserSubscription, Workspace, WorkspaceGroupGrant,
+		WorkspaceMember []ent.Interceptor
 	}
 )
 

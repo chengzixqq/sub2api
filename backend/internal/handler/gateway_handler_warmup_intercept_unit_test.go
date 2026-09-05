@@ -110,6 +110,14 @@ func (f *fakeGroupRepo) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int
 	return nil, nil
 }
 func (f *fakeGroupRepo) BindAccountsToGroup(context.Context, int64, []int64) error { return nil }
+// LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
+//
+// 本 fake 服务的是网关预热路径，那里不存在工作区作用域，
+// 返回空 map 即可。
+func (f *fakeGroupRepo) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]service.GroupAccountCounts, error) {
+	return map[int64]service.GroupAccountCounts{}, nil
+}
+
 func (f *fakeGroupRepo) UpdateSortOrders(context.Context, []service.GroupSortOrderUpdate) error {
 	return nil
 }
@@ -191,6 +199,7 @@ func newTestGatewayHandler(t *testing.T, group *service.Group, accounts []*servi
 		nil, // compositeResolver
 		nil, // balanceNotifyService
 		nil, // userPlatformQuotaRepo
+		nil, // workspaceService
 	)
 
 	// RunModeSimple：跳过计费检查，避免引入 repo/cache 依赖。

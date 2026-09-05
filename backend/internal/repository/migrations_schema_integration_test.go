@@ -42,9 +42,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_migrations").Scan(&applied))
 	require.GreaterOrEqual(t, applied, 7, "expected schema_migrations to contain applied migrations")
 
-	// users: columns required by repository queries
+	// users: columns required by repository queries and public-group access policy.
 	requireColumn(t, tx, "users", "username", "character varying", 100, false)
 	requireColumn(t, tx, "users", "notes", "text", 0, false)
+	requireColumn(t, tx, "users", "restrict_public_groups", "boolean", 0, false)
 
 	// accounts: schedulable and rate-limit fields
 	requireColumn(t, tx, "accounts", "notes", "text", 0, true)
@@ -55,10 +56,11 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "accounts", "session_window_status", "character varying", 20, true)
 	requireIndex(t, tx, "accounts", "idx_accounts_autopause_expiry_due")
 
-	// groups: OpenAI Live 与 Fast 强制策略都默认关闭，管理员显式开启后才生效。
+	// groups: OpenAI Live 与 Fast 策略默认关闭，管理员显式开启后才生效。
 	requireColumn(t, tx, "groups", "allow_live", "boolean", 0, false)
 	requireColumn(t, tx, "groups", "force_openai_fast", "boolean", 0, false)
 	requireColumn(t, tx, "groups", "free_openai_fast", "boolean", 0, false)
+	requireColumn(t, tx, "groups", "max_reasoning_effort_over_limit", "character varying", 20, false)
 
 	// api_keys: key length should be 128
 	requireColumn(t, tx, "api_keys", "key", "character varying", 128, false)
@@ -72,7 +74,15 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "request_type", "smallint", 0, false)
 	requireColumn(t, tx, "usage_logs", "openai_ws_mode", "boolean", 0, false)
 	requireColumn(t, tx, "usage_logs", "native_compaction_v2", "boolean", 0, false)
+	requireColumn(t, tx, "usage_logs", "requested_reasoning_effort", "character varying", 20, true)
+	requireColumn(t, tx, "usage_logs", "probe_coalesced", "boolean", 0, false)
+	requireColumn(t, tx, "usage_logs", "probe_leader_request_id", "character varying", 128, true)
+	requireColumn(t, tx, "usage_logs", "provider_cost_recorded", "boolean", 0, false)
 	requireColumnDefaultContains(t, tx, "usage_logs", "native_compaction_v2", "false")
+	requireColumnDefaultContains(t, tx, "usage_logs", "probe_coalesced", "false")
+	requireColumnDefaultContains(t, tx, "usage_logs", "provider_cost_recorded", "true")
+	requireIndex(t, tx, "usage_logs", "idx_usage_logs_probe_leader_request_id")
+	requireIndex(t, tx, "usage_logs", "idx_usage_logs_provider_cost_created_at")
 	requireColumn(t, tx, "usage_logs", "image_input_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_output_size", "character varying", 32, true)
 	requireColumn(t, tx, "usage_logs", "image_size_source", "character varying", 16, true)
@@ -83,6 +93,13 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_logs", "upstream_response_model", "character varying", 200, true)
 	requireColumn(t, tx, "usage_logs", "upstream_model_mismatch", "boolean", 0, true)
 	requireIndex(t, tx, "usage_logs", usageLogsUpstreamModelMismatchIndex)
+
+	// Channel and account-stat pricing both support an explicit 1h cache-write
+	// price; NULL keeps the legacy cache_write_price fallback active.
+	requireColumn(t, tx, "channel_model_pricing", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_pricing_intervals", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_account_stats_model_pricing", "cache_write_1h_price", "numeric", 0, true)
+	requireColumn(t, tx, "channel_account_stats_pricing_intervals", "cache_write_1h_price", "numeric", 0, true)
 
 	var mismatchIndexDef string
 	require.NoError(t, tx.QueryRowContext(context.Background(), `

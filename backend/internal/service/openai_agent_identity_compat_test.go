@@ -522,6 +522,14 @@ func (r *accountTestAgentIdentityRepo) GetByID(_ context.Context, _ int64) (*Acc
 	return r.account, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *accountTestAgentIdentityRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *accountTestAgentIdentityRepo) UpdateCredentials(_ context.Context, _ int64, credentials map[string]any) error {
 	r.account.Credentials = credentials
 	return nil
@@ -538,6 +546,14 @@ func (r *accountTestAgentIdentityRepo) SetError(_ context.Context, _ int64, _ st
 
 func (r *agentIdentityForwardRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
 	return r.account, nil
+}
+
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *agentIdentityForwardRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
 }
 
 func (r *agentIdentityForwardRepo) UpdateCredentials(_ context.Context, _ int64, credentials map[string]any) error {

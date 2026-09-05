@@ -25,6 +25,10 @@ func (r *resetAccountQuotaRepoStub) GetByID(context.Context, int64) (*Account, e
 	return r.account, r.getByIDErr
 }
 
+func (r *resetAccountQuotaRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *resetAccountQuotaRepoStub) ResetQuotaUsedAndClearRateLimitCooldown(context.Context, int64) error {
 	r.resetCalls++
 	r.callOrder = append(r.callOrder, "reset_quota_and_clear_rate_limit_cooldown")
@@ -42,7 +46,7 @@ func TestResetAccountQuota_ClearsSchedulerRateLimitWithoutClearingOverload(t *te
 	repo := &resetAccountQuotaRepoStub{account: &Account{ID: 42}, overloaded: true}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	err := svc.ResetAccountQuota(context.Background(), 42)
+	err := svc.ResetAccountQuota(WithScope(context.Background(), AdminScope()), 42)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, repo.resetCalls)
@@ -57,7 +61,7 @@ func TestResetAccountQuota_PreservesLookupAndSparkShadowShortCircuits(t *testing
 		repo := &resetAccountQuotaRepoStub{getByIDErr: getErr}
 		svc := &adminServiceImpl{accountRepo: repo}
 
-		err := svc.ResetAccountQuota(context.Background(), 42)
+		err := svc.ResetAccountQuota(WithScope(context.Background(), AdminScope()), 42)
 
 		require.ErrorIs(t, err, getErr)
 		require.Zero(t, repo.resetCalls)
@@ -71,7 +75,7 @@ func TestResetAccountQuota_PreservesLookupAndSparkShadowShortCircuits(t *testing
 		}
 		svc := &adminServiceImpl{accountRepo: repo}
 
-		err := svc.ResetAccountQuota(context.Background(), 42)
+		err := svc.ResetAccountQuota(WithScope(context.Background(), AdminScope()), 42)
 
 		require.Error(t, err)
 		require.Zero(t, repo.resetCalls)
@@ -87,7 +91,7 @@ func TestResetAccountQuota_PropagatesAtomicRepositoryFailure(t *testing.T) {
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	err := svc.ResetAccountQuota(context.Background(), 42)
+	err := svc.ResetAccountQuota(WithScope(context.Background(), AdminScope()), 42)
 
 	require.ErrorIs(t, err, resetErr)
 	require.Equal(t, 1, repo.resetCalls)

@@ -178,6 +178,46 @@ func isBareOrSubpathOf(path, root string) bool {
 	return path == root || strings.HasPrefix(path, root+"/")
 }
 
+// isDedicatedOpenAIInboundEndpoint reports whether an OpenAI/Grok inbound
+// endpoint has its own dedicated upstream path (rather than being forwarded
+// through the Chat/Responses text-completion surface). These endpoints keep
+// their own path both on the success path (GetUpstreamEndpoint) and on the
+// failure path (resolveOpenAIUpstreamEndpoint), so usage_logs attribution
+// stays consistent between the two.
+//
+// 口径变更（失败计费特性上线时点，详见 docs/BILLING_FAILURE_PARITY.md
+// 「usage_logs.upstream_endpoint 归因口径变更」一节）：在此之前，API-Key
+// 账号访问 embeddings / images / videos /
+// alpha search 时，usage_logs.upstream_endpoint 会被错记成 chat/completions
+// 或 responses（这些专用入站端点被当成文本补全面转发）。修正后它们各自保留
+// 真实路径。影响范围仅限该字段的**归因分布**——它不参与任何费用计算（已实证：
+// 该字段从未出现在成本计算函数的入参或函数体内，只流向 usage_logs 行与统计
+// 查询），因此金额零影响；但按 upstream_endpoint 分组的报表在变更时点前后
+// 不可直接比较。
+func isDedicatedOpenAIInboundEndpoint(inbound string) bool {
+	switch strings.TrimSpace(inbound) {
+	case EndpointEmbeddings,
+		EndpointAlphaSearch,
+		EndpointResponsesInputTokens,
+		EndpointImagesGenerations,
+		EndpointImagesEdits,
+		EndpointVideosGenerations,
+		EndpointVideosEdits,
+		EndpointVideosExtensions,
+		EndpointVideos:
+		return true
+	default:
+		return false
+	}
+}
+
+// isChatFamilyInboundEndpoint reports whether an inbound endpoint belongs to
+// the text-completion family that an API-Key account without probed Responses
+// support may serve directly through Chat Completions.
+func isChatFamilyInboundEndpoint(inbound string) bool {
+	return !isDedicatedOpenAIInboundEndpoint(inbound)
+}
+
 // DeriveUpstreamEndpoint determines the upstream endpoint from the
 // account platform and the normalized inbound endpoint.
 //
@@ -197,7 +237,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case service.PlatformOpenAI, service.PlatformGrok:
-		if inbound == EndpointEmbeddings || inbound == EndpointAlphaSearch || inbound == EndpointResponsesInputTokens || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideosEdits || inbound == EndpointVideosExtensions || inbound == EndpointVideos {
+		if isDedicatedOpenAIInboundEndpoint(inbound) {
 			return inbound
 		}
 		// OpenAI forwards everything to the Responses API.

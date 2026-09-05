@@ -778,7 +778,22 @@ func (m *mockGeminiProxyRepo) GetByID(ctx context.Context, id int64) (*Proxy, er
 	}
 	return nil, fmt.Errorf("proxy not found")
 }
+
+// GetByIDScoped 委托给 GetByID：OAuth 授权走的是账号自身的代理配置，
+// 不经管理端作用域中间件。
+func (m *mockGeminiProxyRepo) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	return m.GetByID(ctx, id)
+}
 func (m *mockGeminiProxyRepo) ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
+	panic("not impl")
+}
+
+// ListByIDsScoped 与 ListActiveScoped 是管理端按工作区收窄的代理读取。
+// OAuth 授权路径不经管理端列表，沿用本 mock 的 panic 约定。
+func (m *mockGeminiProxyRepo) ListByIDsScoped(ctx context.Context, ids []int64) ([]Proxy, error) {
+	panic("not impl")
+}
+func (m *mockGeminiProxyRepo) ListActiveScoped(ctx context.Context) ([]Proxy, error) {
 	panic("not impl")
 }
 func (m *mockGeminiProxyRepo) Update(ctx context.Context, proxy *Proxy) error { panic("not impl") }

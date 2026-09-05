@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,11 +13,13 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/handler/quotaview"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // UserWithConcurrency wraps AdminUser with current concurrency info
@@ -63,7 +66,7 @@ type CreateUserRequest struct {
 	Password             string   `json:"password" binding:"required,min=6"`
 	Username             string   `json:"username"`
 	Notes                string   `json:"notes"`
-	Role                 string   `json:"role" binding:"omitempty,oneof=admin user"`
+	Role                 string   `json:"role" binding:"omitempty,oneof=admin user vendor"`
 	Balance              *float64 `json:"balance"`
 	Concurrency          int      `json:"concurrency"`
 	RPMLimit             int      `json:"rpm_limit"`
@@ -78,7 +81,7 @@ type UpdateUserRequest struct {
 	Password             string   `json:"password" binding:"omitempty,min=6"`
 	Username             *string  `json:"username"`
 	Notes                *string  `json:"notes"`
-	Role                 string   `json:"role" binding:"omitempty,oneof=admin user"`
+	Role                 string   `json:"role" binding:"omitempty,oneof=admin user vendor"`
 	Balance              *float64 `json:"balance"`
 	Concurrency          *int     `json:"concurrency"`
 	RPMLimit             *int     `json:"rpm_limit"`
@@ -88,13 +91,33 @@ type UpdateUserRequest struct {
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64 `json:"group_rates"`
+	// AdjustmentNotes is used only when this request changes concurrency.
+	AdjustmentNotes string `json:"adjustment_notes"`
 }
 
 // UpdateBalanceRequest represents balance update request
 type UpdateBalanceRequest struct {
-	Balance   float64 `json:"balance" binding:"required,gt=0"`
-	Operation string  `json:"operation" binding:"required,oneof=set add subtract"`
-	Notes     string  `json:"notes"`
+	Balance   json.RawMessage `json:"balance" binding:"required"`
+	Operation string          `json:"operation" binding:"required,oneof=set add subtract"`
+	Notes     string          `json:"notes"`
+}
+
+func balanceInputString(raw json.RawMessage) (string, error) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return "", errors.New("balance is required")
+	}
+	if strings.HasPrefix(value, "\"") {
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			return "", err
+		}
+		value = strings.TrimSpace(decoded)
+	}
+	if value == "" {
+		return "", errors.New("balance is required")
+	}
+	return value, nil
 }
 
 type BindUserAuthIdentityRequest struct {
@@ -244,7 +267,6 @@ func (h *UserHandler) BindAuthIdentity(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-
 	input := service.AdminBindAuthIdentityInput{
 		ProviderType:    req.ProviderType,
 		ProviderKey:     req.ProviderKey,
@@ -321,9 +343,13 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return
 	}
 
-	// 防锁死保护：管理员不能把自己降级为普通用户(单管理员场景下会失去后台访问权)。
+	// 防锁死保护：管理员不能把自己降级(单管理员场景下会失去后台访问权)。
 	// 与既有"不能禁用/删除 admin"保护一致。降级其他管理员仍然允许。
-	if req.Role == service.RoleUser && userID == getAdminIDFromContext(c) {
+	//
+	// 条件写成「指定了角色且不是 admin」：早先只匹配 RoleUser，
+	// 于是 admin 可以把自己改成 vendor 绕过这道保护。role 为空表示不改角色，
+	// 必须放行 —— 前端编辑表单在只改备注时也会提交整个对象。
+	if req.Role != "" && req.Role != service.RoleAdmin && userID == getAdminIDFromContext(c) {
 		response.BadRequest(c, "cannot demote yourself from admin")
 		return
 	}
@@ -343,28 +369,44 @@ func (h *UserHandler) Update(c *gin.Context) {
 		}
 	}
 
-	// 使用指针类型直接传递，nil 表示未提供该字段
-	user, err := h.adminService.UpdateUser(c.Request.Context(), userID, &service.UpdateUserInput{
-		Email:                req.Email,
-		Password:             req.Password,
-		Username:             req.Username,
-		Notes:                req.Notes,
-		Role:                 req.Role,
-		Balance:              req.Balance,
-		Concurrency:          req.Concurrency,
-		RPMLimit:             req.RPMLimit,
-		Status:               req.Status,
-		AllowedGroups:        req.AllowedGroups,
-		RestrictPublicGroups: req.RestrictPublicGroups,
-		GroupRates:           req.GroupRates,
-		ActorAdminID:         getAdminIDFromContext(c),
-	})
+	payload := struct {
+		UserID int64             `json:"user_id"`
+		Body   UpdateUserRequest `json:"body"`
+	}{UserID: userID, Body: req}
+	execute := func(ctx context.Context) (any, error) {
+		ctx = withAdminAdjustmentMetadata(c, ctx, req.AdjustmentNotes, "admin.users.update", payload)
+		user, execErr := h.adminService.UpdateUser(ctx, userID, &service.UpdateUserInput{
+			Email:                req.Email,
+			Password:             req.Password,
+			Username:             req.Username,
+			Notes:                req.Notes,
+			Role:                 req.Role,
+			Balance:              req.Balance,
+			Concurrency:          req.Concurrency,
+			RPMLimit:             req.RPMLimit,
+			Status:               req.Status,
+			AllowedGroups:        req.AllowedGroups,
+			RestrictPublicGroups: req.RestrictPublicGroups,
+			GroupRates:           req.GroupRates,
+			ActorAdminID:         getAdminIDFromContext(c),
+			AdjustmentNotes:      req.AdjustmentNotes,
+		})
+		if execErr != nil {
+			return nil, execErr
+		}
+		return dto.UserFromServiceAdmin(user), nil
+	}
+
+	if req.Concurrency != nil {
+		executeAdminOptionalIdempotentJSON(c, "admin.users.update", payload, service.DefaultWriteIdempotencyTTL(), execute)
+		return
+	}
+	data, err := execute(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-
-	response.Success(c, dto.UserFromServiceAdmin(user))
+	response.Success(c, data)
 }
 
 // Delete handles deleting a user
@@ -399,6 +441,11 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	balance, err := balanceInputString(req.Balance)
+	if err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
 
 	idempotencyPayload := struct {
 		UserID int64                `json:"user_id"`
@@ -408,7 +455,8 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		Body:   req,
 	}
 	executeAdminIdempotentJSON(c, "admin.users.balance.update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, req.Balance, req.Operation, req.Notes)
+		ctx = withAdminAdjustmentMetadata(c, ctx, req.Notes, "admin.users.balance.update", idempotencyPayload)
+		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, balance, req.Operation, req.Notes)
 		if execErr != nil {
 			return nil, execErr
 		}
@@ -560,6 +608,7 @@ type BatchUpdateConcurrencyRequest struct {
 	All         bool    `json:"all"`
 	Concurrency int     `json:"concurrency"`
 	Mode        string  `json:"mode" binding:"required,oneof=set add"`
+	Notes       string  `json:"notes"`
 }
 
 func (h *UserHandler) BatchUpdateConcurrency(c *gin.Context) {
@@ -605,12 +654,18 @@ func (h *UserHandler) BatchUpdateConcurrency(c *gin.Context) {
 		return
 	}
 
-	affected, err := h.adminService.BatchUpdateConcurrency(c.Request.Context(), userIDs, req.Concurrency, req.Mode)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, gin.H{"affected": affected})
+	idempotencyPayload := struct {
+		Request         BatchUpdateConcurrencyRequest `json:"request"`
+		ResolvedUserIDs []int64                       `json:"resolved_user_ids"`
+	}{Request: req, ResolvedUserIDs: append([]int64(nil), userIDs...)}
+	executeAdminOptionalIdempotentJSON(c, "admin.users.batch_concurrency", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		ctx = withAdminAdjustmentMetadata(c, ctx, req.Notes, "admin.users.batch_concurrency", idempotencyPayload)
+		affected, err := h.adminService.BatchUpdateConcurrency(ctx, userIDs, req.Concurrency, req.Mode)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"affected": affected}, nil
+	})
 }
 
 // BatchUpdateLimits overwrites concurrency and/or RPM limits for multiple users.
@@ -620,6 +675,7 @@ type BatchUpdateLimitsRequest struct {
 	All         bool    `json:"all"`
 	Concurrency *int    `json:"concurrency" binding:"omitempty,min=0"`
 	RPMLimit    *int    `json:"rpm_limit" binding:"omitempty,min=0"`
+	Notes       string  `json:"notes"`
 }
 
 func (h *UserHandler) BatchUpdateLimits(c *gin.Context) {
@@ -667,17 +723,53 @@ func (h *UserHandler) BatchUpdateLimits(c *gin.Context) {
 		return
 	}
 
-	affected, err := h.adminService.BatchUpdateLimits(
-		c.Request.Context(),
-		userIDs,
-		req.Concurrency,
-		req.RPMLimit,
-	)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+	idempotencyPayload := struct {
+		Request         BatchUpdateLimitsRequest `json:"request"`
+		ResolvedUserIDs []int64                  `json:"resolved_user_ids"`
+	}{Request: req, ResolvedUserIDs: append([]int64(nil), userIDs...)}
+	executeAdminOptionalIdempotentJSON(c, "admin.users.batch_limits", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		ctx = withAdminAdjustmentMetadata(c, ctx, req.Notes, "admin.users.batch_limits", idempotencyPayload)
+		affected, err := h.adminService.BatchUpdateLimits(ctx, userIDs, req.Concurrency, req.RPMLimit)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"affected": affected}, nil
+	})
+}
+
+func withAdminAdjustmentMetadata(c *gin.Context, parent context.Context, notes, scope string, payload any) context.Context {
+	actionID, idempotent := adminAdjustmentActionID(c, scope, payload)
+	metadata := service.AdminAdjustmentMetadata{
+		ActionID:      actionID,
+		Idempotent:    idempotent,
+		OperatorEmail: strings.TrimSpace(c.GetString(middleware.ContextKeyAuthEmail)),
+		Notes:         strings.TrimSpace(notes),
+		ClientIP:      c.ClientIP(),
+		AuthMethod:    strings.TrimSpace(c.GetString("auth_method")),
 	}
-	response.Success(c, gin.H{"affected": affected})
+	if subject, ok := middleware.GetAuthSubjectFromContext(c); ok && subject.UserID > 0 {
+		operatorID := subject.UserID
+		metadata.OperatorID = &operatorID
+	}
+	if requestID, _ := parent.Value(ctxkey.RequestID).(string); strings.TrimSpace(requestID) != "" {
+		metadata.RequestID = strings.TrimSpace(requestID)
+	} else if requestID, _ := parent.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(requestID) != "" {
+		metadata.RequestID = strings.TrimSpace(requestID)
+	}
+	return service.WithAdminAdjustmentMetadata(parent, metadata)
+}
+
+func adminAdjustmentActionID(c *gin.Context, scope string, payload any) (uuid.UUID, bool) {
+	key, err := service.NormalizeIdempotencyKey(c.GetHeader("Idempotency-Key"))
+	if err != nil || key == "" {
+		return uuid.New(), false
+	}
+	fingerprint, err := service.BuildIdempotencyFingerprint(c.Request.Method, c.FullPath(), adminActorScope(c), payload)
+	if err != nil {
+		return uuid.New(), false
+	}
+	seed := scope + "\x00" + adminActorScope(c) + "\x00" + service.HashIdempotencyKey(key) + "\x00" + fingerprint
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)), true
 }
 
 // GetUserPlatformQuotas GET /admin/users/:id/platform-quotas

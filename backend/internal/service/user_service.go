@@ -119,8 +119,18 @@ type UserUpdateFields struct {
 
 // BalanceChange 记录一次余额变更前后的值。
 type BalanceChange struct {
-	Old float64
-	New float64
+	Old      float64
+	New      float64
+	OldExact string
+	NewExact string
+}
+
+// ExactBalanceAdjustmentRepository is the precision-preserving path used by
+// administrator balance adjustments. Values are canonical decimal strings so
+// DECIMAL(20,8) inputs never pass through float64 before reaching PostgreSQL.
+type ExactBalanceAdjustmentRepository interface {
+	AdjustBalanceExact(ctx context.Context, id int64, delta string) (BalanceChange, error)
+	SetBalanceExact(ctx context.Context, id int64, value string) (BalanceChange, error)
 }
 
 // IsEmpty 报告该次 Update 是否不写任何列（此时仓储直接返回，不产生写操作）。

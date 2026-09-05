@@ -246,7 +246,11 @@ func applyAccountStatsCost(
 	if usageLog != nil && usageLog.ServiceTier != nil {
 		serviceTier = *usageLog.ServiceTier
 	}
-	usageLog.AccountStatsCost = resolveAccountStatsCost(
+	accountStatsCost := resolveAccountStatsCost(
 		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost, serviceTier,
 	)
+	if accountStatsCost != nil {
+		quantized := QuantizeUsageBillingAmount(*accountStatsCost)
+		usageLog.AccountStatsCost = &quantized
+	}
 }

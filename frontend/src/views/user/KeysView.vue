@@ -189,18 +189,31 @@
 
           <template #cell-usage="{ row }">
             <div class="text-sm">
-              <div class="flex items-center gap-1.5">
-                <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
-                <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.today_actual_cost ?? 0).toFixed(4) }}
-                </span>
-              </div>
-              <div class="mt-0.5 flex items-center gap-1.5">
-                <span class="text-gray-500 dark:text-gray-400">{{ t('keys.total') }}:</span>
-                <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.total_actual_cost ?? 0).toFixed(4) }}
-                </span>
-              </div>
+              <template v-if="usageStatsStatus === 'loaded' && usageStats[row.id]">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
+                  <span class="font-medium text-gray-900 dark:text-white">
+                    ${{ usageStats[row.id].today_actual_cost.toFixed(4) }}
+                  </span>
+                </div>
+                <div class="mt-0.5 flex items-center gap-1.5">
+                  <span class="text-gray-500 dark:text-gray-400">{{ t('keys.total') }}:</span>
+                  <span class="font-medium text-gray-900 dark:text-white">
+                    ${{ usageStats[row.id].total_actual_cost.toFixed(4) }}
+                  </span>
+                </div>
+              </template>
+              <button
+                v-else-if="usageStatsStatus === 'error' || usageStatsStatus === 'loaded'"
+                type="button"
+                class="inline-flex items-center gap-1 text-xs font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
+                :title="t('keys.retryUsage')"
+                data-test="usage-unavailable"
+                @click.stop="loadApiKeys"
+              >
+                <Icon name="refresh" size="xs" />
+                {{ t('keys.usageUnavailable') }}
+              </button>
               <!-- Quota progress (if quota is set) -->
               <div v-if="row.quota > 0" class="mt-1.5">
                 <div class="flex items-center gap-1.5">
@@ -1276,6 +1289,7 @@ const submitting = ref(false)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
 const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
+const usageStatsStatus = ref<'idle' | 'loaded' | 'error'>('idle')
 const userGroupRates = ref<Record<number, number>>({})
 
 const pagination = ref({
@@ -1457,6 +1471,8 @@ const loadApiKeys = async () => {
   abortController = controller
   const { signal } = controller
   loading.value = true
+  usageStats.value = {}
+  usageStatsStatus.value = 'idle'
   try {
     // Build filters
     const filters: {
@@ -1487,11 +1503,17 @@ const loadApiKeys = async () => {
         const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
         if (signal.aborted) return
         usageStats.value = usageResponse.stats
+        usageStatsStatus.value = 'loaded'
       } catch (e) {
         if (!isAbortError(e)) {
           console.error('Failed to load usage stats:', e)
+          usageStats.value = {}
+          usageStatsStatus.value = 'error'
+          appStore.showError(t('keys.usageLoadFailed'))
         }
       }
+    } else {
+      usageStatsStatus.value = 'loaded'
     }
   } catch (error) {
     if (isAbortError(error)) {

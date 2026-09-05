@@ -46,6 +46,14 @@ func (r *ollamaUsageTestRepo) GetByID(ctx context.Context, id int64) (*Account, 
 	return r.upstreamBillingProbeAccountRepo.GetByID(ctx, id)
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *ollamaUsageTestRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *ollamaUsageTestRepo) ListOllamaCloudUsageGroupAccounts(_ context.Context, anchors []*Account) ([]Account, error) {
 	r.groupResolveCalls.Add(1)
 	r.mu.Lock()
@@ -227,6 +235,14 @@ func (r *ollamaRefreshPreflightIdentityChangeRepo) GetByID(ctx context.Context, 
 	return r.upstreamBillingProbeAccountRepo.GetByID(ctx, id)
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *ollamaRefreshPreflightIdentityChangeRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 type ollamaManagedExtraUpdateRepo struct {
 	AccountRepository
 	account *Account
@@ -235,6 +251,14 @@ type ollamaManagedExtraUpdateRepo struct {
 
 func (r *ollamaManagedExtraUpdateRepo) GetByID(_ context.Context, _ int64) (*Account, error) {
 	return r.account, nil
+}
+
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *ollamaManagedExtraUpdateRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
 }
 
 func (r *ollamaManagedExtraUpdateRepo) Update(_ context.Context, account *Account) error {
@@ -628,7 +652,7 @@ func TestOllamaCloudUsageManagedExtraCannotBeImported(t *testing.T) {
 		OllamaCloudUsageAutoRefreshExtraKey: true,
 		OllamaCloudUsageSnapshotExtraKey:    map[string]any{"status": "forged"},
 	}
-	created, err := buildAccountForCreate(&CreateAccountInput{
+	created, err := buildAccountForCreate(context.Background(), &CreateAccountInput{
 		Name: "ollama", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 		Credentials: map[string]any{"base_url": "https://ollama.com", "api_key": "key"},
 		Concurrency: 1,

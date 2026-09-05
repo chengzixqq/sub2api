@@ -49,6 +49,7 @@ func cloneGroupForDuplicateTest(group *Group) *Group {
 	cloned.DailyLimitUSD = cloneGroupValuePointer(group.DailyLimitUSD)
 	cloned.WeeklyLimitUSD = cloneGroupValuePointer(group.WeeklyLimitUSD)
 	cloned.MonthlyLimitUSD = cloneGroupValuePointer(group.MonthlyLimitUSD)
+	cloned.ModelPricing = cloneChannelModelPricing(group.ModelPricing)
 	cloned.ImagePrice1K = cloneGroupValuePointer(group.ImagePrice1K)
 	cloned.ImagePrice2K = cloneGroupValuePointer(group.ImagePrice2K)
 	cloned.ImagePrice4K = cloneGroupValuePointer(group.ImagePrice4K)
@@ -121,11 +122,21 @@ func groupDuplicateTestPointer[T any](value T) *T { return &value }
 func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 1, 2, 3, 4, 0, time.UTC)
 	source := &Group{
-		ID:                           41,
-		Name:                         "高级订阅",
-		Description:                  "configuration",
-		Platform:                     PlatformOpenAI,
-		RateMultiplier:               1.75,
+		ID:                        41,
+		Name:                      "高级订阅",
+		Description:               "configuration",
+		Platform:                  PlatformOpenAI,
+		RateMultiplier:            1.75,
+		LongContextPricingEnabled: true,
+		ModelPricing: []ChannelModelPricing{{
+			Models:     []string{"gpt-*"},
+			InputPrice: groupDuplicateTestPointer(0.000002),
+			Intervals: []PricingInterval{{
+				MinTokens:  200000,
+				MaxTokens:  groupDuplicateTestPointer(400000),
+				InputPrice: groupDuplicateTestPointer(0.000004),
+			}},
+		}},
 		PeakRateEnabled:              true,
 		PeakStart:                    "09:00",
 		PeakEnd:                      "18:00",
@@ -207,6 +218,8 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	require.Equal(t, source.Description, duplicate.Description)
 	require.Equal(t, source.Platform, duplicate.Platform)
 	require.Equal(t, source.RateMultiplier, duplicate.RateMultiplier)
+	require.Equal(t, source.LongContextPricingEnabled, duplicate.LongContextPricingEnabled)
+	require.Equal(t, source.ModelPricing, duplicate.ModelPricing)
 	require.Equal(t, source.PeakRateMultiplier, duplicate.PeakRateMultiplier)
 	require.Equal(t, source.DefaultValidityDays, duplicate.DefaultValidityDays)
 	require.Equal(t, source.ImagePrice4K, duplicate.ImagePrice4K)
@@ -232,6 +245,10 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	}, repo.createdBindings[duplicate.ID])
 
 	duplicate.ModelRouting["gpt-*"][0] = 999
+	duplicate.ModelPricing[0].Models[0] = "changed"
+	*duplicate.ModelPricing[0].InputPrice = 999
+	*duplicate.ModelPricing[0].Intervals[0].MaxTokens = 999
+	*duplicate.ModelPricing[0].Intervals[0].InputPrice = 999
 	duplicate.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P] = 999
 	duplicate.SupportedModelScopes[0] = "changed"
 	duplicate.MessagesDispatchModelConfig.ExactModelMappings["claude-special"] = "changed"
@@ -239,6 +256,10 @@ func TestDuplicateGroupCopiesConfigurationDeeplyAndResetsRuntimeState(t *testing
 	duplicate.ReasoningEffortMappings[0].To = "changed"
 	*duplicate.DailyLimitUSD = 999
 	require.Equal(t, int64(13), source.ModelRouting["gpt-*"][0])
+	require.Equal(t, "gpt-*", source.ModelPricing[0].Models[0])
+	require.Equal(t, 0.000002, *source.ModelPricing[0].InputPrice)
+	require.Equal(t, 400000, *source.ModelPricing[0].Intervals[0].MaxTokens)
+	require.Equal(t, 0.000004, *source.ModelPricing[0].Intervals[0].InputPrice)
 	require.Equal(t, 0.14, source.VideoModelPrices[VideoPriceFamilyGrokImagineVideo15][VideoBillingResolution720P])
 	require.Equal(t, "claude", source.SupportedModelScopes[0])
 	require.Equal(t, "gpt-special", source.MessagesDispatchModelConfig.ExactModelMappings["claude-special"])

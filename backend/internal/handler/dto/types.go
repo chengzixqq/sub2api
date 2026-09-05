@@ -178,6 +178,7 @@ type AdminGroup struct {
 	ProfitMinMargin      float64                       `json:"profit_min_margin"`
 	ProfitSafetyBuffer   float64                       `json:"profit_safety_buffer"`
 	ModelPricing         []service.ChannelModelPricing `json:"model_pricing"`
+	BillingLocked        bool                          `json:"billing_locked"`
 
 	// 模型路由配置（仅 anthropic 平台使用）
 	ModelRouting        map[string][]int64 `json:"model_routing"`
@@ -560,6 +561,16 @@ type UsageLog struct {
 
 	// BillingMode 计费模式：token/image
 	BillingMode *string `json:"billing_mode,omitempty"`
+
+	// ProbeCoalesced marks a request whose upstream probe was coalesced. The
+	// request remains independently billable to the user.
+	ProbeCoalesced bool `json:"probe_coalesced"`
+	// ProbeLeaderRequestID links a coalesced follower to the real upstream
+	// probe request, when applicable.
+	ProbeLeaderRequestID *string `json:"probe_leader_request_id,omitempty"`
+	// ProviderCostRecorded is false for synthetic followers, which prevents
+	// provider/account cost from being counted more than once.
+	ProviderCostRecorded bool `json:"provider_cost_recorded"`
 
 	CreatedAt time.Time `json:"created_at"`
 

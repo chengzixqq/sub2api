@@ -91,6 +91,15 @@ func (groupRepoNoop) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int64,
 func (groupRepoNoop) BindAccountsToGroup(context.Context, int64, []int64) error {
 	panic("unexpected BindAccountsToGroup call")
 }
+
+// LoadAccountCountsScoped 返回空 map 而非 panic。
+//
+// 与本骨架其他方法不同：这个方法由管理端分组列表在 vendor 视角下调用，
+// 缺键即按零计数处理，因此空 map 是安全的中性值。让它 panic 会迫使
+// 每个嵌入者都写一遍同样的空实现。
+func (groupRepoNoop) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
 func (groupRepoNoop) UpdateSortOrders(context.Context, []GroupSortOrderUpdate) error {
 	panic("unexpected UpdateSortOrders call")
 }

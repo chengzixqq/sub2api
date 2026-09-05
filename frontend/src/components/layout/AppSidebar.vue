@@ -29,6 +29,22 @@
       </div>
     </div>
 
+    <!-- 工作区标识：仅 vendor 可见，用于明确当前数据的归属范围 -->
+    <div
+      v-if="workspaceName"
+      class="mx-3 mb-2 flex items-center gap-2 rounded-lg bg-primary-50 px-3 py-2 dark:bg-primary-900/20"
+      :class="{ 'justify-center px-2': sidebarCollapsed }"
+      :title="sidebarCollapsed ? workspaceName : undefined"
+    >
+      <BuildingIcon class="h-4 w-4 flex-shrink-0 text-primary-600 dark:text-primary-400" />
+      <span
+        v-if="!sidebarCollapsed"
+        class="min-w-0 truncate text-xs font-medium text-primary-700 dark:text-primary-300"
+      >
+        {{ workspaceName }}
+      </span>
+    </div>
+
     <!-- Navigation -->
     <nav ref="sidebarNavRef" class="sidebar-nav scrollbar-hide">
       <!-- Admin View: Admin menu first, then personal menu -->
@@ -192,6 +208,7 @@ import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAdminSettingsStore, useAppStore, useAuthStore, useOnboardingStore } from '@/stores'
+import { resolveLandingPath } from '@/router/landing'
 import VersionBadge from '@/components/common/VersionBadge.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeSvg } from '@/utils/sanitize'
@@ -205,6 +222,11 @@ interface NavItem {
   icon: unknown
   iconSvg?: string
   hideInSimpleMode?: boolean
+  /**
+   * 站长专属菜单项。vendor（工作区管理员）登录时隐藏。
+   * 判定依据是后端 VendorScope 白名单：不在白名单内的管理端路由都是站长专属。
+   */
+  ownerOnly?: boolean
   children?: NavItem[]
   /**
    * When true, the parent item only toggles the expand/collapse state and
@@ -222,12 +244,22 @@ interface NavItem {
 
 // applyFeatureFlags 递归过滤掉 featureFlag() === false 的节点（含子节点）。
 // 使用 `!== false` 宽容语义：undefined（设置未加载）或 true 都视为显示。
-function applyFeatureFlags(items: NavItem[]): NavItem[] {
+/**
+ * 过滤菜单项：功能开关关闭的、以及 vendor 不可见的站长专属项。
+ *
+ * ownerOnly 只影响显示。后端中间件对这些路由一律拒绝 vendor，
+ * 因此即便手输 URL 也拿不到数据 —— 这里隐藏是为了不给出无效入口。
+ */
+function applyFeatureFlags(items: NavItem[], isVendor: boolean): NavItem[] {
   const out: NavItem[] = []
   for (const item of items) {
     if (item.featureFlag && item.featureFlag() === false) continue
+    if (isVendor && item.ownerOnly) continue
     if (item.children) {
-      out.push({ ...item, children: applyFeatureFlags(item.children) })
+      const children = applyFeatureFlags(item.children, isVendor)
+      // 子项被全部过滤后，展开型父项已无内容，一并移除。
+      if (item.expandOnly && children.length === 0) continue
+      out.push({ ...item, children })
     } else {
       out.push(item)
     }
@@ -248,10 +280,21 @@ const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const mobileOpen = computed(() => appStore.mobileOpen)
 const isAdmin = computed(() => authStore.isAdmin)
+
+// 站长没有工作区归属，标识条不显示。
+const workspaceName = computed(() => (authStore.isVendor ? authStore.workspace?.name ?? '' : ''))
 const sidebarNavRef = ref<HTMLElement | null>(null)
 const isDark = ref(document.documentElement.classList.contains('dark'))
 
-const homePath = computed(() => (isAdmin.value ? '/admin/dashboard' : '/dashboard'))
+// Logo 与站名指向的首页。vendor 不能用 /admin/dashboard —— 那页对它是 403，
+// 故按权限档解析到一个真正能打开的管理页。
+const homePath = computed(() =>
+  resolveLandingPath({
+    isOwner: authStore.isOwner,
+    isVendor: authStore.isVendor,
+    workspace: authStore.workspace
+  })
+)
 
 // Track which parent nav groups are expanded
 const expandedGroups = ref<Set<string>>(new Set())
@@ -373,6 +416,22 @@ const UsersIcon = {
     )
 }
 
+// 结算总览用：Heroicons 的 currency-dollar（与同文件其他图标同一套线性风格）
+const DollarIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z'
+        })
+      ]
+    )
+}
+
 const FolderIcon = {
   render: () =>
     h(
@@ -453,6 +512,21 @@ const GlobeIcon = {
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
           d: 'M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418'
+        })
+      ]
+    )
+}
+
+const BuildingIcon = {
+  render: () =>
+    h(
+      'svg',
+      { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+      [
+        h('path', {
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          d: 'M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21'
         })
       ]
     )
@@ -728,8 +802,11 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
 }
 
 // finalizeNav 合并三重过滤：featureFlag 过滤 + simple 模式过滤。
+//
+// 这组是用户自己的菜单（密钥、用量、资料等），vendor 与站长同样可见，
+// 因此不施加 ownerOnly 过滤 —— 该标记只用于管理端菜单。
 function finalizeNav(items: NavItem[]): NavItem[] {
-  const visible = applyFeatureFlags(items)
+  const visible = applyFeatureFlags(items, false)
   return authStore.isSimpleMode ? visible.filter(item => !item.hideInSimpleMode) : visible
 }
 
@@ -758,25 +835,39 @@ const customMenuItemsForAdmin = computed(() => {
 // Admin navigation items
 const adminNavItems = computed((): NavItem[] => {
   const baseItems: NavItem[] = [
-    { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
-    { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
-    { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
+    // 管理端总览聚合全站用户/密钥维度数据，无法按工作区收窄（后端白名单
+    // 未放行 users-ranking、stats 等端点），故仅站长可见。
+    { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon, ownerOnly: true },
+    { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring, ownerOnly: true },
+    { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true, ownerOnly: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
+    // 工作区是「发放权限」的入口，仅站长可见（与路由 requiresOwner 一致）。
+    { path: '/admin/workspaces', label: t('nav.workspaces'), icon: FolderIcon, hideInSimpleMode: true, ownerOnly: true },
+    // 结算总览是 ownerOnly 的反面：只对 vendor 有意义（站长看这页是空的）。
+    // 没有 vendorOnly 标记，借 featureFlag 表达 —— 它本就是「返回 false 即隐藏」。
+    {
+      path: '/admin/settlement',
+      label: t('nav.settlement'),
+      icon: DollarIcon,
+      hideInSimpleMode: true,
+      featureFlag: () => authStore.isVendor
+    },
     {
       path: '/admin/channels',
       label: t('nav.channelManagement'),
       icon: ChannelIcon,
       hideInSimpleMode: true,
       expandOnly: true,
+      ownerOnly: true,
       children: [
         { path: '/admin/channels/pricing', label: t('nav.channelPricing'), icon: PriceTagIcon },
         { path: '/admin/channels/monitor', label: t('nav.channelMonitor'), icon: SignalIcon, featureFlag: flagChannelMonitor },
       ],
     },
-    { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
+    { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, ownerOnly: true },
     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
-    { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
+    { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon, ownerOnly: true },
     { path: '/admin/proxies', label: t('nav.proxies'), icon: ServerIcon },
     {
       path: '/admin/security-audit',
@@ -784,13 +875,14 @@ const adminNavItems = computed((): NavItem[] => {
       icon: ShieldIcon,
       expandOnly: true,
       featureFlag: flagRiskControl,
+      ownerOnly: true,
       children: [
         { path: '/admin/risk-control', label: t('nav.contentModeration'), icon: ShieldIcon },
         { path: '/admin/prompt-audit', label: t('nav.promptAudit'), icon: ShieldIcon },
       ],
     },
-    { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true },
-    { path: '/admin/promo-codes', label: t('nav.promoCodes'), icon: GiftIcon, hideInSimpleMode: true },
+    { path: '/admin/redeem', label: t('nav.redeemCodes'), icon: TicketIcon, hideInSimpleMode: true, ownerOnly: true },
+    { path: '/admin/promo-codes', label: t('nav.promoCodes'), icon: GiftIcon, hideInSimpleMode: true, ownerOnly: true },
     {
       path: '/admin/affiliates',
       label: t('nav.affiliateManagement'),
@@ -798,6 +890,7 @@ const adminNavItems = computed((): NavItem[] => {
       hideInSimpleMode: true,
       expandOnly: true,
       featureFlag: flagAffiliate,
+      ownerOnly: true,
       children: [
         { path: '/admin/affiliates/invites', label: t('nav.affiliateInviteRecords'), icon: UsersIcon },
         { path: '/admin/affiliates/rebates', label: t('nav.affiliateRebateRecords'), icon: OrderIcon },
@@ -810,31 +903,38 @@ const adminNavItems = computed((): NavItem[] => {
       icon: OrderIcon,
       hideInSimpleMode: true,
       expandOnly: true,
-      featureFlag: flagAdminPayment,
+      ownerOnly: true,
       children: [
-        { path: '/admin/orders/dashboard', label: t('nav.paymentDashboard'), icon: ChartIcon },
+        { path: '/admin/orders/dashboard', label: t('nav.paymentDashboard'), icon: ChartIcon, featureFlag: flagAdminPayment },
         { path: '/admin/orders', label: t('nav.orderManagement'), icon: OrderIcon },
-        { path: '/admin/orders/plans', label: t('nav.paymentPlans'), icon: CreditCardIcon },
+        { path: '/admin/orders/plans', label: t('nav.paymentPlans'), icon: CreditCardIcon, featureFlag: flagAdminPayment },
       ],
     },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
-    { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }
+    { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true, ownerOnly: true }
   ]
 
-  const visible = applyFeatureFlags(baseItems)
+  const visible = applyFeatureFlags(baseItems, authStore.isVendor)
 
   // 简单模式下，在系统设置前插入 API密钥
+  // 系统设置是站长专属（后端白名单未放行 /admin/settings）。
+  const canSeeSettings = !authStore.isVendor
+
   if (authStore.isSimpleMode) {
     const filtered = visible.filter(item => !item.hideInSimpleMode)
     filtered.push({ path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon })
-    filtered.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+    if (canSeeSettings) {
+      filtered.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+    }
     for (const cm of customMenuItemsForAdmin.value) {
       filtered.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
     }
     return filtered
   }
 
-  visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+  if (canSeeSettings) {
+    visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+  }
   for (const cm of customMenuItemsForAdmin.value) {
     visible.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
   }

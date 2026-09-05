@@ -18,8 +18,9 @@ const (
 
 // Role constants
 const (
-	RoleAdmin = domain.RoleAdmin
-	RoleUser  = domain.RoleUser
+	RoleAdmin  = domain.RoleAdmin
+	RoleUser   = domain.RoleUser
+	RoleVendor = domain.RoleVendor
 )
 
 // Affiliate rebate settings
@@ -485,6 +486,13 @@ const (
 	// keep the full snapshots regardless of this flag.
 	SettingKeyChannelMonitorShowQuota = "channel_monitor_show_quota"
 
+	// Probe coalescing controls the optional single-flight optimization for
+	// strict arithmetic health probes. Defaults are deliberately shadow-only.
+	SettingKeyProbeCoalescingMode                 = "probe_coalescing_mode"
+	SettingKeyProbeCoalescingWindowSeconds        = "probe_coalescing_window_seconds"
+	SettingKeyProbeCoalescingLeaderTimeoutSeconds = "probe_coalescing_leader_timeout_seconds"
+	SettingKeyProbeCoalescingAttemptBudget        = "probe_coalescing_attempt_budget"
+
 	// SettingKeyGrokDefaultTextModel is the fallback Grok text model for empty
 	// request models and built-in Grok aliases (e.g. "grok" → this id). Default grok-4.5.
 	SettingKeyGrokDefaultTextModel = "grok_default_text_model"
@@ -680,6 +688,9 @@ const (
 	// 账号限额通知
 	SettingKeyAccountQuotaNotifyEnabled = "account_quota_notify_enabled" // 全局开关
 	SettingKeyAccountQuotaNotifyEmails  = "account_quota_notify_emails"  // 管理员通知邮箱列表（JSON 数组）
+
+	// 失败请求计费策略：仅允许上游明确 usage/可计费动作时结算。
+	SettingKeyFailureBillingUpstreamUsageOnly = "failure_billing_upstream_usage_only"
 
 	// Web Search Emulation
 	SettingKeyWebSearchEmulationConfig = "web_search_emulation_config" // JSON 配置

@@ -303,6 +303,13 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStream(
 			resetAntigravityCompatTimer(timeoutTimer, timeout)
 			s.observeAntigravityGeminiSSELine(c, event.line)
 			session.consume(event.line)
+			if session.hasMeaningfulData() {
+				// 上游已经向客户端投递过真实内容：即使随后 timeout/read error
+				// 让本次请求以非 UpstreamFailoverError 的普通 error 收尾，也要
+				// 保留「已投递」证据，避免 handler 层的 forwardDeliveredStreamContent
+				// 因读不到标记而误判为未投递，漏掉本该复原的计费。
+				c.Set(GatewayUpstreamDeliveredKey, true)
+			}
 
 		case <-timeoutCh:
 			if writer.Disconnected() {
@@ -418,7 +425,7 @@ func (s *AntigravityGatewayService) handleAntigravityCompatReadError(
 		return session.result(false), err
 	}
 	writeAntigravityCompatStreamError(c, session.adapter, session.writer, "stream_read_error")
-	return nil, fmt.Errorf("stream read error: %w", err)
+	return session.result(false), fmt.Errorf("stream read error: %w", err)
 }
 
 func writeAntigravityCompatStreamError(

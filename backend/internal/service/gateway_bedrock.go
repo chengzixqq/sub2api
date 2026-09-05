@@ -139,14 +139,20 @@ func (s *GatewayService) forwardBedrock(
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var responseErr error
 	if reqStream {
 		streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
-		if err != nil {
-			return nil, err
+		if streamResult != nil {
+			usage = streamResult.usage
+			firstTokenMs = streamResult.firstTokenMs
+			clientDisconnect = streamResult.clientDisconnect
 		}
-		usage = streamResult.usage
-		firstTokenMs = streamResult.firstTokenMs
-		clientDisconnect = streamResult.clientDisconnect
+		if err != nil {
+			if streamResult == nil {
+				return nil, err
+			}
+			responseErr = err
+		}
 	} else {
 		usage, err = s.handleBedrockNonStreamingResponse(ctx, resp, c, account)
 		if err != nil {
@@ -166,7 +172,7 @@ func (s *GatewayService) forwardBedrock(
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
-	}, nil
+	}, responseErr
 }
 
 // executeBedrockUpstream 执行 Bedrock 上游请求（含重试逻辑）

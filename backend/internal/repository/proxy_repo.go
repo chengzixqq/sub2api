@@ -41,7 +41,10 @@ func (r *proxyRepository) Create(ctx context.Context, proxyIn *service.Proxy) er
 		SetPort(proxyIn.Port).
 		SetStatus(proxyIn.Status).
 		SetFallbackMode(proxyIn.FallbackMode).
-		SetExpiryWarnDays(proxyIn.ExpiryWarnDays)
+		SetExpiryWarnDays(proxyIn.ExpiryWarnDays).
+		// 仅 Create 落归属：Update 故意不设此字段，
+		// 否则 vendor 提交一次编辑就能把代理搬进别的工作区。
+		SetWorkspaceID(proxyIn.WorkspaceID)
 	if proxyIn.Username != "" {
 		builder.SetUsername(proxyIn.Username)
 	}
@@ -71,6 +74,52 @@ func (r *proxyRepository) GetByID(ctx context.Context, id int64) (*service.Proxy
 		return nil, err
 	}
 	return proxyEntityToService(m), nil
+}
+
+// GetByIDScoped 是 GetByID 的管理端变体，按调用者作用域收窄。
+//
+// 必须与 GetByID 分开：后者被网关转发路径共用，在那里加工作区谓词
+// 会让代理查不到而打死转发。所以收窄只加在管理端专用方法上。
+//
+// 越权与不存在返回同一个 ErrProxyNotFound：错误码若有差异，
+// 本身就成了别家代理 ID 的存在性探针。
+func (r *proxyRepository) GetByIDScoped(ctx context.Context, id int64) (*service.Proxy, error) {
+	q := r.client.Proxy.Query().Where(proxy.IDEQ(id))
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		q = q.Where(proxy.WorkspaceIDEQ(*workspaceID))
+	}
+
+	m, err := q.Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrProxyNotFound
+		}
+		return nil, err
+	}
+	return proxyEntityToService(m), nil
+}
+
+// ListByIDsScoped 是 ListByIDs 的管理端变体，按调用者作用域收窄。
+//
+// 越权 ID 直接从结果里消失而非报错：批量取用的语义本就是「取到哪些算哪些」，
+// 报错反而会因单个越权 ID 让整批失败，也成了存在性探针。
+func (r *proxyRepository) ListByIDsScoped(ctx context.Context, ids []int64) ([]service.Proxy, error) {
+	if len(ids) == 0 {
+		return []service.Proxy{}, nil
+	}
+
+	proxies, err := scopeProxyQuery(ctx, r.client.Proxy.Query()).
+		Where(proxy.IDIn(ids...)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]service.Proxy, 0, len(proxies))
+	for i := range proxies {
+		out = append(out, *proxyEntityToService(proxies[i]))
+	}
+	return out, nil
 }
 
 func (r *proxyRepository) ListByIDs(ctx context.Context, ids []int64) ([]service.Proxy, error) {
@@ -283,8 +332,19 @@ func (r *proxyRepository) List(ctx context.Context, params pagination.Pagination
 }
 
 // ListWithFilters lists proxies with optional filtering by protocol, status, and search query
+// scopeProxyQuery 按调用者作用域收窄代理查询。
+//
+// 与账号列表同理：Count 与分页都在 SQL 完成，过滤必须落在查询上，
+// 否则总数会保持全量而首页只剩零星几条。站长作用域不加任何谓词。
+func scopeProxyQuery(ctx context.Context, q *dbent.ProxyQuery) *dbent.ProxyQuery {
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		return q.Where(proxy.WorkspaceIDEQ(*workspaceID))
+	}
+	return q
+}
+
 func (r *proxyRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]service.Proxy, *pagination.PaginationResult, error) {
-	q := r.client.Proxy.Query()
+	q := scopeProxyQuery(ctx, r.client.Proxy.Query())
 	if protocol != "" {
 		q = q.Where(proxy.ProtocolEQ(protocol))
 	}
@@ -322,7 +382,7 @@ func (r *proxyRepository) ListWithFilters(ctx context.Context, params pagination
 
 // ListWithFiltersAndAccountCount lists proxies with filters and includes account count per proxy
 func (r *proxyRepository) ListWithFiltersAndAccountCount(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]service.ProxyWithAccountCount, *pagination.PaginationResult, error) {
-	q := r.client.Proxy.Query()
+	q := scopeProxyQuery(ctx, r.client.Proxy.Query())
 	if protocol != "" {
 		q = q.Where(proxy.ProtocolEQ(protocol))
 	}
@@ -435,6 +495,24 @@ func proxyListOrder(params pagination.PaginationParams) []func(*entsql.Selector)
 	return []func(*entsql.Selector){dbent.Desc(field), dbent.Desc(proxy.FieldID)}
 }
 
+// ListActiveScoped 是 ListActive 的管理端变体，按调用者作用域收窄。
+//
+// 不能直接给 ListActive 加过滤：它还服务于 CRS 同步与代理健康巡检，
+// 那些路径不带作用域，ScopeFromContextOrDeny 会一律拒绝，等于打死巡检。
+func (r *proxyRepository) ListActiveScoped(ctx context.Context) ([]service.Proxy, error) {
+	proxies, err := scopeProxyQuery(ctx, r.client.Proxy.Query()).
+		Where(proxy.StatusEQ(service.StatusActive)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	outProxies := make([]service.Proxy, 0, len(proxies))
+	for i := range proxies {
+		outProxies = append(outProxies, *proxyEntityToService(proxies[i]))
+	}
+	return outProxies, nil
+}
+
 func (r *proxyRepository) ListActive(ctx context.Context) ([]service.Proxy, error) {
 	proxies, err := r.client.Proxy.Query().
 		Where(proxy.StatusEQ(service.StatusActive)).
@@ -480,7 +558,7 @@ func (r *proxyRepository) CountAccountsByProxyID(ctx context.Context, proxyID in
 
 func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, proxyID int64) ([]service.ProxyAccountSummary, error) {
 	rows, err := r.sql.QueryContext(ctx, `
-		SELECT id, name, platform, type, notes
+		SELECT id, name, platform, type, notes, workspace_id
 		FROM accounts
 		WHERE proxy_id = $1 AND deleted_at IS NULL
 		ORDER BY id DESC
@@ -493,13 +571,14 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 	out := make([]service.ProxyAccountSummary, 0)
 	for rows.Next() {
 		var (
-			id       int64
-			name     string
-			platform string
-			accType  string
-			notes    sql.NullString
+			id          int64
+			name        string
+			platform    string
+			accType     string
+			notes       sql.NullString
+			workspaceID int64
 		)
-		if err := rows.Scan(&id, &name, &platform, &accType, &notes); err != nil {
+		if err := rows.Scan(&id, &name, &platform, &accType, &notes, &workspaceID); err != nil {
 			return nil, err
 		}
 		var notesPtr *string
@@ -507,11 +586,12 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 			notesPtr = &notes.String
 		}
 		out = append(out, service.ProxyAccountSummary{
-			ID:       id,
-			Name:     name,
-			Platform: platform,
-			Type:     accType,
-			Notes:    notesPtr,
+			ID:          id,
+			Name:        name,
+			Platform:    platform,
+			Type:        accType,
+			Notes:       notesPtr,
+			WorkspaceID: workspaceID,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -520,9 +600,24 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 	return out, nil
 }
 
-// GetAccountCountsForProxies returns a map of proxy ID to account count for all proxies
+// GetAccountCountsForProxies 返回代理 ID 到账号数的映射。
+//
+// 计数按调用者作用域收窄：代理行本身已由 scopeProxyQuery 过滤，
+// 但计数是独立聚合 —— 不收窄的话，站长若把别家账号挂到某 vendor 的代理上，
+// 那个 vendor 就能从数字差额推断出别家账号的存在。
+//
+// 直接收窄而非另开 Scoped 变体：两个调用方都在管理端代理列表内，
+// 无网关或巡检路径。裸 ctx（如集成测试）的作用域为零值，不加谓词。
 func (r *proxyRepository) GetAccountCountsForProxies(ctx context.Context) (counts map[int64]int64, err error) {
-	rows, err := r.sql.QueryContext(ctx, "SELECT proxy_id, COUNT(*) AS count FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL GROUP BY proxy_id")
+	query := "SELECT proxy_id, COUNT(*) AS count FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL"
+	var args []any
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		query += " AND workspace_id = $1"
+		args = append(args, *workspaceID)
+	}
+	query += " GROUP BY proxy_id"
+
+	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -548,8 +643,12 @@ func (r *proxyRepository) GetAccountCountsForProxies(ctx context.Context) (count
 }
 
 // ListActiveWithAccountCount returns all active proxies with account count, sorted by creation time descending
+// ListActiveWithAccountCount 列出启用代理并附带账号数。
+//
+// 直接收窄（不另开 Scoped 变体）：该方法只服务管理端代理列表，
+// 无网关或巡检调用方，加过滤不会波及热路径。
 func (r *proxyRepository) ListActiveWithAccountCount(ctx context.Context) ([]service.ProxyWithAccountCount, error) {
-	proxies, err := r.client.Proxy.Query().
+	proxies, err := scopeProxyQuery(ctx, r.client.Proxy.Query()).
 		Where(proxy.StatusEQ(service.StatusActive)).
 		Order(dbent.Desc(proxy.FieldCreatedAt)).
 		All(ctx)
@@ -596,6 +695,7 @@ func proxyEntityToService(m *dbent.Proxy) *service.Proxy {
 		FallbackMode:   m.FallbackMode,
 		BackupProxyID:  m.BackupProxyID,
 		ExpiryWarnDays: m.ExpiryWarnDays,
+		WorkspaceID:    m.WorkspaceID,
 	}
 	if m.Username != nil {
 		out.Username = *m.Username

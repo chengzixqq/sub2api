@@ -593,6 +593,8 @@ func TestAPIContracts(t *testing.T) {
 								"request_type": "stream",
 								"native_compaction_v2": false,
 								"openai_ws_mode": false,
+								"probe_coalesced": false,
+								"provider_cost_recorded": false,
 								"group_id": null,
 								"subscription_id": null,
 							"input_tokens": 10,
@@ -890,7 +892,7 @@ func TestAPIContracts(t *testing.T) {
 					"hide_ccs_import_button": false,
 					"grok_default_text_model": "grok-4.6",
 					"grok_default_base_url_mode": "cli",
-					"grok_cross_client_model_map_enabled": true,
+					"grok_cross_client_model_map_enabled": false,
 					"purchase_subscription_enabled": false,
 					"purchase_subscription_url": "",
 					"table_default_page_size": 20,
@@ -993,6 +995,10 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_hide_throughput": true,
 					"channel_monitor_show_quota": false,
 					"channel_monitor_default_interval_seconds": 60,
+					"probe_coalescing_mode": "shadow",
+					"probe_coalescing_window_seconds": 60,
+					"probe_coalescing_leader_timeout_seconds": 8,
+					"probe_coalescing_attempt_budget": 8,
 					"available_channels_enabled": false,
 					"model_plaza_enabled": false,
 					"model_plaza_require_auth": false,
@@ -1018,7 +1024,8 @@ func TestAPIContracts(t *testing.T) {
 					"wechat_connect_redirect_url": "",
 					"wechat_connect_frontend_redirect_url": "/auth/wechat/callback",
 					"wechat_connect_scopes": "snsapi_login",
-					"allow_user_view_error_requests": false
+						"allow_user_view_error_requests": false,
+						"failure_billing_upstream_usage_only": false
 				}
 			}`,
 		},
@@ -1175,7 +1182,7 @@ func TestAPIContracts(t *testing.T) {
 					"hide_ccs_import_button": false,
 					"grok_default_text_model": "grok-4.6",
 					"grok_default_base_url_mode": "cli",
-					"grok_cross_client_model_map_enabled": true,
+					"grok_cross_client_model_map_enabled": false,
 					"purchase_subscription_enabled": false,
 					"purchase_subscription_url": "",
 					"table_default_page_size": 20,
@@ -1306,6 +1313,10 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_hide_throughput": true,
 					"channel_monitor_show_quota": false,
 					"channel_monitor_default_interval_seconds": 60,
+					"probe_coalescing_mode": "shadow",
+					"probe_coalescing_window_seconds": 60,
+					"probe_coalescing_leader_timeout_seconds": 8,
+					"probe_coalescing_attempt_budget": 8,
 					"available_channels_enabled": false,
 					"model_plaza_enabled": false,
 					"model_plaza_require_auth": false,
@@ -1367,7 +1378,8 @@ func TestAPIContracts(t *testing.T) {
 					"auth_source_default_dingtalk_grant_on_signup": false,
 					"auth_source_default_dingtalk_grant_on_first_bind": false,
 					"force_email_on_third_party_signup": false,
-					"allow_user_view_error_requests": false
+						"allow_user_view_error_requests": false,
+						"failure_billing_upstream_usage_only": false
 				}
 			}`,
 		},
@@ -1476,8 +1488,8 @@ func newContractDeps(t *testing.T) *contractDeps {
 	settingRepo := newStubSettingRepo()
 	settingService := service.NewSettingService(settingRepo, cfg)
 
-	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
-	authHandler := handler.NewAuthHandler(cfg, nil, userService, settingService, nil, redeemService, nil, nil)
+	adminService := service.NewAdminService(userRepo, groupRepo, &accountRepo, proxyRepo, apiKeyRepo, redeemRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	authHandler := handler.NewAuthHandler(cfg, nil, userService, settingService, nil, redeemService, nil, nil, nil)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService, nil, nil)
 	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil, nil, nil, nil)
@@ -1497,6 +1509,10 @@ func newContractDeps(t *testing.T) *contractDeps {
 			Concurrency: 5,
 		})
 		c.Set(string(middleware.ContextKeyUserRole), service.RoleAdmin)
+		// 复现生产链路：VendorScope 中间件紧跟鉴权，为 admin 注入不受限作用域。
+		// 少了这一步，service 层会按「作用域缺失即受限」把站长当 vendor 处理，
+		// 契约测试便会撞上归属过滤 —— 那是默认拒绝在正确工作，不是被测端点的问题。
+		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
 		c.Next()
 	}
 
@@ -1797,6 +1813,13 @@ func (stubGroupRepo) ListWithFilters(ctx context.Context, params pagination.Pagi
 	return nil, nil, errors.New("not implemented")
 }
 
+// LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
+//
+// 契约测试只断言响应结构，计数取零不影响字段存在性。
+func (r *stubGroupRepo) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]service.GroupAccountCounts, error) {
+	return map[int64]service.GroupAccountCounts{}, nil
+}
+
 func (r *stubGroupRepo) ListActive(ctx context.Context) ([]service.Group, error) {
 	return append([]service.Group(nil), r.active...), nil
 }
@@ -1858,6 +1881,18 @@ func (s *stubAccountRepo) CreateWithAccountGroups(ctx context.Context, account *
 
 func (s *stubAccountRepo) GetByID(ctx context.Context, id int64) (*service.Account, error) {
 	return nil, service.ErrAccountNotFound
+}
+
+// GetByIDScoped 与 GetByID 同义：本 stub 服务的是 API 契约测试，
+// 断言的是路由与响应形状，不涉及工作区归属过滤。
+func (s *stubAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*service.Account, error) {
+	return s.GetByID(ctx, id)
+}
+
+// ListIDsByWorkspace 返回空集：契约测试不构造工作区数据，
+// 空集比 nil 更贴合语义 —— 该工作区名下没有账号。
+func (s *stubAccountRepo) ListIDsByWorkspace(ctx context.Context, workspaceID int64) ([]int64, error) {
+	return nil, nil
 }
 
 func (s *stubAccountRepo) GetByIDs(ctx context.Context, ids []int64) ([]*service.Account, error) {
@@ -2065,7 +2100,25 @@ func (stubProxyRepo) GetByID(ctx context.Context, id int64) (*service.Proxy, err
 	return nil, service.ErrProxyNotFound
 }
 
+// GetByIDScoped 与 GetByID 同义：契约测试断言路由与响应形状，
+// 工作区归属过滤由 service 层的作用域测试单独覆盖。
+func (stubProxyRepo) GetByIDScoped(ctx context.Context, id int64) (*service.Proxy, error) {
+	return nil, service.ErrProxyNotFound
+}
+
 func (stubProxyRepo) ListByIDs(ctx context.Context, ids []int64) ([]service.Proxy, error) {
+	return nil, errors.New("not implemented")
+}
+
+// ListByIDsScoped 与 ListActiveScoped 是管理端按工作区收窄的代理读取。
+//
+// 与不带作用域的版本一样返回未实现：本契约测试断言路由与响应形状，
+// 不触达代理列表数据。
+func (stubProxyRepo) ListByIDsScoped(ctx context.Context, ids []int64) ([]service.Proxy, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (stubProxyRepo) ListActiveScoped(ctx context.Context) ([]service.Proxy, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -2841,6 +2894,14 @@ func (r *stubUsageLogRepo) GetStatsWithFilters(ctx context.Context, filters usag
 	}, nil
 }
 func (r *stubUsageLogRepo) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
+	return nil, errors.New("not implemented")
+}
+
+// GetAllGroupUsageSummaryScoped 是按工作区收窄的分组用量汇总。
+//
+// 与不带作用域的版本一样返回未实现：本契约测试断言的是路由与响应形状，
+// 不触达用量聚合。
+func (r *stubUsageLogRepo) GetAllGroupUsageSummaryScoped(ctx context.Context, todayStart time.Time, workspaceID int64) ([]usagestats.GroupUsageSummary, error) {
 	return nil, errors.New("not implemented")
 }
 

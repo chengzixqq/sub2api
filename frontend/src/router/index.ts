@@ -11,6 +11,7 @@ import { useAdminComplianceStore } from '@/stores/adminCompliance'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
+import { resolveLandingPath } from './landing'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
 import { resolveRouteDocumentTitle } from './title'
 
@@ -399,7 +400,16 @@ const routes: RouteRecordRaw[] = [
   // ==================== Admin Routes ====================
   {
     path: '/admin',
-    redirect: '/admin/dashboard'
+    // 函数式 redirect：vendor 进 /admin 时直接落到自己有权访问的页面，
+    // 而不是先跳 dashboard 再被 requiresOwner 弹回，省掉一次无谓导航。
+    redirect: () => {
+      const authStore = useAuthStore()
+      return resolveLandingPath({
+        isOwner: authStore.isOwner,
+        isVendor: authStore.isVendor,
+        workspace: authStore.workspace
+      })
+    }
   },
   {
     path: '/admin/dashboard',
@@ -408,6 +418,9 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      // 该页聚合全站用户/密钥维度数据，无法按工作区收窄，
+      // 后端白名单未放行其端点（users-ranking、stats 等），故仅站长可见。
+      requiresOwner: true,
       title: 'Admin Dashboard',
       titleKey: 'admin.dashboard.title',
       descriptionKey: 'admin.dashboard.description'
@@ -459,6 +472,35 @@ const routes: RouteRecordRaw[] = [
       title: 'Group Management',
       titleKey: 'admin.groups.title',
       descriptionKey: 'admin.groups.description'
+    }
+  },
+  {
+    path: '/admin/workspaces',
+    name: 'AdminWorkspaces',
+    component: () => import('@/views/admin/WorkspacesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      // 工作区的增删改是「发放权限」的动作，仅站长可见。
+      // isAdmin 对 vendor 也为 true，故必须额外声明。
+      requiresOwner: true,
+      title: 'Workspaces',
+      titleKey: 'admin.workspaces.title',
+      descriptionKey: 'admin.workspaces.description'
+    }
+  },
+  {
+    path: '/admin/settlement',
+    name: 'AdminSettlement',
+    component: () => import('@/views/admin/SettlementView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      // 不加 requiresOwner：这页正是给 vendor 的。站长手输 URL 也能进，
+      // 但 /admin/workspaces/me 对站长返回空载荷，页面会说明不适用。
+      title: 'Settlement',
+      titleKey: 'admin.settlement.title',
+      descriptionKey: 'admin.settlement.subtitle'
     }
   },
   {
@@ -684,6 +726,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresOwner: true,
       title: 'Payment Dashboard',
       titleKey: 'nav.paymentDashboard',
       requiresPayment: true
@@ -696,9 +739,9 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresOwner: true,
       title: 'Order Management',
-      titleKey: 'nav.orderManagement',
-      requiresPayment: true
+      titleKey: 'nav.orderManagement'
     }
   },
   {
@@ -708,6 +751,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
+      requiresOwner: true,
       title: 'Subscription Plans',
       titleKey: 'nav.paymentPlans',
       requiresPayment: true
@@ -825,8 +869,15 @@ router.beforeEach(async (to, _from, next) => {
         next()
         return
       }
-      // Admin users go to admin dashboard, regular users go to user dashboard
-      next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
+      // 按身份分流：站长去管理端总览，vendor 去自己权限档允许的页面
+      // （/admin/dashboard 大半端点对 vendor 是 403），普通用户去用户面板。
+      next(
+        resolveLandingPath({
+          isOwner: authStore.isOwner,
+          isVendor: authStore.isVendor,
+          workspace: authStore.workspace
+        })
+      )
       return
     }
     // Model Plaza:公开路由但受「启用开关 + 可选强制登录」双重控制(后端同口径 fail-closed)
@@ -886,6 +937,32 @@ router.beforeEach(async (to, _from, next) => {
   if (requiresAdmin && !authStore.isAdmin) {
     // User is authenticated but not admin, redirect to user dashboard
     next('/dashboard')
+    return
+  }
+
+  if (requiresAdmin && authStore.isAdmin) {
+    // 登录响应不带 workspace（与 /me 是两条独立的序列化路径），
+    // vendor 首次进入管理端时在此补齐，用于顶部工作区标识、按角色渲染，
+    // 以及下面 requiresOwner 分流时挑落地页所需的权限档。
+    // 拉取失败不阻断进入：权限边界由后端中间件保证，前端仅影响显示。
+    if (authStore.isVendor && !authStore.workspace) {
+      await authStore.refreshUser().catch(() => undefined)
+    }
+  }
+
+  // 站长专属页面：vendor 虽属管理端角色（isAdmin 为 true），但不得进入。
+  // 后端路由白名单已拒绝这些端点，这里避免 vendor 看到一个只会报 403 的空页面。
+  //
+  // 必须放在上面补拉 workspace 之后：解析落地页要读权限档，
+  // 顺序反了会让 vendor 每次都被丢回用户面板。
+  if (to.meta.requiresOwner === true && !authStore.isOwner) {
+    next(
+      resolveLandingPath({
+        isOwner: false,
+        isVendor: authStore.isVendor,
+        workspace: authStore.workspace
+      })
+    )
     return
   }
 

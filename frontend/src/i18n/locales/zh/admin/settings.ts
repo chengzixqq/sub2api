@@ -440,6 +440,13 @@ export default {
         saved: '上游倍率自动探测设置已保存',
         saveFailed: '保存上游倍率自动探测设置失败'
       },
+      failureBilling: {
+        title: '失败请求计费策略',
+        description: '控制上游未返回 usage 时，失败请求是否允许使用本地估算结果结算。',
+        upstreamUsageOnly: '仅按上游 usage 或已确认的可计费动作结算',
+        upstreamUsageOnlyHint: '开启后不再产生 failed_estimated 估算结算；上游明确返回 token/图片 usage 或确认发生可计费动作时仍会结算。',
+        ownerOnly: '仅站长可以修改此策略。'
+      },
       ollamaCloudUsage: {
         title: 'Ollama Cloud 用量刷新',
         description: '在模型请求驱动下刷新账号在 Ollama 官方设置页展示的用量；默认关闭。无新请求时不会自动抓取。',

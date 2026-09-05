@@ -11,6 +11,7 @@ import type {
   LoginRequest,
   RegisterRequest,
   AuthResponse,
+  CurrentUserWorkspace,
   ActionCaptchaRequestProof
 } from '@/types'
 
@@ -82,6 +83,7 @@ export const useAuthStore = defineStore('auth', () => {
   const refreshTokenValue = ref<string | null>(null)
   const tokenExpiresAt = ref<number | null>(null) // 过期时间戳（毫秒）
   const runMode = ref<'standard' | 'simple'>('standard')
+  const workspace = ref<CurrentUserWorkspace | null>(null)
   const pendingAuthSession = ref<PendingAuthSessionSummary | null>(null)
   let refreshIntervalId: ReturnType<typeof setInterval> | null = null
   let tokenRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
@@ -92,9 +94,22 @@ export const useAuthStore = defineStore('auth', () => {
     return !!token.value && !!user.value
   })
 
+  /**
+   * 是否可以访问管理端。
+   *
+   * vendor（代运营）也走管理端界面，只是后端会把数据裁剪到它自己的工作区，
+   * 因此这里必须包含 vendor —— 否则 vendor 登录后路由守卫会把它挡在
+   * 后台之外。真正的权限边界在后端中间件，前端只负责显示。
+   */
   const isAdmin = computed(() => {
-    return user.value?.role === 'admin'
+    return user.value?.role === 'admin' || user.value?.role === 'vendor'
   })
+
+  /** 站长：拥有全站视野，可管理工作区本身。 */
+  const isOwner = computed(() => user.value?.role === 'admin')
+
+  /** 代运营：管理端视野被裁剪到所属工作区。 */
+  const isVendor = computed(() => user.value?.role === 'vendor')
 
   const isSimpleMode = computed(() => runMode.value === 'simple')
   const hasPendingAuthSession = computed(() => pendingAuthSession.value !== null)
@@ -442,7 +457,11 @@ export const useAuthStore = defineStore('auth', () => {
       if (response.data.run_mode) {
         runMode.value = response.data.run_mode
       }
-      const { run_mode: _run_mode, ...userData } = response.data
+      // workspace 只在 vendor 角色下返回；站长与普通用户会拿到 undefined，
+      // 此时显式置空，避免角色切换后残留上一个身份的工作区。
+      workspace.value = response.data.workspace ?? null
+
+      const { run_mode: _run_mode, workspace: _workspace, ...userData } = response.data
       user.value = userData
 
       // Update localStorage
@@ -472,6 +491,7 @@ export const useAuthStore = defineStore('auth', () => {
     refreshTokenValue.value = null
     tokenExpiresAt.value = null
     user.value = null
+    workspace.value = null
     localStorage.removeItem(AUTH_TOKEN_KEY)
     localStorage.removeItem(AUTH_USER_KEY)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
@@ -493,11 +513,14 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     token,
     runMode: readonly(runMode),
+    workspace: readonly(workspace),
     pendingAuthSession: readonly(pendingAuthSession),
 
     // Computed
     isAuthenticated,
     isAdmin,
+    isOwner,
+    isVendor,
     isSimpleMode,
     hasPendingAuthSession,
 

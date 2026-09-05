@@ -23,7 +23,10 @@ export function useGrokOAuth() {
     error.value = ''
   }
 
-  const generateAuthUrl = async (proxyId: number | null | undefined): Promise<boolean> => {
+  const generateAuthUrl = async (
+    proxyId: number | null | undefined,
+    accountId?: number
+  ): Promise<boolean> => {
     loading.value = true
     authUrl.value = ''
     sessionId.value = ''
@@ -33,6 +36,7 @@ export function useGrokOAuth() {
     try {
       const payload: Record<string, unknown> = {}
       if (proxyId) payload.proxy_id = proxyId
+      if (accountId) payload.account_id = accountId
 
       const response = await adminAPI.grok.generateAuthUrl(payload)
       authUrl.value = response.auth_url
@@ -53,6 +57,7 @@ export function useGrokOAuth() {
     sessionId: string
     state: string
     proxyId?: number | null
+    accountId?: number
   }): Promise<GrokTokenInfo | null> => {
     const code = params.code?.trim()
     if (!code || !params.sessionId || !params.state) {
@@ -70,6 +75,7 @@ export function useGrokOAuth() {
         code
       }
       if (params.proxyId) payload.proxy_id = params.proxyId
+      if (params.accountId) payload.account_id = params.accountId
 
       return await adminAPI.grok.exchangeCode(payload as any)
     } catch (err: any) {
@@ -88,7 +94,8 @@ export function useGrokOAuth() {
 
   const validateRefreshToken = async (
     refreshToken: string,
-    proxyId?: number | null
+    proxyId?: number | null,
+    accountId?: number
   ): Promise<GrokTokenInfo | null> => {
     if (!refreshToken.trim()) {
       error.value = t('admin.accounts.oauth.grok.pleaseEnterRefreshToken')
@@ -99,7 +106,7 @@ export function useGrokOAuth() {
     error.value = ''
 
     try {
-      return await adminAPI.grok.refreshGrokToken(refreshToken.trim(), proxyId)
+      return await adminAPI.grok.refreshGrokToken(refreshToken.trim(), proxyId, accountId)
     } catch (err: any) {
       error.value = extractI18nErrorMessage(
         err,
@@ -149,7 +156,8 @@ export function useGrokOAuth() {
 
   const validateSSOToken = async (
     ssoToken: string,
-    proxyId?: number | null
+    proxyId?: number | null,
+    accountId?: number
   ): Promise<GrokTokenInfo | null> => {
     if (!ssoToken.trim()) {
       error.value = t('admin.accounts.oauth.grok.pleaseEnterSSOToken', 'Please enter an SSO token')
@@ -158,7 +166,7 @@ export function useGrokOAuth() {
     loading.value = true
     error.value = ''
     try {
-      return await adminAPI.grok.validateSSOToken(ssoToken.trim(), proxyId)
+      return await adminAPI.grok.validateSSOToken(ssoToken.trim(), proxyId, accountId)
     } catch (err: any) {
       error.value = extractI18nErrorMessage(
         err,

@@ -24,6 +24,9 @@ describe('ReAuthAccountModal Grok re-auth paths', () => {
     // Re-auth updates the existing account; must not call createFromSSO batch create
     expect(source).not.toContain('createFromSSO')
     expect(source).toContain('applyOAuthCredentials')
+    expect(source).toContain('props.account.id')
+    expect(source).toContain('accountId: props.account.id')
+    expect(source).toContain('grokOAuth.exchangeAuthCode')
   })
 
   it('hides footer code-exchange button for SSO/RT input methods', () => {

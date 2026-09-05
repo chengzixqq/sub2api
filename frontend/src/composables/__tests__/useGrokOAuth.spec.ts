@@ -24,7 +24,8 @@ vi.mock('@/api/admin', () => ({
     grok: {
       generateAuthUrl: vi.fn(),
       exchangeCode: vi.fn(),
-      refreshGrokToken: vi.fn()
+      refreshGrokToken: vi.fn(),
+      validateSSOToken: vi.fn()
     }
   }
 }))
@@ -51,6 +52,42 @@ describe('useGrokOAuth.exchangeAuthCode', () => {
     expect(oauth.error.value).toBe(
       'Grok OAuth state 与当前会话不匹配。请粘贴同一次生成的授权链接返回的回调 URL。'
     )
+  })
+})
+
+describe('useGrokOAuth account scoping', () => {
+  it('forwards the existing account id to re-auth helpers', async () => {
+    vi.mocked(adminAPI.grok.generateAuthUrl).mockResolvedValueOnce({
+      auth_url: 'https://example.test/auth',
+      session_id: 'session',
+      state: 'state'
+    })
+    vi.mocked(adminAPI.grok.exchangeCode).mockResolvedValueOnce({ access_token: 'access' })
+    vi.mocked(adminAPI.grok.refreshGrokToken).mockResolvedValueOnce({ access_token: 'refresh' })
+    vi.mocked(adminAPI.grok.validateSSOToken).mockResolvedValueOnce({ access_token: 'sso' })
+
+    const oauth = useGrokOAuth()
+    await oauth.generateAuthUrl(7, 42)
+    await oauth.exchangeAuthCode({
+      code: 'code',
+      sessionId: 'session',
+      state: 'state',
+      proxyId: 7,
+      accountId: 42
+    })
+    await oauth.validateRefreshToken('refresh-token', 7, 42)
+    await oauth.validateSSOToken('sso-token', 7, 42)
+
+    expect(adminAPI.grok.generateAuthUrl).toHaveBeenCalledWith({ proxy_id: 7, account_id: 42 })
+    expect(adminAPI.grok.exchangeCode).toHaveBeenCalledWith({
+      session_id: 'session',
+      state: 'state',
+      code: 'code',
+      proxy_id: 7,
+      account_id: 42
+    })
+    expect(adminAPI.grok.refreshGrokToken).toHaveBeenCalledWith('refresh-token', 7, 42)
+    expect(adminAPI.grok.validateSSOToken).toHaveBeenCalledWith('sso-token', 7, 42)
   })
 })
 

@@ -1440,6 +1440,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			relayErr,
 		)
 	}
+	if errors.Is(relayErr, openaiwsv2.ErrAmbiguousTerminalIdentity) {
+		relayErr = NewOpenAIWSClientCloseError(
+			coderws.StatusPolicyViolation,
+			"upstream terminal identity is ambiguous; please reconnect",
+			relayErr,
+		)
+	}
 	turnErr := wrapOpenAIWSIngressTurnError(
 		relayExit.Stage,
 		relayErr,
@@ -1469,6 +1476,9 @@ func openAIWSPassthroughRelayClientClose(exit openaiwsv2.RelayExit, completedTur
 			return coderws.StatusGoingAway, "upstream produced no semantic output; please reconnect", true
 		}
 		return 0, "", false
+	}
+	if errors.Is(exit.Err, openaiwsv2.ErrAmbiguousTerminalIdentity) {
+		return coderws.StatusPolicyViolation, "upstream terminal identity is ambiguous; please reconnect", true
 	}
 	if !exit.Graceful && exit.Stage == "read_upstream" {
 		return coderws.StatusInternalError, "upstream websocket proxy failed", true

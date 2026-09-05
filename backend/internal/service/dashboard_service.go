@@ -214,6 +214,19 @@ func (s *DashboardService) GetGroupStatsWithUsageFilters(ctx context.Context, st
 
 // GetGroupUsageSummary returns today's, yesterday's, and cumulative cost for all groups.
 func (s *DashboardService) GetGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
+	// 共享分组的金额必须按本家账号重算：行级过滤只决定「看得到哪些分组」，
+	// 拦不住行内金额是各家合计。
+	//
+	// 仅在确实取到受限作用域时收窄 —— 本方法也服务站长仪表盘，
+	// 把作用域缺失当成受限会让仪表盘金额归零。
+	if scope, ok := ScopeFromContext(ctx); ok && scope.IsVendor() {
+		results, err := s.usageRepo.GetAllGroupUsageSummaryScoped(ctx, todayStart, scope.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("get scoped group usage summary: %w", err)
+		}
+		return results, nil
+	}
+
 	results, err := s.usageRepo.GetAllGroupUsageSummary(ctx, todayStart)
 	if err != nil {
 		return nil, fmt.Errorf("get group usage summary: %w", err)

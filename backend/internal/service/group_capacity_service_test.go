@@ -19,6 +19,24 @@ func (s *groupCapacityAccountRepoStub) ListSchedulableCapacityByGroupIDs(_ conte
 	return append([]GroupAccountCapacityRow(nil), s.rows...), nil
 }
 
+// ListSchedulableCapacityByGroupIDsScoped 是按工作区收窄的容量取数。
+//
+// 必须实现：批量路径靠 groupCapacityAccountLister 的类型断言选中，
+// 少一个方法断言就不成立，测试会静默退化到逐组路径，
+// 撞上本 stub 嵌入的 nil AccountRepository 而空指针崩溃。
+//
+// 断言不成立时是「静默降级」而非编译失败，所以往那个接口加方法时
+// 这里必须同步跟上 —— 崩溃栈会指向 ListSchedulableByGroupID，
+// 与真正的缺失方法相隔甚远，很难顺着栈找回这里。
+func (s *groupCapacityAccountRepoStub) ListSchedulableCapacityByGroupIDsScoped(
+	ctx context.Context,
+	groupIDs []int64,
+	_ int64,
+) ([]GroupAccountCapacityRow, error) {
+	// 本测试断言的是聚合逻辑，不涉及工作区收窄，委托给不收窄的版本。
+	return s.ListSchedulableCapacityByGroupIDs(ctx, groupIDs)
+}
+
 type groupCapacityGroupRepoStub struct {
 	GroupRepository
 	groupIDs  []int64

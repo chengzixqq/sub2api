@@ -41,6 +41,14 @@ func (r *stubQuotaAccountRepo) GetByID(_ context.Context, id int64) (*Account, e
 	return acc, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *stubQuotaAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *stubQuotaAccountRepo) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {
 	acc, ok := r.accounts[id]
 	if !ok {

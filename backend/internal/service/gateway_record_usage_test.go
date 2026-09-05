@@ -46,6 +46,7 @@ func newGatewayRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo 
 		nil,
 		nil,
 		nil, // userPlatformQuotaRepo
+		nil, // workspaceService：本测试的账号 workspace_id 为 0，不走授权倍率
 	)
 }
 

@@ -53,6 +53,14 @@ func (s *sparkShadowRepoStub) GetByID(_ context.Context, id int64) (*Account, er
 	return acc, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (s *sparkShadowRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *sparkShadowRepoStub) ListShadowsByParent(_ context.Context, parentID int64) ([]*Account, error) {
 	var result []*Account
 	for _, acc := range s.accounts {
@@ -122,7 +130,7 @@ func (s *sparkShadowRepoStub) ListWithFilters(_ context.Context, _ pagination.Pa
 // Test 1 — 基本生成: ParentAccountID / QuotaDimension / 默认 spark model_mapping / 无 auth token / ProxyID 継承
 // Test 2 — 一母一影: 二度目の生成はエラー
 func TestCreateShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -179,9 +187,9 @@ func TestCreateShadowInheritsParentEffectiveOpenAILongContextBillingValue(t *tes
 				Credentials: map[string]any{"access_token": "token"},
 				Extra:       tt.parentExtra,
 			}
-			require.NoError(t, repo.Create(context.Background(), parent))
+			require.NoError(t, repo.Create(WithScope(context.Background(), AdminScope()), parent))
 
-			shadow, err := svc.CreateShadow(context.Background(), parent.ID, ShadowOptions{Name: "shadow"})
+			shadow, err := svc.CreateShadow(WithScope(context.Background(), AdminScope()), parent.ID, ShadowOptions{Name: "shadow"})
 
 			require.NoError(t, err)
 			require.Equal(t, tt.want, shadow.Extra[openAILongContextBillingEnabledKey])
@@ -193,7 +201,7 @@ func TestCreateShadowInheritsParentEffectiveOpenAILongContextBillingValue(t *tes
 // TestCreateShadow_BindGroups は BindGroups の後置呼び出しを検証する。
 // 影子账号が指定グループに属し、ListSchedulableByGroupID で取得可能であること。
 func TestCreateShadow_BindGroups(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -228,7 +236,7 @@ func TestCreateShadow_BindGroups(t *testing.T) {
 // TestCreateShadow_InheritsParentConcurrency 验证外审 F3:未指定并发时
 // 影子继承母账号并发,避免 Concurrency=0 被限流器当作"无限并发"。
 func TestCreateShadow_InheritsParentConcurrency(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 
 	t.Run("unspecified_inherits_parent", func(t *testing.T) {
 		repo := newSparkShadowRepoStub()
@@ -266,7 +274,7 @@ func TestCreateShadow_InheritsParentConcurrency(t *testing.T) {
 // 影子继承母账号 priority,而非直写 0 抢到最高调度优先级(repo SetPriority 绕过 ent 默认 50,
 // 调度比较数值越小越优先;前端一键创建只传 name 即触发该路径)。
 func TestCreateShadow_InheritsParentPriorityWhenOmitted(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 
 	t.Run("unspecified_inherits_parent", func(t *testing.T) {
 		repo := newSparkShadowRepoStub()
@@ -304,7 +312,7 @@ func TestCreateShadow_InheritsParentPriorityWhenOmitted(t *testing.T) {
 // TestPersistAccountCredentials_SkipsShadow 验证外审第6轮 P1:凭据写入唯一汇聚点
 // persistAccountCredentials 对 spark 影子早返 no-op,任何上游路径都无法把凭据落到影子行。
 func TestPersistAccountCredentials_SkipsShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	parentID := int64(1)
 	shadow := &Account{
@@ -323,7 +331,7 @@ func TestPersistAccountCredentials_SkipsShadow(t *testing.T) {
 // TestResolveCredentialAccount_RejectsParentShadow 验证外审第6轮 P2 防御:畸形数据/手工 DB
 // 写出的「影子→影子」链,凭据解析必须 fail-closed 而非停在无凭据的一级影子。
 func TestResolveCredentialAccount_RejectsParentShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 
 	grandparent := &Account{
@@ -350,7 +358,7 @@ func TestResolveCredentialAccount_RejectsParentShadow(t *testing.T) {
 // TestPersistOpenAI429PlanType_SkipsShadow 验证外审第7轮 P1:429 plan_type 同步走 BulkUpdate 直写
 // (不经 persistAccountCredentials),必须对影子早返,否则会把 plan_type 写进影子 credentials。
 func TestPersistOpenAI429PlanType_SkipsShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	body := []byte(`{"error":{"type":"usage_limit_reached","plan_type":"pro"}}`)
 	parentID := int64(1)
 
@@ -391,7 +399,7 @@ func TestPersistOpenAICodexSnapshot_SkipsShadow(t *testing.T) {
 		spy := &updateExtraSpyRepo{sparkShadowRepoStub: newSparkShadowRepoStub()}
 		s := &RateLimitService{accountRepo: spy}
 		shadow := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &parentID}
-		s.persistOpenAICodexSnapshot(context.Background(), shadow, headers)
+		s.persistOpenAICodexSnapshot(WithScope(context.Background(), AdminScope()), shadow, headers)
 		require.False(t, spy.updateExtraCalled, "影子不应写 codex_* 头快照")
 	})
 
@@ -399,7 +407,7 @@ func TestPersistOpenAICodexSnapshot_SkipsShadow(t *testing.T) {
 		spy := &updateExtraSpyRepo{sparkShadowRepoStub: newSparkShadowRepoStub()}
 		s := &RateLimitService{accountRepo: spy}
 		normal := &Account{ID: 9, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
-		s.persistOpenAICodexSnapshot(context.Background(), normal, headers)
+		s.persistOpenAICodexSnapshot(WithScope(context.Background(), AdminScope()), normal, headers)
 		require.True(t, spy.updateExtraCalled, "普通账号应写 codex_* 头快照(反向对照)")
 	})
 }
@@ -407,7 +415,7 @@ func TestPersistOpenAICodexSnapshot_SkipsShadow(t *testing.T) {
 // TestResetAccountQuota_RejectsShadow 验证外审第7轮 P2:通用 reset-quota 对影子明确 400 拒绝
 // (影子不持自有配额,语义不一致),且母账号仍可正常重置。
 func TestResetAccountQuota_RejectsShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parent := &Account{
@@ -439,7 +447,7 @@ func (s *sparkShadowGroupRepoStub) ListActiveByPlatform(_ context.Context, _ str
 // TestCreateShadow_DefaultGroupBinding 验证外审 F4:未指定 group_ids 时
 // 影子回落绑定 openai-default 组(否则无组、组内路由选不到)。
 func TestCreateShadow_DefaultGroupBinding(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	groupRepo := &sparkShadowGroupRepoStub{
 		groups: []Group{
@@ -463,7 +471,7 @@ func TestCreateShadow_DefaultGroupBinding(t *testing.T) {
 // TestCreateShadow_InheritsParentGroups 验证外审 G1:未指定 group_ids 时
 // 影子继承母账号当前分组(而非仅 openai-default),以便母在自定义组时影子也可路由。
 func TestCreateShadow_InheritsParentGroups(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	// groupRepo 故意提供 openai-default,以证明「继承母分组」优先于「回落 openai-default」。
 	groupRepo := &sparkShadowGroupRepoStub{groups: []Group{{ID: 99, Name: PlatformOpenAI + "-default"}}}
@@ -483,7 +491,7 @@ func TestCreateShadow_InheritsParentGroups(t *testing.T) {
 
 // TestCreateShadow_RejectsShadowAsParent 验证外审 G6:不允许把影子当母创建二级影子。
 func TestCreateShadow_RejectsShadowAsParent(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -503,7 +511,7 @@ func TestCreateShadow_RejectsShadowAsParent(t *testing.T) {
 
 // TestCreateShadow_StructuredErrors 验证外审 G3:可预期业务错误返回结构化 4xx 而非 500。
 func TestCreateShadow_StructuredErrors(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 
 	t.Run("non_oauth_parent_400", func(t *testing.T) {
 		repo := newSparkShadowRepoStub()
@@ -530,7 +538,7 @@ func TestCreateShadow_StructuredErrors(t *testing.T) {
 
 // TestUpdateAccount_RejectsTypeChangeOnShadow 验证外审 G7:影子 type 不可被普通更新改坏。
 func TestUpdateAccount_RejectsTypeChangeOnShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parent := &Account{
@@ -555,7 +563,7 @@ func TestUpdateAccount_RejectsTypeChangeOnShadow(t *testing.T) {
 // TestBulkUpdateAccounts_RejectsCredentialWriteToShadow 验证外审 G5:批量更新携带凭据时
 // 目标含影子必须被拒(与单账号 UpdateAccount 守卫对齐,堵住 bulk 绕过)。
 func TestBulkUpdateAccounts_RejectsCredentialWriteToShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parent := &Account{
@@ -578,7 +586,7 @@ func TestBulkUpdateAccounts_RejectsCredentialWriteToShadow(t *testing.T) {
 }
 
 func TestDeleteAccount_CascadeToShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -614,7 +622,7 @@ func TestDeleteAccount_CascadeToShadow(t *testing.T) {
 // TestUpdateAccount_PropagatesProxyToShadow verifies that updating a parent
 // account's ProxyID propagates the new value to its spark shadow.
 func TestUpdateAccount_PropagatesProxyToShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -650,7 +658,7 @@ func TestUpdateAccount_PropagatesProxyToShadow(t *testing.T) {
 // 对影子写入 access_token/refresh_token 必须被拒绝,且影子的 access_token/refresh_token
 // 保持为空(Credentials 本身允许持有 CreateShadow 写入的 model_mapping,故不能断言整体为空)。
 func TestUpdateAccount_RejectsCredentialWriteToShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -692,7 +700,7 @@ func TestUpdateAccount_RejectsCredentialWriteToShadow(t *testing.T) {
 // TestBulkUpdateAccounts_PropagatesProxyToShadow verifies that bulk-updating
 // accounts' ProxyID propagates the new value to each account's spark shadow.
 func TestBulkUpdateAccounts_PropagatesProxyToShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 
@@ -773,7 +781,7 @@ func (s *sparkShadowValidatingGroupRepoStub) ExistsByIDs(_ context.Context, ids 
 // TestCreateShadow_DefaultsNameFromParent 验证外审 E/P2:空 name 不应 500,
 // 而是默认 "<母账号名> (Spark)"。
 func TestCreateShadow_DefaultsNameFromParent(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parent := &Account{
@@ -790,7 +798,7 @@ func TestCreateShadow_DefaultsNameFromParent(t *testing.T) {
 // TestCreateShadow_ConcurrentCreateReturns409 验证外审 A/P1:并发竞态下预查放行后
 // Create 撞唯一索引,应映射结构化 409 而非裸 500。
 func TestCreateShadow_ConcurrentCreateReturns409(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	base := newSparkShadowRepoStub()
 	repo := &raceCreateRepoStub{sparkShadowRepoStub: base}
 	svc := &adminServiceImpl{accountRepo: repo}
@@ -808,7 +816,7 @@ func TestCreateShadow_ConcurrentCreateReturns409(t *testing.T) {
 // TestCreateShadow_InvalidGroupRejectedNoOrphan 验证外审 C/P1:显式无效分组应在
 // 创建前被拒,不留孤儿影子。
 func TestCreateShadow_InvalidGroupRejectedNoOrphan(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	groupRepo := &sparkShadowValidatingGroupRepoStub{existing: map[int64]bool{7: true}}
 	svc := &adminServiceImpl{accountRepo: repo, groupRepo: groupRepo}
@@ -829,7 +837,7 @@ func TestCreateShadow_InvalidGroupRejectedNoOrphan(t *testing.T) {
 // TestCreateShadow_BindFailureRollsBackShadow 验证外审 C/P1:绑组失败时补偿删除
 // 刚建的影子,不留孤儿(否则一母一影唯一索引会挡住重试)。
 func TestCreateShadow_BindFailureRollsBackShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	base := newSparkShadowRepoStub()
 	repo := &bindFailRepoStub{sparkShadowRepoStub: base}
 	groupRepo := &sparkShadowValidatingGroupRepoStub{existing: map[int64]bool{7: true}}
@@ -851,7 +859,7 @@ func TestCreateShadow_BindFailureRollsBackShadow(t *testing.T) {
 // TestUpdateAccount_RejectsParentTypeChangeWithShadow 验证外审 D/P1:母账号有 spark 影子时,
 // 不能把 type 改出 OpenAI OAuth(否则影子被调度后透传凭据解析必失败)。
 func TestUpdateAccount_RejectsParentTypeChangeWithShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parent := &Account{
@@ -875,7 +883,7 @@ func TestUpdateAccount_RejectsParentTypeChangeWithShadow(t *testing.T) {
 // TestUpdateAccount_IgnoresProxyChangeOnShadow 验证外审 B/P1:影子 proxy 恒继承母账号,
 // 普通更新不得独立改动。
 func TestUpdateAccount_IgnoresProxyChangeOnShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parentProxy := int64(7)
@@ -898,7 +906,7 @@ func TestUpdateAccount_IgnoresProxyChangeOnShadow(t *testing.T) {
 }
 
 func TestUpdateAccount_ShadowAllowsModelMappingAndGroupUpdate(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	groupRepo := &sparkShadowValidatingGroupRepoStub{existing: map[int64]bool{7: true}}
 	svc := &adminServiceImpl{accountRepo: repo, groupRepo: groupRepo}
@@ -943,7 +951,7 @@ func TestUpdateAccount_ShadowAllowsModelMappingAndGroupUpdate(t *testing.T) {
 }
 
 func TestUpdateAccount_ShadowEmptyCredentialsClearsModelMapping(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parentID := int64(1)
@@ -972,7 +980,7 @@ func TestUpdateAccount_ShadowEmptyCredentialsClearsModelMapping(t *testing.T) {
 }
 
 func TestUpdateAccount_ShadowRejectsAuthCredentials(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parentID := int64(1)
@@ -999,7 +1007,7 @@ func TestUpdateAccount_ShadowRejectsAuthCredentials(t *testing.T) {
 // TestBulkUpdateAccounts_RejectsProxyChangeOnShadow 验证外审第4轮 P1:批量更新携带 proxy 且
 // 目标含影子必须被拒(与单账号 UpdateAccount 守卫对齐,堵住 bulk 绕过"proxy 恒继承母账号")。
 func TestBulkUpdateAccounts_RejectsProxyChangeOnShadow(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newSparkShadowRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo}
 	parentProxy := int64(7)
@@ -1029,5 +1037,5 @@ func TestForceOpenAIPrivacy_SkipsShadow(t *testing.T) {
 	svc := &adminServiceImpl{}
 	pid := int64(1)
 	shadow := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &pid}
-	require.Equal(t, "", svc.ForceOpenAIPrivacy(context.Background(), shadow), "影子隐私设置应跳过")
+	require.Equal(t, "", svc.ForceOpenAIPrivacy(WithScope(context.Background(), AdminScope()), shadow), "影子隐私设置应跳过")
 }

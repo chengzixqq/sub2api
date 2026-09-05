@@ -264,6 +264,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	pendingSSEEventType := ""
 	eventInProgress := false
 	eventStartsClientOutput := false
+	// eventDeliveredRealContent 与 eventStartsClientOutput 并行累积，但只收真实内容帧：
+	// startsClientOutput 是「要不要写客户端」的黑名单判定，response.failed / 裸 error /
+	// response.incomplete 都会让它为真却不含推理内容，用它标记已投递会导致多算。
+	eventDeliveredRealContent := false
+	eventStartsVisibleOutput := false
 	eventStartsTTFTOutput := false
 	eventShouldFlush := false
 	handlePendingWriteError := func(err error) {
@@ -306,11 +311,16 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			firstOutputProgressObserved = true
 			stopFirstOutputTimer()
 		}
+		if eventDeliveredRealContent {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+		}
 		if completedTTFTEvent && firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
 		eventStartsClientOutput = false
+		eventDeliveredRealContent = false
+		eventStartsVisibleOutput = false
 		eventStartsTTFTOutput = false
 		eventShouldFlush = false
 	}
@@ -605,7 +615,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = "data: " + data
 			}
 			imageCounter.AddSSEData(dataBytes)
-			searchCounter += countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen)
+			searchCounter = AccumulateSearchCount(searchCounter, countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen), "responses_stream")
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
 			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
@@ -662,10 +672,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
+			deliversRealContent := openAIResponsesStreamEventDeliversRealContent(data, eventType)
 			startsVisibleOutput := openAIStreamDataStartsVisibleOutput(data, eventType)
 			startsTTFTOutput := openAIStreamDataStartsTTFT(data, eventType, forceFlushFailedEvent, ttftMode)
 			if stageFirstOutput {
 				eventStartsClientOutput = eventStartsClientOutput || startsClientOutput
+				eventDeliveredRealContent = eventDeliveredRealContent || deliversRealContent
+				eventStartsVisibleOutput = eventStartsVisibleOutput || startsVisibleOutput
 				eventStartsTTFTOutput = eventStartsTTFTOutput || startsTTFTOutput
 				if startsClientOutput {
 					firstOutputScanGuard.Store(false)
@@ -709,6 +722,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 				stopFirstOutputTimer()
+			}
+			// 同 passthrough：投递标记独立于 TTFT 门控，只认真实内容帧白名单。
+			if !guardFirstOutput && deliversRealContent {
+				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
 			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
 			return

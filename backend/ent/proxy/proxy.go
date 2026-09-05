@@ -43,6 +43,8 @@ const (
 	FieldBackupProxyID = "backup_proxy_id"
 	// FieldExpiryWarnDays holds the string denoting the expiry_warn_days field in the database.
 	FieldExpiryWarnDays = "expiry_warn_days"
+	// FieldWorkspaceID holds the string denoting the workspace_id field in the database.
+	FieldWorkspaceID = "workspace_id"
 	// EdgeAccounts holds the string denoting the accounts edge name in mutations.
 	EdgeAccounts = "accounts"
 	// EdgeBackupProxy holds the string denoting the backup_proxy edge name in mutations.
@@ -79,6 +81,7 @@ var Columns = []string{
 	FieldFallbackMode,
 	FieldBackupProxyID,
 	FieldExpiryWarnDays,
+	FieldWorkspaceID,
 }
 
 // ValidColumn reports if the column name is valid (part of the table columns).
@@ -125,6 +128,8 @@ var (
 	FallbackModeValidator func(string) error
 	// DefaultExpiryWarnDays holds the default value on creation for the "expiry_warn_days" field.
 	DefaultExpiryWarnDays int
+	// DefaultWorkspaceID holds the default value on creation for the "workspace_id" field.
+	DefaultWorkspaceID int64
 )
 
 // OrderOption defines the ordering options for the Proxy queries.
@@ -203,6 +208,11 @@ func ByBackupProxyID(opts ...sql.OrderTermOption) OrderOption {
 // ByExpiryWarnDays orders the results by the expiry_warn_days field.
 func ByExpiryWarnDays(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldExpiryWarnDays, opts...).ToFunc()
+}
+
+// ByWorkspaceID orders the results by the workspace_id field.
+func ByWorkspaceID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldWorkspaceID, opts...).ToFunc()
 }
 
 // ByAccountsCount orders the results by accounts count.

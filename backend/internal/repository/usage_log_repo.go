@@ -18,16 +18,20 @@ const rawUsageLogModelColumn = "model"
 // Historical rows may contain upstream/billing model values, while newer rows store requested_model.
 // Requested/upstream/mapping analytics must use resolveModelDimensionExpression instead.
 
-// usageLogSuccessFilterUL 用于把"失败请求 usage log"（tokens=0、cost=0、不计费的占位记录）
-// 从统计性聚合中排除，避免污染 Dashboard / 用量拆分等指标。
+// usageLogSuccessFilterUL 判断一行 usage log 是否算「成功请求」，只用于请求数聚合。
 //
-// schema 中没有 success bool 列；新增列要做迁移，风险大；这里用 actual_cost > 0 作为代理：
-// 任何成功落账的请求都会产生 actual_cost（包括 token 计费、纯图片 token 计费、按次/按图计费），
-// 反之 failed-request usage log 的 actual_cost 为 0。
-// 早期版本用 4 项 token 和 > 0 判定会把"按次/按图计费"与"image_output_tokens 独立计费"的纯图片
-// 请求误判为失败，导致这部分请求从用量统计里消失，故改用 actual_cost。
-// 配合 `FROM usage_logs ul` JOIN 查询使用。
-const usageLogSuccessFilterUL = "ul.actual_cost > 0"
+// schema 中没有 success 列。actual_cost > 0 曾单独承担该职责,但失败请求开始计费后
+// 失败行也带 cost,会通过该判定被误算成成功。现改为叠加 billing_provenance 白名单:
+// 只有 NULL(历史行/成功且用量来自上游)与 "estimated"(成功但上游未给 usage 帧)算成功。
+//
+// 采用白名单而非黑名单:将来新增任何 failed_* 取值默认被排除,而不是默认漏进成功统计。
+//
+// 重要:该常量只应该以 FILTER (WHERE ...) 的形式施加在 total_requests/today_requests
+// 这类"请求数"聚合列上，不能拼进查询的 WHERE 子句、也不能用来过滤 cost/token 的 SUM。
+// 被计费的失败行(billing_provenance = 'failed_upstream'/'failed_estimated')产生了真实的
+// 上游费用,必须继续计入花费类统计,否则分平台/分用户的花费报表会与不做此过滤的总账
+// (如 usage_dashboard_daily、不带该过滤的汇总查询)对不上账。
+const usageLogSuccessFilterUL = "ul.actual_cost > 0 AND (ul.billing_provenance IS NULL OR ul.billing_provenance = 'estimated')"
 
 // usageLogEffectivePlatformExpr 用于按"有效平台"维度聚合 usage_logs：
 // 优先取请求实际走的分组 platform，若分组未设置 platform 再 fallback 到 account.platform。

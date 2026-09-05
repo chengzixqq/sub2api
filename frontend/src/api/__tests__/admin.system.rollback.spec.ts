@@ -36,6 +36,11 @@ describe('admin system rollback API', () => {
     expect(result.versions).toEqual(versions)
   })
 
+  // 15 分钟超时是 #4504 的修复本体：全局 30s 超时会在下载中途掐断回滚。
+  // 断言里带上它，而不是放宽成 expect.anything() —— 这个值被改回默认
+  // 就是回归，测试要挡住。
+  const withUpdateTimeout = { timeout: 15 * 60 * 1000 }
+
   it('rollback posts the target version in the request body', async () => {
     post.mockResolvedValue({ data: { message: 'ok', need_restart: true } })
 
@@ -44,7 +49,7 @@ describe('admin system rollback API', () => {
     expect(post).toHaveBeenCalledWith(
       '/admin/system/rollback',
       { version: '0.1.146' },
-      { timeout: 15 * 60 * 1000 }
+      withUpdateTimeout
     )
     expect(result.need_restart).toBe(true)
   })
@@ -54,10 +59,6 @@ describe('admin system rollback API', () => {
 
     await rollback()
 
-    expect(post).toHaveBeenCalledWith(
-      '/admin/system/rollback',
-      undefined,
-      { timeout: 15 * 60 * 1000 }
-    )
+    expect(post).toHaveBeenCalledWith('/admin/system/rollback', undefined, withUpdateTimeout)
   })
 })

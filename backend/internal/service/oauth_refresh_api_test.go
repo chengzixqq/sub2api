@@ -43,6 +43,14 @@ func (r *refreshAPIAccountRepo) GetByID(_ context.Context, _ int64) (*Account, e
 	return activeRefreshAPITestAccount(r.account), nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *refreshAPIAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func activeRefreshAPITestAccount(account *Account) *Account {
 	if account == nil || account.Status != "" {
 		return account
@@ -776,6 +784,14 @@ func (r *refreshAPIAccountRepoWithRace) GetByID(_ context.Context, _ int64) (*Ac
 		return nil, r.getByIDErr
 	}
 	return activeRefreshAPITestAccount(r.account), nil
+}
+
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *refreshAPIAccountRepoWithRace) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
 }
 
 // ========== Race recovery tests ==========

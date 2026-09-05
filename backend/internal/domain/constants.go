@@ -14,6 +14,21 @@ const (
 const (
 	RoleAdmin = "admin"
 	RoleUser  = "user"
+	// RoleVendor 是供应商（代运营）角色：能登录管理端，但只看得到、
+	// 也只改得动自己工作区内的资源，且权限还要再受工作区权限档约束。
+	RoleVendor = "vendor"
+)
+
+// DefaultWorkspaceID 是预置的「站长直管」工作区。
+//
+// accounts/proxies.workspace_id 的列默认值就是它，所以迁移 192 之前的
+// 存量资源全部归属于此。站长视角不受工作区过滤，此 ID 仅用于写入默认归属。
+const DefaultWorkspaceID int64 = 1
+
+// Workspace status constants（复用 StatusActive/StatusDisabled 的取值口径）。
+const (
+	WorkspaceStatusActive   = StatusActive
+	WorkspaceStatusDisabled = StatusDisabled
 )
 
 // Platform constants

@@ -207,16 +207,39 @@ func (p *ChannelModelPricing) GetTierByLabel(label string) *PricingInterval {
 	return nil
 }
 
-// Clone 返回 ChannelModelPricing 的拷贝（切片独立，指针字段共享，调用方只读安全）
+func clonePricingPtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+// Clone 返回 ChannelModelPricing 的深拷贝。
 func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp := p
+	cp.InputPrice = clonePricingPtr(p.InputPrice)
+	cp.OutputPrice = clonePricingPtr(p.OutputPrice)
+	cp.CacheWritePrice = clonePricingPtr(p.CacheWritePrice)
+	cp.CacheReadPrice = clonePricingPtr(p.CacheReadPrice)
+	cp.ImageInputPrice = clonePricingPtr(p.ImageInputPrice)
+	cp.ImageOutputPrice = clonePricingPtr(p.ImageOutputPrice)
+	cp.PerRequestPrice = clonePricingPtr(p.PerRequestPrice)
 	if p.Models != nil {
 		cp.Models = make([]string, len(p.Models))
 		copy(cp.Models, p.Models)
 	}
 	if p.Intervals != nil {
 		cp.Intervals = make([]PricingInterval, len(p.Intervals))
-		copy(cp.Intervals, p.Intervals)
+		for i := range p.Intervals {
+			cp.Intervals[i] = p.Intervals[i]
+			cp.Intervals[i].MaxTokens = clonePricingPtr(p.Intervals[i].MaxTokens)
+			cp.Intervals[i].InputPrice = clonePricingPtr(p.Intervals[i].InputPrice)
+			cp.Intervals[i].OutputPrice = clonePricingPtr(p.Intervals[i].OutputPrice)
+			cp.Intervals[i].CacheWritePrice = clonePricingPtr(p.Intervals[i].CacheWritePrice)
+			cp.Intervals[i].CacheReadPrice = clonePricingPtr(p.Intervals[i].CacheReadPrice)
+			cp.Intervals[i].PerRequestPrice = clonePricingPtr(p.Intervals[i].PerRequestPrice)
+		}
 	}
 	if p.TimePricing != nil {
 		cp.TimePricing = &ChannelTimePricing{

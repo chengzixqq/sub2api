@@ -25,6 +25,14 @@ func (r *dbFallbackRepoStub) GetByID(ctx context.Context, id int64) (*Account, e
 	return nil, nil // not found, no error
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *dbFallbackRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func TestCheckErrorPolicy_401_DBFallback_Escalates(t *testing.T) {
 	// Scenario: cache account has empty TempUnschedulableReason (cache miss),
 	// but DB account has a previous 401 record.

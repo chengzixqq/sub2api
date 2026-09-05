@@ -247,6 +247,27 @@ func (_u *ProxyUpdate) AddExpiryWarnDays(v int) *ProxyUpdate {
 	return _u
 }
 
+// SetWorkspaceID sets the "workspace_id" field.
+func (_u *ProxyUpdate) SetWorkspaceID(v int64) *ProxyUpdate {
+	_u.mutation.ResetWorkspaceID()
+	_u.mutation.SetWorkspaceID(v)
+	return _u
+}
+
+// SetNillableWorkspaceID sets the "workspace_id" field if the given value is not nil.
+func (_u *ProxyUpdate) SetNillableWorkspaceID(v *int64) *ProxyUpdate {
+	if v != nil {
+		_u.SetWorkspaceID(*v)
+	}
+	return _u
+}
+
+// AddWorkspaceID adds value to the "workspace_id" field.
+func (_u *ProxyUpdate) AddWorkspaceID(v int64) *ProxyUpdate {
+	_u.mutation.AddWorkspaceID(v)
+	return _u
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdate) AddAccountIDs(ids ...int64) *ProxyUpdate {
 	_u.mutation.AddAccountIDs(ids...)
@@ -446,6 +467,12 @@ func (_u *ProxyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.WorkspaceID(); ok {
+		_spec.SetField(proxy.FieldWorkspaceID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedWorkspaceID(); ok {
+		_spec.AddField(proxy.FieldWorkspaceID, field.TypeInt64, value)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -759,6 +786,27 @@ func (_u *ProxyUpdateOne) AddExpiryWarnDays(v int) *ProxyUpdateOne {
 	return _u
 }
 
+// SetWorkspaceID sets the "workspace_id" field.
+func (_u *ProxyUpdateOne) SetWorkspaceID(v int64) *ProxyUpdateOne {
+	_u.mutation.ResetWorkspaceID()
+	_u.mutation.SetWorkspaceID(v)
+	return _u
+}
+
+// SetNillableWorkspaceID sets the "workspace_id" field if the given value is not nil.
+func (_u *ProxyUpdateOne) SetNillableWorkspaceID(v *int64) *ProxyUpdateOne {
+	if v != nil {
+		_u.SetWorkspaceID(*v)
+	}
+	return _u
+}
+
+// AddWorkspaceID adds value to the "workspace_id" field.
+func (_u *ProxyUpdateOne) AddWorkspaceID(v int64) *ProxyUpdateOne {
+	_u.mutation.AddWorkspaceID(v)
+	return _u
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_u *ProxyUpdateOne) AddAccountIDs(ids ...int64) *ProxyUpdateOne {
 	_u.mutation.AddAccountIDs(ids...)
@@ -988,6 +1036,12 @@ func (_u *ProxyUpdateOne) sqlSave(ctx context.Context) (_node *Proxy, err error)
 	}
 	if value, ok := _u.mutation.AddedExpiryWarnDays(); ok {
 		_spec.AddField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.WorkspaceID(); ok {
+		_spec.SetField(proxy.FieldWorkspaceID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedWorkspaceID(); ok {
+		_spec.AddField(proxy.FieldWorkspaceID, field.TypeInt64, value)
 	}
 	if _u.mutation.AccountsCleared() {
 		edge := &sqlgraph.EdgeSpec{

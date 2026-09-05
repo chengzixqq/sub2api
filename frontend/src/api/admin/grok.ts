@@ -15,6 +15,7 @@ export interface GrokAuthUrlResponse {
 }
 
 export interface GrokAuthUrlRequest {
+  account_id?: number
   proxy_id?: number
   redirect_uri?: string
 }
@@ -25,12 +26,15 @@ export interface GrokOAuthCapabilities {
 
 const GROK_AUTHORIZATION_TIMEOUT_MS = 120_000
 
-export async function getCapabilities(): Promise<GrokOAuthCapabilities> {
-  const { data } = await apiClient.get<GrokOAuthCapabilities>('/admin/grok/oauth/capabilities')
+export async function getCapabilities(accountId?: number): Promise<GrokOAuthCapabilities> {
+  const { data } = await apiClient.get<GrokOAuthCapabilities>('/admin/grok/oauth/capabilities', {
+    params: accountId ? { account_id: accountId } : undefined
+  })
   return data
 }
 
 export interface GrokExchangeCodeRequest {
+  account_id?: number
   session_id: string
   state: string
   code: string
@@ -150,10 +154,12 @@ export async function exchangeCode(payload: GrokExchangeCodeRequest): Promise<Gr
 
 export async function refreshGrokToken(
   refreshToken: string,
-  proxyId?: number | null
+  proxyId?: number | null,
+  accountId?: number
 ): Promise<GrokTokenInfo> {
   const payload: Record<string, unknown> = { refresh_token: refreshToken }
   if (proxyId) payload.proxy_id = proxyId
+  if (accountId) payload.account_id = accountId
 
   const { data } = await apiClient.post<GrokTokenInfo>(
     '/admin/grok/oauth/refresh-token',
@@ -184,10 +190,12 @@ export async function createFromSSO(payload: GrokSSOToOAuthRequest): Promise<Gro
 /** Validate a browser SSO cookie and convert to Build OAuth tokens (no raw SSO stored). */
 export async function validateSSOToken(
   ssoToken: string,
-  proxyId?: number | null
+  proxyId?: number | null,
+  accountId?: number
 ): Promise<GrokTokenInfo> {
   const payload: Record<string, unknown> = { sso_token: ssoToken }
   if (proxyId) payload.proxy_id = proxyId
+  if (accountId) payload.account_id = accountId
   const { data } = await apiClient.post<GrokTokenInfo>('/admin/grok/oauth/sso-token', payload, {
     timeout: GROK_AUTHORIZATION_TIMEOUT_MS
   })

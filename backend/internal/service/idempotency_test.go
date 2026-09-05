@@ -609,7 +609,6 @@ func TestIdempotencyCoordinator_RepoNilScopeRequiredAndRecordIDMissing(t *testin
 	})
 	require.Error(t, err)
 	require.Equal(t, infraerrors.Code(ErrIdempotencyStoreUnavail), infraerrors.Code(err))
-
 	coordinator = NewIdempotencyCoordinator(newInMemoryIdempotencyRepo(), cfg)
 	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		IdempotencyKey: "k2",
@@ -778,7 +777,7 @@ func TestIdempotencyCoordinator_MarkAndMarshalBranches(t *testing.T) {
 	coordinator := NewIdempotencyCoordinator(repo, DefaultIdempotencyConfig())
 
 	repo.failMarkSucceeded = true
-	_, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
+	result, err := coordinator.Execute(context.Background(), IdempotencyExecuteOptions{
 		Scope:          "scope-success",
 		IdempotencyKey: "k1",
 		Method:         "POST",
@@ -790,6 +789,9 @@ func TestIdempotencyCoordinator_MarkAndMarshalBranches(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Equal(t, infraerrors.Code(ErrIdempotencyStoreUnavail), infraerrors.Code(err))
+	require.NotNil(t, result)
+	require.Equal(t, map[string]any{"ok": true}, result.Data)
+	require.Equal(t, "mark_succeeded", infraerrors.FromError(err).Metadata["stage"])
 
 	repo.failMarkSucceeded = false
 	_, err = coordinator.Execute(context.Background(), IdempotencyExecuteOptions{

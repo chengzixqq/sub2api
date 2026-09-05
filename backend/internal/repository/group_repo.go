@@ -981,6 +981,63 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 	return counts, nil
 }
 
+// LoadAccountCountsScoped 与 loadAccountCounts 同口径，但只统计归属指定
+// 工作区的账号。
+//
+// 独立成一个导出方法、不给 loadAccountCounts 加参数：后者被 GetByID 等
+// 分组读取路径共用，那些路径也服务网关，一旦带上归属条件就会在转发时
+// 过滤掉本该可用的账号。新方法只被管理端的列表装配调用。
+func (r *groupRepository) LoadAccountCountsScoped(
+	ctx context.Context,
+	groupIDs []int64,
+	workspaceID int64,
+) (counts map[int64]service.GroupAccountCounts, err error) {
+	counts = make(map[int64]service.GroupAccountCounts, len(groupIDs))
+	if len(groupIDs) == 0 {
+		return counts, nil
+	}
+	if workspaceID <= 0 {
+		return nil, fmt.Errorf("scoped account counts require a positive workspace id, got %d", workspaceID)
+	}
+
+	rows, err := r.sql.QueryContext(
+		ctx,
+		fmt.Sprintf(`SELECT ag.group_id,
+			COUNT(*) FILTER (WHERE a.deleted_at IS NULL) AS total,
+			COUNT(*) FILTER (WHERE %s) AS active,
+			COUNT(*) FILTER (WHERE %s) AS rate_limited
+		FROM account_groups ag
+		JOIN accounts a ON a.id = ag.account_id
+		WHERE ag.group_id = ANY($1) AND a.workspace_id = $2
+		GROUP BY ag.group_id`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
+		pq.Array(groupIDs),
+		workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			counts = nil
+		}
+	}()
+
+	for rows.Next() {
+		var groupID int64
+		var c service.GroupAccountCounts
+		if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited); err != nil {
+			return nil, err
+		}
+		counts[groupID] = c
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return counts, nil
+}
+
 // GetAccountIDsByGroupIDs 获取多个分组的所有账号 ID（去重）
 func (r *groupRepository) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
 	if len(groupIDs) == 0 {

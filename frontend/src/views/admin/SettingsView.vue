@@ -4825,6 +4825,44 @@
             </div>
           </div>
 
+          <!-- Failure billing policy -->
+          <div class="card" data-testid="failure-billing-settings">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.failureBilling.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.failureBilling.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <label class="font-medium text-gray-900 dark:text-white">
+                    {{ t("admin.settings.failureBilling.upstreamUsageOnly") }}
+                  </label>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.failureBilling.upstreamUsageOnlyHint") }}
+                  </p>
+                  <p
+                    v-if="!authStore.isOwner"
+                    class="mt-1 text-xs text-gray-400 dark:text-gray-500"
+                  >
+                    {{ t("admin.settings.failureBilling.ownerOnly") }}
+                  </p>
+                </div>
+                <Toggle
+                  v-model="form.failure_billing_upstream_usage_only"
+                  :disabled="!authStore.isOwner"
+                  :aria-label="t('admin.settings.failureBilling.upstreamUsageOnly')"
+                  data-testid="failure-billing-upstream-usage-only"
+                />
+              </div>
+            </div>
+          </div>
+
           <!-- Ollama Cloud Usage Settings -->
           <div class="card" data-testid="ollama-cloud-usage-global-settings">
             <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
@@ -7131,6 +7169,41 @@
           </div>
         </div>
 
+        <div v-if="authStore.isOwner" class="card" data-testid="probe-coalescing-settings">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ localText('探针合并', 'Probe coalescing') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ localText('仅合并严格识别的非流式算术探针；用户请求仍逐笔鉴权和计费。默认影子模式不会改变响应。当前 active 仅适用于单实例或单活部署。', 'Coalesce only strict non-stream arithmetic probes. User authentication and billing remain per request. Shadow mode is the safe default. Active mode currently requires a single active instance.') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div>
+              <label class="input-label">{{ localText('运行模式', 'Mode') }}</label>
+              <select v-model="form.probe_coalescing_mode" class="input mt-1.5 max-w-md">
+                <option value="shadow">{{ localText('影子：只记录，不合并', 'Shadow: observe only') }}</option>
+                <option value="active">{{ localText('启用：合并上游探针', 'Active: coalesce upstream probes') }}</option>
+                <option value="off">{{ localText('关闭', 'Off') }}</option>
+              </select>
+            </div>
+            <div class="grid gap-4 sm:grid-cols-3">
+              <div>
+                <label class="input-label">{{ localText('窗口（秒）', 'Window (seconds)') }}</label>
+                <input v-model.number="form.probe_coalescing_window_seconds" type="number" min="1" max="3600" class="input mt-1.5" />
+              </div>
+              <div>
+                <label class="input-label">{{ localText('首领超时（秒）', 'Leader timeout (seconds)') }}</label>
+                <input v-model.number="form.probe_coalescing_leader_timeout_seconds" type="number" min="1" max="60" class="input mt-1.5" />
+              </div>
+              <div>
+                <label class="input-label">{{ localText('每窗口尝试次数', 'Attempts per window') }}</label>
+                <input v-model.number="form.probe_coalescing_attempt_budget" type="number" min="1" max="64" class="input mt-1.5" />
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
@@ -8778,6 +8851,10 @@ import {
   deriveWeChatConnectStoredMode,
   normalizeDefaultSubscriptionSettings,
   resolveWeChatConnectModeCapabilities,
+  normalizeProbeCoalescingInteger,
+  normalizeProbeCoalescingMode,
+  PROBE_COALESCING_DEFAULTS,
+  PROBE_COALESCING_LIMITS,
 } from "@/api/admin/settings";
 import type {
   AuthSourceDefaultsState,
@@ -8791,6 +8868,7 @@ import type {
   WebSearchEmulationConfig,
   WebSearchProviderConfig,
   WebSearchTestResult,
+  ProbeCoalescingMode,
 } from "@/api/admin/settings";
 import type {
   AdminGroup,
@@ -8823,7 +8901,7 @@ import {
 import TotpStepUpDialog from "@/components/auth/TotpStepUpDialog.vue";
 import { affiliatesAPI, type AffiliateAdminEntry, type SimpleUser as AffiliateSimpleUser } from "@/api/admin/affiliates";
 import { extractApiErrorMessage, extractI18nErrorMessage } from "@/utils/apiError";
-import { useAppStore } from "@/stores";
+import { useAppStore, useAuthStore } from "@/stores";
 import { useAdminSettingsStore } from "@/stores/adminSettings";
 import { normalizeVisibleMethod } from "@/components/payment/paymentFlow";
 import {
@@ -8841,6 +8919,7 @@ import {
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
+const authStore = useAuthStore();
 // 关闭 step-up 开关是敏感操作：后端返回 STEP_UP_REQUIRED 时弹 TOTP 码重试
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
@@ -9483,6 +9562,10 @@ type SettingsForm = Omit<
   /** Form always binds a concrete boolean (SystemSettings marks this optional). */
   channel_monitor_hide_throughput: boolean;
   channel_monitor_show_quota: boolean;
+  probe_coalescing_mode: ProbeCoalescingMode;
+  probe_coalescing_window_seconds: number;
+  probe_coalescing_leader_timeout_seconds: number;
+  probe_coalescing_attempt_budget: number;
   smtp_password: string;
   turnstile_secret_key: string;
   tencent_captcha_app_secret_key: string;
@@ -9797,6 +9880,11 @@ const form = reactive<SettingsForm>({
   channel_monitor_default_interval_seconds: 60,
   channel_monitor_hide_throughput: false,
   channel_monitor_show_quota: false,
+  probe_coalescing_mode: PROBE_COALESCING_DEFAULTS.mode,
+  probe_coalescing_window_seconds: PROBE_COALESCING_DEFAULTS.window_seconds,
+  probe_coalescing_leader_timeout_seconds:
+    PROBE_COALESCING_DEFAULTS.leader_timeout_seconds,
+  probe_coalescing_attempt_budget: PROBE_COALESCING_DEFAULTS.attempt_budget,
   // Available Channels feature switch
   available_channels_enabled: false,
   // Model Plaza feature switches + description
@@ -9809,6 +9897,8 @@ const form = reactive<SettingsForm>({
   affiliate_enabled: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
+  // Failure billing policy (site owner only; visible to all admins)
+  failure_billing_upstream_usage_only: false,
 });
 
 // 人机验证 UI 状态：单卡片「总开关 + 服务商单选」，落库仍是三个独立
@@ -10803,6 +10893,28 @@ async function loadSettings() {
     form.channel_monitor_show_quota = Boolean(
       settings.channel_monitor_show_quota
     );
+    form.probe_coalescing_mode = normalizeProbeCoalescingMode(
+      settings.probe_coalescing_mode,
+    );
+    form.probe_coalescing_window_seconds = normalizeProbeCoalescingInteger(
+      settings.probe_coalescing_window_seconds,
+      PROBE_COALESCING_DEFAULTS.window_seconds,
+      PROBE_COALESCING_LIMITS.window_seconds.min,
+      PROBE_COALESCING_LIMITS.window_seconds.max,
+    );
+    form.probe_coalescing_leader_timeout_seconds =
+      normalizeProbeCoalescingInteger(
+        settings.probe_coalescing_leader_timeout_seconds,
+        PROBE_COALESCING_DEFAULTS.leader_timeout_seconds,
+        PROBE_COALESCING_LIMITS.leader_timeout_seconds.min,
+        PROBE_COALESCING_LIMITS.leader_timeout_seconds.max,
+      );
+    form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
+      settings.probe_coalescing_attempt_budget,
+      PROBE_COALESCING_DEFAULTS.attempt_budget,
+      PROBE_COALESCING_LIMITS.attempt_budget.min,
+      PROBE_COALESCING_LIMITS.attempt_budget.max,
+    );
     form.login_agreement_updated_at =
       settings.login_agreement_updated_at || "2026-03-31";
     form.login_agreement_documents =
@@ -11152,6 +11264,31 @@ async function saveSettings() {
     form.claude_oauth_system_prompt_blocks =
       claudeOAuthSystemPromptBlocksJSON;
 
+    // Keep the owner-only probe controls within the same bounds as the runtime
+    // parser before including them in the all-settings payload.
+    form.probe_coalescing_mode = normalizeProbeCoalescingMode(
+      form.probe_coalescing_mode,
+    );
+    form.probe_coalescing_window_seconds = normalizeProbeCoalescingInteger(
+      form.probe_coalescing_window_seconds,
+      PROBE_COALESCING_DEFAULTS.window_seconds,
+      PROBE_COALESCING_LIMITS.window_seconds.min,
+      PROBE_COALESCING_LIMITS.window_seconds.max,
+    );
+    form.probe_coalescing_leader_timeout_seconds =
+      normalizeProbeCoalescingInteger(
+        form.probe_coalescing_leader_timeout_seconds,
+        PROBE_COALESCING_DEFAULTS.leader_timeout_seconds,
+        PROBE_COALESCING_LIMITS.leader_timeout_seconds.min,
+        PROBE_COALESCING_LIMITS.leader_timeout_seconds.max,
+      );
+    form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
+      form.probe_coalescing_attempt_budget,
+      PROBE_COALESCING_DEFAULTS.attempt_budget,
+      PROBE_COALESCING_LIMITS.attempt_budget.min,
+      PROBE_COALESCING_LIMITS.attempt_budget.max,
+    );
+
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
@@ -11468,6 +11605,18 @@ async function saveSettings() {
       affiliate_enabled: form.affiliate_enabled,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
     };
+
+    if (authStore.isOwner) {
+      Object.assign(payload, {
+        probe_coalescing_mode: form.probe_coalescing_mode,
+        probe_coalescing_window_seconds: form.probe_coalescing_window_seconds,
+        probe_coalescing_leader_timeout_seconds:
+          form.probe_coalescing_leader_timeout_seconds,
+        probe_coalescing_attempt_budget: form.probe_coalescing_attempt_budget,
+        failure_billing_upstream_usage_only:
+          form.failure_billing_upstream_usage_only,
+      });
+    }
 
     // 仅当 openai_fast_policy_settings 已成功从后端加载时才回写，
     // 否则省略整个字段，让后端保留既有规则（含默认值）。

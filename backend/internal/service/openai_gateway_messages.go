@@ -984,8 +984,15 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
+		// 同 chat_completions 路径：TTFT 与投递标记拆开门控，标记只认真实内容帧，
+		// 避免上游零投递（只回错误帧/前导帧）的请求被计费 = 多算。
+		if openAIResponsesStreamEventDeliversRealContent(
+			payload, strings.TrimSpace(gjson.Get(payload, "type").String()),
+		) {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+		}
 		if countSearch {
-			searchCount += countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen)
+			searchCount = AccumulateSearchCount(searchCount, countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen), "messages_stream")
 		}
 
 		var event apicompat.ResponsesStreamEvent

@@ -33,12 +33,20 @@ func (r *contentModerationTestProxyRepo) GetByID(ctx context.Context, id int64) 
 	return nil, errors.New("proxy not found")
 }
 
+func (r *contentModerationTestProxyRepo) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *contentModerationTestProxyRepo) Create(ctx context.Context, proxy *Proxy) error {
 	panic("not implemented")
 }
 
 func (r *contentModerationTestProxyRepo) ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
 	panic("not implemented")
+}
+
+func (r *contentModerationTestProxyRepo) ListByIDsScoped(ctx context.Context, ids []int64) ([]Proxy, error) {
+	return r.ListByIDs(ctx, ids)
 }
 
 func (r *contentModerationTestProxyRepo) Update(ctx context.Context, proxy *Proxy) error {
@@ -63,6 +71,10 @@ func (r *contentModerationTestProxyRepo) ListWithFiltersAndAccountCount(ctx cont
 
 func (r *contentModerationTestProxyRepo) ListActive(ctx context.Context) ([]Proxy, error) {
 	panic("not implemented")
+}
+
+func (r *contentModerationTestProxyRepo) ListActiveScoped(ctx context.Context) ([]Proxy, error) {
+	return r.ListActive(ctx)
 }
 
 func (r *contentModerationTestProxyRepo) ListActiveWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error) {

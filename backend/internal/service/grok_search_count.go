@@ -4,8 +4,53 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
+	"go.uber.org/zap"
 )
+
+// NormalizeSearchCount prevents malformed upstream counters from producing a
+// negative surcharge.
+func NormalizeSearchCount(count int) int {
+	if count < 0 {
+		return 0
+	}
+	return count
+}
+
+// SaturatingSearchCountAdd adds counters without allowing integer wraparound.
+func SaturatingSearchCountAdd(current, delta int) (int, bool) {
+	current = NormalizeSearchCount(current)
+	delta = NormalizeSearchCount(delta)
+	maxInt := int(^uint(0) >> 1)
+	if delta > maxInt-current {
+		return maxInt, true
+	}
+	return current + delta, false
+}
+
+// AccumulateSearchCount is the common boundary for counters collected while
+// parsing an upstream response. Upstream data is untrusted: clamp negative
+// values and saturate instead of allowing an int wraparound to become a free
+// or negative search surcharge.
+func AccumulateSearchCount(current, delta int, component string) int {
+	if current < 0 || delta < 0 {
+		logger.L().Warn("openai.search_count_negative_clamped",
+			zap.String("component", component),
+			zap.Int("current", current),
+			zap.Int("delta", delta),
+		)
+	}
+	next, saturated := SaturatingSearchCountAdd(current, delta)
+	if saturated {
+		logger.L().Warn("openai.search_count_overflow_saturated",
+			zap.String("component", component),
+			zap.Int("current", current),
+			zap.Int("delta", delta),
+		)
+	}
+	return next
+}
 
 // countGrokNativeSearchCallsFromJSONBytes counts completed native search tool
 // calls in a Responses-style JSON body (output array or nested response.output).
@@ -32,7 +77,7 @@ func countGrokNativeSearchCallsFromSSEBody(body string) int {
 	seen := make(map[string]struct{})
 	total := 0
 	forEachOpenAISSEDataPayload(body, func(data []byte) {
-		total += countGrokNativeSearchCallsInSSEDataDedup(data, seen)
+		total = AccumulateSearchCount(total, countGrokNativeSearchCallsInSSEDataDedup(data, seen), "sse_body")
 	})
 	return total
 }
@@ -206,11 +251,30 @@ func countGrokNativeSearchCallsInOutputArray(output gjson.Result) int {
 	if !output.IsArray() {
 		return 0
 	}
+	seen := make(map[string]struct{})
+	syntheticOrdinal := 0
 	count := 0
 	output.ForEach(func(_, item gjson.Result) bool {
-		if isGrokNativeSearchOutputItem(item) {
-			count++
+		if !isGrokNativeSearchOutputItem(item) {
+			return true
 		}
+		key := firstNonEmpty(
+			strings.TrimSpace(item.Get("call_id").String()),
+			strings.TrimSpace(item.Get("id").String()),
+			strings.TrimSpace(item.Get("item.call_id").String()),
+			strings.TrimSpace(item.Get("item.id").String()),
+		)
+		if key == "" {
+			// Distinct id-less calls still each count; only reuse a key when an
+			// upstream-provided identifier makes a duplicate provable.
+			syntheticOrdinal++
+			key = "json-synth:" + strconv.Itoa(syntheticOrdinal)
+		}
+		if _, exists := seen[key]; exists {
+			return true
+		}
+		seen[key] = struct{}{}
+		count++
 		return true
 	})
 	return count

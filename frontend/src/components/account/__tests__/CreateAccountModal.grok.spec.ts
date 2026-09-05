@@ -8,12 +8,20 @@ const source = readFileSync(
 )
 
 describe('CreateAccountModal Grok account types', () => {
+  it('hides the Grok creation entry from workspace vendors', () => {
+    expect(source).toContain('data-testid="grok-platform-option"')
+    expect(source).toContain('v-if="!isVendor"')
+    expect(source).toContain('const { isVendor, canSetPriority, canSetAccountRate }')
+  })
+
   it('offers API-key setup alongside OAuth with the official xAI default', () => {
     expect(source).toContain('data-testid="grok-account-type-api-key"')
     expect(source).toContain("@click=\"accountCategory = 'apikey'\"")
     expect(source).toContain("newPlatform === 'grok'")
     expect(source).toContain("? 'https://api.x.ai/v1'")
     expect(source).toContain("form.platform === 'grok'")
+    // The placeholder is selected in the platform switch; keep the assertion
+    // tied to the user-visible value rather than the implementation shape.
     expect(source).toContain(':placeholder="apiKeyValuePlaceholder"')
     expect(source).toContain("return 'xai-...'")
   })

@@ -27,6 +27,7 @@ type UpdateSettingsRequest struct {
 	EmailVerifyEnabled                  bool                         `json:"email_verify_enabled"`
 	RegistrationEmailSuffixWhitelist    []string                     `json:"registration_email_suffix_whitelist"`
 	RegistrationEmailDomainQuotaEnabled *bool                        `json:"registration_email_domain_quota_enabled"` // 非白名单域名限量注册开关（省略=保持现值）
+	FailureBillingUpstreamUsageOnly     *bool                        `json:"failure_billing_upstream_usage_only"`     // 失败计费仅允许上游明确 usage/动作（省略=保持现值）
 	PromoCodeEnabled                    bool                         `json:"promo_code_enabled"`
 	PasswordResetEnabled                bool                         `json:"password_reset_enabled"`
 	FrontendURL                         string                       `json:"frontend_url"`
@@ -334,6 +335,11 @@ type UpdateSettingsRequest struct {
 	ChannelMonitorDefaultIntervalSeconds *int    `json:"channel_monitor_default_interval_seconds"`
 	ChannelMonitorHideThroughput         *bool   `json:"channel_monitor_hide_throughput"`
 	ChannelMonitorShowQuota              *bool   `json:"channel_monitor_show_quota"`
+	// Probe coalescing is owner-controlled and intentionally omitted from public settings.
+	ProbeCoalescingMode                 string `json:"probe_coalescing_mode"`
+	ProbeCoalescingWindowSeconds        int    `json:"probe_coalescing_window_seconds"`
+	ProbeCoalescingLeaderTimeoutSeconds int    `json:"probe_coalescing_leader_timeout_seconds"`
+	ProbeCoalescingAttemptBudget        int    `json:"probe_coalescing_attempt_budget"`
 
 	// Grok model mapping policy
 	GrokDefaultTextModel           *string `json:"grok_default_text_model"`
@@ -489,6 +495,21 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
+	}
+	if !settingActorIsOwner(c) {
+		ownerOnlySettings := map[string]string{
+			"probe_coalescing_mode":                   "Probe coalescing settings require site-owner access",
+			"probe_coalescing_window_seconds":         "Probe coalescing settings require site-owner access",
+			"probe_coalescing_leader_timeout_seconds": "Probe coalescing settings require site-owner access",
+			"probe_coalescing_attempt_budget":         "Probe coalescing settings require site-owner access",
+			"failure_billing_upstream_usage_only":     "Failure billing policy requires site-owner access",
+		}
+		for key, message := range ownerOnlySettings {
+			if _, sent := sentFields[key]; sent {
+				response.Forbidden(c, message)
+				return
+			}
+		}
 	}
 	auditReq := settingsAuditRequest(req)
 	omitted := omittedSettingKeys(sentFields)
@@ -1654,6 +1675,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.AllowUserViewErrorRequests
 		}(),
+		FailureBillingUpstreamUsageOnly: func() bool {
+			if req.FailureBillingUpstreamUsageOnly != nil {
+				return *req.FailureBillingUpstreamUsageOnly
+			}
+			return previousSettings.FailureBillingUpstreamUsageOnly
+		}(),
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -1905,6 +1932,30 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.ChannelMonitorShowQuota
 			}
 			return previousSettings.ChannelMonitorShowQuota
+		}(),
+		ProbeCoalescingMode: func() string {
+			if _, sent := sentFields["probe_coalescing_mode"]; sent {
+				return strings.TrimSpace(req.ProbeCoalescingMode)
+			}
+			return previousSettings.ProbeCoalescingMode
+		}(),
+		ProbeCoalescingWindowSeconds: func() int {
+			if _, sent := sentFields["probe_coalescing_window_seconds"]; sent {
+				return req.ProbeCoalescingWindowSeconds
+			}
+			return previousSettings.ProbeCoalescingWindowSeconds
+		}(),
+		ProbeCoalescingLeaderTimeoutSeconds: func() int {
+			if _, sent := sentFields["probe_coalescing_leader_timeout_seconds"]; sent {
+				return req.ProbeCoalescingLeaderTimeoutSeconds
+			}
+			return previousSettings.ProbeCoalescingLeaderTimeoutSeconds
+		}(),
+		ProbeCoalescingAttemptBudget: func() int {
+			if _, sent := sentFields["probe_coalescing_attempt_budget"]; sent {
+				return req.ProbeCoalescingAttemptBudget
+			}
+			return previousSettings.ProbeCoalescingAttemptBudget
 		}(),
 		GrokDefaultTextModel: func() string {
 			if req.GrokDefaultTextModel != nil {
@@ -2366,6 +2417,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ChannelMonitorDefaultIntervalSeconds: updatedSettings.ChannelMonitorDefaultIntervalSeconds,
 		ChannelMonitorHideThroughput:         updatedSettings.ChannelMonitorHideThroughput,
 		ChannelMonitorShowQuota:              updatedSettings.ChannelMonitorShowQuota,
+		ProbeCoalescingMode:                  updatedSettings.ProbeCoalescingMode,
+		ProbeCoalescingWindowSeconds:         updatedSettings.ProbeCoalescingWindowSeconds,
+		ProbeCoalescingLeaderTimeoutSeconds:  updatedSettings.ProbeCoalescingLeaderTimeoutSeconds,
+		ProbeCoalescingAttemptBudget:         updatedSettings.ProbeCoalescingAttemptBudget,
 
 		GrokDefaultTextModel:           updatedSettings.GrokDefaultTextModel,
 		GrokCrossClientModelMapEnabled: updatedSettings.GrokCrossClientModelMapEnabled,
@@ -2380,11 +2435,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 		AffiliateEnabled: updatedSettings.AffiliateEnabled,
 
-		RiskControlEnabled:          updatedSettings.RiskControlEnabled,
-		CyberSessionBlockEnabled:    updatedSettings.CyberSessionBlockEnabled,
-		CyberSessionBlockTTLSeconds: updatedSettings.CyberSessionBlockTTLSeconds,
-		AccountSchedulingThresholds: updatedSettings.AccountSchedulingThresholds,
-		AllowUserViewErrorRequests:  updatedSettings.AllowUserViewErrorRequests,
+		RiskControlEnabled:              updatedSettings.RiskControlEnabled,
+		CyberSessionBlockEnabled:        updatedSettings.CyberSessionBlockEnabled,
+		CyberSessionBlockTTLSeconds:     updatedSettings.CyberSessionBlockTTLSeconds,
+		AccountSchedulingThresholds:     updatedSettings.AccountSchedulingThresholds,
+		AllowUserViewErrorRequests:      updatedSettings.AllowUserViewErrorRequests,
+		FailureBillingUpstreamUsageOnly: updatedSettings.FailureBillingUpstreamUsageOnly,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)

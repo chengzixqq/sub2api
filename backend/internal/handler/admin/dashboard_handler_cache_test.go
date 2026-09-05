@@ -30,11 +30,36 @@ func (r *dashboardUsageRepoCacheProbe) GetUsageTrendWithFilters(
 	stream *bool,
 	billingType *int8,
 ) ([]usagestats.TrendDataPoint, error) {
+	return r.trendResult(ctx, nil)
+}
+
+func (r *dashboardUsageRepoCacheProbe) GetUsageTrendWithUsageFilters(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	granularity string,
+	filters usagestats.UsageLogFilters,
+) ([]usagestats.TrendDataPoint, error) {
+	return r.trendResult(ctx, filters.UpstreamModelMismatch)
+}
+
+func (r *dashboardUsageRepoCacheProbe) trendResult(ctx context.Context, upstreamModelMismatch *bool) ([]usagestats.TrendDataPoint, error) {
 	r.trendCalls.Add(1)
+	requests := int64(1)
+	if accountIDs, restricted := service.UsageAccountScopeFrom(ctx); restricted && len(accountIDs) > 0 {
+		requests = accountIDs[0]
+	}
+	totalTokens := int64(2)
+	if upstreamModelMismatch != nil {
+		if *upstreamModelMismatch {
+			totalTokens = 20
+		} else {
+			totalTokens = 10
+		}
+	}
 	return []usagestats.TrendDataPoint{{
 		Date:        "2026-03-11",
-		Requests:    1,
-		TotalTokens: 2,
+		Requests:    requests,
+		TotalTokens: totalTokens,
 		Cost:        3,
 		ActualCost:  4,
 	}}, nil
@@ -115,4 +140,51 @@ func TestDashboardHandler_GetUserUsageTrend_UsesCache(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec2.Code)
 	require.Equal(t, "hit", rec2.Header().Get("X-Snapshot-Cache"))
 	require.Equal(t, int32(1), repo.usersTrendCalls.Load())
+}
+
+func TestDashboardUsageTrendCache_RestrictedScopesBypassSharedEntries(t *testing.T) {
+	t.Cleanup(resetDashboardReadCachesForTest)
+	resetDashboardReadCachesForTest()
+
+	repo := &dashboardUsageRepoCacheProbe{}
+	dashboardSvc := service.NewDashboardService(repo, nil, nil, nil)
+	handler := NewDashboardHandler(dashboardSvc, nil)
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	admin, hit, err := handler.getUsageTrendCached(context.Background(), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Equal(t, int64(1), admin[0].Requests)
+
+	adminCached, hit, err := handler.getUsageTrendCached(context.Background(), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, int64(1), adminCached[0].Requests)
+
+	mismatch := true
+	vendorA, hit, err := handler.getUsageTrendCached(service.WithUsageAccountScope(context.Background(), []int64{101}), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, &mismatch)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Equal(t, int64(101), vendorA[0].Requests)
+	require.Equal(t, int64(20), vendorA[0].TotalTokens)
+
+	mismatch = false
+	vendorAWithoutMismatch, hit, err := handler.getUsageTrendCached(service.WithUsageAccountScope(context.Background(), []int64{101}), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, &mismatch)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Equal(t, int64(101), vendorAWithoutMismatch[0].Requests)
+	require.Equal(t, int64(10), vendorAWithoutMismatch[0].TotalTokens)
+
+	vendorB, hit, err := handler.getUsageTrendCached(service.WithUsageAccountScope(context.Background(), []int64{202}), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.Equal(t, int64(202), vendorB[0].Requests)
+	require.Equal(t, int32(4), repo.trendCalls.Load())
+
+	adminAgain, hit, err := handler.getUsageTrendCached(context.Background(), start, end, "hour", 0, 0, 0, 0, "", nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Equal(t, int64(1), adminAgain[0].Requests)
+	require.Equal(t, int32(4), repo.trendCalls.Load())
 }

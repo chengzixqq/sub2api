@@ -42,6 +42,7 @@ func ProvideRouter(
 	settingService *service.SettingService,
 	compositeResolver *service.CompositeRouteResolver,
 	redisClient *redis.Client,
+	workspaceService *service.WorkspaceService,
 ) *gin.Engine {
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -87,7 +88,7 @@ func ProvideRouter(
 		service.SetWebSearchManager(websearch.NewManager(configs, redisClient))
 	})
 
-	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient)
+	return SetupRouter(r, handlers, jwtAuth, optionalJWTAuth, adminAuth, apiKeyAuth, auditLog, stepUpAuth, apiKeyService, subscriptionService, opsService, settingService, compositeResolver, cfg, redisClient, workspaceService)
 }
 
 func configureTrustedProxies(r *gin.Engine, cfg config.ServerConfig) {
@@ -112,6 +113,9 @@ func configureTrustedProxies(r *gin.Engine, cfg config.ServerConfig) {
 // ProvideHTTPServer 提供 HTTP 服务器
 func ProvideHTTPServer(cfg *config.Config, router *gin.Engine) *http.Server {
 	httpHandler := http.Handler(router)
+	// Keep the Go toolchain at 1.26.7 or newer while h2c and ReadHeaderTimeout
+	// are enabled. Go 1.26.6 could carry the header deadline across the h2c
+	// handoff and close otherwise active HTTP/2 streams.
 	server := &http.Server{
 		Addr:           cfg.Server.Address(),
 		Handler:        httpHandler,

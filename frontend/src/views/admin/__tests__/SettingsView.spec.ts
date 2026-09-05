@@ -80,6 +80,7 @@ const {
 }));
 
 const localeRef = vi.hoisted(() => ({ value: "zh-CN" }));
+const authStoreMock = vi.hoisted(() => ({ isOwner: true }));
 
 vi.mock("@/api", () => ({
   adminAPI: {
@@ -120,6 +121,7 @@ vi.mock("@/api", () => ({
 }));
 
 vi.mock("@/stores", () => ({
+  useAuthStore: () => authStoreMock,
   useAppStore: () => ({
     showError,
     showSuccess,
@@ -534,6 +536,15 @@ const baseSettingsResponse = {
   subscription_expiry_notify_enabled: true,
   account_quota_notify_enabled: false,
   account_quota_notify_emails: [],
+  channel_monitor_enabled: true,
+  channel_monitor_mode: "v1",
+  channel_monitor_default_interval_seconds: 60,
+  channel_monitor_hide_throughput: false,
+  channel_monitor_show_quota: false,
+  probe_coalescing_mode: "shadow",
+  probe_coalescing_window_seconds: 60,
+  probe_coalescing_leader_timeout_seconds: 8,
+  probe_coalescing_attempt_budget: 8,
   // 平台限额嵌套字段（新后端契约）
   default_platform_quotas: {
     anthropic:   { daily: null, weekly: null, monthly: null },
@@ -733,6 +744,29 @@ describe("admin SettingsView payment visible method controls", () => {
 
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ compact_home_enabled: true }),
+    );
+  });
+
+  it("submits probe coalescing mode and numeric controls", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get("#settings-tab-features").trigger("click");
+    const card = wrapper.get('[data-testid="probe-coalescing-settings"]');
+    await card.get("select").setValue("active");
+    await card.findAll('input[type="number"]')[0].setValue(10);
+    await card.findAll('input[type="number"]')[1].setValue(5);
+    await card.findAll('input[type="number"]')[2].setValue(12);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        probe_coalescing_mode: "active",
+        probe_coalescing_window_seconds: 10,
+        probe_coalescing_leader_timeout_seconds: 5,
+        probe_coalescing_attempt_budget: 12,
+      }),
     );
   });
 

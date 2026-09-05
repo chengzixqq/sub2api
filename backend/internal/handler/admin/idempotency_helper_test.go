@@ -21,6 +21,39 @@ type storeUnavailableRepoStub struct{}
 func (storeUnavailableRepoStub) CreateProcessing(context.Context, *service.IdempotencyRecord) (bool, error) {
 	return false, errors.New("store unavailable")
 }
+
+type markSucceededUnavailableRepoStub struct {
+	*memoryIdempotencyRepoStub
+}
+
+func (r *markSucceededUnavailableRepoStub) MarkSucceeded(context.Context, int64, int, string, time.Time) error {
+	return errors.New("mark succeeded unavailable")
+}
+
+func TestExecuteAdminIdempotentJSONReturnsCommittedResultWhenSuccessMarkFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &markSucceededUnavailableRepoStub{memoryIdempotencyRepoStub: newMemoryIdempotencyRepoStub()}
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, service.DefaultIdempotencyConfig()))
+	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(nil) })
+
+	var executed atomic.Int32
+	router := gin.New()
+	router.POST("/idempotent", func(c *gin.Context) {
+		executeAdminIdempotentJSON(c, "admin.users.balance.update", map[string]any{"balance": 5}, time.Minute, func(context.Context) (any, error) {
+			executed.Add(1)
+			return gin.H{"balance": 15}, nil
+		})
+	})
+	req := httptest.NewRequest(http.MethodPost, "/idempotent", bytes.NewBufferString(`{"balance":5}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "committed-result")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "result-committed", recorder.Header().Get("X-Idempotency-Degraded"))
+	require.Equal(t, int32(1), executed.Load())
+}
 func (storeUnavailableRepoStub) GetByScopeAndKeyHash(context.Context, string, string) (*service.IdempotencyRecord, error) {
 	return nil, errors.New("store unavailable")
 }
@@ -282,4 +315,43 @@ func TestExecuteAdminIdempotentJSONConcurrentRetryOnlyOneSideEffect(t *testing.T
 	require.Equal(t, http.StatusOK, status3)
 	require.Equal(t, "true", headers3.Get("X-Idempotency-Replayed"))
 	require.Equal(t, int32(1), executed.Load())
+}
+
+func TestExecuteAdminOptionalIdempotentJSONReplaysWhenKeyIsProvided(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := newMemoryIdempotencyRepoStub()
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, service.DefaultIdempotencyConfig()))
+	t.Cleanup(func() {
+		service.SetDefaultIdempotencyCoordinator(nil)
+	})
+
+	var executed atomic.Int32
+	router := gin.New()
+	router.POST("/optional", func(c *gin.Context) {
+		executeAdminOptionalIdempotentJSON(c, "admin.users.batch_limits", map[string]any{"concurrency": 8}, time.Minute, func(context.Context) (any, error) {
+			executed.Add(1)
+			return gin.H{"affected": 2}, nil
+		})
+	})
+
+	call := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/optional", bytes.NewBufferString(`{"concurrency":8}`))
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set("Idempotency-Key", key)
+		}
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	require.Equal(t, http.StatusOK, call("").Code)
+	require.Equal(t, http.StatusOK, call("").Code)
+	require.Equal(t, int32(2), executed.Load(), "legacy callers without a key remain allowed")
+
+	require.Equal(t, http.StatusOK, call("batch-limits-retry").Code)
+	replay := call("batch-limits-retry")
+	require.Equal(t, http.StatusOK, replay.Code)
+	require.Equal(t, "true", replay.Header().Get("X-Idempotency-Replayed"))
+	require.Equal(t, int32(3), executed.Load(), "same key must not execute the batch adjustment twice")
 }

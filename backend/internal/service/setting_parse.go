@@ -191,6 +191,10 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyChannelMonitorDefaultIntervalSeconds: "60",
 		SettingKeyChannelMonitorHideThroughput:         "true",
 		SettingKeyChannelMonitorShowQuota:              "false",
+		SettingKeyProbeCoalescingMode:                  "shadow",
+		SettingKeyProbeCoalescingWindowSeconds:         "60",
+		SettingKeyProbeCoalescingLeaderTimeoutSeconds:  "8",
+		SettingKeyProbeCoalescingAttemptBudget:         "8",
 
 		// Grok: safe defaults — no cross-vendor model rewrite unless operators enable it.
 		SettingKeyGrokDefaultTextModel:           "grok-4.6",
@@ -260,7 +264,8 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyOpenAIAdvancedSchedulerWeightPreviousResponse:      "",
 		SettingKeyOpenAIAdvancedSchedulerWeightSessionSticky:         "",
 
-		SettingKeyAllowUserViewErrorRequests: "false",
+		SettingKeyAllowUserViewErrorRequests:      "false",
+		SettingKeyFailureBillingUpstreamUsageOnly: "false",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -803,15 +808,19 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// 配额展示默认关闭且 fail-closed：仅字面 "true" 视为开启
 	// （与 setting_public.go 公开读取路径保持一致）。
 	result.ChannelMonitorShowQuota = settings[SettingKeyChannelMonitorShowQuota] == "true"
+	result.ProbeCoalescingMode = normalizeProbeCoalescingMode(settings[SettingKeyProbeCoalescingMode])
+	result.ProbeCoalescingWindowSeconds = parseProbePositive(settings[SettingKeyProbeCoalescingWindowSeconds], 60, 3600)
+	result.ProbeCoalescingLeaderTimeoutSeconds = parseProbePositive(settings[SettingKeyProbeCoalescingLeaderTimeoutSeconds], 8, 60)
+	result.ProbeCoalescingAttemptBudget = parseProbePositive(settings[SettingKeyProbeCoalescingAttemptBudget], 8, 64)
 
 	// Grok default mapping policy
 	result.GrokDefaultTextModel = strings.TrimSpace(settings[SettingKeyGrokDefaultTextModel])
 	if result.GrokDefaultTextModel == "" {
 		result.GrokDefaultTextModel = "grok-4.6"
 	}
-	// Default true (missing/empty → enabled) so Claude/Codex→Grok mapping keeps working.
-	// Operators can set false to disable silent cross-client rewrite.
-	result.GrokCrossClientModelMapEnabled = !isFalseSettingValue(settings[SettingKeyGrokCrossClientModelMapEnabled])
+	// Missing remains disabled. Explicit persisted true/false values are kept so
+	// upgrades never silently enable cross-client rewrites.
+	result.GrokCrossClientModelMapEnabled = strings.EqualFold(strings.TrimSpace(settings[SettingKeyGrokCrossClientModelMapEnabled]), "true")
 	result.GrokDefaultBaseURLMode = normalizeGrokDefaultBaseURLMode(settings[SettingKeyGrokDefaultBaseURLMode])
 
 	// Available channels feature (default: disabled; strict true)
@@ -969,7 +978,8 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		}
 	}
 
-	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true" // default false
+	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true"           // default false
+	result.FailureBillingUpstreamUsageOnly = settings[SettingKeyFailureBillingUpstreamUsageOnly] == "true" // default false
 
 	// Publish Grok default model_mapping options for accounts with empty mapping.
 	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{

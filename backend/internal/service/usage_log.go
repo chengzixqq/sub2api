@@ -128,6 +128,10 @@ type UsageLog struct {
 	BillingTier *string
 	// BillingMode 计费模式：token/image
 	BillingMode *string
+	// BillingProvenance 标记该行的计费来源与成败：
+	// nil = 成功且用量来自上游（历史行同此）；"estimated" = 成功但上游未给 usage；
+	// "failed_upstream" = 失败但拿到上游真实 usage；"failed_estimated" = 失败且用量为估算。
+	BillingProvenance *string
 	// ServiceTier records the billable request tier, e.g. OpenAI "priority" / "flex"
 	// or Anthropic "fast".
 	ServiceTier *string
@@ -172,6 +176,16 @@ type UsageLog struct {
 	AccountRateMultiplier *float64
 	// AccountStatsCost 账号统计定价预计算费用（nil = 使用默认公式 total_cost × account_rate_multiplier）
 	AccountStatsCost *float64
+
+	// ProbeCoalesced marks a request whose upstream probe was coalesced. The
+	// request is still billed to the user; this is attribution metadata only.
+	ProbeCoalesced bool
+	// ProbeLeaderRequestID links a coalesced follower to the request that
+	// performed the real upstream probe. Nil means no follower attribution.
+	ProbeLeaderRequestID *string
+	// ProviderCostRecorded is true only when this request caused an upstream
+	// provider/account cost. Followers keep user billing but set this false.
+	ProviderCostRecorded bool
 
 	BillingType        int8
 	RequestType        RequestType

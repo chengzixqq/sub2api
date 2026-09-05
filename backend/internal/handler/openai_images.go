@@ -157,6 +157,30 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	defer func() { stopJSONKeepalive() }()
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	//
+	// estimatedPromptTokens 刻意接 openAIBinaryBodyEndpointPromptTokens（恒 0）而不是
+	// EstimateFailurePromptTokens：本端点的 body 由 ReadRequestBodyWithPrealloc 原样读入，
+	// multipart/form-data（images/edits 上传的 PNG 二进制）会整块落在这里，一旦进估算器
+	// 就按每 rune 1 token 计价（1 MiB 二进制 ⇒ 1,048,576 token），而图片按张计费
+	// （BillingModeImage）根本不按 token 计价——那是多算方向且无任何兜底。详见
+	// openAIBinaryBodyEndpointPromptTokens 的文档。
+	// 代价（少算方向，明确接受）：本端点失败请求只在上游给了真实 usage 时才有非零用量。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput:    billingAttemptOutputReset(c),
+		upstreamUsageOnly:     failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		estimatedPromptTokens: openAIBinaryBodyEndpointPromptTokens,
+		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			APIKey:              apiKey,
+			Subscription:        subscription,
+			ReqModel:            requestModel,
+			ChannelUsageFields:  clientRequestedUsageFields(c, channelMapping, requestModel, ""),
+			RequestPayloadBytes: imagesFailurePayloadHashSeed(body, parsed),
+			Component:           "handler.openai_gateway.images",
+		}),
+	})
+	defer guard.Flush()
+
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
@@ -236,6 +260,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		}
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		guard.ObserveAttempt(account)
 		if !parsed.Stream && !jsonKeepaliveStarted {
 			stopJSONKeepalive = service.StartOpenAIImagesJSONKeepalive(c, h.openAIImagesJSONKeepaliveInterval())
 			jsonKeepaliveStarted = true
@@ -261,6 +286,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveOpenAIForwardResult(result)
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.images.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -392,6 +419,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			upstreamModel = result.UpstreamModel
 		}
 		sessionID := service.ExtractClientSessionID(c)
+		guard.MarkSettled()
 		h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,
@@ -433,6 +461,16 @@ func (h *OpenAIGatewayHandler) openAIImagesJSONKeepaliveInterval() time.Duration
 		return 0
 	}
 	return time.Duration(h.cfg.Gateway.ImageNonstreamKeepaliveInterval) * time.Second
+}
+
+// imagesFailurePayloadHashSeed 返回失败结算行 payload hash 的取值来源，口径与成功路径
+// （见上面 requestPayloadHash 的赋值）保持一致：multipart 请求不拿整个二进制体做哈希，
+// 而是用 parsed.StickySessionSeed()，避免把上传的图片字节带进哈希计算。
+func imagesFailurePayloadHashSeed(body []byte, parsed *service.OpenAIImagesRequest) []byte {
+	if parsed != nil && parsed.Multipart {
+		return []byte(parsed.StickySessionSeed())
+	}
+	return body
 }
 
 func isMultipartImagesContentType(contentType string) bool {

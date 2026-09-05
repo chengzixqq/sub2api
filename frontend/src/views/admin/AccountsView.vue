@@ -456,7 +456,14 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :position="menu.pos" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" @settlement="handleSettlement" />
+
+    <SettlementRateDialog
+      :show="showSettlement"
+      :account="settlementAcc"
+      @close="closeSettlement"
+      @updated="handleAccountUpdated"
+    />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -512,6 +519,7 @@ import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
+import SettlementRateDialog from '@/components/account/SettlementRateDialog.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
@@ -591,6 +599,8 @@ const showBulkEdit = ref(false)
 const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
+const showSettlement = ref(false)
+const settlementAcc = ref<Account | null>(null)
 const showCreateShadowDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
@@ -1370,7 +1380,8 @@ const isAnyModalOpen = computed(() => {
     showStats.value ||
     showSchedulePanel.value ||
     showErrorPassthrough.value ||
-    showTLSFingerprintProfiles.value
+    showTLSFingerprintProfiles.value ||
+    showSettlement.value
   )
 })
 
@@ -1387,6 +1398,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
   return (
     current.updated_at !== next.updated_at ||
     current.current_concurrency !== next.current_concurrency ||
+    current.probe_concurrency !== next.probe_concurrency ||
     current.current_window_cost !== next.current_window_cost ||
     current.active_sessions !== next.active_sessions ||
     current.schedulable !== next.schedulable ||
@@ -1823,6 +1835,22 @@ const cols = computed(() =>
 )
 
 const handleEdit = (a: Account) => { edAcc.value = a; showEdit.value = true }
+
+/**
+ * 打开结算倍率对话框。
+ *
+ * 传账号：结算倍率就是账号自己的 rate_multiplier，计费按账号取值。
+ * 可调区间挂在工作区上，对话框自己去拉，这里不用管。
+ */
+const handleSettlement = (a: Account) => {
+  settlementAcc.value = a
+  showSettlement.value = true
+}
+
+const closeSettlement = () => {
+  showSettlement.value = false
+  settlementAcc.value = null
+}
 const openMenu = (a: Account, e: MouseEvent) => {
   menu.acc = a
 
@@ -2203,6 +2231,7 @@ const accountMatchesCurrentFilters = (account: Account) => {
 const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Account => ({
   ...updatedAccount,
   current_concurrency: updatedAccount.current_concurrency ?? oldAccount.current_concurrency,
+  probe_concurrency: updatedAccount.probe_concurrency ?? oldAccount.probe_concurrency,
   current_window_cost: updatedAccount.current_window_cost ?? oldAccount.current_window_cost,
   active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions
 })

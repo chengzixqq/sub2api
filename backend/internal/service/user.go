@@ -72,6 +72,20 @@ func (u *User) IsAdmin() bool {
 	return u.Role == RoleAdmin
 }
 
+// IsVendor 判断是否为工作区代运营角色。
+func (u *User) IsVendor() bool {
+	return u.Role == RoleVendor
+}
+
+// CanAccessAdminPanel 判断用户能否进入管理端路由。
+//
+// 与 IsAdmin 分开：IsAdmin 还用于内容审核豁免、后台模式绕过等超级权限判断，
+// vendor 不应获得这些。vendor 仅获得管理端入口，具体端点准入由
+// VendorScope 中间件的白名单收口（默认拒绝）。
+func (u *User) CanAccessAdminPanel() bool {
+	return u.IsAdmin() || u.IsVendor()
+}
+
 func (u *User) IsActive() bool {
 	return u.Status == StatusActive
 }

@@ -608,6 +608,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	responseID := ""
 	usage := OpenAIUsage{}
+	searchCount := 0
+	searchSeen := make(map[string]struct{})
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
 	reqStream := openAIWSPayloadBoolFromRaw(body, "stream", true)
@@ -654,6 +656,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			RequestedReasoningEffort:      CanonicalRequestedReasoningEffort(body, originalModel, mappedModel),
 			Stream:                        reqStream,
 			OpenAIWSMode:                  true,
+			SearchCount:                   searchCount,
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
 			Duration:                      time.Since(turnStart),
@@ -747,6 +750,18 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
 		responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
+		if account.Platform == PlatformGrok {
+			delta := countGrokNativeSearchCallsInSSEDataDedup(upstreamMessage, searchSeen)
+			var saturated bool
+			searchCount, saturated = SaturatingSearchCountAdd(searchCount, delta)
+			if saturated {
+				logOpenAIWSModeInfo(
+					"ingress_ws_http_bridge_search_count_saturated account_id=%d turn=%d",
+					account.ID,
+					turn,
+				)
+			}
+		}
 		if responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
 		}
@@ -759,6 +774,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		}
 		if isOpenAIWSTokenEvent(eventType) {
 			tokenEventCount++
+			c.Set(GatewayUpstreamDeliveredKey, true)
 			if firstTokenMs == nil {
 				ms := int(time.Since(turnStart).Milliseconds())
 				firstTokenMs = &ms
@@ -817,10 +833,16 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 			}
 			if !wroteDownstream && shouldFailover && (turn == 1 || statusCode == http.StatusTooManyRequests) {
+				var failoverErr error
 				if account.Platform == PlatformGrok {
-					return nil, newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false)
+					failoverErr = newOpenAIUpstreamFailoverError(statusCode, resp.Header, upstreamMessage, errMessage, false)
+				} else {
+					failoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, true, resp.Header.Get("x-request-id"), upstreamMessage, errMessage, mappedModel, resp.Header)
 				}
-				return nil, s.newOpenAIStreamFailoverErrorWithModel(c, account, true, resp.Header.Get("x-request-id"), upstreamMessage, errMessage, mappedModel, resp.Header)
+				if searchCount > 0 {
+					return resultWithUsage(), failoverErr
+				}
+				return nil, failoverErr
 			}
 			if account.Platform != PlatformGrok && !failureAccountSideEffectsApplied {
 				if eventType == "response.failed" || (!officialOpenAIResponses && shouldFailover && !requestScopedCapacity) {
@@ -948,7 +970,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	if err := scanner.Err(); err != nil {
 		streamErr := fmt.Errorf("read upstream http bridge stream: %w", err)
 		if turn == 1 && !wroteDownstream {
-			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, streamErr, true)
+			failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, streamErr, true)
+			if searchCount > 0 {
+				return resultWithUsage(), failoverErr
+			}
+			return nil, failoverErr
 		}
 		return resultWithUsage(), streamErr
 	}
@@ -957,7 +983,11 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		terminalErr = errors.New("upstream http bridge stream sent [DONE] before terminal event")
 	}
 	if turn == 1 && !wroteDownstream {
-		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, terminalErr, true)
+		failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, terminalErr, true)
+		if searchCount > 0 {
+			return resultWithUsage(), failoverErr
+		}
+		return nil, failoverErr
 	}
 	return resultWithUsage(), terminalErr
 }

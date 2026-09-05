@@ -184,7 +184,7 @@ func TestGatewayService_Forward_StreamErrorWithoutUsageReturnsNilResult(t *testi
 	require.Nil(t, result, "无已观测 usage 时不应返回部分结果")
 }
 
-func TestGatewayService_Forward_FailoverErrorKeepsNilResult(t *testing.T) {
+func TestGatewayService_Forward_FailoverErrorWithoutUsageKeepsNilResult(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -196,7 +196,7 @@ func TestGatewayService_Forward_FailoverErrorKeepsNilResult(t *testing.T) {
 	require.NoError(t, err)
 
 	// 未向客户端写出任何字节前的读错误会包成 UpstreamFailoverError 走换号重试。
-	// 该路径必须保持 result=nil：failover 成功后按成功请求计费，双份结果会重复计费。
+	// 没有真实 usage 时必须保持 result=nil，避免产生零 usage 的幽灵账单记录。
 	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -211,7 +211,42 @@ func TestGatewayService_Forward_FailoverErrorKeepsNilResult(t *testing.T) {
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
-	require.Nil(t, result, "failover 错误必须保持 result=nil，防止重试成功后双重计费")
+	require.Nil(t, result, "没有真实 usage 的 failover 错误必须保持 result=nil")
+}
+
+func TestGatewayService_Forward_SSEFailoverErrorPreservesPartialUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+	require.NoError(t, err)
+
+	upstreamSSE := strings.Join([]string{
+		`data: {"type":"message_start","message":{"usage":{"input_tokens":13,"cache_creation_input_tokens":2}}}`,
+		"",
+		`event: error`,
+		`data: {"type":"error","error":{"type":"overloaded_error","message":"overloaded after partial usage"}}`,
+		"",
+		"",
+	}, "\n")
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+	}}
+	svc := newForwardPartialUsageServiceForTest(upstream)
+
+	result, err := svc.Forward(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), parsed)
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "expected failover error, got %T: %v", err, err)
+	require.NotNil(t, result, "最后一次 failover 已有真实 usage 时必须交给 settlement guard")
+	require.Equal(t, 13, result.Usage.InputTokens)
+	require.Equal(t, 2, result.Usage.CacheCreationInputTokens)
 }
 
 func TestGatewayService_Forward_PreOutputSSEOverloadedErrorUsesSemantic529(t *testing.T) {
@@ -292,7 +327,8 @@ func TestGatewayService_Forward_PostOutputSSEOverloadedErrorKeepsExistingStatus(
 
 	result, err := svc.Forward(context.Background(), c, newAnthropicOAuthAccountForPartialUsageTest(), parsed)
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.Usage.InputTokens)
 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)

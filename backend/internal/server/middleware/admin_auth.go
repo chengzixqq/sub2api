@@ -197,8 +197,9 @@ func validateJWTForAdmin(
 		return false
 	}
 
-	// 检查管理员权限
-	if !user.IsAdmin() {
+	// 检查管理端准入权限（admin 或 vendor）
+	// vendor 仅获得入口，具体端点准入由 VendorScope 白名单收口（默认拒绝）
+	if !user.CanAccessAdminPanel() {
 		AbortWithError(c, 403, "FORBIDDEN", "Admin access required")
 		return false
 	}

@@ -148,6 +148,8 @@
             Antigravity
           </button>
           <button
+            v-if="!isVendor"
+            data-testid="grok-platform-option"
             type="button"
             @click="form.platform = 'grok'"
             :class="[
@@ -2935,7 +2937,9 @@
             @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
         </div>
-        <div>
+        <!-- 优先级对 vendor 隐藏：绑定分组时后端强制取授权的 base_priority，
+             新建时填的值会被静默忽略 -->
+        <div v-if="canSetPriority">
           <label class="input-label">{{ t('admin.accounts.priority') }}</label>
           <input
             v-model.number="form.priority"
@@ -2946,7 +2950,8 @@
           />
           <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
-        <div>
+        <!-- 账号级倍率同理：vendor 的结算走工作区授权倍率 -->
+        <div v-if="canSetAccountRate">
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
@@ -3773,6 +3778,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
+import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 import {
   useAccountOAuth,
   type AddMethod,
@@ -3861,6 +3867,9 @@ interface OAuthFlowExposed {
 const { t } = useI18n()
 const authStore = useAuthStore()
 const browserTimeZone = getBrowserTimeZone()
+
+// 站长恒真；vendor 侧这两个字段会被后端覆盖，藏掉免得填了不生效。
+const { isVendor, canSetPriority, canSetAccountRate } = useWorkspacePerms()
 
 const oauthStepTitle = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')

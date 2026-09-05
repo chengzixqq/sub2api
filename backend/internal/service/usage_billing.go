@@ -163,7 +163,12 @@ type AccountQuotaState struct {
 }
 
 type UsageBillingApplyResult struct {
-	Applied              bool
+	Applied bool
+	// UsageLogPersisted is true when the billing repository has verified or
+	// inserted the corresponding usage row in the same transaction. It is
+	// intentionally separate from Applied because an idempotent retry may
+	// find an already-applied billing key.
+	UsageLogPersisted    bool
 	APIKeyQuotaExhausted bool
 	NewBalance           *float64           // post-deduction balance (nil = no balance deduction)
 	BalanceOverdrafted   bool               // true when the sufficient-balance guard missed and debt was still recorded
@@ -223,4 +228,22 @@ type UsageBillingRepository interface {
 	ReserveBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error)
 	CaptureBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error)
 	ReleaseBatchImageBalance(ctx context.Context, cmd *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error)
+}
+
+// UsageBillingWithUsageLogRepository is an optional production extension for
+// strict synthetic probe billing. It lets the repository insert the usage row
+// in the same database transaction as the balance/quota effects. Existing
+// fakes and legacy repositories can continue implementing UsageBillingRepository;
+// callers only use this extension when a durable probe row is required.
+type UsageBillingWithUsageLogRepository interface {
+	UsageBillingRepository
+	ApplyWithUsageLog(ctx context.Context, cmd *UsageBillingCommand, usageLog *UsageLog) (*UsageBillingApplyResult, error)
+}
+
+func hasAtomicUsageBillingRepository(repo UsageBillingRepository) bool {
+	if repo == nil {
+		return false
+	}
+	_, ok := repo.(UsageBillingWithUsageLogRepository)
+	return ok
 }

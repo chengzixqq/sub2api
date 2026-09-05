@@ -91,6 +91,12 @@ func (r *longContextBillingRepoStub) GetByID(_ context.Context, _ int64) (*Accou
 	return r.account, nil
 }
 
+// GetByIDScoped 与 GetByID 同源：本文件断言的是长上下文计费字段的保留语义，
+// 与归属过滤无关，覆盖基类的 panic 以免管理端读路径炸在这里。
+func (r *longContextBillingRepoStub) GetByIDScoped(_ context.Context, _ int64) (*Account, error) {
+	return r.account, nil
+}
+
 func (r *longContextBillingRepoStub) GetByIDs(_ context.Context, _ []int64) ([]*Account, error) {
 	if r.accounts != nil {
 		return r.accounts, nil
@@ -248,7 +254,7 @@ func TestAdminServiceBulkUpdateAccountsRejectsMalformedOpenAILongContextBillingV
 	repo := &longContextBillingRepoStub{account: &Account{ID: 1, Platform: PlatformOpenAI}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+	result, err := svc.BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 		AccountIDs: []int64{1},
 		Extra:      map[string]any{openAILongContextBillingEnabledKey: []bool{true}},
 	})
@@ -262,7 +268,7 @@ func TestAdminServiceBulkUpdateAccountsRejectsOpenAILongContextKeyForNonOpenAIAc
 	repo := &longContextBillingRepoStub{account: &Account{ID: 1, Platform: PlatformGrok}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+	result, err := svc.BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 		AccountIDs: []int64{1},
 		Extra:      map[string]any{openAILongContextBillingEnabledKey: true},
 	})
@@ -281,7 +287,7 @@ func TestAdminServiceBulkUpdateAccountsRejectsMalformedValueForMixedTargetsInclu
 	}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+	result, err := svc.BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 		AccountIDs: []int64{1, 2},
 		Extra:      map[string]any{openAILongContextBillingEnabledKey: "malformed"},
 	})

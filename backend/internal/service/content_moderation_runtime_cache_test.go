@@ -265,21 +265,40 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 		SettingKeyRiskControlEnabled:      "true",
 		SettingKeyContentModerationConfig: runtimeCacheTestConfig(t, "blocked"),
 	}}
-	svc := runtimeCacheTestService(repo, time.Nanosecond)
+	svc := runtimeCacheTestService(repo, time.Minute)
 	input := runtimeCacheTestInput("blocked")
 
 	decision, err := svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
 
+	// 显式把快照的加载时间回拨到 TTL 之外，以此表达“快照已过期”。
+	// 不能用极小的 TTL（例如 time.Nanosecond）代替：部分平台上 time.Now()
+	// 的单调时钟分辨率远大于 1ns，两次连续取值之差恒为 0，过期判定
+	// now.Sub(loadedAt) < TTL 会始终成立，刷新永远不会被触发。
+	current := svc.runtimeSnapshot.Load()
+	require.NotNil(t, current)
+	expired := *current
+	expired.loadedAt = time.Now().Add(-2 * time.Minute)
+	svc.runtimeSnapshot.Store(&expired)
+
 	repo.failMultiple(errors.New("database unavailable"))
+	// 这一次 Check 只负责触发后台刷新；此刻刷新尚未结束，
+	// 它读到的仍是回拨过的旧快照，因此不能用它来断言“保留了旧配置”。
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)
+
+	// 等待后台刷新真正失败并落地（失败会写入 backoff 时间戳），
+	// 只有在这之后读取快照，才能验证旧配置没有被失败的刷新清掉。
 	require.Eventually(t, func() bool {
 		_, calls := repo.calls()
-		return calls >= 2
+		return calls >= 2 && svc.runtimeRefreshRetryAt.Load() > 0
 	}, time.Second, time.Millisecond)
+
+	decision, err = svc.Check(context.Background(), input)
+	require.NoError(t, err)
+	require.True(t, decision.Blocked)
 }
 
 func TestContentModerationRuntimeSnapshotRefreshFailureBacksOff(t *testing.T) {

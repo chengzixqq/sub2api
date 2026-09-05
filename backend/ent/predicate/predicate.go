@@ -15,6 +15,9 @@ type Account func(*sql.Selector)
 // AccountGroup is the predicate function for accountgroup builders.
 type AccountGroup func(*sql.Selector)
 
+// AdminUserAdjustment is the predicate function for adminuseradjustment builders.
+type AdminUserAdjustment func(*sql.Selector)
+
 // Announcement is the predicate function for announcement builders.
 type Announcement func(*sql.Selector)
 
@@ -122,3 +125,12 @@ type UserPlatformQuota func(*sql.Selector)
 
 // UserSubscription is the predicate function for usersubscription builders.
 type UserSubscription func(*sql.Selector)
+
+// Workspace is the predicate function for workspace builders.
+type Workspace func(*sql.Selector)
+
+// WorkspaceGroupGrant is the predicate function for workspacegroupgrant builders.
+type WorkspaceGroupGrant func(*sql.Selector)
+
+// WorkspaceMember is the predicate function for workspacemember builders.
+type WorkspaceMember func(*sql.Selector)

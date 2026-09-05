@@ -444,6 +444,9 @@ export default {
         selectUser: 'Select {email}',
         enableConcurrency: 'Update concurrency',
         enableRPMLimit: 'Update RPM limit',
+        notes: 'Operation notes (optional)',
+        notesPlaceholder: 'Reason for this batch limit update',
+        notesHint: 'Enabled with concurrency updates. Used only for the generated ledger entries and not saved to user profiles.',
         unlimited: 'Unlimited',
         nonNegativeInteger: 'Enter a non-negative whole number.',
         apply: 'Apply limits',
@@ -485,6 +488,9 @@ export default {
       password: 'Password',
       username: 'Username',
       notes: 'Notes',
+      adjustmentNotes: 'Concurrency adjustment note (optional)',
+      adjustmentNotesPlaceholder: 'Reason for this concurrency change',
+      adjustmentNotesHint: 'Enabled when concurrency changes. Used only for this ledger entry and not saved to the user profile.',
       enterEmail: 'Enter email',
       enterPassword: 'Enter password',
       enterUsername: 'Enter username (optional)',
@@ -673,6 +679,7 @@ export default {
       totalRecharged: 'Total Recharged',
       roles: {
         admin: 'Admin',
+        vendor: 'Vendor',
         user: 'User'
       },
       // Settings Dropdowns
@@ -922,6 +929,9 @@ export default {
       },
       noGroupsYet: 'No groups yet',
       createFirstGroup: 'Create your first group to organize API keys.',
+      noGrantedGroups: 'No groups granted yet',
+      noGrantedGroupsHint:
+        'Groups will appear here once the owner grants them to your workspace.',
       creating: 'Creating...',
       updating: 'Updating...',
       limitDay: 'd',

@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,10 +99,14 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			sqlmock.AnyArg(), // model_mapping_chain
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
+			sqlmock.AnyArg(), // billing_provenance
 			sqlmock.AnyArg(), // account_stats_cost
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
 			createdAt,
+			false,            // probe_coalesced
+			sqlmock.AnyArg(), // probe_leader_request_id
+			true,             // provider_cost_recorded
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
@@ -192,10 +197,14 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // model_mapping_chain
 			sqlmock.AnyArg(), // billing_tier
 			sqlmock.AnyArg(), // billing_mode
+			sqlmock.AnyArg(), // billing_provenance
 			sqlmock.AnyArg(), // account_stats_cost
 			sqlmock.AnyArg(), // session_id
 			log.NativeCompactionV2,
 			createdAt,
+			false,            // probe_coalesced
+			sqlmock.AnyArg(), // probe_leader_request_id
+			true,             // provider_cost_recorded
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
@@ -260,6 +269,39 @@ func TestPrepareUsageLogInsert_ArgCountMatchesTypes(t *testing.T) {
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 }
 
+func TestPrepareUsageLogInsert_ProviderCostAttribution(t *testing.T) {
+	base := service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-provider-cost",
+		Model:          "gpt-5",
+		RequestedModel: "gpt-5",
+		CreatedAt:      time.Date(2025, 1, 5, 12, 0, 0, 0, time.UTC),
+	}
+
+	// Historical/non-probe callers have a zero-value bool, but must remain
+	// provider-cost records after the attribution columns are added.
+	prepared := prepareUsageLogInsert(&base)
+	require.Equal(t, true, prepared.args[len(prepared.args)-1])
+
+	// A coalesced follower is the one explicit exception: it is billed to the
+	// user, but must not duplicate account/provider cost.
+	follower := base
+	follower.RequestID = "req-provider-cost-follower"
+	follower.ProbeCoalesced = true
+	follower.ProviderCostRecorded = false
+	prepared = prepareUsageLogInsert(&follower)
+	require.Equal(t, false, prepared.args[len(prepared.args)-1])
+
+	leader := base
+	leader.RequestID = "req-provider-cost-leader"
+	leader.ProbeCoalesced = true
+	leader.ProviderCostRecorded = true
+	prepared = prepareUsageLogInsert(&leader)
+	require.Equal(t, true, prepared.args[len(prepared.args)-1])
+}
+
 func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestType(t *testing.T) {
 	log := &service.UsageLog{
 		UserID:             1,
@@ -276,8 +318,8 @@ func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestT
 	prepared := prepareUsageLogInsert(log)
 
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-2])
-	require.Equal(t, true, prepared.args[len(prepared.args)-2])
+	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-5])
+	require.Equal(t, true, prepared.args[len(prepared.args)-5])
 	require.Equal(t, int16(service.RequestTypeStream), prepared.args[30])
 	require.Equal(t, service.RequestTypeStream, log.RequestType)
 	require.True(t, log.Stream)
@@ -567,8 +609,8 @@ func TestUsageLogRepositoryUsageAggregatesFilterNativeCompactionV2(t *testing.T)
 
 func TestShouldUsePreaggregatedTrendRejectsNativeCompactionV2Filter(t *testing.T) {
 	nativeCompactionV2 := true
-	require.True(t, shouldUsePreaggregatedTrend("day", 0, 0, 0, 0, "", nil, nil, nil, "", nil, nil))
-	require.False(t, shouldUsePreaggregatedTrend("day", 0, 0, 0, 0, "", nil, nil, nil, "", nil, &nativeCompactionV2))
+	require.True(t, shouldUsePreaggregatedTrend(context.Background(), "day", 0, 0, 0, 0, "", nil, nil, nil, "", nil, nil))
+	require.False(t, shouldUsePreaggregatedTrend(context.Background(), "day", 0, 0, 0, 0, "", nil, nil, nil, "", nil, &nativeCompactionV2))
 }
 
 func TestUsageLogRepositoryGetModelStatsWithFiltersRequestTypePriority(t *testing.T) {
@@ -792,6 +834,51 @@ func TestUsageLogRepositoryGetGroupStatsWithUsageFiltersAppliesRequestedModelFil
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUsageLogRepositoryGetGroupStatsRestrictsVendorToGrantedGroups(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	ctx := service.WithUsageAccountScope(context.Background(), []int64{11, 12})
+	ctx = service.WithScope(ctx, service.VendorScope(42, service.WorkspacePermissions{}))
+
+	mock.ExpectQuery(`(?s)workspace_group_grants.*g\.deleted_at IS NULL`).
+		WithArgs(start, end, pq.Array([]int64{11, 12}), int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"group_id", "group_name", "requests", "total_tokens",
+			"cost", "actual_cost", "account_cost",
+		}).AddRow(int64(7), "granted", int64(2), int64(30), 0.2, 0.15, 0.1))
+
+	results, err := repo.GetGroupStatsWithFilters(ctx, start, end, 0, 0, 0, 0, nil, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, int64(7), results[0].GroupID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryGetGroupStatsAdminScopeKeepsUnrestrictedQuery(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	ctx := service.WithScope(context.Background(), service.AdminScope())
+
+	mock.ExpectQuery(`(?s)FROM usage_logs ul.*LEFT JOIN groups g ON g\.id = ul\.group_id.*WHERE ul\.created_at >= \$1 AND ul\.created_at < \$2.*GROUP BY ul\.group_id, g\.name`).
+		WithArgs(start, end).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"group_id", "group_name", "requests", "total_tokens",
+			"cost", "actual_cost", "account_cost",
+		}).AddRow(int64(7), "owner-visible", int64(1), int64(20), 0.2, 0.15, 0.1))
+
+	results, err := repo.GetGroupStatsWithFilters(ctx, start, end, 0, 0, 0, 0, nil, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, int64(7), results[0].GroupID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -954,10 +1041,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
+			sql.NullString{},
 			sql.NullFloat64{},
 			sql.NullString{},
 			false, // native_compaction_v2
 			now,
+			false,            // probe_coalesced
+			sql.NullString{}, // probe_leader_request_id
+			true,             // provider_cost_recorded
 		}})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
@@ -1033,10 +1124,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // model_mapping_chain
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
+			sql.NullString{},  // billing_provenance
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullString{},  // session_id
 			false,             // native_compaction_v2
 			now,
+			false,            // probe_coalesced
+			sql.NullString{}, // probe_leader_request_id
+			true,             // provider_cost_recorded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1095,10 +1190,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // model_mapping_chain
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
+			sql.NullString{},  // billing_provenance
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullString{},  // session_id
 			true,              // native_compaction_v2
 			now,
+			false,            // probe_coalesced
+			sql.NullString{}, // probe_leader_request_id
+			true,             // provider_cost_recorded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1158,10 +1257,14 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // model_mapping_chain
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
+			sql.NullString{},  // billing_provenance
 			sql.NullFloat64{}, // account_stats_cost
 			sql.NullString{},  // session_id
 			false,             // native_compaction_v2
 			now,
+			false,            // probe_coalesced
+			sql.NullString{}, // probe_leader_request_id
+			true,             // provider_cost_recorded
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)

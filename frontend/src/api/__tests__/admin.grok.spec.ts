@@ -1,19 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { post } = vi.hoisted(() => ({
+const { post, get } = vi.hoisted(() => ({
   post: vi.fn(),
+  get: vi.fn(),
 }))
 
 vi.mock('@/api/client', () => ({
-  apiClient: { post },
+  apiClient: { post, get },
 }))
 
-import { authorizePassword, createFromSSO, getGrokSSOImportTimeout } from '@/api/admin/grok'
+import {
+  authorizePassword,
+  createFromSSO,
+  exchangeCode,
+  generateAuthUrl,
+  getCapabilities,
+  getGrokSSOImportTimeout,
+  refreshGrokToken,
+  validateSSOToken,
+} from '@/api/admin/grok'
 
 describe('admin Grok SSO import API', () => {
   beforeEach(() => {
     post.mockReset()
+    get.mockReset()
     post.mockResolvedValue({ data: { created: [], failed: [] } })
+    get.mockResolvedValue({ data: { password_auth_enabled: false } })
   })
 
   it.each([
@@ -49,5 +61,40 @@ describe('admin Grok SSO import API', () => {
       },
       { timeout: 120_000 },
     )
+  })
+
+  it('carries account scope through re-auth helpers', async () => {
+    post.mockResolvedValue({ data: { access_token: 'access-token' } })
+
+    await generateAuthUrl({ account_id: 42, proxy_id: 7 })
+    await exchangeCode({ account_id: 42, session_id: 'session', state: 'state', code: 'code' })
+    await refreshGrokToken('refresh-token', 7, 42)
+    await validateSSOToken('sso-token', 7, 42)
+    await getCapabilities(42)
+
+    expect(post).toHaveBeenNthCalledWith(1, '/admin/grok/oauth/auth-url', {
+      account_id: 42,
+      proxy_id: 7,
+    })
+    expect(post).toHaveBeenNthCalledWith(2, '/admin/grok/oauth/exchange-code', {
+      account_id: 42,
+      session_id: 'session',
+      state: 'state',
+      code: 'code',
+    })
+    expect(post).toHaveBeenNthCalledWith(
+      3,
+      '/admin/grok/oauth/refresh-token',
+      { refresh_token: 'refresh-token', proxy_id: 7, account_id: 42 },
+    )
+    expect(post).toHaveBeenNthCalledWith(
+      4,
+      '/admin/grok/oauth/sso-token',
+      { sso_token: 'sso-token', proxy_id: 7, account_id: 42 },
+      { timeout: 120_000 },
+    )
+    expect(get).toHaveBeenCalledWith('/admin/grok/oauth/capabilities', {
+      params: { account_id: 42 },
+    })
   })
 })

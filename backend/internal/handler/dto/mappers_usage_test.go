@@ -127,6 +127,27 @@ func TestUsageLogFromService_IncludesServiceTierForUserAndAdmin(t *testing.T) {
 	require.InDelta(t, 1.5, *adminDTO.AccountRateMultiplier, 1e-12)
 }
 
+func TestUsageLogFromService_IncludesProbeAttribution(t *testing.T) {
+	t.Parallel()
+	leaderID := "probe-leader-1"
+	log := &service.UsageLog{
+		RequestID:            "probe-follower-1",
+		Model:                "gpt-5.4",
+		ProbeCoalesced:       true,
+		ProbeLeaderRequestID: &leaderID,
+		ProviderCostRecorded: false,
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+	for _, got := range []*UsageLog{userDTO, &adminDTO.UsageLog} {
+		require.True(t, got.ProbeCoalesced)
+		require.NotNil(t, got.ProbeLeaderRequestID)
+		require.Equal(t, leaderID, *got.ProbeLeaderRequestID)
+		require.False(t, got.ProviderCostRecorded)
+	}
+}
+
 func TestUsageLogFromService_UsesRequestedModelAndKeepsUpstreamAdminOnly(t *testing.T) {
 	t.Parallel()
 

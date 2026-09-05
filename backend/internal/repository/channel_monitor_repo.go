@@ -54,7 +54,7 @@ func (r *channelMonitorRepository) Create(ctx context.Context, m *service.Channe
 		SetCreatedBy(m.CreatedBy).
 		SetExtraHeaders(channelMonitorHeadersForPersistence(m)).
 		SetBodyOverrideMode(defaultBodyModeRepo(m.BodyOverrideMode)).
-		SetCheckMode(defaultCheckModeRepo(m.CheckMode))
+		SetCheckMode(defaultCreateCheckModeRepo(m.CheckMode))
 	if m.TemplateID != nil {
 		builder = builder.SetTemplateID(*m.TemplateID)
 	}
@@ -848,6 +848,13 @@ func defaultAPIModeRepo(apiMode string) string {
 func defaultCheckModeRepo(checkMode string) string {
 	if checkMode == "" {
 		return "probe"
+	}
+	return checkMode
+}
+
+func defaultCreateCheckModeRepo(checkMode string) string {
+	if strings.TrimSpace(checkMode) == "" {
+		return "quota"
 	}
 	return checkMode
 }

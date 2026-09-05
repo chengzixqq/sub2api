@@ -1556,7 +1556,9 @@
             @input="form.load_factor = (form.load_factor &amp;&amp; form.load_factor >= 1) ? form.load_factor : null" />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
         </div>
-        <div>
+        <!-- 优先级对 vendor 隐藏：绑定分组时后端强制取授权的 base_priority，
+             忽略这里填的值，留着输入框只会让人以为改生效了 -->
+        <div v-if="canSetPriority">
           <label class="input-label">{{ t('admin.accounts.priority') }}</label>
           <input
             v-model.number="form.priority"
@@ -1567,7 +1569,9 @@
           />
           <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
-        <div>
+        <!-- 账号级倍率同理：vendor 的结算走工作区授权倍率，
+             账号自身倍率只是回退值，改它不影响自己的账单 -->
+        <div v-if="canSetAccountRate">
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input
             v-model.number="form.rate_multiplier"
@@ -2873,6 +2877,7 @@ import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
+import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 import type {
   Account,
   Proxy,
@@ -2963,6 +2968,9 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const browserTimeZone = getBrowserTimeZone()
+
+// 站长恒真；vendor 侧这两个字段会被后端覆盖，藏掉免得改了不生效。
+const { canSetPriority, canSetAccountRate } = useWorkspacePerms()
 
 // Spark 影子账号(parent_account_id 非空):代理恒继承母账号,不可独立编辑(外审 B/P1),
 // 故隐藏代理选择器。

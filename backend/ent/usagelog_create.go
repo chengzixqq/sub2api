@@ -623,6 +623,48 @@ func (_c *UsageLogCreate) SetNillableCacheTTLOverridden(v *bool) *UsageLogCreate
 	return _c
 }
 
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (_c *UsageLogCreate) SetProbeCoalesced(v bool) *UsageLogCreate {
+	_c.mutation.SetProbeCoalesced(v)
+	return _c
+}
+
+// SetNillableProbeCoalesced sets the "probe_coalesced" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableProbeCoalesced(v *bool) *UsageLogCreate {
+	if v != nil {
+		_c.SetProbeCoalesced(*v)
+	}
+	return _c
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (_c *UsageLogCreate) SetProbeLeaderRequestID(v string) *UsageLogCreate {
+	_c.mutation.SetProbeLeaderRequestID(v)
+	return _c
+}
+
+// SetNillableProbeLeaderRequestID sets the "probe_leader_request_id" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableProbeLeaderRequestID(v *string) *UsageLogCreate {
+	if v != nil {
+		_c.SetProbeLeaderRequestID(*v)
+	}
+	return _c
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (_c *UsageLogCreate) SetProviderCostRecorded(v bool) *UsageLogCreate {
+	_c.mutation.SetProviderCostRecorded(v)
+	return _c
+}
+
+// SetNillableProviderCostRecorded sets the "provider_cost_recorded" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableProviderCostRecorded(v *bool) *UsageLogCreate {
+	if v != nil {
+		_c.SetProviderCostRecorded(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *UsageLogCreate) SetCreatedAt(v time.Time) *UsageLogCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -772,6 +814,14 @@ func (_c *UsageLogCreate) defaults() {
 	if _, ok := _c.mutation.CacheTTLOverridden(); !ok {
 		v := usagelog.DefaultCacheTTLOverridden
 		_c.mutation.SetCacheTTLOverridden(v)
+	}
+	if _, ok := _c.mutation.ProbeCoalesced(); !ok {
+		v := usagelog.DefaultProbeCoalesced
+		_c.mutation.SetProbeCoalesced(v)
+	}
+	if _, ok := _c.mutation.ProviderCostRecorded(); !ok {
+		v := usagelog.DefaultProviderCostRecorded
+		_c.mutation.SetProviderCostRecorded(v)
 	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		v := usagelog.DefaultCreatedAt()
@@ -927,6 +977,17 @@ func (_c *UsageLogCreate) check() error {
 	}
 	if _, ok := _c.mutation.CacheTTLOverridden(); !ok {
 		return &ValidationError{Name: "cache_ttl_overridden", err: errors.New(`ent: missing required field "UsageLog.cache_ttl_overridden"`)}
+	}
+	if _, ok := _c.mutation.ProbeCoalesced(); !ok {
+		return &ValidationError{Name: "probe_coalesced", err: errors.New(`ent: missing required field "UsageLog.probe_coalesced"`)}
+	}
+	if v, ok := _c.mutation.ProbeLeaderRequestID(); ok {
+		if err := usagelog.ProbeLeaderRequestIDValidator(v); err != nil {
+			return &ValidationError{Name: "probe_leader_request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.probe_leader_request_id": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.ProviderCostRecorded(); !ok {
+		return &ValidationError{Name: "provider_cost_recorded", err: errors.New(`ent: missing required field "UsageLog.provider_cost_recorded"`)}
 	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "UsageLog.created_at"`)}
@@ -1130,6 +1191,18 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
 		_node.CacheTTLOverridden = value
+	}
+	if value, ok := _c.mutation.ProbeCoalesced(); ok {
+		_spec.SetField(usagelog.FieldProbeCoalesced, field.TypeBool, value)
+		_node.ProbeCoalesced = value
+	}
+	if value, ok := _c.mutation.ProbeLeaderRequestID(); ok {
+		_spec.SetField(usagelog.FieldProbeLeaderRequestID, field.TypeString, value)
+		_node.ProbeLeaderRequestID = &value
+	}
+	if value, ok := _c.mutation.ProviderCostRecorded(); ok {
+		_spec.SetField(usagelog.FieldProviderCostRecorded, field.TypeBool, value)
+		_node.ProviderCostRecorded = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(usagelog.FieldCreatedAt, field.TypeTime, value)
@@ -2079,6 +2152,48 @@ func (u *UsageLogUpsert) SetCacheTTLOverridden(v bool) *UsageLogUpsert {
 // UpdateCacheTTLOverridden sets the "cache_ttl_overridden" field to the value that was provided on create.
 func (u *UsageLogUpsert) UpdateCacheTTLOverridden() *UsageLogUpsert {
 	u.SetExcluded(usagelog.FieldCacheTTLOverridden)
+	return u
+}
+
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (u *UsageLogUpsert) SetProbeCoalesced(v bool) *UsageLogUpsert {
+	u.Set(usagelog.FieldProbeCoalesced, v)
+	return u
+}
+
+// UpdateProbeCoalesced sets the "probe_coalesced" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateProbeCoalesced() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldProbeCoalesced)
+	return u
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (u *UsageLogUpsert) SetProbeLeaderRequestID(v string) *UsageLogUpsert {
+	u.Set(usagelog.FieldProbeLeaderRequestID, v)
+	return u
+}
+
+// UpdateProbeLeaderRequestID sets the "probe_leader_request_id" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateProbeLeaderRequestID() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldProbeLeaderRequestID)
+	return u
+}
+
+// ClearProbeLeaderRequestID clears the value of the "probe_leader_request_id" field.
+func (u *UsageLogUpsert) ClearProbeLeaderRequestID() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldProbeLeaderRequestID)
+	return u
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (u *UsageLogUpsert) SetProviderCostRecorded(v bool) *UsageLogUpsert {
+	u.Set(usagelog.FieldProviderCostRecorded, v)
+	return u
+}
+
+// UpdateProviderCostRecorded sets the "provider_cost_recorded" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateProviderCostRecorded() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldProviderCostRecorded)
 	return u
 }
 
@@ -3069,6 +3184,55 @@ func (u *UsageLogUpsertOne) SetCacheTTLOverridden(v bool) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateCacheTTLOverridden() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheTTLOverridden()
+	})
+}
+
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (u *UsageLogUpsertOne) SetProbeCoalesced(v bool) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProbeCoalesced(v)
+	})
+}
+
+// UpdateProbeCoalesced sets the "probe_coalesced" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateProbeCoalesced() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProbeCoalesced()
+	})
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (u *UsageLogUpsertOne) SetProbeLeaderRequestID(v string) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProbeLeaderRequestID(v)
+	})
+}
+
+// UpdateProbeLeaderRequestID sets the "probe_leader_request_id" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateProbeLeaderRequestID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProbeLeaderRequestID()
+	})
+}
+
+// ClearProbeLeaderRequestID clears the value of the "probe_leader_request_id" field.
+func (u *UsageLogUpsertOne) ClearProbeLeaderRequestID() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearProbeLeaderRequestID()
+	})
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (u *UsageLogUpsertOne) SetProviderCostRecorded(v bool) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProviderCostRecorded(v)
+	})
+}
+
+// UpdateProviderCostRecorded sets the "provider_cost_recorded" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateProviderCostRecorded() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProviderCostRecorded()
 	})
 }
 
@@ -4225,6 +4389,55 @@ func (u *UsageLogUpsertBulk) SetCacheTTLOverridden(v bool) *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) UpdateCacheTTLOverridden() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheTTLOverridden()
+	})
+}
+
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (u *UsageLogUpsertBulk) SetProbeCoalesced(v bool) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProbeCoalesced(v)
+	})
+}
+
+// UpdateProbeCoalesced sets the "probe_coalesced" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateProbeCoalesced() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProbeCoalesced()
+	})
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (u *UsageLogUpsertBulk) SetProbeLeaderRequestID(v string) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProbeLeaderRequestID(v)
+	})
+}
+
+// UpdateProbeLeaderRequestID sets the "probe_leader_request_id" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateProbeLeaderRequestID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProbeLeaderRequestID()
+	})
+}
+
+// ClearProbeLeaderRequestID clears the value of the "probe_leader_request_id" field.
+func (u *UsageLogUpsertBulk) ClearProbeLeaderRequestID() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearProbeLeaderRequestID()
+	})
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (u *UsageLogUpsertBulk) SetProviderCostRecorded(v bool) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetProviderCostRecorded(v)
+	})
+}
+
+// UpdateProviderCostRecorded sets the "provider_cost_recorded" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateProviderCostRecorded() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateProviderCostRecorded()
 	})
 }
 

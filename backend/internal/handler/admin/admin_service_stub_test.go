@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ type stubAdminService struct {
 	updatedProxies                      []*service.UpdateProxyInput
 	testedProxyIDs                      []int64
 	getUserErr                          error
+	lastBalanceInput                    string
 	createAccountErr                    error
 	createSparkShadowErr                error
 	updateAccountErr                    error
@@ -188,8 +190,10 @@ func (s *stubAdminService) DeleteUser(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *stubAdminService) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*service.User, error) {
-	user := service.User{ID: userID, Balance: balance, Status: service.StatusActive}
+func (s *stubAdminService) UpdateUserBalance(ctx context.Context, userID int64, balance string, operation string, notes string) (*service.User, error) {
+	s.lastBalanceInput = balance
+	value, _ := strconv.ParseFloat(balance, 64)
+	user := service.User{ID: userID, Balance: value, Status: service.StatusActive}
 	return &user, nil
 }
 
@@ -285,6 +289,21 @@ func (s *stubAdminService) GetAllGroupsIncludingInactive(ctx context.Context) ([
 func (s *stubAdminService) GetGroup(ctx context.Context, id int64) (*service.Group, error) {
 	group := service.Group{ID: id, Name: "group", Status: service.StatusActive}
 	return &group, nil
+}
+
+// FilterGroupIDsByScope 原样返回：桩不模拟工作区作用域。
+//
+// 作用域裁剪本身在 service 包内单测，此处返回入参以保持
+// 站长视角行为 —— 这些用例断言的都是站长路径。
+func (s *stubAdminService) FilterGroupIDsByScope(ctx context.Context, ids []int64) ([]int64, error) {
+	return ids, nil
+}
+
+// FilterAccountIDsByScope 原样返回，理由同上：桩服务于站长路径用例。
+//
+// 真实实现回表比对 workspace_id，vendor 的裁剪语义在 service 包内单测。
+func (s *stubAdminService) FilterAccountIDsByScope(ctx context.Context, ids []int64) ([]int64, error) {
+	return ids, nil
 }
 
 func (s *stubAdminService) GetGroupModelsListCandidates(ctx context.Context, id int64, platform string) ([]string, error) {

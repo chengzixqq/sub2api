@@ -3,7 +3,7 @@
     :show="show"
     :title="t('admin.users.bulkLimits.title')"
     width="normal"
-    @close="emit('close')"
+    @close="handleClose"
   >
     <form id="bulk-edit-user-limits-form" class="space-y-5" @submit.prevent="handleSubmit">
       <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -62,6 +62,22 @@
         </div>
       </div>
 
+      <div>
+        <label for="bulk-adjustment-notes" class="input-label">
+          {{ t('admin.users.bulkLimits.notes') }}
+        </label>
+        <textarea
+          id="bulk-adjustment-notes"
+          v-model="notes"
+          rows="2"
+          class="input"
+          :disabled="!enableConcurrency"
+          :placeholder="t('admin.users.bulkLimits.notesPlaceholder')"
+          data-test="adjustment-notes"
+        ></textarea>
+        <p class="input-hint">{{ t('admin.users.bulkLimits.notesHint') }}</p>
+      </div>
+
       <p v-if="hasInvalidValue" class="text-sm text-red-600 dark:text-red-400">
         {{ t('admin.users.bulkLimits.nonNegativeInteger') }}
       </p>
@@ -72,7 +88,7 @@
 
     <template #footer>
       <div class="flex justify-end gap-3">
-        <button type="button" class="btn btn-secondary" @click="emit('close')">
+        <button type="button" class="btn btn-secondary" @click="handleClose">
           {{ t('common.cancel') }}
         </button>
         <button
@@ -114,8 +130,25 @@ const enableConcurrency = ref(false)
 const enableRPMLimit = ref(false)
 const concurrencyValue = ref<string | number>('')
 const rpmLimitValue = ref<string | number>('')
+const notes = ref('')
 const submitting = ref(false)
 const MAX_BATCH_USER_IDS = 500
+const pendingAdjustment = ref<{ fingerprint: string, idempotencyKey: string } | null>(null)
+
+const clearPendingAdjustment = () => { pendingAdjustment.value = null }
+const getAdjustmentOptions = (fingerprint: string) => {
+  if (pendingAdjustment.value?.fingerprint !== fingerprint) {
+    pendingAdjustment.value = {
+      fingerprint,
+      idempotencyKey: adminAPI.users.createAdjustmentIdempotencyKey()
+    }
+  }
+  return { idempotencyKey: pendingAdjustment.value.idempotencyKey }
+}
+const handleClose = () => {
+  clearPendingAdjustment()
+  emit('close')
+}
 
 const parseLimit = (value: string | number): number | null | undefined => {
   const trimmed = String(value).trim()
@@ -152,7 +185,9 @@ const reset = () => {
   enableRPMLimit.value = false
   concurrencyValue.value = ''
   rpmLimitValue.value = ''
+  notes.value = ''
   submitting.value = false
+  clearPendingAdjustment()
 }
 
 watch(
@@ -184,6 +219,10 @@ const handleSubmit = async () => {
         : t('admin.users.bulkLimits.rpmValue', { value: parsedRPMLimit.value })
     )
   }
+  const trimmedNotes = notes.value.trim()
+  if (parsedConcurrency.value !== undefined && parsedConcurrency.value !== null && trimmedNotes) {
+    request.notes = trimmedNotes
+  }
 
   const confirmed = window.confirm(
     t('admin.users.bulkLimits.confirm', {
@@ -195,7 +234,9 @@ const handleSubmit = async () => {
 
   submitting.value = true
   try {
-    const result = await adminAPI.users.batchUpdateLimits(request)
+    const options = getAdjustmentOptions(JSON.stringify(request))
+    const result = await adminAPI.users.batchUpdateLimits(request, options)
+    clearPendingAdjustment()
     appStore.showSuccess(
       t('admin.users.bulkLimits.success', { count: result.affected })
     )

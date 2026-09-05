@@ -275,8 +275,16 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	ctx := c.Request.Context()
 	testOpts := firstAccountTestOptions(opts)
 
-	// Get account
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	// Management requests carry a workspace scope, while scheduled/background
+	// probes intentionally do not. Use the scoped read when one is present so a
+	// vendor cannot probe or mutate another workspace's account by ID.
+	var account *Account
+	var err error
+	if _, scoped := ScopeFromContext(ctx); scoped {
+		account, err = s.accountRepo.GetByIDScoped(ctx, accountID)
+	} else {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
+	}
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}

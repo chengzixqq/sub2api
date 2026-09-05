@@ -62,7 +62,9 @@ func TestGroupFromServiceOmitsProfitControl(t *testing.T) {
 
 // TestGroupFromServiceAdminIncludesProfitControl 钉死管理端仍能读写利润控制配置。
 func TestGroupFromServiceAdminIncludesProfitControl(t *testing.T) {
-	admin := GroupFromServiceAdmin(profitControlServiceGroup())
+	group := profitControlServiceGroup()
+	group.BillingLocked = true
+	admin := GroupFromServiceAdmin(group)
 	if admin.ProfitControlEnabled != true || admin.ProfitMinMargin != 0.3 || admin.ProfitSafetyBuffer != 0.05 {
 		t.Fatalf("管理员 DTO 未透传利润控制配置: %+v", admin)
 	}
@@ -71,5 +73,8 @@ func TestGroupFromServiceAdminIncludesProfitControl(t *testing.T) {
 		if _, ok := fields[f]; !ok {
 			t.Errorf("管理员 DTO 应包含 %q", f)
 		}
+	}
+	if !admin.BillingLocked || fields["billing_locked"] != true {
+		t.Fatalf("管理员 DTO 未透传共享分组计费锁: %+v", admin)
 	}
 }

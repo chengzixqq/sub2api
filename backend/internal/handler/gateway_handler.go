@@ -57,6 +57,7 @@ type GatewayHandler struct {
 	maxAccountSwitchesGemini  int
 	cfg                       *config.Config
 	settingService            *service.SettingService
+	probeCoalescer            *ProbeCoalescer
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -77,6 +78,7 @@ func NewGatewayHandler(
 	cfg *config.Config,
 	settingService *service.SettingService,
 ) *GatewayHandler {
+	RegisterProbeSettingsService(settingService)
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 10
 	maxAccountSwitchesGemini := 3
@@ -114,6 +116,7 @@ func NewGatewayHandler(
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,
 		cfg:                       cfg,
 		settingService:            settingService,
+		probeCoalescer:            DefaultProbeCoalescer(),
 	}
 }
 
@@ -276,6 +279,45 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	} else if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
 	}
+
+	// Strict arithmetic probes may share a verified upstream health result.
+	// This runs after user slot and billing eligibility checks, but before any
+	// account is selected, so followers still consume user concurrency and are
+	// billed independently without occupying an upstream slot.
+	var probeLease *ProbeLease
+	probeCandidateDetected := false
+	probeLeaderInstalled := false
+	if candidate, ok := probeCandidateForRequest(c, body, reqModel, optionalGroupID(apiKey.GroupID), platform, channelMapping.ChannelID); ok {
+		probeCandidateDetected = true
+		probeCtx := c.Request.Context()
+		syncProbeCoalescerSettings(h.probeCoalescer, h.settingService, probeCtx)
+		probeCtx, probeRequestID := prepareProbeAdmission(c, h.probeCoalescer)
+		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeRequestID)
+		if probeLease.IsExhausted() {
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted", streamStarted)
+			return
+		}
+		if probeLease.IsFollower() {
+			handled, promoted, probeErr := resolveProbeFollower(c, probeLease, func(ctx context.Context, candidate ProbeCandidate, account *service.Account, leaderID string) error {
+				return h.billSyntheticProbe(c, apiKey, subscription, body, candidate, account, leaderID, channelMapping)
+			})
+			if handled {
+				if probeErr != nil {
+					status, code, message := probeResolutionError(probeErr)
+					h.handleStreamingAwareError(c, status, code, message, streamStarted)
+				}
+				return
+			}
+			if promoted {
+				defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+				probeLeaderInstalled = true
+			}
+		}
+		if probeLease.IsLeader() && !probeLeaderInstalled {
+			defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+		}
+	}
+	markProbeAccountConcurrency(c, probeLease, probeCandidateDetected)
 	sessionKey := sessionHash
 	if platform == service.PlatformGemini && sessionHash != "" {
 		sessionKey = "gemini:" + sessionHash
@@ -303,6 +345,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
+
+	// 计费结算守卫：保证下面两个分支无论从哪个 return 退出都恰好结算一次。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), h.settingService),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(effectiveAPIKeyPlatform(c, apiKey), body)
+		},
+		sink: h.claudeFailureSink(c, apiKey, subscription, reqModel, channelMapping, body),
+	})
+	defer guard.Flush()
 
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
@@ -356,6 +409,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			setProbeLeaderAccount(c, account)
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
@@ -443,6 +497,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account = latest
 			selection.Account = latest
+			setProbeLeaderAccount(c, account)
 			// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已
 			// 抢槽的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
 			if selection.ProfitGateActive() || !selection.Acquired {
@@ -459,6 +514,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if fs.SwitchCount > 0 {
 				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
+			guard.ObserveAttempt(account)
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity {
@@ -480,6 +536,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+				guard.ObserveForwardResult(result)
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
@@ -562,8 +620,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			forceCacheBilling := fs.ForceCacheBilling
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
-			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+			guard.MarkSettled()
+			recordUsage := func(ctx context.Context) error {
+				return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 					Result:             result,
 					QuotaPlatform:      quotaPlatform,
 					APIKey:             apiKey,
@@ -580,7 +639,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					ForceCacheBilling:  forceCacheBilling,
 					APIKeyService:      h.apiKeyService,
 					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-				}); err != nil {
+				})
+			}
+			if probeLease != nil && probeLease.IsLeader() {
+				if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 					logger.L().With(
 						zap.String("component", "handler.gateway.messages"),
 						zap.Int64("user_id", subject.UserID),
@@ -590,7 +652,20 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 					).Error("gateway.record_usage_failed", zap.Error(err))
 				}
-			})
+			} else {
+				h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+					if err := recordUsage(ctx); err != nil {
+						logger.L().With(
+							zap.String("component", "handler.gateway.messages"),
+							zap.Int64("user_id", subject.UserID),
+							zap.Int64("api_key_id", apiKey.ID),
+							zap.Any("group_id", apiKey.GroupID),
+							zap.String("model", reqModel),
+							zap.Int64("account_id", account.ID),
+						).Error("gateway.record_usage_failed", zap.Error(err))
+					}
+				})
+			}
 			return
 		}
 	}
@@ -670,6 +745,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account := selection.Account
 			setOpsSelectedAccount(c, account.ID, account.Platform)
+			setProbeLeaderAccount(c, account)
 
 			// [DEBUG-STICKY] 打印账号选择结果
 			reqLog.Info("sticky.account_selected",
@@ -767,6 +843,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 			account = latest
 			selection.Account = latest
+			setProbeLeaderAccount(c, account)
 			// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已
 			// 抢槽的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
 			if selection.ProfitGateActive() || !selection.Acquired {
@@ -854,6 +931,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if fs.ForceCacheBilling {
 				requestCtx = service.WithForceCacheBilling(requestCtx)
 			}
+			guard.ObserveAttempt(account)
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
@@ -902,8 +980,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				forceCacheBilling := fs.ForceCacheBilling
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
 				sessionID := service.ExtractClientSessionID(c)
-				h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-					if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+				guard.MarkSettled()
+				recordUsage := func(ctx context.Context) error {
+					return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 						Result:             result,
 						QuotaPlatform:      quotaPlatform,
 						APIKey:             currentAPIKey,
@@ -920,7 +999,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						ForceCacheBilling:  forceCacheBilling,
 						APIKeyService:      h.apiKeyService,
 						ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-					}); err != nil {
+					})
+				}
+				if probeLease != nil && probeLease.IsLeader() {
+					if recordErr := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, false); recordErr != nil {
 						logger.L().With(
 							zap.String("component", "handler.gateway.messages"),
 							zap.Int64("user_id", subject.UserID),
@@ -928,12 +1010,31 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 							zap.Any("group_id", currentAPIKey.GroupID),
 							zap.String("model", reqModel),
 							zap.Int64("account_id", account.ID),
-						).Error("gateway.record_usage_failed", zap.Error(err))
+						).Error("gateway.record_usage_failed", zap.Error(recordErr))
 					}
-				})
+				} else {
+					h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+						if recordErr := recordUsage(ctx); recordErr != nil {
+							logger.L().With(
+								zap.String("component", "handler.gateway.messages"),
+								zap.Int64("user_id", subject.UserID),
+								zap.Int64("api_key_id", currentAPIKey.ID),
+								zap.Any("group_id", currentAPIKey.GroupID),
+								zap.String("model", reqModel),
+								zap.Int64("account_id", account.ID),
+							).Error("gateway.record_usage_failed", zap.Error(recordErr))
+						}
+					})
+				}
 			}
 
 			if err != nil {
+				// 必须放在 if err != nil 的第一行：BetaBlockedError / PromptTooLongError
+				// 都在下面提前 return，放到 errors.As(&failoverErr) 块内会漏掉它们，
+				// 使 Flush 把这些上游根本没收到的请求按估算 prompt token 计费。
+				guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+				guard.ObserveForwardResult(result)
+
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
@@ -1060,7 +1161,77 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 
-			submitForwardUsage(result)
+			// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
+			userAgent := c.GetHeader("User-Agent")
+			clientIP := ip.GetClientIP(c)
+			// Forward 内部可能继续改写 body，usage 去重指纹必须使用最终上游接受的当前 body。
+			requestPayloadHash := service.HashUsageRequestPayload(attemptParsedReq.Body.Bytes())
+			inboundEndpoint := GetInboundEndpoint(c)
+			upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
+
+			if result.ReasoningEffort == nil {
+				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(attemptParsedReq.OutputEffort)
+			}
+			// 同上（重试路径中的对称填充）。详见非重试路径同名注释。
+			if result.ReasoningEffort == nil && attemptParsedReq.ThinkingEnabled {
+				protocolModel := result.UpstreamModel
+				if protocolModel == "" {
+					protocolModel = result.Model
+				}
+				result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(protocolModel)
+			}
+
+			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
+			// ForceCacheBilling 提前拍成标量，避免 worker 闭包保活 failover 状态里的响应体。
+			forceCacheBilling := fs.ForceCacheBilling
+			quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
+			sessionID := service.ExtractClientSessionID(c)
+			guard.MarkSettled()
+			recordUsage := func(ctx context.Context) error {
+				return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+					Result:             result,
+					QuotaPlatform:      quotaPlatform,
+					APIKey:             currentAPIKey,
+					User:               currentAPIKey.User,
+					Account:            account,
+					Subscription:       currentSubscription,
+					PricingAt:          pricingAt,
+					InboundEndpoint:    inboundEndpoint,
+					UpstreamEndpoint:   upstreamEndpoint,
+					UserAgent:          userAgent,
+					IPAddress:          clientIP,
+					SessionID:          sessionID,
+					RequestPayloadHash: requestPayloadHash,
+					ForceCacheBilling:  forceCacheBilling,
+					APIKeyService:      h.apiKeyService,
+					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
+				})
+			}
+			if probeLease != nil && probeLease.IsLeader() {
+				if recordErr := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); recordErr != nil {
+					logger.L().With(
+						zap.String("component", "handler.gateway.messages"),
+						zap.Int64("user_id", subject.UserID),
+						zap.Int64("api_key_id", currentAPIKey.ID),
+						zap.Any("group_id", currentAPIKey.GroupID),
+						zap.String("model", reqModel),
+						zap.Int64("account_id", account.ID),
+					).Error("gateway.record_usage_failed", zap.Error(recordErr))
+				}
+			} else {
+				h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+					if recordErr := recordUsage(ctx); recordErr != nil {
+						logger.L().With(
+							zap.String("component", "handler.gateway.messages"),
+							zap.Int64("user_id", subject.UserID),
+							zap.Int64("api_key_id", currentAPIKey.ID),
+							zap.Any("group_id", currentAPIKey.GroupID),
+							zap.String("model", reqModel),
+							zap.Int64("account_id", account.ID),
+						).Error("gateway.record_usage_failed", zap.Error(recordErr))
+					}
+				})
+			}
 			return
 		}
 		if !retryWithFallback {

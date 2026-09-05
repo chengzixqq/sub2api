@@ -945,6 +945,12 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		fallbackBytes = 0
 		mergeOpenAIUsage(&usage, dataBytes)
 		imageCounter.AddSSEData(dataBytes)
+		// 投递标记必须在完整 data 帧上判定（processLine 拿到的是单行，多行 data 帧
+		// 要靠 accumulator 拼装后才能解析）。原门控对任何非空行置位，上游只回
+		// error / response.failed 时也会标记 = 多算，这里收窄到真的带出图片内容。
+		if openAIImagesStreamDataDeliversRealContent(dataBytes) {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+		}
 	}
 
 	flushSSEEvent := func() {

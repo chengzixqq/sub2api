@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -26,7 +27,7 @@ func (r *usageLogRepository) GetUserStatsAggregated(ctx context.Context, userID 
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
@@ -65,7 +66,7 @@ func (r *usageLogRepository) GetAPIKeyStatsAggregated(ctx context.Context, apiKe
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
@@ -114,7 +115,7 @@ func (r *usageLogRepository) GetAccountStatsAggregated(ctx context.Context, acco
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
@@ -154,7 +155,7 @@ func (r *usageLogRepository) GetModelStatsAggregated(ctx context.Context, modelN
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
@@ -195,7 +196,7 @@ func (r *usageLogRepository) GetDailyStatsAggregated(ctx context.Context, userID
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(COALESCE(duration_ms, 0)), 0) as avg_duration_ms
 		FROM usage_logs
@@ -280,8 +281,8 @@ func (r *usageLogRepository) GetAccountTodayStats(ctx context.Context, accountID
 		SELECT
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
-			COALESCE(SUM(total_cost), 0) as standard_cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2
@@ -310,8 +311,8 @@ func (r *usageLogRepository) GetAccountWindowStats(ctx context.Context, accountI
 		SELECT
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
-			COALESCE(SUM(total_cost), 0) as standard_cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2
@@ -347,8 +348,8 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 			account_id,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as cost,
-			COALESCE(SUM(total_cost), 0) as standard_cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as standard_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = ANY($1) AND created_at >= $2
@@ -493,6 +494,9 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 
 	// GROUP BY (user_id, effective_platform) 一次查询同时得到总值与按平台拆分。
 	// 应用层把同一 user_id 的多行累加为总值，并把非空 platform 行收集到 ByPlatform。
+	// 不施加 usageLogSuccessFilterUL：这里只汇总 actual_cost（花费类聚合），被计费的失败行
+	// 产生了真实的上游费用，必须计入，否则会与总账对不上；该常量只用于门控请求数，此查询没有
+	// 请求数列，因此不适用。
 	query := `
 		SELECT
 			ul.user_id,
@@ -504,7 +508,6 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 		LEFT JOIN accounts a ON a.id = ul.account_id
 		WHERE ul.user_id = ANY($1)
 		  AND ul.created_at >= LEAST($2, $4)
-		  AND ` + usageLogSuccessFilterUL + `
 		GROUP BY ul.user_id, ` + usageLogEffectivePlatformExpr + `
 	`
 	today := timezone.Today()
@@ -548,13 +551,23 @@ func (r *usageLogRepository) GetBatchUserUsageStats(ctx context.Context, userIDs
 // BatchAPIKeyUsageStats represents usage stats for a single API key
 type BatchAPIKeyUsageStats = usagestats.BatchAPIKeyUsageStats
 
+const batchAPIKeyUsageStatsQuery = `
+	SELECT
+		api_key_id,
+		COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $2 AND created_at < $3), 0) as total_cost,
+		COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $4), 0) as today_cost
+	FROM usage_logs
+	WHERE api_key_id = ANY($1)
+	  AND created_at >= LEAST($2, $4)
+	GROUP BY api_key_id
+`
+
 // GetBatchAPIKeyUsageStats gets today and total actual_cost for multiple API keys within a time range.
 // If startTime is zero, defaults to 30 days ago.
 func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKeyIDs []int64, startTime, endTime time.Time) (map[int64]*BatchAPIKeyUsageStats, error) {
-	result := make(map[int64]*BatchAPIKeyUsageStats)
 	normalizedAPIKeyIDs := normalizePositiveInt64IDs(apiKeyIDs)
 	if len(normalizedAPIKeyIDs) == 0 {
-		return result, nil
+		return map[int64]*BatchAPIKeyUsageStats{}, nil
 	}
 
 	// 默认最近 30 天
@@ -565,22 +578,59 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 		endTime = time.Now()
 	}
 
-	for _, id := range normalizedAPIKeyIDs {
+	today := timezone.Today()
+	result, err := queryBatchAPIKeyUsageStats(ctx, r.sql, normalizedAPIKeyIDs, startTime, endTime, today)
+	if err == nil {
+		return result, nil
+	}
+	if r.db == nil || !isDynamicSharedMemoryExhaustion(err) {
+		return nil, err
+	}
+
+	logger.LegacyPrintf(
+		"repository.usage_log",
+		"GetBatchAPIKeyUsageStats retrying without parallel workers after PostgreSQL shared-memory exhaustion: %v",
+		err,
+	)
+	tx, txErr := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if txErr != nil {
+		return nil, fmt.Errorf("begin serial batch api key usage retry: %w", txErr)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, txErr = tx.ExecContext(ctx, "SET LOCAL max_parallel_workers_per_gather = 0"); txErr != nil {
+		return nil, fmt.Errorf("disable parallel workers for batch api key usage retry: %w", txErr)
+	}
+	result, txErr = queryBatchAPIKeyUsageStats(ctx, tx, normalizedAPIKeyIDs, startTime, endTime, today)
+	if txErr != nil {
+		return nil, txErr
+	}
+	if txErr = tx.Commit(); txErr != nil {
+		return nil, fmt.Errorf("commit serial batch api key usage retry: %w", txErr)
+	}
+	return result, nil
+}
+
+func queryBatchAPIKeyUsageStats(
+	ctx context.Context,
+	executor sqlExecutor,
+	apiKeyIDs []int64,
+	startTime time.Time,
+	endTime time.Time,
+	today time.Time,
+) (map[int64]*BatchAPIKeyUsageStats, error) {
+	result := make(map[int64]*BatchAPIKeyUsageStats, len(apiKeyIDs))
+	for _, id := range apiKeyIDs {
 		result[id] = &BatchAPIKeyUsageStats{APIKeyID: id}
 	}
 
-	query := `
-		SELECT
-			api_key_id,
-			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $2 AND created_at < $3), 0) as total_cost,
-			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $4), 0) as today_cost
-		FROM usage_logs
-		WHERE api_key_id = ANY($1)
-		  AND created_at >= LEAST($2, $4)
-		GROUP BY api_key_id
-	`
-	today := timezone.Today()
-	rows, err := r.sql.QueryContext(ctx, query, pq.Array(normalizedAPIKeyIDs), startTime, endTime, today)
+	rows, err := executor.QueryContext(
+		ctx,
+		batchAPIKeyUsageStatsQuery,
+		pq.Array(apiKeyIDs),
+		startTime,
+		endTime,
+		today,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -607,6 +657,19 @@ func (r *usageLogRepository) GetBatchAPIKeyUsageStats(ctx context.Context, apiKe
 	return result, nil
 }
 
+func isDynamicSharedMemoryExhaustion(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "53100" && strings.Contains(strings.ToLower(pqErr.Message), "shared memory segment")
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "could not resize shared memory segment") &&
+		strings.Contains(message, "no space left on device")
+}
+
 // resolveEndpointColumn maps endpoint type to the corresponding DB column name.
 func resolveEndpointColumn(endpointType string) string {
 	switch endpointType {
@@ -627,7 +690,7 @@ func (r *usageLogRepository) GetGlobalStats(ctx context.Context, startTime, endT
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens + cache_read_tokens), 0) as total_cache_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
@@ -675,6 +738,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		conditions = append(conditions, fmt.Sprintf("group_id = $%d", len(args)+1))
 		args = append(args, filters.GroupID)
 	}
+	conditions, args = appendUsageAccountScopeCondition(ctx, "account_id", conditions, args)
 	conditions, args = appendUsageLogModelWhereCondition(conditions, args, filters.Model, filters.ModelFilterSource)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
 	conditions, args = appendNativeCompactionV2WhereCondition(conditions, args, filters.NativeCompactionV2, "")
@@ -704,9 +768,9 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 				output_tokens,
 				cache_creation_tokens,
 				cache_read_tokens,
-				total_cost,
+				CASE WHEN provider_cost_recorded THEN total_cost ELSE 0 END AS total_cost,
 				actual_cost,
-				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
+				CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END AS account_cost,
 				duration_ms
 			FROM usage_logs
 			%s
@@ -840,7 +904,7 @@ type EndpointStat = usagestats.EndpointStat
 func (r *usageLogRepository) getEndpointStatsByColumnWithFilters(ctx context.Context, endpointColumn string, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string) (results []EndpointStat, err error) {
 	actualCostExpr := "COALESCE(SUM(actual_cost), 0) as actual_cost"
 	if accountID > 0 && userID == 0 && apiKeyID == 0 {
-		actualCostExpr = "COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost"
+		actualCostExpr = "COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as actual_cost"
 	}
 
 	query := fmt.Sprintf(`
@@ -848,7 +912,7 @@ func (r *usageLogRepository) getEndpointStatsByColumnWithFilters(ctx context.Con
 			COALESCE(NULLIF(TRIM(%s), ''), 'unknown') AS endpoint,
 			COUNT(*) AS requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) AS total_tokens,
-			COALESCE(SUM(total_cost), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
 			%s
 		FROM usage_logs
 		WHERE created_at >= $1 AND created_at < $2
@@ -871,6 +935,8 @@ func (r *usageLogRepository) getEndpointStatsByColumnWithFilters(ctx context.Con
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
 		args = append(args, groupID)
 	}
+	scopeSQL, args := appendUsageAccountScope(ctx, "account_id", args)
+	query += scopeSQL
 	query, args = appendUsageLogModelQueryFilter(query, args, model, modelSource)
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, requestType, stream)
 	if billingType != nil {
@@ -927,8 +993,8 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 			TO_CHAR(created_at, 'YYYY-MM-DD') as date,
 			COUNT(*) as requests,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(total_cost), 0) as cost,
-			COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as actual_cost,
 			COALESCE(SUM(actual_cost), 0) as user_cost
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $2 AND created_at < $3

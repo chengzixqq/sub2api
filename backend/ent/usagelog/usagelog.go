@@ -106,6 +106,12 @@ const (
 	FieldVideoDurationSeconds = "video_duration_seconds"
 	// FieldCacheTTLOverridden holds the string denoting the cache_ttl_overridden field in the database.
 	FieldCacheTTLOverridden = "cache_ttl_overridden"
+	// FieldProbeCoalesced holds the string denoting the probe_coalesced field in the database.
+	FieldProbeCoalesced = "probe_coalesced"
+	// FieldProbeLeaderRequestID holds the string denoting the probe_leader_request_id field in the database.
+	FieldProbeLeaderRequestID = "probe_leader_request_id"
+	// FieldProviderCostRecorded holds the string denoting the provider_cost_recorded field in the database.
+	FieldProviderCostRecorded = "provider_cost_recorded"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// EdgeUser holds the string denoting the user edge name in mutations.
@@ -206,6 +212,9 @@ var Columns = []string{
 	FieldVideoResolution,
 	FieldVideoDurationSeconds,
 	FieldCacheTTLOverridden,
+	FieldProbeCoalesced,
+	FieldProbeLeaderRequestID,
+	FieldProviderCostRecorded,
 	FieldCreatedAt,
 }
 
@@ -288,6 +297,12 @@ var (
 	VideoResolutionValidator func(string) error
 	// DefaultCacheTTLOverridden holds the default value on creation for the "cache_ttl_overridden" field.
 	DefaultCacheTTLOverridden bool
+	// DefaultProbeCoalesced holds the default value on creation for the "probe_coalesced" field.
+	DefaultProbeCoalesced bool
+	// ProbeLeaderRequestIDValidator is a validator for the "probe_leader_request_id" field. It is called by the builders before save.
+	ProbeLeaderRequestIDValidator func(string) error
+	// DefaultProviderCostRecorded holds the default value on creation for the "provider_cost_recorded" field.
+	DefaultProviderCostRecorded bool
 	// DefaultCreatedAt holds the default value on creation for the "created_at" field.
 	DefaultCreatedAt func() time.Time
 )
@@ -523,6 +538,21 @@ func ByVideoDurationSeconds(opts ...sql.OrderTermOption) OrderOption {
 // ByCacheTTLOverridden orders the results by the cache_ttl_overridden field.
 func ByCacheTTLOverridden(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldCacheTTLOverridden, opts...).ToFunc()
+}
+
+// ByProbeCoalesced orders the results by the probe_coalesced field.
+func ByProbeCoalesced(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProbeCoalesced, opts...).ToFunc()
+}
+
+// ByProbeLeaderRequestID orders the results by the probe_leader_request_id field.
+func ByProbeLeaderRequestID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProbeLeaderRequestID, opts...).ToFunc()
+}
+
+// ByProviderCostRecorded orders the results by the provider_cost_recorded field.
+func ByProviderCostRecorded(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldProviderCostRecorded, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

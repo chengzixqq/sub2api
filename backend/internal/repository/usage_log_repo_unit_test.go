@@ -3,11 +3,14 @@
 package repository
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,4 +67,47 @@ func TestBuildUsageLogBatchInsertQuery_UsesConflictDoNothing(t *testing.T) {
 
 	require.Contains(t, query, "ON CONFLICT (request_id, api_key_id) DO NOTHING")
 	require.NotContains(t, strings.ToUpper(query), "DO UPDATE")
+}
+
+func TestGetBatchAPIKeyUsageStats_RetriesSharedMemoryExhaustionWithoutParallelWorkers(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := newUsageLogRepositoryWithSQL(nil, db)
+	queryPattern := `(?s)SELECT\s+api_key_id,.*FROM usage_logs.*GROUP BY api_key_id`
+	startTime := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	endTime := startTime.AddDate(0, 1, 0)
+
+	mock.ExpectQuery(queryPattern).
+		WithArgs(sqlmock.AnyArg(), startTime, endTime, sqlmock.AnyArg()).
+		WillReturnError(&pq.Error{
+			Code:    "53100",
+			Message: `could not resize shared memory segment "/PostgreSQL.1" to 25223168 bytes: No space left on device`,
+		})
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL max_parallel_workers_per_gather = 0`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(queryPattern).
+		WithArgs(sqlmock.AnyArg(), startTime, endTime, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "total_cost", "today_cost"}).
+			AddRow(int64(7), 12.5, 1.25))
+	mock.ExpectCommit()
+
+	stats, err := repo.GetBatchAPIKeyUsageStats(context.Background(), []int64{7}, startTime, endTime)
+	require.NoError(t, err)
+	require.Equal(t, 12.5, stats[7].TotalActualCost)
+	require.Equal(t, 1.25, stats[7].TodayActualCost)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIsDynamicSharedMemoryExhaustion_DoesNotRetryOtherDiskFullErrors(t *testing.T) {
+	require.False(t, isDynamicSharedMemoryExhaustion(&pq.Error{
+		Code:    "53100",
+		Message: "could not write to file pg_wal/xlogtemp: No space left on device",
+	}))
+	require.True(t, isDynamicSharedMemoryExhaustion(&pq.Error{
+		Code:    "53100",
+		Message: `could not resize shared memory segment "/PostgreSQL.1" to 25223168 bytes: No space left on device`,
+	}))
 }

@@ -24,6 +24,8 @@ type FrameConn interface {
 	Close() error
 }
 
+var ErrAmbiguousTerminalIdentity = errors.New("websocket terminal identity is ambiguous after a completed turn")
+
 type Usage struct {
 	InputTokens              int
 	OutputTokens             int
@@ -105,6 +107,13 @@ type relayState struct {
 	requestModelMu          sync.RWMutex
 	requestModel            string
 	pendingTurnStart        atomic.Pointer[time.Time]
+	turnOpen                bool
+	turnLifecycleInit       bool
+	turnSequence            uint64
+	completedTurns          uint64
+	completedIDs            map[string]struct{}
+	ambiguousTerminal       bool
+	turnRolledBack          bool
 	lastResponseID          string
 	lastResponseModel       string
 	lastResponseServiceTier string
@@ -135,6 +144,14 @@ type observedUpstreamEvent struct {
 	duration            time.Duration
 	firstToken          *int
 }
+
+type turnCompletionDisposition uint8
+
+const (
+	turnCompletionIgnored turnCompletionDisposition = iota
+	turnCompletionAccepted
+	turnCompletionAmbiguous
+)
 
 type relayTurnTiming struct {
 	startAt               time.Time
@@ -180,6 +197,7 @@ func Relay(
 	}
 	startAt := nowFn()
 	state := &relayState{requestModel: result.RequestModel}
+	firstIsResponseCreate := isClientResponseCreateFrame(firstMessageType, firstClientMessage)
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
 		if firstTurnStartedAt.IsZero() {
@@ -204,8 +222,10 @@ func Relay(
 		return upstreamConn.WriteFrame(writeCtx, msgType, payload)
 	}
 	writeClientFrameUpstream := func(msgType coderws.MessageType, payload []byte) error {
-		if isClientResponseCreateFrame(msgType, payload) {
-			state.setRequestModel(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
+		isResponseCreate := isClientResponseCreateFrame(msgType, payload)
+		turnSequence := uint64(0)
+		if isResponseCreate {
+			turnSequence = state.beginResponseCreate(strings.TrimSpace(gjson.GetBytes(payload, "model").String()))
 			turnStartedAt := time.Time{}
 			if options.TakeNextTurnStartedAt != nil {
 				turnStartedAt = options.TakeNextTurnStartedAt()
@@ -215,7 +235,11 @@ func Relay(
 			}
 			state.setPendingTurnStartedAt(turnStartedAt)
 		}
-		return writeUpstream(msgType, payload)
+		if err := writeUpstream(msgType, payload); err != nil {
+			state.rollbackResponseCreate(turnSequence)
+			return err
+		}
+		return nil
 	}
 	writeClient := func(msgType coderws.MessageType, payload []byte) error {
 		// 下行写超时故意不挂在 relayCtx 上：coder/websocket 在已武装的 write
@@ -239,6 +263,9 @@ func Relay(
 	})
 
 	if options.FirstMessageSent {
+		if firstIsResponseCreate {
+			state.beginResponseCreate(result.RequestModel)
+		}
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:        "write_first_message_skipped",
 			Direction:    "client_to_upstream",
@@ -256,6 +283,9 @@ func Relay(
 				Error:        err.Error(),
 			})
 			return result, &RelayExit{Stage: "write_upstream", Err: err}
+		}
+		if firstIsResponseCreate {
+			state.beginResponseCreate(result.RequestModel)
 		}
 		emitRelayTrace(onTrace, RelayTraceEvent{
 			Stage:        "write_first_message_ok",
@@ -587,7 +617,7 @@ func runUpstreamToClient(
 		case coderws.MessageBinary:
 			// binary frame 直接透传，不进入 JSON 观测路径（避免无效解析开销）。
 		}
-		emitTurnComplete(onTurnComplete, state, observedEvent)
+		ambiguousTerminal := emitTurnComplete(onTurnComplete, state, observedEvent)
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
@@ -637,6 +667,14 @@ func runUpstreamToClient(
 			forwardedFrames.Add(1)
 		}
 		markActivity()
+		if ambiguousTerminal {
+			exitCh <- relayExitSignal{
+				stage:           "ambiguous_terminal_identity",
+				err:             ErrAmbiguousTerminalIdentity,
+				wroteDownstream: true,
+			}
+			return
+		}
 	}
 }
 
@@ -700,7 +738,7 @@ func relayDirectionFromStage(stage string) string {
 	switch stage {
 	case "read_client", "write_upstream":
 		return "client_to_upstream"
-	case "read_upstream", "write_client", "drain_terminal":
+	case "read_upstream", "write_client", "drain_terminal", "ambiguous_terminal_identity":
 		return "upstream_to_client"
 	case "idle_timeout":
 		return "watchdog"
@@ -842,8 +880,8 @@ func finalizeObservedRelayTerminal(state *relayState, observed observedUpstreamE
 			if duration < 0 {
 				duration = 0
 			}
-			observed.startedAt = turnTiming.startAt
 			observed.duration = duration
+			observed.startedAt = turnTiming.startAt
 			observed.firstToken = openAIWSRelayCloneIntPtr(turnTiming.firstTokenMs)
 		}
 	} else {
@@ -857,17 +895,34 @@ func emitTurnComplete(
 	onTurnComplete func(turn RelayTurnResult),
 	state *relayState,
 	observed observedUpstreamEvent,
-) {
-	if onTurnComplete == nil || !observed.terminal {
-		return
+) bool {
+	if !observed.terminal {
+		return false
 	}
 	responseID := strings.TrimSpace(observed.responseID)
 	if responseID == "" && strings.TrimSpace(observed.eventType) != "error" {
-		return
+		// A direct helper call without an initialized turn is treated as an
+		// unidentifiable terminal and ignored. The live relay initializes its
+		// turn before forwarding, allowing the custom ambiguity guard to handle
+		// a later duplicate after the first turn.
+		if state == nil || !state.turnLifecycleInit {
+			return false
+		}
 	}
 	requestModel := ""
 	if state != nil {
-		requestModel = state.currentRequestModel()
+		var disposition turnCompletionDisposition
+		requestModel, disposition = state.claimTurnCompletion(responseID)
+		switch disposition {
+		case turnCompletionAmbiguous:
+			return true
+		case turnCompletionAccepted:
+		default:
+			return false
+		}
+	}
+	if onTurnComplete == nil {
+		return false
 	}
 	onTurnComplete(RelayTurnResult{
 		RequestModel:          requestModel,
@@ -881,6 +936,7 @@ func emitTurnComplete(
 		Duration:              observed.duration,
 		FirstTokenMs:          openAIWSRelayCloneIntPtr(observed.firstToken),
 	})
+	return false
 }
 
 func firstRelayResponseModel(message []byte) string {
@@ -980,8 +1036,8 @@ func (s *relayState) setPendingTurnStartedAt(startedAt time.Time) {
 	if s == nil || startedAt.IsZero() {
 		return
 	}
-	startedAtCopy := startedAt
-	s.pendingTurnStart.Store(&startedAtCopy)
+	copy := startedAt
+	s.pendingTurnStart.Store(&copy)
 }
 
 func (s *relayState) consumePendingTurnStartedAt() time.Time {
@@ -1219,13 +1275,94 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.FirstTokenMs = state.firstTokenMs
 }
 
-func (s *relayState) setRequestModel(model string) {
-	if s == nil || model == "" {
+// beginResponseCreate registers the billing turn before the write starts. An
+// upstream can answer before WriteFrame returns, so registering afterwards can
+// lose the only terminal usage event. The sequence lets a failed write roll
+// back only the turn it opened.
+func (s *relayState) beginResponseCreate(model string) uint64 {
+	if s == nil {
+		return 0
+	}
+	s.requestModelMu.Lock()
+	s.turnSequence++
+	if model != "" {
+		s.requestModel = model
+	}
+	s.turnOpen = true
+	s.turnLifecycleInit = true
+	s.ambiguousTerminal = false
+	s.turnRolledBack = false
+	sequence := s.turnSequence
+	s.requestModelMu.Unlock()
+	return sequence
+}
+
+func (s *relayState) rollbackResponseCreate(sequence uint64) {
+	if s == nil || sequence == 0 {
 		return
 	}
 	s.requestModelMu.Lock()
-	s.requestModel = model
+	if s.turnSequence == sequence {
+		s.turnOpen = false
+		s.turnRolledBack = true
+	}
 	s.requestModelMu.Unlock()
+}
+
+func (s *relayState) claimTurnCompletion(responseID string) (string, turnCompletionDisposition) {
+	if s == nil {
+		return "", turnCompletionIgnored
+	}
+	s.requestModelMu.Lock()
+	defer s.requestModelMu.Unlock()
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" && s.completedTurns > 0 {
+		// An unidentified delayed duplicate is indistinguishable from the
+		// next turn's terminal. Forward the frame, then terminate the session
+		// so it cannot consume or corrupt a later billing turn.
+		s.turnOpen = false
+		s.ambiguousTerminal = true
+		return "", turnCompletionAmbiguous
+	}
+	if responseID != "" {
+		if _, duplicate := s.completedIDs[responseID]; duplicate {
+			return "", turnCompletionIgnored
+		}
+	}
+	if !s.turnLifecycleInit {
+		// Keep the small internal helper API backwards-compatible for callers
+		// that construct a relayState directly rather than going through Relay.
+		s.turnLifecycleInit = true
+		s.rememberCompletedResponseLocked(responseID)
+		return s.requestModel, turnCompletionAccepted
+	}
+	if !s.turnOpen {
+		if s.ambiguousTerminal || s.turnRolledBack {
+			return "", turnCompletionIgnored
+		}
+		// An upstream bare error may be followed by a response terminal
+		// carrying the next response id without another client response.create.
+		// Accept a distinct id so the official fallback sequence can settle both
+		// turns while duplicate ids remain suppressed above.
+		if responseID == "" {
+			return "", turnCompletionIgnored
+		}
+		s.turnOpen = true
+	}
+	s.turnOpen = false
+	s.rememberCompletedResponseLocked(responseID)
+	return s.requestModel, turnCompletionAccepted
+}
+
+func (s *relayState) rememberCompletedResponseLocked(responseID string) {
+	s.completedTurns++
+	if responseID == "" {
+		return
+	}
+	if s.completedIDs == nil {
+		s.completedIDs = make(map[string]struct{})
+	}
+	s.completedIDs[responseID] = struct{}{}
 }
 
 func (s *relayState) currentRequestModel() string {

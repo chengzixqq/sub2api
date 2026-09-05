@@ -199,6 +199,33 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	routingStart := time.Now()
 	requiredCapability := grokMediaRequiredCapability(endpoint)
 
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	//
+	// estimatedPromptTokens 与 images 端点同样刻意接 openAIBinaryBodyEndpointPromptTokens
+	// （恒 0）而不是 EstimateFailurePromptTokens：本 handler 的 body 由
+	// ReadRequestBodyWithPrealloc 原样读入，且 ParseGrokMediaRequest 在 body 不是合法 JSON
+	// 时会走 parseGrokMediaMultipartRequest（grok_media.go:194）——即 images/edits、
+	// videos/edits 这些端点确实会收到 multipart/form-data 的图片、视频二进制体。让它进估算器
+	// 就是按每 rune 1 token 给二进制计价，而 Grok media 按张/按时长计费，属多算方向。
+	// 代价（少算方向，明确接受）：本端点失败请求只在上游给了真实 usage 时才有非零用量。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput:    billingAttemptOutputReset(c),
+		upstreamUsageOnly:     failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		estimatedPromptTokens: openAIBinaryBodyEndpointPromptTokens,
+		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			APIKey:       apiKey,
+			Subscription: subscription,
+			ReqModel:     requestModel,
+			ChannelUsageFields: service.ChannelUsageFields{
+				OriginalModel:      clientRequestedModel(c, requestModel),
+				ChannelMappedModel: requestModel,
+			},
+			RequestPayloadBytes: grokMediaFailurePayloadHashSeed(body, requestID),
+			Component:           "handler.openai_gateway.grok_media",
+		}),
+	})
+	defer guard.Flush()
+
 	for {
 		if failoverClientGone(c) {
 			return
@@ -316,6 +343,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		}
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		guard.ObserveAttempt(account)
 		forwardStart := time.Now()
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
@@ -336,6 +364,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveOpenAIForwardResult(result)
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if failoverClientGone(c) {
@@ -411,6 +441,11 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 
+		// 转发成功即认定结算归正常路径所有，无条件 MarkSettled。
+		// 不能只在 shouldRecordGrokMediaUsage 为真时标记：video status/content 这类
+		// 查询端点成功时刻意不记用量行，若不标记，defer guard.Flush() 会把一次成功请求
+		// 按失败兜底再记一笔——那是多算方向。
+		guard.MarkSettled()
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account, grokMediaScheduleModel(account, routingModel, result), true, nil)
 		if isGrokVideoCreateEndpoint(endpoint) && strings.TrimSpace(result.ResponseID) != "" {
 			if err := h.gatewayService.BindGrokMediaVideoRequestAccount(
@@ -468,6 +503,16 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 		)
 		return
 	}
+}
+
+// grokMediaFailurePayloadHashSeed 返回失败结算行 payload hash 的取值来源，口径与成功路径
+// recordGrokMediaUsage 里的 payloadForHash 一致：无请求体的 video lookup 端点退回用
+// requestID 做哈希种子。
+func grokMediaFailurePayloadHashSeed(body []byte, requestID string) []byte {
+	if len(body) == 0 && strings.TrimSpace(requestID) != "" {
+		return []byte(requestID)
+	}
+	return body
 }
 
 func (h *OpenAIGatewayHandler) ensureGrokMediaAccountEligibility(ctx context.Context, account *service.Account) (bool, string, error) {

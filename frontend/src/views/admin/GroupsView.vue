@@ -100,7 +100,10 @@
               <Icon name="arrowsUpDown" size="md" class="mr-2" />
               {{ t("admin.groups.sortOrder") }}
             </button>
+            <!-- 建分组是站长专属：后端白名单未放行 POST /admin/groups，
+                 vendor 点了必然 403 -->
             <button
+              v-if="canCreateGroups"
               @click="openCreateModal"
               class="btn btn-primary"
               data-tour="groups-create-btn"
@@ -412,7 +415,10 @@
                   t("admin.groups.compositeRoutes.action")
                 }}</span>
               </button>
+              <!-- 倍率属计费档。未开该档的 vendor 提交会被 service 层
+                   丢弃字段，藏掉入口免得改了不生效 -->
               <button
+                v-if="canBillGroups"
                 @click="handleRateMultipliers(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-purple-600 dark:hover:bg-dark-700 dark:hover:text-purple-400"
               >
@@ -430,7 +436,9 @@
                   t("admin.groups.rpmOverrides")
                 }}</span>
               </button>
+              <!-- 删分组同为站长专属：DELETE 不在 vendor 白名单内 -->
               <button
+                v-if="canDeleteGroups"
                 @click="handleDelete(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
               >
@@ -441,11 +449,19 @@
           </template>
 
           <template #empty>
+            <!-- vendor 的空列表不是「还没建」而是「还没被授权」，
+                 给他一个自己点不动的创建按钮只会让人以为功能坏了 -->
             <EmptyState
+              v-if="canCreateGroups"
               :title="t('admin.groups.noGroupsYet')"
               :description="t('admin.groups.createFirstGroup')"
               :action-text="t('admin.groups.createGroup')"
               @action="openCreateModal"
+            />
+            <EmptyState
+              v-else
+              :title="t('admin.groups.noGrantedGroups')"
+              :description="t('admin.groups.noGrantedGroupsHint')"
             />
           </template>
         </DataTable>
@@ -1501,7 +1517,10 @@
         </div>
 
 
-        <div class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400">
+        <div
+          v-if="canBillGroups"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
@@ -3298,7 +3317,10 @@
         </div>
 
 
-        <div class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400">
+        <div
+          v-if="canBillGroups && !editingGroup?.billing_locked"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
               <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.groups.modelPricing.title") }}</h4>
@@ -4606,6 +4628,7 @@ import { createStableObjectKeyResolver } from "@/utils/stableObjectKey";
 import { extractApiErrorMessage } from "@/utils/apiError";
 import { useKeyedDebouncedSearch } from "@/composables/useKeyedDebouncedSearch";
 import { getPersistedPageSize } from "@/composables/usePersistedPageSize";
+import { useWorkspacePerms } from "@/composables/useWorkspacePerms";
 import {
   createDefaultMessagesDispatchFormState,
   messagesDispatchConfigToFormState,
@@ -4728,6 +4751,11 @@ const groupPricingToAPI = (
 const { t } = useI18n();
 const appStore = useAppStore();
 const onboardingStore = useOnboardingStore();
+
+// 工作区权限档：只用于藏掉 vendor 点了必然 403 的入口，
+// 真正的拦截在后端路由白名单与 service 层。
+const { canCreateGroups, canDeleteGroups, canBillGroups } =
+  useWorkspacePerms();
 
 const ALWAYS_VISIBLE_COLUMNS = new Set(["name", "actions"]);
 // Default hidden columns (hidden on first load / after schema bumps).

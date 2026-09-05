@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -47,7 +48,7 @@ func (s *adminServiceImpl) ListOpenAISchedulableAccountsForSchedulerScore(ctx co
 }
 
 func (s *adminServiceImpl) GetAccount(ctx context.Context, id int64) (*Account, error) {
-	return s.accountRepo.GetByID(ctx, id)
+	return s.accountRepo.GetByIDScoped(ctx, id)
 }
 
 func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
@@ -60,7 +61,58 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 		return nil, fmt.Errorf("failed to get accounts by IDs: %w", err)
 	}
 
-	return accounts, nil
+	// 批量读必须在取回后按实际 workspace_id 复核。
+	//
+	// 单账号读走 GetByIDScoped 已收窄，而这里是裸 GetByIDs —— 若不复核，
+	// vendor 传入任意 ID 即可读到别家账号（含凭证摘要与用量）。
+	// 剔除而非报错：批量端点的语义是「处理你有权的那些」，
+	// 报错会让错误码本身成为别家账号 ID 的存在性探针。
+	return s.filterAccountsByScope(ctx, accounts), nil
+}
+
+// filterAccountsByScope 剔除不属于当前作用域的账号。
+//
+// 站长（Unrestricted）原样返回同一切片，不产生任何额外开销与行为差异。
+func (s *adminServiceImpl) filterAccountsByScope(ctx context.Context, accounts []*Account) []*Account {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return accounts
+	}
+	out := make([]*Account, 0, len(accounts))
+	for _, a := range accounts {
+		if a == nil {
+			continue
+		}
+		if scope.OwnsWorkspaceID(a.WorkspaceID) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// scopedAccountIDs 把调用方传入的账号 ID 收窄为当前作用域内实际存在的那些。
+//
+// 用于批量写端点：它们只吃 account_ids，无法靠单条 GetByIDScoped 兜住。
+// 站长返回原切片；vendor 得到的是「传入 ∩ 自己名下」。
+func (s *adminServiceImpl) scopedAccountIDs(ctx context.Context, ids []int64) ([]int64, error) {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return ids, nil
+	}
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	accounts, err := s.accountRepo.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve account scope: %w", err)
+	}
+	owned := make([]int64, 0, len(accounts))
+	for _, a := range accounts {
+		if a != nil && scope.OwnsWorkspaceID(a.WorkspaceID) {
+			owned = append(owned, a.ID)
+		}
+	}
+	return owned, nil
 }
 
 const maxAccountNameRunes = 100
@@ -245,7 +297,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		return existing, nil
 	}
 
-	source, err := s.accountRepo.GetByID(ctx, id)
+	source, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -307,6 +359,13 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		SkipDefaultGroupBind:  true,
 		SkipMixedChannelCheck: true,
 	}
+	// 源账号已过 GetByIDScoped 的归属校验，但它继承来的分组未必都在本工作区授权表内
+	// ——站长可以把一个 vendor 的账号挂进任意分组。若不校验，复制就成了
+	// 绕过授权把账号铺进未授权分组的后门。
+	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
+		return nil, err
+	}
+
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, fmt.Errorf("normalize duplicate account extra: %w", err)
@@ -314,7 +373,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	duplicate, err := buildAccountForCreate(input, accountExtra)
+	duplicate, err := buildAccountForCreate(ctx, input, accountExtra)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +457,18 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
-func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	if err := validateAccountCreateScope(ctx, input.Platform); err != nil {
+		return nil, err
+	}
+
+	// 结算倍率须落在工作区约定区间内。放在这里而非 CreateAccount，
+	// 是为了同时覆盖复制账号（DuplicateAccount 也走本函数）—— 否则复制一份
+	// 站长设过高倍率的账号，就能把区间外的倍率带进自己名下。
+	if err := applyAccountFieldScope(ctx, "create", &input.RateMultiplier); err != nil {
+		return nil, err
+	}
+
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -419,6 +489,7 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		Priority:    input.Priority,
 		Status:      StatusActive,
 		Schedulable: true,
+		WorkspaceID: resolveNewAccountWorkspaceID(ctx),
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -459,6 +530,36 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 		account.LoadFactor = input.LoadFactor
 	}
 	return account, nil
+}
+
+func validateAccountCreateScope(ctx context.Context, platform string) error {
+	scope := ScopeFromContextOrDeny(ctx)
+	if scope.IsVendor() && strings.EqualFold(strings.TrimSpace(platform), PlatformGrok) {
+		return infraerrors.Forbidden(
+			"WORKSPACE_GROK_ACCOUNT_CREATE_FORBIDDEN",
+			"workspace vendors may only reauthorize an existing Grok account",
+		)
+	}
+	return nil
+}
+
+// resolveNewAccountWorkspaceID 决定新建账号的归属工作区。
+//
+// vendor 建的账号落入其所属工作区，站长建的落 DefaultWorkspaceID（站长直管）。
+// 归属不由请求体指定，避免 vendor 通过伪造字段把账号塞进别的工作区。
+//
+// 站长必须落 1 而非 0：workspace_id 有外键指向 workspaces(id)，而预置行只有
+// id=1，落 0 会让站长的每一次新建都撞外键失败。存量行的列默认值同样是 1，
+// 新建与存量因此同口径。
+//
+// 无作用域（未过管理端中间件）也按站长处理 —— 这类调用只可能来自内部编排，
+// vendor 的请求必然带作用域。
+func resolveNewAccountWorkspaceID(ctx context.Context) int64 {
+	scope, ok := ScopeFromContext(ctx)
+	if !ok || scope.Unrestricted || scope.WorkspaceID <= 0 {
+		return domain.DefaultWorkspaceID
+	}
+	return scope.WorkspaceID
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
@@ -505,7 +606,14 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
-	account, err := buildAccountForCreate(input, accountExtra)
+	// 授权校验必须早于 Create：绑定发生在账号入库之后，
+	// 放到那里失败会留下一个不属于任何分组的孤儿账号。
+	// 默认分组自动绑定同样经此校验 —— 那条路径不走 validateGroupIDsExist。
+	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
+		return nil, err
+	}
+
+	account, err := buildAccountForCreate(ctx, input, accountExtra)
 	if err != nil {
 		return nil, err
 	}
@@ -545,11 +653,19 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// 新账号加入工作区后，该工作区的账号白名单缓存已过期。
+	s.invalidateWorkspaceAccountScope(account.WorkspaceID)
+
 	return account, nil
 }
 
 func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error) {
-	account, err := s.accountRepo.GetByID(ctx, id)
+	// 先校验倍率区间再取数：越界即拒，不必先付一次查询代价。
+	if err := applyAccountFieldScope(ctx, "update", &input.RateMultiplier); err != nil {
+		return nil, err
+	}
+
+	account, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -798,6 +914,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
 			return nil, err
 		}
+		if err := s.requireGroupIDsGranted(ctx, *input.GroupIDs); err != nil {
+			return nil, err
+		}
 
 		// 检查混合渠道风险（除非用户已确认）
 		if !input.SkipMixedChannelCheck {
@@ -862,7 +981,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	}
 
 	// 重新查询以确保返回完整数据（包括正确的 Proxy 关联对象）
-	updated, err := s.accountRepo.GetByID(ctx, id)
+	updated, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -881,7 +1000,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
 	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
-		account, err := s.accountRepo.GetByID(ctx, id)
+		account, err := s.accountRepo.GetByIDScoped(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -898,6 +1017,11 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
+	// 批量最需要这道校验：一次请求就能给名下全部账号刷上区间外的倍率。
+	if err := applyAccountFieldScope(ctx, "bulk_update", &input.RateMultiplier); err != nil {
+		return nil, err
+	}
+
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
@@ -916,6 +1040,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		input.AccountIDs = accountIDs
 	}
 
+	// 收窄必须在 filters 解析之后：filters 路径按条件反查 ID，
+	// 若放在前面，vendor 提交 filters 即可绕过收窄批量改写全站账号。
+	scopedIDs, err := s.scopedAccountIDs(ctx, input.AccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	input.AccountIDs = scopedIDs
+
 	result := &BulkUpdateAccountsResult{
 		SuccessIDs: make([]int64, 0, len(input.AccountIDs)),
 		FailedIDs:  make([]int64, 0, len(input.AccountIDs)),
@@ -927,6 +1059,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 	if input.GroupIDs != nil {
 		if err := s.validateGroupIDsExist(ctx, *input.GroupIDs); err != nil {
+			return nil, err
+		}
+		if err := s.requireGroupIDsGranted(ctx, *input.GroupIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -1218,7 +1353,25 @@ func (s *adminServiceImpl) resolveBulkUpdateTargetIDs(ctx context.Context, filte
 	}
 }
 
+// DeleteAccount 删除账号，并级联删除其 spark 影子账号。
+//
+// 归属校验必须独立前置，不能靠下面那次 GetByIDScoped 兼任：那一处的语义是
+// 「取 workspaceID 供缓存失效」，取不到刻意不阻断（账号可能已不存在，
+// 交由 Delete 报错）。两种语义挤在一个调用里，结果是 vendor 传别家 ID 时
+// scoped 读返回 not found，却继续走完删除 —— 跨区删号且无痕。
 func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
+	if err := s.requireAccountAccess(ctx, id); err != nil {
+		return err
+	}
+
+	// 先取归属工作区：删除后就查不到了，而缓存失效需要这个 ID。
+	// 取不到不阻断删除（账号可能已不存在，由下面的 Delete 报错），
+	// 仅退化为不失效，缓存会在 30s 内自然过期。
+	var workspaceID int64
+	if account, err := s.accountRepo.GetByIDScoped(ctx, id); err == nil && account != nil {
+		workspaceID = account.WorkspaceID
+	}
+
 	// 级联删除 spark 影子账号（先删影子，再删母账号）
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, id)
 	if err != nil {
@@ -1232,11 +1385,16 @@ func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
 	if err := s.accountRepo.Delete(ctx, id); err != nil {
 		return err
 	}
+
+	// 账号已移出工作区，白名单缓存必须立即失效：
+	// 否则原 vendor 在缓存过期前仍能查到该账号的用量（越权）。
+	s.invalidateWorkspaceAccountScope(workspaceID)
+
 	return nil
 }
 
 func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int64) (*Account, error) {
-	account, err := s.accountRepo.GetByID(ctx, id)
+	account, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -1244,7 +1402,15 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 	return account, nil
 }
 
+// ClearAccountError 清空账号的错误与限流状态，使其恢复可调度。
+//
+// 归属校验必须前置：下面是连续五次写操作，末尾的 GetByIDScoped 只是取回显值。
+// 若把它当校验，五次写早已落库 —— 越权的 vendor 已经把别家账号从
+// 限流状态里捞了出来，读不到也回滚不了。
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
+	if err := s.requireAccountAccess(ctx, id); err != nil {
+		return nil, err
+	}
 	if err := s.accountRepo.ClearError(ctx, id); err != nil {
 		return nil, err
 	}
@@ -1263,30 +1429,49 @@ func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Ac
 	if s.runtimeBlocker != nil {
 		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
 	}
-	return s.accountRepo.GetByID(ctx, id)
+	return s.accountRepo.GetByIDScoped(ctx, id)
 }
 
+// SetAccountError 手工把账号标记为错误状态。
+//
+// 写别家账号的错误信息等于让对方的号停摆，所以同样需要归属校验。
 func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorMsg string) error {
+	if err := s.requireAccountAccess(ctx, id); err != nil {
+		return err
+	}
 	return s.accountRepo.SetError(ctx, id, errorMsg)
 }
 
+// SetAccountSchedulable 切换账号是否参与调度。
+//
+// 校验前置的理由同 ClearAccountError：原实现先 SetSchedulable 再 scoped 读，
+// 读失败时开关已经翻了 —— vendor 能凭裸 ID 停掉别家在跑的账号。
 func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error) {
+	if err := s.requireAccountAccess(ctx, id); err != nil {
+		return nil, err
+	}
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
-	updated, err := s.accountRepo.GetByID(ctx, id)
+	updated, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return updated, nil
 }
 
+// RevertAccountProxyFallback 把账号的代理从降级态恢复回原配置。
+//
+// 代理归属本身受工作区约束，改别家账号走哪条代理等同篡改其出口 IP。
 func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id int64) error {
+	if err := s.requireAccountAccess(ctx, id); err != nil {
+		return err
+	}
 	if err := s.accountRepo.RevertProxyFallback(ctx, id); err != nil {
 		return err
 	}
 	// 加载回退后的账号以获取实际 ProxyID，再传播到影子账号
-	account, err := s.accountRepo.GetByID(ctx, id)
+	account, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return fmt.Errorf("get account after proxy revert: %w", err)
 	}
@@ -1297,7 +1482,7 @@ func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id in
 // 安全不变量：Credentials 恒不含 auth token（仅 model_mapping，守卫 isAllowedSparkShadowCredentialsUpdate 放行）。
 func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opts ShadowOptions) (*Account, error) {
 	// 1. 加载母账号并校验平台/类型
-	parent, err := s.accountRepo.GetByID(ctx, parentID)
+	parent, err := s.accountRepo.GetByIDScoped(ctx, parentID)
 	if err != nil {
 		return nil, fmt.Errorf("get parent account: %w", err)
 	}
@@ -1347,6 +1532,13 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		}
 	}
 
+	// 授权校验放在三条分支汇合之后：继承母账号分组与回落默认分组
+	// 都不经上面的存在性校验，只在显式指定时校验会漏掉这两条路径。
+	// 影子账号会真实承接该分组的流量，绑定权与普通账号同级。
+	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
+		return nil, err
+	}
+
 	// 4. 构造影子账号（安全不变量：Credentials 恒不含 auth token，仅含 model_mapping）。
 	// name 为空时默认 "<母账号名> (Spark)"——否则空 name 会在 ent(name NotEmpty)处变成裸 500
 	// (外审 E/P2);并 rune 安全截断到 ent MaxLen(100)。
@@ -1375,6 +1567,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		Platform:        PlatformOpenAI,
 		Type:            AccountTypeOAuth,
 		Status:          StatusActive,
+		WorkspaceID:     parent.WorkspaceID,
 		Credentials:     map[string]any{"model_mapping": defaultSparkShadowModelMapping()},
 		ParentAccountID: &parentID,
 		QuotaDimension:  QuotaDimensionSpark,
@@ -1489,6 +1682,34 @@ func (s *adminServiceImpl) checkMixedChannelRisk(ctx context.Context, currentAcc
 	return nil
 }
 
+// requireGroupIDsGranted 校验待绑定的分组全部在本工作区授权表内。
+//
+// 这是设计里的硬不变量之一：账号↔分组关联只有站长能跨区操作。
+// 若不校验，vendor 可把自己的账号挂进任意分组 —— 等于自行接单，
+// 且该分组的用户流量会真实打到他的号上。
+//
+// 与 requireGroupAccess 同样返回 ErrWorkspaceScopeViolation（对外 404）：
+// 用 403 会让错误码本身变成「该分组是否存在」的探针。
+func (s *adminServiceImpl) requireGroupIDsGranted(ctx context.Context, groupIDs []int64) error {
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	granted, err := s.grantedGroupIDs(ctx)
+	if err != nil {
+		return err
+	}
+	// nil 表示站长不受限；空 map 表示零授权，一个都不许绑。
+	if granted == nil {
+		return nil
+	}
+	for _, id := range groupIDs {
+		if _, ok := granted[id]; !ok {
+			return domain.ErrWorkspaceScopeViolation
+		}
+	}
+	return nil
+}
+
 func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs []int64) error {
 	if len(groupIDs) == 0 {
 		return nil
@@ -1520,6 +1741,14 @@ func (s *adminServiceImpl) validateGroupIDsExist(ctx context.Context, groupIDs [
 
 // CheckMixedChannelRisk checks whether target groups contain mixed channels for the current account platform.
 func (s *adminServiceImpl) CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error {
+	if currentAccountID > 0 {
+		if err := s.requireAccountAccess(ctx, currentAccountID); err != nil {
+			return err
+		}
+	}
+	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
+		return err
+	}
 	return s.checkMixedChannelRisk(ctx, currentAccountID, currentAccountPlatform, groupIDs)
 }
 
@@ -1549,7 +1778,7 @@ func (e *MixedChannelError) Error() string {
 }
 
 func (s *adminServiceImpl) ResetAccountQuota(ctx context.Context, id int64) error {
-	account, err := s.accountRepo.GetByID(ctx, id)
+	account, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return err
 	}

@@ -18,6 +18,15 @@
               <Icon name="chart" size="sm" class="text-indigo-500" />
               {{ t('admin.accounts.viewStats') }}
             </button>
+            <!--
+              结算倍率：仅供应商可见。站长改的是账号自身倍率（在编辑弹窗里），
+              供应商改的是 (工作区 × 分组) 的结算价 —— 两者不是同一个字段，
+              所以入口也分开，不做成同一个按钮按角色切换语义。
+            -->
+            <button v-if="isVendor" @click="$emit('settlement', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
+              <Icon name="dollar" size="sm" class="text-emerald-500" />
+              {{ t('admin.workspaces.settlement.entry') }}
+            </button>
             <button @click="$emit('schedule', account); $emit('close')" class="flex w-full items-center gap-2 px-4 py-2 text-sm hover:bg-gray-100 dark:hover:bg-dark-700">
               <Icon name="clock" size="sm" class="text-orange-500" />
               {{ t('admin.scheduledTests.schedule') }}
@@ -65,11 +74,15 @@
 import { computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Icon } from '@/components/icons'
+import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 import type { Account } from '@/types'
 
 const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
-const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow'])
+const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'settlement'])
 const { t } = useI18n()
+// 结算倍率入口只对供应商有意义：站长没有「自己的工作区」，
+// /admin/workspaces/me 对其返回空载荷，点开必然是空对话框。
+const { isVendor } = useWorkspacePerms()
 const canDuplicate = computed(() => {
   if (!props.account || props.account.parent_account_id != null) return false
   return ['apikey', 'upstream', 'bedrock', 'service_account'].includes(props.account.type)

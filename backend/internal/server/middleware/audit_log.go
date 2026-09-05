@@ -118,6 +118,8 @@ var auditSensitiveReads = map[string]string{
 	"GET /api/v1/admin/groups/:id/api-keys":       "admin.groups.api_keys.read",
 	"GET /api/v1/admin/backups/s3-config":         "admin.backups.s3_config.read",
 	"GET /api/v1/admin/data-management/s3/config": "admin.data_management.s3_config.read",
+	"GET /api/v1/admin/user-adjustments":          "admin.user_adjustments.read",
+	"GET /api/v1/admin/user-adjustments/export":   "admin.user_adjustments.export",
 }
 
 // auditActionOverrides 变更类请求的动作名精确映射（未命中时自动推导）。
@@ -241,6 +243,13 @@ func NewAuditLogMiddleware(auditService *service.AuditLogService) AuditLogMiddle
 		}
 		if requestID, ok := c.Request.Context().Value(ctxkey.RequestID).(string); ok {
 			entry.RequestID = requestID
+		}
+
+		// 操作归属工作区：vendor 操作记到自己工作区，站长/系统操作留 NULL。
+		// VendorScope 中间件在审计之前注册，此处作用域必然已就绪。
+		if scope, ok := GetVendorScopeFromContext(c); ok && !scope.Unrestricted && scope.WorkspaceID > 0 {
+			wid := scope.WorkspaceID
+			entry.WorkspaceID = &wid
 		}
 
 		// 操作者身份：优先取认证中间件写入的上下文，其次取 handler 覆写（登录等场景）。

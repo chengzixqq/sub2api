@@ -444,6 +444,9 @@ export default {
         selectUser: '选择 {email}',
         enableConcurrency: '修改并发数',
         enableRPMLimit: '修改 RPM 限制',
+        notes: '操作备注（可选）',
+        notesPlaceholder: '填写本次批量限制变更原因',
+        notesHint: '启用并发修改时可填写，仅用于生成的并发流水，不会写入用户资料。',
         unlimited: '不限制',
         nonNegativeInteger: '请输入非负整数。',
         apply: '应用限制',
@@ -485,6 +488,9 @@ export default {
       password: '密码',
       username: '用户名',
       notes: '备注',
+      adjustmentNotes: '并发调整备注（可选）',
+      adjustmentNotesPlaceholder: '填写本次并发变更原因',
+      adjustmentNotesHint: '并发发生变化时可填写，仅用于本次流水，不会写入用户资料。',
       enterEmail: '请输入邮箱',
       enterPassword: '请输入密码',
       enterUsername: '请输入用户名（选填）',
@@ -559,6 +565,7 @@ export default {
       deleteConfirm: "确定要删除用户 '{email}' 吗？此操作无法撤销。",
       roles: {
         admin: '管理员',
+        vendor: '供应商',
         user: '用户'
       },
       form: {
@@ -939,6 +946,8 @@ export default {
       platformNotEditable: '创建后不可更改平台',
       noGroupsYet: '暂无分组',
       createFirstGroup: '创建您的第一个分组来组织 API 密钥。',
+      noGrantedGroups: '暂无已授权分组',
+      noGrantedGroupsHint: '站长把分组授权给你的工作区后，会出现在这里。',
       creating: '创建中...',
       updating: '更新中...',
       limitDay: '日',

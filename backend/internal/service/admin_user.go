@@ -16,6 +16,8 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/lib/pq"
+	"github.com/shopspring/decimal"
 )
 
 // User management implementations
@@ -111,8 +113,8 @@ func normalizeUserRole(role, fallback string) (string, error) {
 	if role == "" {
 		return fallback, nil
 	}
-	if role != RoleAdmin && role != RoleUser {
-		return "", fmt.Errorf("invalid role: %q (must be %s or %s)", role, RoleAdmin, RoleUser)
+	if role != RoleAdmin && role != RoleUser && role != RoleVendor {
+		return "", fmt.Errorf("invalid role: %q (must be %s, %s or %s)", role, RoleAdmin, RoleUser, RoleVendor)
 	}
 	return role, nil
 }
@@ -219,6 +221,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	oldRole := user.Role
 	oldRPMLimit := user.RPMLimit
 	oldAllowedGroups := append([]int64(nil), user.AllowedGroups...)
+	oldRestrictPublicGroups := user.RestrictPublicGroups
 
 	// fields 与下面的 input.X 判空条件一一对应：管理员没提交的列不写回，
 	// 避免这份快照回滚并发的扣费、状态变更或批量限额调整。
@@ -257,7 +260,10 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		}
 		// 防锁死保护：不允许降级系统中最后一个管理员（自我降级已在 handler 层拦截，
 		// 此处兜底覆盖跨管理员互降导致零 admin 的场景）。
-		if user.Role == RoleAdmin && role == RoleUser {
+		//
+		// 判定「离开 admin」而非枚举目标角色：vendor 引入时这里漏判过一次，
+		// 只匹配 RoleUser 让 admin→vendor 绕开了保护。今后再加角色也不必回来改。
+		if user.Role == RoleAdmin && role != RoleAdmin {
 			if err := s.ensureNotLastAdmin(ctx); err != nil {
 				return nil, err
 			}
@@ -280,14 +286,77 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		user.AllowedGroups = *input.AllowedGroups
 		fields.AllowedGroups = true
 	}
-
-	oldRestrictPublicGroups := user.RestrictPublicGroups
 	if input.RestrictPublicGroups != nil {
 		user.RestrictPublicGroups = *input.RestrictPublicGroups
 		fields.RestrictPublicGroups = true
 	}
 
-	if err := s.userRepo.Update(ctx, user, fields); err != nil {
+	concurrencyLedgerPersisted := false
+	groupRatesPersisted := false
+	persistConcurrencyLedger := fields.Concurrency && s.canPersistAdminAdjustments()
+	useUpdateTransaction := s.entClient != nil && (persistConcurrencyLedger || (input.GroupRates != nil && s.userGroupRateRepo != nil))
+	if useUpdateTransaction {
+		tx, err := s.entClient.Tx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		opCtx := dbent.NewTxContext(ctx, tx)
+		metadata := AdminAdjustmentMetadataFromContext(ctx)
+		requested := max(user.Concurrency, 0)
+		if persistConcurrencyLedger {
+			committed, err := s.adjustmentActionAlreadyCommitted(opCtx, metadata)
+			if err != nil {
+				return nil, err
+			}
+			if committed {
+				return s.userRepo.GetByID(opCtx, id)
+			}
+			fields.Concurrency = false
+		}
+		// Keep the same lock order as an email-only update: email advisory
+		// lock first, then the user row. This avoids a row/advisory inversion
+		// when one request changes email and concurrency together.
+		if err := s.userRepo.Update(opCtx, user, fields); err != nil {
+			return nil, err
+		}
+		if persistConcurrencyLedger {
+			before, after, snapshotEmail, snapshotName, err := atomicSetUserConcurrency(opCtx, tx.Client(), user.ID, requested)
+			if err != nil {
+				return nil, err
+			}
+			oldConcurrency = before
+			user.Concurrency = after
+			if after != before {
+				if metadata.Notes == "" {
+					metadata.Notes = input.AdjustmentNotes
+				}
+				requestedValue := decimal.NewFromInt(int64(requested)).StringFixed(8)
+				beforeValue := decimal.NewFromInt(int64(before)).StringFixed(8)
+				afterValue := decimal.NewFromInt(int64(after)).StringFixed(8)
+				deltaValue := decimal.NewFromInt(int64(after - before)).StringFixed(8)
+				if err := s.createAdjustmentRecords(opCtx, tx.Client(), []AdminUserAdjustmentWrite{{
+					ActionID: metadata.ActionID, Kind: AdjustmentKindConcurrency,
+					Operation: AdjustmentOperationSet, RequestedValue: &requestedValue,
+					Delta: deltaValue, BeforeValue: &beforeValue, AfterValue: &afterValue,
+					UserID: user.ID, UserEmail: adjustmentStringPtr(snapshotEmail), UserName: adjustmentStringPtr(snapshotName),
+					Source: "admin_user_update",
+				}}, metadata); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if input.GroupRates != nil && s.userGroupRateRepo != nil {
+			if err := s.userGroupRateRepo.SyncUserGroupRates(opCtx, user.ID, input.GroupRates); err != nil {
+				return nil, fmt.Errorf("sync user group rates: %w", err)
+			}
+			groupRatesPersisted = true
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		concurrencyLedgerPersisted = persistConcurrencyLedger
+	} else if err := s.userRepo.Update(ctx, user, fields); err != nil {
 		return nil, err
 	}
 
@@ -298,9 +367,9 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	// 同步用户专属分组倍率
-	if input.GroupRates != nil && s.userGroupRateRepo != nil {
+	if !groupRatesPersisted && input.GroupRates != nil && s.userGroupRateRepo != nil {
 		if err := s.userGroupRateRepo.SyncUserGroupRates(ctx, user.ID, input.GroupRates); err != nil {
-			logger.LegacyPrintf("service.admin", "failed to sync user group rates: user_id=%d err=%v", user.ID, err)
+			return nil, fmt.Errorf("sync user group rates: %w", err)
 		}
 	}
 
@@ -313,7 +382,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	concurrencyDiff := user.Concurrency - oldConcurrency
-	if concurrencyDiff != 0 {
+	if concurrencyDiff != 0 && !concurrencyLedgerPersisted && s.redeemCodeRepo != nil {
 		code, err := GenerateRedeemCode()
 		if err != nil {
 			logger.LegacyPrintf("service.admin", "failed to generate adjustment redeem code: %v", err)
@@ -334,6 +403,38 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	}
 
 	return user, nil
+}
+
+func atomicSetUserConcurrency(ctx context.Context, client *dbent.Client, userID int64, value int) (before, after int, email, name string, err error) {
+	rows, err := client.QueryContext(ctx, `
+WITH target AS (
+    SELECT id, concurrency AS before_value
+    FROM users
+    WHERE id = $1 AND deleted_at IS NULL
+    FOR UPDATE
+), updated AS (
+    UPDATE users AS u
+    SET concurrency = $2, updated_at = NOW()
+    FROM target
+    WHERE u.id = target.id
+    RETURNING target.before_value, u.concurrency AS after_value,
+              u.email, COALESCE(NULLIF(u.username, ''), '') AS user_name
+)
+SELECT before_value, after_value, email, user_name FROM updated`, userID, max(value, 0))
+	if err != nil {
+		return 0, 0, "", "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, 0, "", "", err
+		}
+		return 0, 0, "", "", ErrUserNotFound
+	}
+	if err := rows.Scan(&before, &after, &email, &name); err != nil {
+		return 0, 0, "", "", err
+	}
+	return before, after, email, name, rows.Err()
 }
 
 func sameInt64Set(a, b []int64) bool {
@@ -449,24 +550,33 @@ func (s *adminServiceImpl) deleteUserWithAPIKeys(ctx context.Context, userID int
 
 func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error) {
 	cleaned := make([]int64, 0, len(userIDs))
+	seen := make(map[int64]struct{}, len(userIDs))
 	for _, uid := range userIDs {
-		if uid > 0 {
-			cleaned = append(cleaned, uid)
+		if uid <= 0 {
+			continue
 		}
+		if _, ok := seen[uid]; ok {
+			continue
+		}
+		seen[uid] = struct{}{}
+		cleaned = append(cleaned, uid)
 	}
 	if len(cleaned) == 0 {
 		return 0, nil
 	}
 
+	if mode != AdjustmentOperationSet && mode != AdjustmentOperationAdd {
+		return 0, errors.New("invalid mode: must be 'set' or 'add'")
+	}
+
 	var affected int
 	var err error
-	switch mode {
-	case "set":
+	if s.canPersistAdminAdjustments() {
+		affected, err = s.batchUpdateConcurrencyWithLedger(ctx, cleaned, value, mode, nil, "admin_batch_concurrency")
+	} else if mode == AdjustmentOperationSet {
 		affected, err = s.userRepo.BatchSetConcurrency(ctx, cleaned, value)
-	case "add":
+	} else {
 		affected, err = s.userRepo.BatchAddConcurrency(ctx, cleaned, value)
-	default:
-		return 0, errors.New("invalid mode: must be 'set' or 'add'")
 	}
 	if err != nil {
 		return 0, err
@@ -501,7 +611,13 @@ func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int6
 		return 0, nil
 	}
 
-	affected, err := s.userRepo.BatchUpdateLimits(ctx, cleaned, concurrency, rpmLimit)
+	var affected int
+	var err error
+	if concurrency != nil && s.canPersistAdminAdjustments() {
+		affected, err = s.batchUpdateConcurrencyWithLedger(ctx, cleaned, *concurrency, AdjustmentOperationSet, rpmLimit, "admin_batch_limits")
+	} else {
+		affected, err = s.userRepo.BatchUpdateLimits(ctx, cleaned, concurrency, rpmLimit)
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -513,19 +629,71 @@ func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int6
 	return affected, nil
 }
 
-func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error) {
+var maxAdminBalance = decimal.RequireFromString("999999999999.99999999")
+
+func parseAdminBalance(balance string, operation string) (decimal.Decimal, error) {
+	value, err := decimal.NewFromString(strings.TrimSpace(balance))
+	if err != nil {
+		return decimal.Zero, infraerrors.BadRequest("INVALID_BALANCE", "balance must be a decimal number")
+	}
+	if value.IsNegative() || value.GreaterThan(maxAdminBalance) || !value.Equal(value.Round(8)) {
+		return decimal.Zero, infraerrors.BadRequest("INVALID_BALANCE", "balance must be between 0 and 999999999999.99999999 with at most 8 decimal places")
+	}
+	if operation != AdjustmentOperationSet && !value.IsPositive() {
+		return decimal.Zero, infraerrors.BadRequest("INVALID_BALANCE", "balance must be greater than zero for add or subtract")
+	}
+	return value.Round(8), nil
+}
+
+func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, balance string, operation string, notes string) (*User, error) {
+	requestedBalance, err := parseAdminBalance(balance, operation)
+	if err != nil {
+		return nil, err
+	}
+	if !s.canPersistAdminAdjustments() {
+		return s.updateUserBalanceCompatibility(ctx, userID, requestedBalance, operation, notes)
+	}
+
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	opCtx := dbent.NewTxContext(ctx, tx)
+	metadata := AdminAdjustmentMetadataFromContext(ctx)
+	committed, err := s.adjustmentActionAlreadyCommitted(opCtx, metadata)
+	if err != nil {
+		return nil, err
+	}
+	if committed {
+		return s.userRepo.GetByID(opCtx, userID)
+	}
+
 	// 余额调整必须走原子接口：先读后整行写回会把并发的计费扣款覆盖掉。
-	var (
-		change BalanceChange
-		err    error
-	)
+	var change BalanceChange
+	exactRepo, exact := s.userRepo.(ExactBalanceAdjustmentRepository)
 	switch operation {
-	case "set":
-		change, err = s.userRepo.SetBalance(ctx, userID, balance)
-	case "add":
-		change, err = s.userRepo.AdjustBalance(ctx, userID, balance)
-	case "subtract":
-		change, err = s.userRepo.AdjustBalance(ctx, userID, -balance)
+	case AdjustmentOperationSet:
+		if exact {
+			change, err = exactRepo.SetBalanceExact(opCtx, userID, requestedBalance.StringFixed(8))
+		} else {
+			value, _ := requestedBalance.Float64()
+			change, err = s.userRepo.SetBalance(opCtx, userID, value)
+		}
+	case AdjustmentOperationAdd:
+		if exact {
+			change, err = exactRepo.AdjustBalanceExact(opCtx, userID, requestedBalance.StringFixed(8))
+		} else {
+			value, _ := requestedBalance.Float64()
+			change, err = s.userRepo.AdjustBalance(opCtx, userID, value)
+		}
+	case AdjustmentOperationSubtract:
+		if exact {
+			change, err = exactRepo.AdjustBalanceExact(opCtx, userID, requestedBalance.Neg().StringFixed(8))
+		} else {
+			value, _ := requestedBalance.Float64()
+			change, err = s.userRepo.AdjustBalance(opCtx, userID, -value)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported balance operation: %q", operation)
 	}
@@ -536,17 +704,119 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		return nil, err
 	}
 
-	user, err := s.userRepo.GetByID(ctx, userID)
+	beforeDecimal, afterDecimal, balanceDiff, err := exactBalanceChange(change)
+	if err != nil {
+		return nil, err
+	}
+	if !balanceDiff.IsZero() {
+		email, name, snapshotErr := adminAdjustmentUserSnapshot(opCtx, tx.Client(), userID)
+		if snapshotErr != nil {
+			return nil, snapshotErr
+		}
+		metadata.Notes = notes
+		requested := requestedBalance.StringFixed(8)
+		beforeValue := beforeDecimal.StringFixed(8)
+		afterValue := afterDecimal.StringFixed(8)
+		deltaValue := balanceDiff.StringFixed(8)
+		if err := s.createAdjustmentRecords(opCtx, tx.Client(), []AdminUserAdjustmentWrite{{
+			ActionID:       metadata.ActionID,
+			Kind:           AdjustmentKindBalance,
+			Operation:      adjustmentOperationForDelta(operation, balanceDiff.Sign()),
+			RequestedValue: &requested,
+			Delta:          deltaValue,
+			BeforeValue:    &beforeValue,
+			AfterValue:     &afterValue,
+			UserID:         userID,
+			UserEmail:      adjustmentStringPtr(email),
+			UserName:       adjustmentStringPtr(name),
+			Source:         "admin_balance",
+		}}, metadata); err != nil {
+			return nil, err
+		}
+	}
+	user, err := s.userRepo.GetByID(opCtx, userID)
 	if err != nil {
 		return nil, err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	balanceDiffFloat, _ := balanceDiff.Float64()
+	requestedFloat, _ := requestedBalance.Float64()
+	s.afterBalanceAdjustmentCommit(ctx, userID, operation, requestedFloat, balanceDiffFloat)
+	return user, nil
+}
+
+func exactBalanceChange(change BalanceChange) (before, after, delta decimal.Decimal, err error) {
+	if change.OldExact == "" || change.NewExact == "" {
+		before = decimal.NewFromFloat(change.Old).Round(8)
+		after = decimal.NewFromFloat(change.New).Round(8)
+		return before, after, after.Sub(before), nil
+	}
+	before, err = decimal.NewFromString(change.OldExact)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("parse exact balance before value: %w", err)
+	}
+	after, err = decimal.NewFromString(change.NewExact)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("parse exact balance after value: %w", err)
+	}
+	return before, after, after.Sub(before), nil
+}
+
+func (s *adminServiceImpl) updateUserBalanceCompatibility(ctx context.Context, userID int64, balance decimal.Decimal, operation string, notes string) (*User, error) {
+	var (
+		change BalanceChange
+		err    error
+	)
+	value, _ := balance.Float64()
+	switch operation {
+	case AdjustmentOperationSet:
+		change, err = s.userRepo.SetBalance(ctx, userID, value)
+	case AdjustmentOperationAdd:
+		change, err = s.userRepo.AdjustBalance(ctx, userID, value)
+	case AdjustmentOperationSubtract:
+		change, err = s.userRepo.AdjustBalance(ctx, userID, -value)
+	default:
+		return nil, fmt.Errorf("unsupported balance operation: %q", operation)
+	}
+	if errors.Is(err, ErrBalanceNegative) {
+		return nil, fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", change.Old, change.New)
+	}
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
 	balanceDiff := change.New - change.Old
-	if s.authCacheInvalidator != nil && balanceDiff != 0 {
+	if balanceDiff != 0 && s.redeemCodeRepo != nil {
+		code, generateErr := GenerateRedeemCode()
+		if generateErr != nil {
+			return nil, generateErr
+		}
+		now := time.Now()
+		if createErr := s.redeemCodeRepo.Create(ctx, &RedeemCode{
+			Code: code, Type: AdjustmentTypeAdminBalance, Value: balanceDiff,
+			Status: StatusUsed, UsedBy: &user.ID, Notes: notes, UsedAt: &now,
+		}); createErr != nil {
+			logger.LegacyPrintf("service.admin", "failed to create balance adjustment redeem code: %v", createErr)
+		}
+	}
+	s.afterBalanceAdjustmentCommit(ctx, userID, operation, value, balanceDiff)
+	return user, nil
+}
+
+func (s *adminServiceImpl) afterBalanceAdjustmentCommit(ctx context.Context, userID int64, operation string, requested, delta float64) {
+	if delta == 0 {
+		return
+	}
+	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
-	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
-
+	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, requested)
 	if s.billingCacheService != nil {
 		go func() {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -556,31 +826,218 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 			}
 		}()
 	}
+}
 
-	if balanceDiff != 0 {
+type adminConcurrencyChange struct {
+	UserID int64
+	Email  string
+	Name   string
+	Before int
+	After  int
+}
+
+func (s *adminServiceImpl) canPersistAdminAdjustments() bool {
+	return s.entClient != nil && s.redeemCodeRepo != nil && s.adjustmentRepo != nil
+}
+
+func (s *adminServiceImpl) adjustmentActionAlreadyCommitted(ctx context.Context, metadata AdminAdjustmentMetadata) (bool, error) {
+	if !metadata.Idempotent {
+		return false, nil
+	}
+	if err := s.adjustmentRepo.LockAction(ctx, metadata.ActionID); err != nil {
+		return false, fmt.Errorf("lock admin adjustment action: %w", err)
+	}
+	count, err := s.adjustmentRepo.CountByActionID(ctx, metadata.ActionID)
+	if err != nil {
+		return false, fmt.Errorf("check admin adjustment action: %w", err)
+	}
+	return count > 0, nil
+}
+
+func adminAdjustmentUserSnapshot(ctx context.Context, client *dbent.Client, userID int64) (email, name string, err error) {
+	rows, err := client.QueryContext(ctx, `SELECT email, COALESCE(NULLIF(username, ''), '') FROM users WHERE id = $1 AND deleted_at IS NULL`, userID)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", "", err
+		}
+		return "", "", ErrUserNotFound
+	}
+	if err := rows.Scan(&email, &name); err != nil {
+		return "", "", err
+	}
+	return email, name, rows.Err()
+}
+
+func (s *adminServiceImpl) createAdjustmentRecords(ctx context.Context, client *dbent.Client, rows []AdminUserAdjustmentWrite, metadata AdminAdjustmentMetadata) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	var operatorName *string
+	if metadata.OperatorID != nil {
+		operatorEmail, name, err := adminAdjustmentUserSnapshot(ctx, client, *metadata.OperatorID)
+		if err != nil {
+			return fmt.Errorf("snapshot adjustment operator: %w", err)
+		}
+		metadata.OperatorEmail = operatorEmail
+		operatorName = adjustmentStringPtr(name)
+	}
+	now := time.Now()
+	redeemCodes := make([]RedeemCode, 0, len(rows))
+	for i := range rows {
 		code, err := GenerateRedeemCode()
 		if err != nil {
-			logger.LegacyPrintf("service.admin", "failed to generate adjustment redeem code: %v", err)
-			return user, nil
+			return err
 		}
-
-		adjustmentRecord := &RedeemCode{
-			Code:   code,
-			Type:   AdjustmentTypeAdminBalance,
-			Value:  balanceDiff,
-			Status: StatusUsed,
-			UsedBy: &user.ID,
-			Notes:  notes,
+		recordType := AdjustmentTypeAdminBalance
+		if rows[i].Kind == AdjustmentKindConcurrency {
+			recordType = AdjustmentTypeAdminConcurrency
 		}
-		now := time.Now()
-		adjustmentRecord.UsedAt = &now
-
-		if err := s.redeemCodeRepo.Create(ctx, adjustmentRecord); err != nil {
-			logger.LegacyPrintf("service.admin", "failed to create balance adjustment redeem code: %v", err)
+		userID := rows[i].UserID
+		delta, err := decimal.NewFromString(rows[i].Delta)
+		if err != nil {
+			return fmt.Errorf("parse adjustment delta: %w", err)
 		}
+		deltaFloat, _ := delta.Float64()
+		redeemCodes = append(redeemCodes, RedeemCode{
+			Code: code, Type: recordType, Value: deltaFloat, ValueExact: delta.StringFixed(8), Status: StatusUsed,
+			UsedBy: &userID, UsedAt: &now, Notes: metadata.Notes,
+		})
+		rows[i].OperatorUserID = metadata.OperatorID
+		rows[i].OperatorEmail = adjustmentStringPtr(metadata.OperatorEmail)
+		rows[i].OperatorName = operatorName
+		rows[i].Notes = adjustmentStringPtr(metadata.Notes)
+		rows[i].ClientIP = adjustmentStringPtr(metadata.ClientIP)
+		rows[i].AuthMethod = adjustmentStringPtr(metadata.AuthMethod)
+		rows[i].RequestID = adjustmentStringPtr(metadata.RequestID)
+		rows[i].CreatedAt = now
 	}
+	if err := s.redeemCodeRepo.CreateBatch(ctx, redeemCodes); err != nil {
+		return fmt.Errorf("create compatibility adjustment records: %w", err)
+	}
+	if err := s.adjustmentRepo.CreateBatch(ctx, rows); err != nil {
+		return fmt.Errorf("create admin user adjustments: %w", err)
+	}
+	return nil
+}
 
-	return user, nil
+func (s *adminServiceImpl) batchUpdateConcurrencyWithLedger(ctx context.Context, userIDs []int64, value int, mode string, rpmLimit *int, source string) (int, error) {
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	opCtx := dbent.NewTxContext(ctx, tx)
+	metadata := AdminAdjustmentMetadataFromContext(ctx)
+	committed, err := s.adjustmentActionAlreadyCommitted(opCtx, metadata)
+	if err != nil {
+		return 0, err
+	}
+	if committed {
+		return countActiveAdjustmentTargets(opCtx, tx.Client(), userIDs)
+	}
+	changes, err := atomicBatchUpdateConcurrency(opCtx, tx.Client(), userIDs, value, mode, rpmLimit)
+	if err != nil {
+		return 0, err
+	}
+	rows := make([]AdminUserAdjustmentWrite, 0, len(changes))
+	requested := decimal.NewFromInt(int64(value)).StringFixed(8)
+	if mode == AdjustmentOperationSet && value < 0 {
+		requested = decimal.Zero.StringFixed(8)
+	}
+	for _, change := range changes {
+		delta := change.After - change.Before
+		if delta == 0 {
+			continue
+		}
+		beforeValue := decimal.NewFromInt(int64(change.Before)).StringFixed(8)
+		afterValue := decimal.NewFromInt(int64(change.After)).StringFixed(8)
+		deltaValue := decimal.NewFromInt(int64(delta)).StringFixed(8)
+		rows = append(rows, AdminUserAdjustmentWrite{
+			ActionID: metadata.ActionID, Kind: AdjustmentKindConcurrency,
+			Operation: adjustmentOperationForDelta(mode, delta), RequestedValue: &requested,
+			Delta: deltaValue, BeforeValue: &beforeValue, AfterValue: &afterValue,
+			UserID: change.UserID, UserEmail: adjustmentStringPtr(change.Email), UserName: adjustmentStringPtr(change.Name), Source: source,
+		})
+	}
+	if err := s.createAdjustmentRecords(opCtx, tx.Client(), rows, metadata); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(changes), nil
+}
+
+func countActiveAdjustmentTargets(ctx context.Context, client *dbent.Client, userIDs []int64) (count int, err error) {
+	rows, err := client.QueryContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE id = ANY($1) AND deleted_at IS NULL`, pq.Array(userIDs))
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		return 0, errors.New("active adjustment target count returned no row")
+	}
+	if err := rows.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, rows.Err()
+}
+
+func atomicBatchUpdateConcurrency(ctx context.Context, client *dbent.Client, userIDs []int64, value int, mode string, rpmLimit *int) ([]adminConcurrencyChange, error) {
+	setExpression := "$2"
+	if mode == AdjustmentOperationAdd {
+		setExpression = "GREATEST(target.before_value + $2, 0)"
+	} else if value < 0 {
+		value = 0
+	}
+	args := []any{pq.Array(userIDs), value}
+	rpmClause := ""
+	if rpmLimit != nil {
+		rpm := max(*rpmLimit, 0)
+		args = append(args, rpm)
+		rpmClause = fmt.Sprintf(", rpm_limit = $%d", len(args))
+	}
+	query := fmt.Sprintf(`
+WITH target AS (
+    SELECT id, concurrency AS before_value
+    FROM users
+    WHERE id = ANY($1) AND deleted_at IS NULL
+    FOR UPDATE
+), updated AS (
+    UPDATE users AS u
+    SET concurrency = %s%s, updated_at = NOW()
+    FROM target
+    WHERE u.id = target.id
+    RETURNING u.id, u.email, COALESCE(NULLIF(u.username, ''), '') AS user_name,
+              target.before_value, u.concurrency AS after_value
+)
+SELECT id, email, user_name, before_value, after_value FROM updated ORDER BY id`, setExpression, rpmClause)
+	rows, err := client.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	changes := make([]adminConcurrencyChange, 0, len(userIDs))
+	for rows.Next() {
+		var change adminConcurrencyChange
+		if err := rows.Scan(&change.UserID, &change.Email, &change.Name, &change.Before, &change.After); err != nil {
+			return nil, err
+		}
+		changes = append(changes, change)
+	}
+	return changes, rows.Err()
 }
 
 func (s *adminServiceImpl) tryAccrueAffiliateRebateForAdminRecharge(ctx context.Context, userID int64, operation string, amount float64) {

@@ -78,6 +78,10 @@ func (r *upstreamBillingProbeAccountRepo) GetByID(_ context.Context, id int64) (
 	return &clone, nil
 }
 
+func (r *upstreamBillingProbeAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *upstreamBillingProbeAccountRepo) GetByIDs(_ context.Context, ids []int64) ([]*Account, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -538,6 +542,45 @@ func TestUpstreamBillingProbeKeepsRateWhenDeclarationOutOfSyncRange(t *testing.T
 			require.Equal(t, snapshot.Data["resolved_rate_multiplier"], snapshot.Data["effective_rate_multiplier"])
 		})
 	}
+}
+
+func TestUpstreamBillingProbeKeepsVendorRateWhenOutsideWorkspaceRange(t *testing.T) {
+	initialRate := 0.25
+	account := &Account{
+		ID:             23,
+		WorkspaceID:    7,
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeAPIKey,
+		Status:         StatusActive,
+		Concurrency:    1,
+		RateMultiplier: &initialRate,
+		Credentials: map[string]any{
+			"api_key":  "sk-sensitive",
+			"base_url": "https://upstream.example",
+		},
+		Extra: map[string]any{
+			UpstreamBillingProbeEnabledExtraKey:    true,
+			UpstreamBillingRateSyncEnabledExtraKey: true,
+		},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       upstreamBillingProbeValidBody(),
+	}}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	min, max := 0.70, 0.80
+	svc.SetWorkspaceRepository(&workspaceRepoStub{
+		workspace: &Workspace{ID: 7, SettlementRateMin: &min, SettlementRateMax: &max},
+	})
+
+	snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Nil(t, snapshot.SyncedRateMultiplier)
+	require.Equal(t, initialRate, *account.RateMultiplier)
 }
 
 // 未开启同步的账号只观察上游声明：声明值不适配 accounts.rate_multiplier

@@ -7,16 +7,19 @@ import (
 )
 
 type RedeemCode struct {
-	ID        int64
-	Code      string
-	Type      string
-	Value     float64
-	Status    string
-	UsedBy    *int64
-	UsedAt    *time.Time
-	Notes     string
-	CreatedAt time.Time
-	ExpiresAt *time.Time
+	ID    int64
+	Code  string
+	Type  string
+	Value float64
+	// ValueExact is used by transactional admin adjustments to preserve
+	// DECIMAL(20,8) values that cannot be represented exactly as float64.
+	ValueExact string
+	Status     string
+	UsedBy     *int64
+	UsedAt     *time.Time
+	Notes      string
+	CreatedAt  time.Time
+	ExpiresAt  *time.Time
 
 	GroupID      *int64
 	ValidityDays int

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -121,7 +122,7 @@ func TestAdminService_UpdateUserBalance_UsesAtomicPrimitives(t *testing.T) {
 				redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}},
 			}
 
-			user, err := svc.UpdateUserBalance(context.Background(), 7, tt.amount, tt.operation, "")
+			user, err := svc.UpdateUserBalance(context.Background(), 7, strconv.FormatFloat(tt.amount, 'f', -1, 64), tt.operation, "")
 			require.NoError(t, err)
 			require.Equal(t, []BalanceChange{tt.want}, repo.changes)
 			require.Equal(t, tt.want.New, user.Balance)
@@ -136,7 +137,7 @@ func TestAdminService_UpdateUserBalance_RejectsNegativeResult(t *testing.T) {
 		redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}},
 	}
 
-	_, err := svc.UpdateUserBalance(context.Background(), 7, 4, "subtract", "")
+	_, err := svc.UpdateUserBalance(context.Background(), 7, "4", "subtract", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "balance cannot be negative")
 	require.Empty(t, repo.changes, "refused adjustment must not be applied")
@@ -150,7 +151,7 @@ func TestAdminService_UpdateUserBalance_RejectsUnknownOperation(t *testing.T) {
 		redeemCodeRepo: &balanceRedeemRepoStub{redeemRepoStub: &redeemRepoStub{}},
 	}
 
-	_, err := svc.UpdateUserBalance(context.Background(), 7, 1, "multiply", "")
+	_, err := svc.UpdateUserBalance(context.Background(), 7, "1", "multiply", "")
 	require.Error(t, err)
 	require.Empty(t, repo.changes)
 }
@@ -166,7 +167,7 @@ func TestAdminService_UpdateUserBalance_InvalidatesAuthCache(t *testing.T) {
 		authCacheInvalidator: invalidator,
 	}
 
-	_, err := svc.UpdateUserBalance(context.Background(), 7, 5, "add", "")
+	_, err := svc.UpdateUserBalance(context.Background(), 7, "5", "add", "")
 	require.NoError(t, err)
 	require.Equal(t, []int64{7}, invalidator.userIDs)
 	require.Len(t, redeemRepo.created, 1)
@@ -183,7 +184,7 @@ func TestAdminService_UpdateUserBalance_NoChangeNoInvalidate(t *testing.T) {
 		authCacheInvalidator: invalidator,
 	}
 
-	_, err := svc.UpdateUserBalance(context.Background(), 7, 10, "set", "")
+	_, err := svc.UpdateUserBalance(context.Background(), 7, "10", "set", "")
 	require.NoError(t, err)
 	require.Empty(t, invalidator.userIDs)
 	require.Empty(t, redeemRepo.created)
@@ -236,7 +237,7 @@ func TestAdminService_UpdateUserBalance_AdminRechargeAffiliateRebate(t *testing.
 				affiliateService: affiliate,
 			}
 
-			_, err := svc.UpdateUserBalance(context.Background(), 7, tt.amount, tt.operation, "")
+			_, err := svc.UpdateUserBalance(context.Background(), 7, strconv.FormatFloat(tt.amount, 'f', -1, 64), tt.operation, "")
 			require.NoError(t, err)
 			require.Equal(t, tt.wantCalls, affiliate.calls)
 		})
@@ -255,7 +256,7 @@ func TestAdminService_UpdateUserBalance_AffiliateFailureDoesNotRollbackRecharge(
 		affiliateService: affiliate,
 	}
 
-	user, err := svc.UpdateUserBalance(context.Background(), 7, 5, "add", "")
+	user, err := svc.UpdateUserBalance(context.Background(), 7, "5", "add", "")
 	require.NoError(t, err)
 	require.Equal(t, 15.0, user.Balance)
 	require.Equal(t, []adminRechargeAffiliateAccrual{{userID: 7, amount: 5}}, affiliate.calls)

@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -149,7 +150,8 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(account.Schedulable).
-		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+		SetAutoPauseOnExpired(account.AutoPauseOnExpired).
+		SetWorkspaceID(account.WorkspaceID)
 
 	if account.RateMultiplier != nil {
 		builder.SetRateMultiplier(*account.RateMultiplier)
@@ -253,6 +255,44 @@ func (r *accountRepository) CreateWithAccountGroups(ctx context.Context, account
 		}
 	}
 	return nil
+}
+
+// ListIDsByWorkspace 返回工作区名下全部账号 ID，用于收窄用量统计。
+//
+// 返回空切片（非错误）表示该工作区确实没有账号，调用方须据此让用量查询
+// 返回零结果，而不是退化为全量可见。
+func (r *accountRepository) ListIDsByWorkspace(ctx context.Context, workspaceID int64) ([]int64, error) {
+	return r.client.Account.Query().
+		Where(dbaccount.WorkspaceIDEQ(workspaceID)).
+		IDs(ctx)
+}
+
+// GetByIDScoped 按调用者作用域取单个账号，越权 ID 一律返回
+// ErrAccountNotFound，不泄露他区资源的存在性。
+//
+// 与 GetByID 分开而不是就地收窄，是因为 GetByID 同时服务于网关调度
+// (gateway_scheduling.go)、令牌刷新与后台巡检等链路 —— 那些 context
+// 不经过管理端中间件，就地收窄会让它们全部退化成 workspace_id = 0
+// 而查不到账号，等同于打死线上转发。管理端写入口显式改用本方法。
+func (r *accountRepository) GetByIDScoped(ctx context.Context, id int64) (*service.Account, error) {
+	q := r.client.Account.Query().Where(dbaccount.IDEQ(id))
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		q = q.Where(dbaccount.WorkspaceIDEQ(*workspaceID))
+	}
+
+	m, err := q.Only(ctx)
+	if err != nil {
+		return nil, translatePersistenceError(err, service.ErrAccountNotFound, nil)
+	}
+
+	accounts, err := r.accountsToService(ctx, []*dbent.Account{m})
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		return nil, service.ErrAccountNotFound
+	}
+	return &accounts[0], nil
 }
 
 func (r *accountRepository) GetByID(ctx context.Context, id int64) (*service.Account, error) {
@@ -909,8 +949,15 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "")
 }
 
-func (r *accountRepository) accountListFilteredQuery(platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
+func (r *accountRepository) accountListFilteredQuery(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
 	q := r.client.Account.Query()
+
+	// 工作区收窄必须落在 SQL 上：Count 与分页都在数据库完成，
+	// 若改为取出后在 service 层过滤，会出现「首页只剩几条、总数仍是全量」
+	// 的分页错乱。站长作用域返回 nil，行为与引入工作区之前完全一致。
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		q = q.Where(dbaccount.WorkspaceIDEQ(*workspaceID))
+	}
 
 	if platform != "" {
 		q = q.Where(dbaccount.PlatformEQ(platform))
@@ -1006,7 +1053,7 @@ func (r *accountRepository) accountListFilteredQuery(platform, accountType, stat
 }
 
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)
+	q := r.accountListFilteredQuery(ctx, platform, accountType, status, search, groupID, privacyMode)
 	// Clone before Count so interceptor-appended predicates (SoftDeleteMixin's
 	// deleted_at IS NULL) don't accumulate on the shared builder and pollute the
 	// subsequent list query. Same pattern used in group_repo/promo_code_repo/user_repo
@@ -1036,7 +1083,7 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 }
 
 func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
-	accounts, err := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode).All(ctx)
+	accounts, err := r.accountListFilteredQuery(ctx, platform, accountType, status, search, groupID, privacyMode).All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,6 +1101,11 @@ func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platfor
 	}
 	if groupIDFilter != nil && *groupIDFilter > 0 {
 		q = q.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(*groupIDFilter)))
+	}
+	// Ops 统计只经管理端路由暴露，供应商应只看到本工作区的账号。
+	// 这条快路径绕过了 ListWithFilters，需单独施加谓词。
+	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
+		q = q.Where(dbaccount.WorkspaceIDEQ(*workspaceID))
 	}
 
 	accounts, err := q.
@@ -1920,6 +1972,36 @@ func (r *accountRepository) ListSchedulableByGroupID(ctx context.Context, groupI
 }
 
 func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Context, groupIDs []int64) ([]service.GroupAccountCapacityRow, error) {
+	return r.listSchedulableCapacityByGroupIDs(ctx, groupIDs, 0)
+}
+
+// ListSchedulableCapacityByGroupIDsScoped 只统计归属指定工作区的账号容量。
+//
+// 共享分组的容量（并发/会话/RPM）是运营数据：行级过滤让 vendor 看得到
+// 该分组，却拦不住行内容量是各家合计 —— 由此可推算别家的账号规模。
+func (r *accountRepository) ListSchedulableCapacityByGroupIDsScoped(
+	ctx context.Context,
+	groupIDs []int64,
+	workspaceID int64,
+) ([]service.GroupAccountCapacityRow, error) {
+	if workspaceID <= 0 {
+		// 不接受非正数悄悄退化成全站：调用方本意是收窄，
+		// 静默放开会把泄露伪装成正常返回。
+		return nil, fmt.Errorf("scoped capacity query requires a positive workspace id, got %d", workspaceID)
+	}
+	return r.listSchedulableCapacityByGroupIDs(ctx, groupIDs, workspaceID)
+}
+
+// listSchedulableCapacityByGroupIDs 是两个导出方法的共同实现。
+// workspaceID 为 0 表示全站口径（站长），否则按归属收窄。
+//
+// 共用一条语句而非各写一份：容量的可调度判定有 6 个条件，
+// 抄成两份后任何一侧调整都会让站长与供应商看到不同的容量。
+func (r *accountRepository) listSchedulableCapacityByGroupIDs(
+	ctx context.Context,
+	groupIDs []int64,
+	workspaceID int64,
+) ([]service.GroupAccountCapacityRow, error) {
 	groupIDs = uniquePositiveInt64s(groupIDs)
 	if len(groupIDs) == 0 {
 		return []service.GroupAccountCapacityRow{}, nil
@@ -1933,6 +2015,9 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			}
 			for i := range accounts {
 				acc := &accounts[i]
+				if workspaceID > 0 && acc.WorkspaceID != workspaceID {
+					continue
+				}
 				rows = append(rows, service.GroupAccountCapacityRow{
 					GroupID:             groupID,
 					AccountID:           acc.ID,
@@ -1966,8 +2051,9 @@ func (r *accountRepository) ListSchedulableCapacityByGroupIDs(ctx context.Contex
 			AND (a.expires_at IS NULL OR a.expires_at > $3 OR a.auto_pause_on_expired = FALSE)
 			AND (a.overload_until IS NULL OR a.overload_until <= $3)
 			AND (a.rate_limit_reset_at IS NULL OR a.rate_limit_reset_at <= $3)
+			AND ($4 = 0 OR a.workspace_id = $4)
 		ORDER BY ag.group_id ASC, ag.priority ASC, a.priority ASC, a.id ASC
-	`, pq.Array(groupIDs), service.StatusActive, time.Now())
+	`, pq.Array(groupIDs), service.StatusActive, time.Now(), workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -3381,6 +3467,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		Concurrency:             m.Concurrency,
 		Priority:                m.Priority,
 		RateMultiplier:          &rateMultiplier,
+		WorkspaceID:             m.WorkspaceID,
 		LoadFactor:              m.LoadFactor,
 		Status:                  m.Status,
 		ErrorMessage:            derefString(m.ErrorMessage),

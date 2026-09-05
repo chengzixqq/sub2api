@@ -16,6 +16,76 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSettingHandler_UpdateSettingsPersistsProbeCoalescingOwnerFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &settingHandlerRepoStub{values: map[string]string{
+		service.SettingKeyProbeCoalescingMode:                 "shadow",
+		service.SettingKeyProbeCoalescingWindowSeconds:        "60",
+		service.SettingKeyProbeCoalescingLeaderTimeoutSeconds: "8",
+		service.SettingKeyProbeCoalescingAttemptBudget:        "8",
+	}}
+	svc := service.NewSettingService(repo, &config.Config{Default: config.DefaultConfig{UserConcurrency: 5}})
+	h := NewSettingHandler(svc, nil, nil, nil, nil, nil, nil)
+	rawBody, err := json.Marshal(map[string]any{
+		"probe_coalescing_mode":                   "active",
+		"probe_coalescing_window_seconds":         10,
+		"probe_coalescing_leader_timeout_seconds": 5,
+		"probe_coalescing_attempt_budget":         12,
+	})
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", bytes.NewReader(rawBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("user_role", service.RoleAdmin)
+	h.UpdateSettings(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "active", repo.values[service.SettingKeyProbeCoalescingMode])
+	require.Equal(t, "10", repo.values[service.SettingKeyProbeCoalescingWindowSeconds])
+	require.Equal(t, "5", repo.values[service.SettingKeyProbeCoalescingLeaderTimeoutSeconds])
+	require.Equal(t, "12", repo.values[service.SettingKeyProbeCoalescingAttemptBudget])
+
+	getRec := httptest.NewRecorder()
+	getCtx, _ := gin.CreateTestContext(getRec)
+	getCtx.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	getCtx.Set("user_role", service.RoleAdmin)
+	h.GetSettings(getCtx)
+	require.Equal(t, http.StatusOK, getRec.Code, getRec.Body.String())
+	var getResp response.Response
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+	getData, ok := getResp.Data.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "active", getData["probe_coalescing_mode"])
+	require.Equal(t, float64(10), getData["probe_coalescing_window_seconds"])
+	require.Equal(t, float64(5), getData["probe_coalescing_leader_timeout_seconds"])
+	require.Equal(t, float64(12), getData["probe_coalescing_attempt_budget"])
+}
+
+func TestSettingHandler_UpdateSettingsKeepsOmittedProbeCoalescingFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repo := &settingHandlerRepoStub{values: map[string]string{
+		service.SettingKeyProbeCoalescingMode:                 "active",
+		service.SettingKeyProbeCoalescingWindowSeconds:        "10",
+		service.SettingKeyProbeCoalescingLeaderTimeoutSeconds: "5",
+		service.SettingKeyProbeCoalescingAttemptBudget:        "12",
+	}}
+	svc := service.NewSettingService(repo, &config.Config{Default: config.DefaultConfig{UserConcurrency: 5}})
+	h := NewSettingHandler(svc, nil, nil, nil, nil, nil, nil)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/settings", bytes.NewBufferString(`{"risk_control_enabled":true}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("user_role", service.RoleAdmin)
+	h.UpdateSettings(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "active", repo.values[service.SettingKeyProbeCoalescingMode])
+	require.Equal(t, "10", repo.values[service.SettingKeyProbeCoalescingWindowSeconds])
+	require.Equal(t, "5", repo.values[service.SettingKeyProbeCoalescingLeaderTimeoutSeconds])
+	require.Equal(t, "12", repo.values[service.SettingKeyProbeCoalescingAttemptBudget])
+}
+
 type settingHandlerRepoStub struct {
 	values      map[string]string
 	lastUpdates map[string]string

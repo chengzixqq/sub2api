@@ -58,6 +58,9 @@ type AuditLog struct {
 	StatusCode       int            `json:"status_code"`
 	LatencyMs        int64          `json:"latency_ms"`
 	Extra            map[string]any `json:"extra,omitempty"`
+	// WorkspaceID 操作发生时操作者所属的工作区。
+	// nil = 站长本人或系统操作（不属于任何供应商工作区）。
+	WorkspaceID *int64 `json:"workspace_id,omitempty"`
 }
 
 // AuditLogFilter 审计日志列表查询条件。
@@ -77,6 +80,12 @@ type AuditLogFilter struct {
 	Success *bool
 	// Query 对 path / action / actor_email 做模糊匹配。
 	Query string
+
+	// WorkspaceID 工作区作用域约束，由 service 层依据请求上下文强制覆写，
+	// 不接受 handler 传入 —— 否则 vendor 可以伪造该值读取他人审计记录。
+	// nil = 不限制（站长）；非 nil = 仅该工作区的记录，
+	// workspace_id IS NULL 的站长/系统操作对 vendor 不可见。
+	WorkspaceID *int64
 }
 
 // AuditLogList 分页结果。

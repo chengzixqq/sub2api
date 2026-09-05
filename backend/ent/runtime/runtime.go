@@ -7,6 +7,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adminuseradjustment"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -45,6 +46,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/workspace"
+	"github.com/Wei-Shaw/sub2api/ent/workspacegroupgrant"
+	"github.com/Wei-Shaw/sub2api/ent/workspacemember"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
@@ -238,22 +242,26 @@ func init() {
 	accountDescRateMultiplier := accountFields[11].Descriptor()
 	// account.DefaultRateMultiplier holds the default value on creation for the rate_multiplier field.
 	account.DefaultRateMultiplier = accountDescRateMultiplier.Default.(float64)
+	// accountDescWorkspaceID is the schema descriptor for workspace_id field.
+	accountDescWorkspaceID := accountFields[12].Descriptor()
+	// account.DefaultWorkspaceID holds the default value on creation for the workspace_id field.
+	account.DefaultWorkspaceID = accountDescWorkspaceID.Default.(int64)
 	// accountDescStatus is the schema descriptor for status field.
-	accountDescStatus := accountFields[12].Descriptor()
+	accountDescStatus := accountFields[13].Descriptor()
 	// account.DefaultStatus holds the default value on creation for the status field.
 	account.DefaultStatus = accountDescStatus.Default.(string)
 	// account.StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	account.StatusValidator = accountDescStatus.Validators[0].(func(string) error)
 	// accountDescAutoPauseOnExpired is the schema descriptor for auto_pause_on_expired field.
-	accountDescAutoPauseOnExpired := accountFields[16].Descriptor()
+	accountDescAutoPauseOnExpired := accountFields[17].Descriptor()
 	// account.DefaultAutoPauseOnExpired holds the default value on creation for the auto_pause_on_expired field.
 	account.DefaultAutoPauseOnExpired = accountDescAutoPauseOnExpired.Default.(bool)
 	// accountDescSchedulable is the schema descriptor for schedulable field.
-	accountDescSchedulable := accountFields[17].Descriptor()
+	accountDescSchedulable := accountFields[18].Descriptor()
 	// account.DefaultSchedulable holds the default value on creation for the schedulable field.
 	account.DefaultSchedulable = accountDescSchedulable.Default.(bool)
 	// accountDescSessionWindowStatus is the schema descriptor for session_window_status field.
-	accountDescSessionWindowStatus := accountFields[25].Descriptor()
+	accountDescSessionWindowStatus := accountFields[26].Descriptor()
 	// account.SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	account.SessionWindowStatusValidator = accountDescSessionWindowStatus.Validators[0].(func(string) error)
 	accountgroupFields := schema.AccountGroup{}.Fields()
@@ -266,6 +274,52 @@ func init() {
 	accountgroupDescCreatedAt := accountgroupFields[3].Descriptor()
 	// accountgroup.DefaultCreatedAt holds the default value on creation for the created_at field.
 	accountgroup.DefaultCreatedAt = accountgroupDescCreatedAt.Default.(func() time.Time)
+	adminuseradjustmentFields := schema.AdminUserAdjustment{}.Fields()
+	_ = adminuseradjustmentFields
+	// adminuseradjustmentDescKind is the schema descriptor for kind field.
+	adminuseradjustmentDescKind := adminuseradjustmentFields[1].Descriptor()
+	// adminuseradjustment.KindValidator is a validator for the "kind" field. It is called by the builders before save.
+	adminuseradjustment.KindValidator = adminuseradjustmentDescKind.Validators[0].(func(string) error)
+	// adminuseradjustmentDescOperation is the schema descriptor for operation field.
+	adminuseradjustmentDescOperation := adminuseradjustmentFields[2].Descriptor()
+	// adminuseradjustment.OperationValidator is a validator for the "operation" field. It is called by the builders before save.
+	adminuseradjustment.OperationValidator = adminuseradjustmentDescOperation.Validators[0].(func(string) error)
+	// adminuseradjustmentDescUserEmail is the schema descriptor for user_email field.
+	adminuseradjustmentDescUserEmail := adminuseradjustmentFields[8].Descriptor()
+	// adminuseradjustment.UserEmailValidator is a validator for the "user_email" field. It is called by the builders before save.
+	adminuseradjustment.UserEmailValidator = adminuseradjustmentDescUserEmail.Validators[0].(func(string) error)
+	// adminuseradjustmentDescUserName is the schema descriptor for user_name field.
+	adminuseradjustmentDescUserName := adminuseradjustmentFields[9].Descriptor()
+	// adminuseradjustment.UserNameValidator is a validator for the "user_name" field. It is called by the builders before save.
+	adminuseradjustment.UserNameValidator = adminuseradjustmentDescUserName.Validators[0].(func(string) error)
+	// adminuseradjustmentDescOperatorEmail is the schema descriptor for operator_email field.
+	adminuseradjustmentDescOperatorEmail := adminuseradjustmentFields[11].Descriptor()
+	// adminuseradjustment.OperatorEmailValidator is a validator for the "operator_email" field. It is called by the builders before save.
+	adminuseradjustment.OperatorEmailValidator = adminuseradjustmentDescOperatorEmail.Validators[0].(func(string) error)
+	// adminuseradjustmentDescOperatorName is the schema descriptor for operator_name field.
+	adminuseradjustmentDescOperatorName := adminuseradjustmentFields[12].Descriptor()
+	// adminuseradjustment.OperatorNameValidator is a validator for the "operator_name" field. It is called by the builders before save.
+	adminuseradjustment.OperatorNameValidator = adminuseradjustmentDescOperatorName.Validators[0].(func(string) error)
+	// adminuseradjustmentDescClientIP is the schema descriptor for client_ip field.
+	adminuseradjustmentDescClientIP := adminuseradjustmentFields[14].Descriptor()
+	// adminuseradjustment.ClientIPValidator is a validator for the "client_ip" field. It is called by the builders before save.
+	adminuseradjustment.ClientIPValidator = adminuseradjustmentDescClientIP.Validators[0].(func(string) error)
+	// adminuseradjustmentDescAuthMethod is the schema descriptor for auth_method field.
+	adminuseradjustmentDescAuthMethod := adminuseradjustmentFields[15].Descriptor()
+	// adminuseradjustment.AuthMethodValidator is a validator for the "auth_method" field. It is called by the builders before save.
+	adminuseradjustment.AuthMethodValidator = adminuseradjustmentDescAuthMethod.Validators[0].(func(string) error)
+	// adminuseradjustmentDescRequestID is the schema descriptor for request_id field.
+	adminuseradjustmentDescRequestID := adminuseradjustmentFields[16].Descriptor()
+	// adminuseradjustment.RequestIDValidator is a validator for the "request_id" field. It is called by the builders before save.
+	adminuseradjustment.RequestIDValidator = adminuseradjustmentDescRequestID.Validators[0].(func(string) error)
+	// adminuseradjustmentDescSource is the schema descriptor for source field.
+	adminuseradjustmentDescSource := adminuseradjustmentFields[17].Descriptor()
+	// adminuseradjustment.SourceValidator is a validator for the "source" field. It is called by the builders before save.
+	adminuseradjustment.SourceValidator = adminuseradjustmentDescSource.Validators[0].(func(string) error)
+	// adminuseradjustmentDescCreatedAt is the schema descriptor for created_at field.
+	adminuseradjustmentDescCreatedAt := adminuseradjustmentFields[19].Descriptor()
+	// adminuseradjustment.DefaultCreatedAt holds the default value on creation for the created_at field.
+	adminuseradjustment.DefaultCreatedAt = adminuseradjustmentDescCreatedAt.Default.(func() time.Time)
 	announcementFields := schema.Announcement{}.Fields()
 	_ = announcementFields
 	// announcementDescTitle is the schema descriptor for title field.
@@ -1713,6 +1767,10 @@ func init() {
 	proxyDescExpiryWarnDays := proxyFields[10].Descriptor()
 	// proxy.DefaultExpiryWarnDays holds the default value on creation for the expiry_warn_days field.
 	proxy.DefaultExpiryWarnDays = proxyDescExpiryWarnDays.Default.(int)
+	// proxyDescWorkspaceID is the schema descriptor for workspace_id field.
+	proxyDescWorkspaceID := proxyFields[11].Descriptor()
+	// proxy.DefaultWorkspaceID holds the default value on creation for the workspace_id field.
+	proxy.DefaultWorkspaceID = proxyDescWorkspaceID.Default.(int64)
 	redeemcodeFields := schema.RedeemCode{}.Fields()
 	_ = redeemcodeFields
 	// redeemcodeDescCode is the schema descriptor for code field.
@@ -2128,8 +2186,20 @@ func init() {
 	usagelogDescCacheTTLOverridden := usagelogFields[45].Descriptor()
 	// usagelog.DefaultCacheTTLOverridden holds the default value on creation for the cache_ttl_overridden field.
 	usagelog.DefaultCacheTTLOverridden = usagelogDescCacheTTLOverridden.Default.(bool)
+	// usagelogDescProbeCoalesced is the schema descriptor for probe_coalesced field.
+	usagelogDescProbeCoalesced := usagelogFields[46].Descriptor()
+	// usagelog.DefaultProbeCoalesced holds the default value on creation for the probe_coalesced field.
+	usagelog.DefaultProbeCoalesced = usagelogDescProbeCoalesced.Default.(bool)
+	// usagelogDescProbeLeaderRequestID is the schema descriptor for probe_leader_request_id field.
+	usagelogDescProbeLeaderRequestID := usagelogFields[47].Descriptor()
+	// usagelog.ProbeLeaderRequestIDValidator is a validator for the "probe_leader_request_id" field. It is called by the builders before save.
+	usagelog.ProbeLeaderRequestIDValidator = usagelogDescProbeLeaderRequestID.Validators[0].(func(string) error)
+	// usagelogDescProviderCostRecorded is the schema descriptor for provider_cost_recorded field.
+	usagelogDescProviderCostRecorded := usagelogFields[48].Descriptor()
+	// usagelog.DefaultProviderCostRecorded holds the default value on creation for the provider_cost_recorded field.
+	usagelog.DefaultProviderCostRecorded = usagelogDescProviderCostRecorded.Default.(bool)
 	// usagelogDescCreatedAt is the schema descriptor for created_at field.
-	usagelogDescCreatedAt := usagelogFields[46].Descriptor()
+	usagelogDescCreatedAt := usagelogFields[49].Descriptor()
 	// usagelog.DefaultCreatedAt holds the default value on creation for the created_at field.
 	usagelog.DefaultCreatedAt = usagelogDescCreatedAt.Default.(func() time.Time)
 	userMixin := schema.User{}.Mixin()
@@ -2474,6 +2544,101 @@ func init() {
 	usersubscriptionDescAssignedAt := usersubscriptionFields[12].Descriptor()
 	// usersubscription.DefaultAssignedAt holds the default value on creation for the assigned_at field.
 	usersubscription.DefaultAssignedAt = usersubscriptionDescAssignedAt.Default.(func() time.Time)
+	workspaceMixin := schema.Workspace{}.Mixin()
+	workspaceMixinHooks1 := workspaceMixin[1].Hooks()
+	workspace.Hooks[0] = workspaceMixinHooks1[0]
+	workspaceMixinInters1 := workspaceMixin[1].Interceptors()
+	workspace.Interceptors[0] = workspaceMixinInters1[0]
+	workspaceMixinFields0 := workspaceMixin[0].Fields()
+	_ = workspaceMixinFields0
+	workspaceFields := schema.Workspace{}.Fields()
+	_ = workspaceFields
+	// workspaceDescCreatedAt is the schema descriptor for created_at field.
+	workspaceDescCreatedAt := workspaceMixinFields0[0].Descriptor()
+	// workspace.DefaultCreatedAt holds the default value on creation for the created_at field.
+	workspace.DefaultCreatedAt = workspaceDescCreatedAt.Default.(func() time.Time)
+	// workspaceDescUpdatedAt is the schema descriptor for updated_at field.
+	workspaceDescUpdatedAt := workspaceMixinFields0[1].Descriptor()
+	// workspace.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	workspace.DefaultUpdatedAt = workspaceDescUpdatedAt.Default.(func() time.Time)
+	// workspace.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	workspace.UpdateDefaultUpdatedAt = workspaceDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// workspaceDescName is the schema descriptor for name field.
+	workspaceDescName := workspaceFields[0].Descriptor()
+	// workspace.NameValidator is a validator for the "name" field. It is called by the builders before save.
+	workspace.NameValidator = func() func(string) error {
+		validators := workspaceDescName.Validators
+		fns := [...]func(string) error{
+			validators[0].(func(string) error),
+			validators[1].(func(string) error),
+		}
+		return func(name string) error {
+			for _, fn := range fns {
+				if err := fn(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// workspaceDescDescription is the schema descriptor for description field.
+	workspaceDescDescription := workspaceFields[1].Descriptor()
+	// workspace.DefaultDescription holds the default value on creation for the description field.
+	workspace.DefaultDescription = workspaceDescDescription.Default.(string)
+	// workspace.DescriptionValidator is a validator for the "description" field. It is called by the builders before save.
+	workspace.DescriptionValidator = workspaceDescDescription.Validators[0].(func(string) error)
+	// workspaceDescStatus is the schema descriptor for status field.
+	workspaceDescStatus := workspaceFields[2].Descriptor()
+	// workspace.DefaultStatus holds the default value on creation for the status field.
+	workspace.DefaultStatus = workspaceDescStatus.Default.(string)
+	// workspace.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	workspace.StatusValidator = workspaceDescStatus.Validators[0].(func(string) error)
+	// workspaceDescPermAccountManage is the schema descriptor for perm_account_manage field.
+	workspaceDescPermAccountManage := workspaceFields[3].Descriptor()
+	// workspace.DefaultPermAccountManage holds the default value on creation for the perm_account_manage field.
+	workspace.DefaultPermAccountManage = workspaceDescPermAccountManage.Default.(bool)
+	// workspaceDescPermGroupOps is the schema descriptor for perm_group_ops field.
+	workspaceDescPermGroupOps := workspaceFields[4].Descriptor()
+	// workspace.DefaultPermGroupOps holds the default value on creation for the perm_group_ops field.
+	workspace.DefaultPermGroupOps = workspaceDescPermGroupOps.Default.(bool)
+	// workspaceDescPermGroupBilling is the schema descriptor for perm_group_billing field.
+	workspaceDescPermGroupBilling := workspaceFields[5].Descriptor()
+	// workspace.DefaultPermGroupBilling holds the default value on creation for the perm_group_billing field.
+	workspace.DefaultPermGroupBilling = workspaceDescPermGroupBilling.Default.(bool)
+	// workspaceDescPermProxyManage is the schema descriptor for perm_proxy_manage field.
+	workspaceDescPermProxyManage := workspaceFields[6].Descriptor()
+	// workspace.DefaultPermProxyManage holds the default value on creation for the perm_proxy_manage field.
+	workspace.DefaultPermProxyManage = workspaceDescPermProxyManage.Default.(bool)
+	// workspaceDescPermMonitorView is the schema descriptor for perm_monitor_view field.
+	workspaceDescPermMonitorView := workspaceFields[7].Descriptor()
+	// workspace.DefaultPermMonitorView holds the default value on creation for the perm_monitor_view field.
+	workspace.DefaultPermMonitorView = workspaceDescPermMonitorView.Default.(bool)
+	workspacegroupgrantFields := schema.WorkspaceGroupGrant{}.Fields()
+	_ = workspacegroupgrantFields
+	// workspacegroupgrantDescBasePriority is the schema descriptor for base_priority field.
+	workspacegroupgrantDescBasePriority := workspacegroupgrantFields[2].Descriptor()
+	// workspacegroupgrant.DefaultBasePriority holds the default value on creation for the base_priority field.
+	workspacegroupgrant.DefaultBasePriority = workspacegroupgrantDescBasePriority.Default.(int)
+	// workspacegroupgrantDescEnabled is the schema descriptor for enabled field.
+	workspacegroupgrantDescEnabled := workspacegroupgrantFields[3].Descriptor()
+	// workspacegroupgrant.DefaultEnabled holds the default value on creation for the enabled field.
+	workspacegroupgrant.DefaultEnabled = workspacegroupgrantDescEnabled.Default.(bool)
+	// workspacegroupgrantDescCreatedAt is the schema descriptor for created_at field.
+	workspacegroupgrantDescCreatedAt := workspacegroupgrantFields[4].Descriptor()
+	// workspacegroupgrant.DefaultCreatedAt holds the default value on creation for the created_at field.
+	workspacegroupgrant.DefaultCreatedAt = workspacegroupgrantDescCreatedAt.Default.(func() time.Time)
+	// workspacegroupgrantDescUpdatedAt is the schema descriptor for updated_at field.
+	workspacegroupgrantDescUpdatedAt := workspacegroupgrantFields[5].Descriptor()
+	// workspacegroupgrant.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	workspacegroupgrant.DefaultUpdatedAt = workspacegroupgrantDescUpdatedAt.Default.(func() time.Time)
+	// workspacegroupgrant.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	workspacegroupgrant.UpdateDefaultUpdatedAt = workspacegroupgrantDescUpdatedAt.UpdateDefault.(func() time.Time)
+	workspacememberFields := schema.WorkspaceMember{}.Fields()
+	_ = workspacememberFields
+	// workspacememberDescCreatedAt is the schema descriptor for created_at field.
+	workspacememberDescCreatedAt := workspacememberFields[2].Descriptor()
+	// workspacemember.DefaultCreatedAt holds the default value on creation for the created_at field.
+	workspacemember.DefaultCreatedAt = workspacememberDescCreatedAt.Default.(func() time.Time)
 }
 
 const (

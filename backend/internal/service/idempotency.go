@@ -430,7 +430,9 @@ func (c *IdempotencyCoordinator) Execute(
 		logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->store_unavailable", false, map[string]string{
 			"operation": "mark_succeeded",
 		})
-		return nil, ErrIdempotencyStoreUnavail.WithCause(markErr)
+		return &IdempotencyExecuteResult{Data: data}, ErrIdempotencyStoreUnavail.
+			WithMetadata(map[string]string{"stage": "mark_succeeded"}).
+			WithCause(markErr)
 	}
 	logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->succeeded", false, nil)
 

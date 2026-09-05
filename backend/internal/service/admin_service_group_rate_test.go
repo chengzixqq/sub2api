@@ -27,6 +27,10 @@ type userGroupRateRepoStubForGroupRate struct {
 	rpmSyncedGroupID int64
 	rpmSyncedEntries []GroupRPMOverrideInput
 	rpmSyncErr       error
+
+	syncedUserID    int64
+	syncedUserRates map[int64]*float64
+	syncUserErr     error
 }
 
 func (s *userGroupRateRepoStubForGroupRate) GetByUserID(_ context.Context, _ int64) (map[int64]float64, error) {
@@ -48,8 +52,10 @@ func (s *userGroupRateRepoStubForGroupRate) GetByGroupID(_ context.Context, grou
 	return s.getByGroupIDData[groupID], nil
 }
 
-func (s *userGroupRateRepoStubForGroupRate) SyncUserGroupRates(_ context.Context, _ int64, _ map[int64]*float64) error {
-	panic("unexpected SyncUserGroupRates call")
+func (s *userGroupRateRepoStubForGroupRate) SyncUserGroupRates(_ context.Context, userID int64, rates map[int64]*float64) error {
+	s.syncedUserID = userID
+	s.syncedUserRates = rates
+	return s.syncUserErr
 }
 
 func (s *userGroupRateRepoStubForGroupRate) SyncGroupRateMultipliers(_ context.Context, groupID int64, entries []GroupRateMultiplierInput) error {
@@ -89,7 +95,7 @@ func TestAdminService_GetGroupRateMultipliers(t *testing.T) {
 		}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		entries, err := svc.GetGroupRateMultipliers(context.Background(), 10)
+		entries, err := svc.GetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10)
 		require.NoError(t, err)
 		require.Len(t, entries, 2)
 		require.Equal(t, int64(1), entries[0].UserID)
@@ -104,7 +110,7 @@ func TestAdminService_GetGroupRateMultipliers(t *testing.T) {
 	t.Run("returns nil when repo is nil", func(t *testing.T) {
 		svc := &adminServiceImpl{userGroupRateRepo: nil}
 
-		entries, err := svc.GetGroupRateMultipliers(context.Background(), 10)
+		entries, err := svc.GetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10)
 		require.NoError(t, err)
 		require.Nil(t, entries)
 	})
@@ -115,7 +121,7 @@ func TestAdminService_GetGroupRateMultipliers(t *testing.T) {
 		}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		entries, err := svc.GetGroupRateMultipliers(context.Background(), 99)
+		entries, err := svc.GetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 99)
 		require.NoError(t, err)
 		require.Nil(t, entries)
 	})
@@ -126,7 +132,7 @@ func TestAdminService_GetGroupRateMultipliers(t *testing.T) {
 		}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		_, err := svc.GetGroupRateMultipliers(context.Background(), 10)
+		_, err := svc.GetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "db error")
 	})
@@ -137,7 +143,7 @@ func TestAdminService_ClearGroupRateMultipliers(t *testing.T) {
 		repo := &userGroupRateRepoStubForGroupRate{}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		err := svc.ClearGroupRateMultipliers(context.Background(), 42)
+		err := svc.ClearGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 42)
 		require.NoError(t, err)
 		require.Equal(t, []int64{42}, repo.deletedGroupIDs)
 	})
@@ -145,7 +151,7 @@ func TestAdminService_ClearGroupRateMultipliers(t *testing.T) {
 	t.Run("returns nil when repo is nil", func(t *testing.T) {
 		svc := &adminServiceImpl{userGroupRateRepo: nil}
 
-		err := svc.ClearGroupRateMultipliers(context.Background(), 42)
+		err := svc.ClearGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 42)
 		require.NoError(t, err)
 	})
 
@@ -155,7 +161,7 @@ func TestAdminService_ClearGroupRateMultipliers(t *testing.T) {
 		}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		err := svc.ClearGroupRateMultipliers(context.Background(), 42)
+		err := svc.ClearGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 42)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "delete failed")
 	})
@@ -170,7 +176,7 @@ func TestAdminService_BatchSetGroupRateMultipliers(t *testing.T) {
 			{UserID: 1, RateMultiplier: 1.5},
 			{UserID: 2, RateMultiplier: 0.8},
 		}
-		err := svc.BatchSetGroupRateMultipliers(context.Background(), 10, entries)
+		err := svc.BatchSetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10, entries)
 		require.NoError(t, err)
 		require.Equal(t, int64(10), repo.syncedGroupID)
 		require.Equal(t, entries, repo.syncedEntries)
@@ -179,7 +185,7 @@ func TestAdminService_BatchSetGroupRateMultipliers(t *testing.T) {
 	t.Run("returns nil when repo is nil", func(t *testing.T) {
 		svc := &adminServiceImpl{userGroupRateRepo: nil}
 
-		err := svc.BatchSetGroupRateMultipliers(context.Background(), 10, nil)
+		err := svc.BatchSetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10, nil)
 		require.NoError(t, err)
 	})
 
@@ -189,7 +195,7 @@ func TestAdminService_BatchSetGroupRateMultipliers(t *testing.T) {
 		}
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 
-		err := svc.BatchSetGroupRateMultipliers(context.Background(), 10, []GroupRateMultiplierInput{
+		err := svc.BatchSetGroupRateMultipliers(WithScope(context.Background(), AdminScope()), 10, []GroupRateMultiplierInput{
 			{UserID: 1, RateMultiplier: 1.0},
 		})
 		require.Error(t, err)
@@ -204,7 +210,7 @@ func TestAdminService_BatchSetGroupRPMOverrides(t *testing.T) {
 		override := 20
 		entries := []GroupRPMOverrideInput{{UserID: 2, RPMOverride: &override}}
 
-		err := svc.BatchSetGroupRPMOverrides(context.Background(), 10, entries)
+		err := svc.BatchSetGroupRPMOverrides(WithScope(context.Background(), AdminScope()), 10, entries)
 		require.NoError(t, err)
 		require.Equal(t, int64(10), repo.rpmSyncedGroupID)
 		require.Equal(t, entries, repo.rpmSyncedEntries)
@@ -215,7 +221,7 @@ func TestAdminService_BatchSetGroupRPMOverrides(t *testing.T) {
 		svc := &adminServiceImpl{userGroupRateRepo: repo}
 		negative := -1
 
-		err := svc.BatchSetGroupRPMOverrides(context.Background(), 10, []GroupRPMOverrideInput{
+		err := svc.BatchSetGroupRPMOverrides(WithScope(context.Background(), AdminScope()), 10, []GroupRPMOverrideInput{
 			{UserID: 2, RPMOverride: &negative},
 		})
 		require.Error(t, err)

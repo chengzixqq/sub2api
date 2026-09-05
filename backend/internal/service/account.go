@@ -58,6 +58,13 @@ type Account struct {
 	SessionWindowEnd    *time.Time
 	SessionWindowStatus string
 
+	// WorkspaceID 资源归属工作区。站长直管账号归属 domain.DefaultWorkspaceID（1），
+	// 不是 0 —— 该列有外键指向 workspaces(id)，落 0 写不进去。
+	//
+	// 0 只可能出现在迁移 192 之前的残留行。归属校验（Scope.OwnsWorkspaceID）
+	// 一律拒绝非正值；计费不看归属，残留行照旧按账号自身倍率结算。
+	WorkspaceID int64
+
 	ParentAccountID *int64 // non-nil → 影子账号（不持凭据，透传母账号凭据）
 	QuotaDimension  string // 用量维度："" / "global" / "spark"
 

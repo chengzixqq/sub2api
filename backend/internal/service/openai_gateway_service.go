@@ -451,6 +451,7 @@ type OpenAIGatewayService struct {
 	userPlatformQuotaRepo UserPlatformQuotaRepository
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
+	workspaceService      *WorkspaceService
 
 	openaiWSPoolOnce               sync.Once
 	openaiWSStateStoreOnce         sync.Once
@@ -515,6 +516,7 @@ func NewOpenAIGatewayService(
 	balanceNotifyService *BalanceNotifyService,
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	workspaceService *WorkspaceService,
 ) *OpenAIGatewayService {
 	// enforceCodexIdentityHeaders 是 HTTP / 透传 / WS / 探针 等出站路径共用的纯函数收口点，
 	// 拿不到配置，故在此发布进程级开关快照。配置取反义，零值即「强制统一出口开启」。
@@ -523,6 +525,7 @@ func NewOpenAIGatewayService(
 	}
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
+		workspaceService:    workspaceService,
 		usageLogRepo:        usageLogRepo,
 		usageBillingRepo:    usageBillingRepo,
 		userRepo:            userRepo,

@@ -234,6 +234,10 @@ func TestGrokOAuthHandlerValidateSSOTokenReturnsTokenInfo(t *testing.T) {
 	handler := NewGrokOAuthHandler(oauthService, nil, nil, nil)
 
 	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
+		c.Next()
+	})
 	router.POST("/api/v1/admin/grok/oauth/sso-token", handler.ValidateSSOToken)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/grok/oauth/sso-token", strings.NewReader(`{"sso_token":"sso-token"}`))
@@ -245,7 +249,7 @@ func TestGrokOAuthHandlerValidateSSOTokenReturnsTokenInfo(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), `"sso_token"`)
 }
 
-func TestGrokOAuthHandlerAuthorizePasswordReturnsTokenInfoWithoutPassword(t *testing.T) {
+func TestGrokOAuthHandlerAuthorizePasswordCannotBeEnabledByLegacyConfig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	oauthClient := &grokOAuthHandlerClient{}
@@ -262,8 +266,9 @@ func TestGrokOAuthHandlerAuthorizePasswordReturnsTokenInfoWithoutPassword(t *tes
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), `"access_token":"access-token"`)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Contains(t, rec.Body.String(), "GROK_OAUTH_PASSWORD_AUTH_DISABLED")
+	require.NotContains(t, rec.Body.String(), `"access_token"`)
 	require.NotContains(t, rec.Body.String(), "super-secret")
 }
 
@@ -274,6 +279,10 @@ func TestGrokOAuthHandlerPasswordCapabilityDefaultsToDisabled(t *testing.T) {
 	handler := NewGrokOAuthHandler(oauthService, nil, nil, nil)
 
 	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
+		c.Next()
+	})
 	router.GET("/api/v1/admin/grok/oauth/capabilities", handler.GetCapabilities)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/grok/oauth/capabilities", nil))

@@ -115,6 +115,12 @@ type UsageLog struct {
 	VideoDurationSeconds *int `json:"video_duration_seconds,omitempty"`
 	// CacheTTLOverridden holds the value of the "cache_ttl_overridden" field.
 	CacheTTLOverridden bool `json:"cache_ttl_overridden,omitempty"`
+	// ProbeCoalesced holds the value of the "probe_coalesced" field.
+	ProbeCoalesced bool `json:"probe_coalesced,omitempty"`
+	// ProbeLeaderRequestID holds the value of the "probe_leader_request_id" field.
+	ProbeLeaderRequestID *string `json:"probe_leader_request_id,omitempty"`
+	// ProviderCostRecorded holds the value of the "provider_cost_recorded" field.
+	ProviderCostRecorded bool `json:"provider_cost_recorded,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// Edges holds the relations/edges for other nodes in the graph.
@@ -202,13 +208,13 @@ func (*UsageLog) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case usagelog.FieldImageSizeBreakdown:
 			values[i] = new([]byte)
-		case usagelog.FieldUpstreamModelMismatch, usagelog.FieldLongContextBillingApplied, usagelog.FieldStream, usagelog.FieldCacheTTLOverridden:
+		case usagelog.FieldUpstreamModelMismatch, usagelog.FieldLongContextBillingApplied, usagelog.FieldStream, usagelog.FieldCacheTTLOverridden, usagelog.FieldProbeCoalesced, usagelog.FieldProviderCostRecorded:
 			values[i] = new(sql.NullBool)
 		case usagelog.FieldInputCost, usagelog.FieldOutputCost, usagelog.FieldCacheCreationCost, usagelog.FieldCacheReadCost, usagelog.FieldTotalCost, usagelog.FieldActualCost, usagelog.FieldRateMultiplier, usagelog.FieldAccountRateMultiplier:
 			values[i] = new(sql.NullFloat64)
 		case usagelog.FieldID, usagelog.FieldUserID, usagelog.FieldAPIKeyID, usagelog.FieldAccountID, usagelog.FieldChannelID, usagelog.FieldGroupID, usagelog.FieldSubscriptionID, usagelog.FieldInputTokens, usagelog.FieldOutputTokens, usagelog.FieldCacheCreationTokens, usagelog.FieldCacheReadTokens, usagelog.FieldCacheCreation5mTokens, usagelog.FieldCacheCreation1hTokens, usagelog.FieldBillingType, usagelog.FieldDurationMs, usagelog.FieldFirstTokenMs, usagelog.FieldImageCount, usagelog.FieldVideoCount, usagelog.FieldVideoDurationSeconds:
 			values[i] = new(sql.NullInt64)
-		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution:
+		case usagelog.FieldRequestID, usagelog.FieldModel, usagelog.FieldRequestedModel, usagelog.FieldUpstreamModel, usagelog.FieldUpstreamResponseModel, usagelog.FieldModelMappingChain, usagelog.FieldBillingTier, usagelog.FieldBillingMode, usagelog.FieldUserAgent, usagelog.FieldIPAddress, usagelog.FieldImageSize, usagelog.FieldImageInputSize, usagelog.FieldImageOutputSize, usagelog.FieldImageSizeSource, usagelog.FieldVideoResolution, usagelog.FieldProbeLeaderRequestID:
 			values[i] = new(sql.NullString)
 		case usagelog.FieldCreatedAt:
 			values[i] = new(sql.NullTime)
@@ -532,6 +538,25 @@ func (_m *UsageLog) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.CacheTTLOverridden = value.Bool
 			}
+		case usagelog.FieldProbeCoalesced:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field probe_coalesced", values[i])
+			} else if value.Valid {
+				_m.ProbeCoalesced = value.Bool
+			}
+		case usagelog.FieldProbeLeaderRequestID:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field probe_leader_request_id", values[i])
+			} else if value.Valid {
+				_m.ProbeLeaderRequestID = new(string)
+				*_m.ProbeLeaderRequestID = value.String
+			}
+		case usagelog.FieldProviderCostRecorded:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field provider_cost_recorded", values[i])
+			} else if value.Valid {
+				_m.ProviderCostRecorded = value.Bool
+			}
 		case usagelog.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -778,6 +803,17 @@ func (_m *UsageLog) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("cache_ttl_overridden=")
 	builder.WriteString(fmt.Sprintf("%v", _m.CacheTTLOverridden))
+	builder.WriteString(", ")
+	builder.WriteString("probe_coalesced=")
+	builder.WriteString(fmt.Sprintf("%v", _m.ProbeCoalesced))
+	builder.WriteString(", ")
+	if v := _m.ProbeLeaderRequestID; v != nil {
+		builder.WriteString("probe_leader_request_id=")
+		builder.WriteString(*v)
+	}
+	builder.WriteString(", ")
+	builder.WriteString("provider_cost_recorded=")
+	builder.WriteString(fmt.Sprintf("%v", _m.ProviderCostRecorded))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

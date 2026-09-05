@@ -318,7 +318,7 @@ func TestGrokOAuthServiceValidateSSOTokenReturnsOAuthTokensWithoutPersistingSSO(
 	require.NotContains(t, creds, "password")
 }
 
-func TestGrokOAuthServiceAuthorizePasswordUsesLoginThenSSOAuthorize(t *testing.T) {
+func TestGrokOAuthServicePasswordAuthCannotBeEnabledByLegacyConfig(t *testing.T) {
 	client := &grokOAuthClientStub{
 		loginResult: &GrokPasswordLoginResult{
 			Email:    "user@example.com",
@@ -335,16 +335,11 @@ func TestGrokOAuthServiceAuthorizePasswordUsesLoginThenSSOAuthorize(t *testing.T
 	svc := NewGrokOAuthService(nil, client, cfg)
 	defer svc.Stop()
 
-	require.True(t, svc.GetCapabilities().PasswordAuthEnabled)
-	info, err := svc.AuthorizePassword(context.Background(), " user@example.com ", "  super-secret  ", nil)
-	require.NoError(t, err)
-	require.Equal(t, "user@example.com", info.Email)
-	require.Equal(t, "access-from-password", info.AccessToken)
-	creds := svc.BuildAccountCredentials(info)
-	require.NotContains(t, creds, "password")
-	require.NotContains(t, creds, "sso_token")
-	require.Equal(t, "user@example.com", client.loginEmail)
-	require.Equal(t, "  super-secret  ", client.loginPassword)
+	require.False(t, svc.GetCapabilities().PasswordAuthEnabled)
+	_, err := svc.AuthorizePassword(context.Background(), " user@example.com ", "  super-secret  ", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "GROK_OAUTH_PASSWORD_AUTH_DISABLED")
+	require.Empty(t, client.loginEmail)
 }
 
 func TestGrokOAuthServiceAuthorizePasswordDisabledByDefault(t *testing.T) {

@@ -187,6 +187,20 @@ func (_c *ProxyCreate) SetNillableExpiryWarnDays(v *int) *ProxyCreate {
 	return _c
 }
 
+// SetWorkspaceID sets the "workspace_id" field.
+func (_c *ProxyCreate) SetWorkspaceID(v int64) *ProxyCreate {
+	_c.mutation.SetWorkspaceID(v)
+	return _c
+}
+
+// SetNillableWorkspaceID sets the "workspace_id" field if the given value is not nil.
+func (_c *ProxyCreate) SetNillableWorkspaceID(v *int64) *ProxyCreate {
+	if v != nil {
+		_c.SetWorkspaceID(*v)
+	}
+	return _c
+}
+
 // AddAccountIDs adds the "accounts" edge to the Account entity by IDs.
 func (_c *ProxyCreate) AddAccountIDs(ids ...int64) *ProxyCreate {
 	_c.mutation.AddAccountIDs(ids...)
@@ -270,6 +284,10 @@ func (_c *ProxyCreate) defaults() error {
 		v := proxy.DefaultExpiryWarnDays
 		_c.mutation.SetExpiryWarnDays(v)
 	}
+	if _, ok := _c.mutation.WorkspaceID(); !ok {
+		v := proxy.DefaultWorkspaceID
+		_c.mutation.SetWorkspaceID(v)
+	}
 	return nil
 }
 
@@ -336,6 +354,9 @@ func (_c *ProxyCreate) check() error {
 	}
 	if _, ok := _c.mutation.ExpiryWarnDays(); !ok {
 		return &ValidationError{Name: "expiry_warn_days", err: errors.New(`ent: missing required field "Proxy.expiry_warn_days"`)}
+	}
+	if _, ok := _c.mutation.WorkspaceID(); !ok {
+		return &ValidationError{Name: "workspace_id", err: errors.New(`ent: missing required field "Proxy.workspace_id"`)}
 	}
 	return nil
 }
@@ -415,6 +436,10 @@ func (_c *ProxyCreate) createSpec() (*Proxy, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ExpiryWarnDays(); ok {
 		_spec.SetField(proxy.FieldExpiryWarnDays, field.TypeInt, value)
 		_node.ExpiryWarnDays = value
+	}
+	if value, ok := _c.mutation.WorkspaceID(); ok {
+		_spec.SetField(proxy.FieldWorkspaceID, field.TypeInt64, value)
+		_node.WorkspaceID = value
 	}
 	if nodes := _c.mutation.AccountsIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -699,6 +724,24 @@ func (u *ProxyUpsert) AddExpiryWarnDays(v int) *ProxyUpsert {
 	return u
 }
 
+// SetWorkspaceID sets the "workspace_id" field.
+func (u *ProxyUpsert) SetWorkspaceID(v int64) *ProxyUpsert {
+	u.Set(proxy.FieldWorkspaceID, v)
+	return u
+}
+
+// UpdateWorkspaceID sets the "workspace_id" field to the value that was provided on create.
+func (u *ProxyUpsert) UpdateWorkspaceID() *ProxyUpsert {
+	u.SetExcluded(proxy.FieldWorkspaceID)
+	return u
+}
+
+// AddWorkspaceID adds v to the "workspace_id" field.
+func (u *ProxyUpsert) AddWorkspaceID(v int64) *ProxyUpsert {
+	u.Add(proxy.FieldWorkspaceID, v)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -972,6 +1015,27 @@ func (u *ProxyUpsertOne) AddExpiryWarnDays(v int) *ProxyUpsertOne {
 func (u *ProxyUpsertOne) UpdateExpiryWarnDays() *ProxyUpsertOne {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetWorkspaceID sets the "workspace_id" field.
+func (u *ProxyUpsertOne) SetWorkspaceID(v int64) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetWorkspaceID(v)
+	})
+}
+
+// AddWorkspaceID adds v to the "workspace_id" field.
+func (u *ProxyUpsertOne) AddWorkspaceID(v int64) *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddWorkspaceID(v)
+	})
+}
+
+// UpdateWorkspaceID sets the "workspace_id" field to the value that was provided on create.
+func (u *ProxyUpsertOne) UpdateWorkspaceID() *ProxyUpsertOne {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateWorkspaceID()
 	})
 }
 
@@ -1414,6 +1478,27 @@ func (u *ProxyUpsertBulk) AddExpiryWarnDays(v int) *ProxyUpsertBulk {
 func (u *ProxyUpsertBulk) UpdateExpiryWarnDays() *ProxyUpsertBulk {
 	return u.Update(func(s *ProxyUpsert) {
 		s.UpdateExpiryWarnDays()
+	})
+}
+
+// SetWorkspaceID sets the "workspace_id" field.
+func (u *ProxyUpsertBulk) SetWorkspaceID(v int64) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.SetWorkspaceID(v)
+	})
+}
+
+// AddWorkspaceID adds v to the "workspace_id" field.
+func (u *ProxyUpsertBulk) AddWorkspaceID(v int64) *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.AddWorkspaceID(v)
+	})
+}
+
+// UpdateWorkspaceID sets the "workspace_id" field to the value that was provided on create.
+func (u *ProxyUpsertBulk) UpdateWorkspaceID() *ProxyUpsertBulk {
+	return u.Update(func(s *ProxyUpsert) {
+		s.UpdateWorkspaceID()
 	})
 }
 

@@ -20,6 +20,15 @@ declare module 'vue-router' {
     requiresAdmin?: boolean
 
     /**
+     * 是否仅站长（role=admin）可访问。
+     *
+     * requiresAdmin 对代运营（role=vendor）同样成立，因此站长专属页面
+     * 必须额外声明本字段。
+     * @default false
+     */
+    requiresOwner?: boolean
+
+    /**
      * Page title for this route
      */
     title?: string

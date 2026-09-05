@@ -82,6 +82,13 @@ vi.mock('@/stores/onboarding', () => ({
   }),
 }))
 
+// 视图通过 useWorkspacePerms 读取身份来决定建/删分组等入口的显隐。
+// 本文件断言的是列设置，与身份无关，故以站长身份 mock 取得完整列集合；
+// 与同文件其余 store 一致走 vi.mock，不引入真实 pinia。
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ isOwner: true, isVendor: false, workspace: null }),
+}))
+
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
@@ -236,6 +243,7 @@ describe('admin GroupsView column settings', () => {
     getModelsListCandidates.mockReset()
     getUsageSummary.mockReset()
     getCapacitySummary.mockReset()
+    getLiveCapability.mockReset()
     listAccounts.mockReset()
     showError.mockReset()
     showSuccess.mockReset()

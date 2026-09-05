@@ -81,10 +81,14 @@ var usageLogInsertArgTypes = [...]string{
 	"text",        // model_mapping_chain
 	"text",        // billing_tier
 	"text",        // billing_mode
+	"text",        // billing_provenance
 	"numeric",     // account_stats_cost
 	"text",        // session_id
 	"boolean",     // native_compaction_v2
 	"timestamptz", // created_at
+	"boolean",     // probe_coalesced
+	"text",        // probe_leader_request_id
+	"boolean",     // provider_cost_recorded
 }
 
 const (
@@ -281,17 +285,21 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -740,15 +748,19 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		) AS (VALUES `)
 
-	// Each batch row prepends the synthetic input_index before the 60
+	// Each batch row prepends the synthetic input_index before the 65
 	// usage-log column values.
-	args := make([]any, 0, len(keys)*61)
+	args := make([]any, 0, len(keys)*66)
 	argPos := 1
 	for idx, key := range keys {
 		if idx > 0 {
@@ -834,10 +846,14 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				model_mapping_chain,
 				billing_tier,
 				billing_mode,
+				billing_provenance,
 				account_stats_cost,
 				session_id,
 				native_compaction_v2,
-				created_at
+				created_at,
+				probe_coalesced,
+				probe_leader_request_id,
+				provider_cost_recorded
 			)
 			SELECT
 				user_id,
@@ -897,10 +913,14 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				model_mapping_chain,
 				billing_tier,
 				billing_mode,
+				billing_provenance,
 				account_stats_cost,
 				session_id,
 				native_compaction_v2,
-				created_at
+				created_at,
+				probe_coalesced,
+				probe_leader_request_id,
+				provider_cost_recorded
 			FROM input
 			ON CONFLICT (request_id, api_key_id) DO NOTHING
 			RETURNING request_id, api_key_id, id, created_at
@@ -1000,13 +1020,17 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		) AS (VALUES `)
 
-	args := make([]any, 0, len(preparedList)*60)
+	args := make([]any, 0, len(preparedList)*65)
 	argPos := 1
 	for idx, prepared := range preparedList {
 		if idx > 0 {
@@ -1089,10 +1113,14 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		)
 		SELECT
 			user_id,
@@ -1152,10 +1180,14 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		FROM input
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)
@@ -1223,17 +1255,21 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			model_mapping_chain,
 			billing_tier,
 			billing_mode,
+			billing_provenance,
 			account_stats_cost,
 			session_id,
 			native_compaction_v2,
-			created_at
+			created_at,
+			probe_coalesced,
+			probe_leader_request_id,
+			provider_cost_recorded
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
@@ -1241,6 +1277,13 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 }
 
 func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
+	// The probe attribution columns were added after UsageLog existed. Keep
+	// zero-value/non-probe logs on the historical provider-cost path; only an
+	// explicitly coalesced follower may write provider_cost_recorded=false.
+	providerCostRecorded := log.ProviderCostRecorded
+	if !log.ProbeCoalesced && (log.ProbeLeaderRequestID == nil || strings.TrimSpace(*log.ProbeLeaderRequestID) == "") {
+		providerCostRecorded = true
+	}
 	createdAt := log.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now()
@@ -1275,6 +1318,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	modelMappingChain := nullString(log.ModelMappingChain)
 	billingTier := nullString(log.BillingTier)
 	billingMode := nullString(log.BillingMode)
+	billingProvenance := nullString(log.BillingProvenance)
 	sessionID := nullString(log.SessionID)
 	requestedModel := strings.TrimSpace(log.RequestedModel)
 	if requestedModel == "" {
@@ -1352,10 +1396,14 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			modelMappingChain,
 			billingTier,
 			billingMode,
+			billingProvenance,
 			log.AccountStatsCost, // account_stats_cost
 			sessionID,            // session_id
 			log.NativeCompactionV2,
 			createdAt,
+			log.ProbeCoalesced,
+			nullString(log.ProbeLeaderRequestID),
+			providerCostRecorded,
 		},
 	}
 }

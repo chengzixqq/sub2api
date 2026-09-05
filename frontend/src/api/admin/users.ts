@@ -6,6 +6,40 @@
 import { apiClient } from '../client'
 import type { AdminUser, UpdateUserRequest, PaginatedResponse, ApiKey } from '@/types'
 
+export interface AdjustmentRequestOptions {
+  idempotencyKey?: string
+}
+
+export function createAdjustmentIdempotencyKey(): string {
+  const requestID = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  return `admin-adjustment-${requestID}`
+}
+
+async function postAdjustment<T>(
+  url: string,
+  payload: unknown,
+  options?: AdjustmentRequestOptions
+): Promise<T> {
+  const key = options?.idempotencyKey ?? createAdjustmentIdempotencyKey()
+  const { data } = await apiClient.post<T>(url, payload, {
+    headers: { 'Idempotency-Key': key }
+  })
+  return data
+}
+
+async function putAdjustment<T>(
+  url: string,
+  payload: unknown,
+  options?: AdjustmentRequestOptions
+): Promise<T> {
+  const key = options?.idempotencyKey ?? createAdjustmentIdempotencyKey()
+  const { data } = await apiClient.put<T>(url, payload, {
+    headers: { 'Idempotency-Key': key }
+  })
+  return data
+}
+
 export interface AdminBindAuthIdentityChannelRequest {
   channel: string
   channel_app_id: string
@@ -49,6 +83,7 @@ export interface BatchUpdateUserLimitsRequest {
   all?: boolean
   concurrency?: number
   rpm_limit?: number
+  notes?: string
 }
 
 export interface BatchUpdateUserLimitsResponse {
@@ -68,7 +103,7 @@ export async function list(
   pageSize: number = 20,
   filters?: {
     status?: 'active' | 'disabled'
-    role?: 'admin' | 'user'
+    role?: 'admin' | 'user' | 'vendor'
     search?: string
     group_name?: string         // fuzzy filter by allowed group name
     api_key_group_id?: number   // filter users by the group their API keys are bound to
@@ -132,7 +167,7 @@ export async function create(userData: {
   password: string
   username?: string
   notes?: string
-  role?: 'admin' | 'user'
+  role?: 'admin' | 'user' | 'vendor'
   balance?: number
   concurrency?: number
   rpm_limit?: number
@@ -148,7 +183,14 @@ export async function create(userData: {
  * @param updates - Fields to update
  * @returns Updated user
  */
-export async function update(id: number, updates: UpdateUserRequest): Promise<AdminUser> {
+export async function update(
+  id: number,
+  updates: UpdateUserRequest,
+  options?: AdjustmentRequestOptions
+): Promise<AdminUser> {
+  if (updates.concurrency !== undefined) {
+    return putAdjustment<AdminUser>(`/admin/users/${id}`, updates, options)
+  }
   const { data } = await apiClient.put<AdminUser>(`/admin/users/${id}`, updates)
   return data
 }
@@ -173,37 +215,48 @@ export async function deleteUser(id: number): Promise<{ message: string }> {
  */
 export async function updateBalance(
   id: number,
-  balance: number,
+  balance: number | string,
   operation: 'set' | 'add' | 'subtract' = 'set',
-  notes?: string
+  notes?: string,
+  options?: AdjustmentRequestOptions
 ): Promise<AdminUser> {
-  const { data } = await apiClient.post<AdminUser>(`/admin/users/${id}/balance`, {
+  const payload = {
     balance,
     operation,
     notes: notes || ''
-  })
-  return data
+  }
+  return postAdjustment<AdminUser>(`/admin/users/${id}/balance`, payload, options)
 }
 
 /**
  * Update user concurrency
  * @param id - User ID
  * @param concurrency - New concurrency limit
+ * @param adjustmentNotes - Optional note for this concurrency ledger entry
  * @returns Updated user
  */
-export async function updateConcurrency(id: number, concurrency: number): Promise<AdminUser> {
-  return update(id, { concurrency })
+export async function updateConcurrency(
+  id: number,
+  concurrency: number,
+  adjustmentNotes?: string,
+  options?: AdjustmentRequestOptions
+): Promise<AdminUser> {
+  return update(id, {
+    concurrency,
+    adjustment_notes: adjustmentNotes
+  }, options)
 }
 
 /** Overwrite concurrency and/or RPM limits for multiple users in one request. */
 export async function batchUpdateLimits(
-  request: BatchUpdateUserLimitsRequest
+  request: BatchUpdateUserLimitsRequest,
+  options?: AdjustmentRequestOptions
 ): Promise<BatchUpdateUserLimitsResponse> {
-  const { data } = await apiClient.post<BatchUpdateUserLimitsResponse>(
+  return postAdjustment<BatchUpdateUserLimitsResponse>(
     '/admin/users/batch-limits',
-    request
+    request,
+    options
   )
-  return data
 }
 
 /**
@@ -408,6 +461,7 @@ export const usersAPI = {
   updateBalance,
   updateConcurrency,
   batchUpdateLimits,
+  createAdjustmentIdempotencyKey,
   toggleStatus,
   getUserApiKeys,
   getUserUsageStats,

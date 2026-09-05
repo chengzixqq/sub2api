@@ -56,7 +56,10 @@ func (s *GrokOAuthService) GetCapabilities() GrokOAuthCapabilities {
 }
 
 func (s *GrokOAuthService) passwordAuthEnabled() bool {
-	return s.config != nil && s.config.Gateway.Grok.PasswordAuthEnabled
+	// Password-to-SSO authentication is intentionally hard-disabled. Keep the
+	// capability field and endpoint for compatibility, but never activate the
+	// credential-bearing flow from legacy configuration.
+	return false
 }
 
 type GrokAuthURLResult struct {

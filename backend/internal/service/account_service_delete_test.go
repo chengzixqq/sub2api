@@ -44,6 +44,20 @@ func (s *accountRepoStub) GetByIDs(ctx context.Context, ids []int64) ([]*Account
 	panic("unexpected GetByIDs call")
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 返回占位账号而非 panic：账号的写路径现在一律先过归属校验，
+// 而本 stub 服务的测试断言的是删除与更新语义本身。归属过滤的
+// 正确性由 admin_account_workspace_scope_test.go 专门覆盖。
+func (s *accountRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return &Account{ID: id}, nil
+}
+
+// ListIDsByWorkspace 供批量写端点复核归属白名单，同样按 panic 约定。
+func (s *accountRepoStub) ListIDsByWorkspace(ctx context.Context, workspaceID int64) ([]int64, error) {
+	panic("unexpected ListIDsByWorkspace call")
+}
+
 // ExistsByID 返回预设的存在性检查结果。
 // 这是 Delete 方法调用的第一个仓储方法，用于验证账号是否存在。
 func (s *accountRepoStub) ExistsByID(ctx context.Context, id int64) (bool, error) {

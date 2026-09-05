@@ -832,6 +832,14 @@ func (r *publicBatchImageAccountRepo) GetByID(_ context.Context, id int64) (*Acc
 	return nil, errors.New("account not found")
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *publicBatchImageAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *publicBatchImageAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]Account, error) {
 	out := make([]Account, 0, len(r.accounts))
 	for _, account := range r.accounts {

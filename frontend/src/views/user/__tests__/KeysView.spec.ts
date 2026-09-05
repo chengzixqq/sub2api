@@ -53,6 +53,11 @@ const messages: Record<string, string> = {
   'keys.status.inactive': 'Inactive',
   'keys.status.quota_exhausted': 'Quota exhausted',
   'keys.usage': 'Usage',
+  'keys.usageUnavailable': 'Usage unavailable',
+  'keys.usageLoadFailed': 'Failed to load API key usage',
+  'keys.retryUsage': 'Retry loading usage',
+  'keys.today': 'Today',
+  'keys.total': 'Last 30d',
 }
 
 vi.mock('@/api', () => ({
@@ -105,11 +110,11 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-const createApiKey = (): ApiKey => ({
-  id: 1,
+const createApiKey = (id = 1): ApiKey => ({
+  id,
   user_id: 1,
-  key: 'sk-test-key',
-  name: 'test-key',
+  key: `sk-test-key-${id}`,
+  name: `test-key-${id}`,
   group_id: null,
   status: 'active',
   ip_whitelist: [],
@@ -172,6 +177,9 @@ const DataTableStub = {
         <slot name="cell-name" :value="row.name" :row="row" />
         <div data-test="current-concurrency">
           <slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" />
+        </div>
+        <div data-test="usage">
+          <slot name="cell-usage" :row="row" />
         </div>
         <div
           v-if="columns.some((col) => col.key === 'last_used_ip')"
@@ -279,7 +287,11 @@ describe('user KeysView column settings', () => {
       pages: 1,
     })
     getPublicSettings.mockResolvedValue({})
-    getDashboardApiKeysUsage.mockResolvedValue({ stats: {} })
+    getDashboardApiKeysUsage.mockResolvedValue({
+      stats: {
+        '1': { api_key_id: 1, today_actual_cost: 0, total_actual_cost: 0 },
+      },
+    })
     getAvailableGroups.mockResolvedValue([])
     getUserGroupRates.mockResolvedValue({})
     isCurrentStep.mockReturnValue(false)
@@ -392,6 +404,49 @@ describe('user KeysView column settings', () => {
     const wrapper = await mountView()
 
     expect(wrapper.get('[data-test="current-concurrency"]').text()).toBe('3')
+  })
+
+  it('renders zero only when the usage endpoint confirms a zero value', async () => {
+    const wrapper = await mountView()
+
+    expect(wrapper.get('[data-test="usage"]').text()).toContain('Today: $0.0000')
+    expect(wrapper.get('[data-test="usage"]').text()).toContain('Last 30d: $0.0000')
+    expect(wrapper.find('[data-test="usage-unavailable"]').exists()).toBe(false)
+  })
+
+  it('shows an unavailable state instead of zero when usage loading fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    getDashboardApiKeysUsage.mockRejectedValueOnce(new Error('database unavailable'))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.get('[data-test="usage-unavailable"]').text()).toContain('Usage unavailable')
+    expect(wrapper.get('[data-test="usage"]').text()).not.toContain('$0.0000')
+    expect(showError).toHaveBeenCalledWith('Failed to load API key usage')
+    consoleError.mockRestore()
+  })
+
+  it('keeps valid usage visible when another row is missing from the response', async () => {
+    listKeys.mockResolvedValueOnce({
+      items: [createApiKey(1), createApiKey(2)],
+      total: 2,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+    getDashboardApiKeysUsage.mockResolvedValueOnce({
+      stats: {
+        '1': { api_key_id: 1, today_actual_cost: 1.25, total_actual_cost: 12.5 },
+      },
+    })
+
+    const wrapper = await mountView()
+    const usageCells = wrapper.findAll('[data-test="usage"]')
+
+    expect(usageCells[0].text()).toContain('Today: $1.2500')
+    expect(usageCells[0].text()).toContain('Last 30d: $12.5000')
+    expect(usageCells[1].text()).toContain('Usage unavailable')
+    expect(showError).not.toHaveBeenCalled()
   })
 
   it('marks current concurrency as sortable', async () => {

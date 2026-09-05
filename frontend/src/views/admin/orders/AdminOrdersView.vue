@@ -1,62 +1,96 @@
 <template>
   <AppLayout>
     <div class="space-y-4">
-      <!-- Filters -->
-      <div class="card p-4">
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="flex-1 sm:max-w-64">
-            <input v-model="orderSearch" type="text" :placeholder="t('payment.admin.searchOrders')" class="input" @input="debounceLoadOrders" />
-          </div>
-          <Select v-model="orderFilters.status" :options="statusFilterOptions" class="w-36" @change="loadOrders" />
-          <Select v-model="orderFilters.payment_type" :options="paymentTypeFilterOptions" class="w-40" @change="loadOrders" />
-          <Select v-model="orderFilters.order_type" :options="orderTypeFilterOptions" class="w-36" @change="loadOrders" />
-          <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
-            <button @click="loadOrders" :disabled="ordersLoading" class="btn btn-secondary" :title="t('common.refresh')">
-              <Icon name="refresh" size="md" :class="ordersLoading ? 'animate-spin' : ''" />
-            </button>
-          </div>
-        </div>
+      <div v-if="!adminSettingsStore.loaded" class="card p-4">
+        <div class="h-10 w-full max-w-sm animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
       </div>
 
-      <!-- Table -->
-      <OrderTable :orders="orders" :loading="ordersLoading" show-user>
-        <template #actions="{ row }">
-          <div class="flex items-center gap-1">
-            <button @click="showOrderDetail(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-600">
-              <Icon name="eye" size="sm" />
-              {{ t('common.view') }}
-            </button>
-            <button v-if="row.status === 'PENDING'" @click="handleCancelOrder(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-yellow-600 hover:bg-yellow-50 dark:text-yellow-400 dark:hover:bg-yellow-900/20">
-              <Icon name="x" size="sm" />
-              {{ t('payment.orders.cancel') }}
-            </button>
-            <button v-if="row.status === 'FAILED'" @click="handleRetryOrder(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20">
-              <Icon name="refresh" size="sm" />
-              {{ t('payment.admin.retry') }}
-            </button>
-            <template v-if="row.status === 'REFUND_REQUESTED'">
-              <span v-if="row.refund_amount" class="rounded-full bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">{{ creditedAmountSymbol }}{{ row.refund_amount.toFixed(2) }}</span>
-              <button @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
-                <Icon name="check" size="sm" />
-                {{ t('payment.admin.approveRefund') }}
-              </button>
-            </template>
-            <button v-else-if="row.status === 'REFUND_FAILED'" @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
-              <Icon name="refresh" size="sm" />
-              {{ t('payment.admin.retryRefund') }}
-            </button>
-            <button v-else-if="row.status === 'REFUND_PENDING'" :disabled="refundQueryingIds.has(row.id)" @click="handleQueryRefund(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-orange-600 hover:bg-orange-50 disabled:opacity-60 dark:text-orange-400 dark:hover:bg-orange-900/20">
-              <Icon name="refresh" size="sm" :class="refundQueryingIds.has(row.id) ? 'animate-spin' : ''" />
-              {{ t('payment.admin.queryRefundStatus') }}
-            </button>
-            <button v-else-if="row.status === 'COMPLETED' || row.status === 'PARTIALLY_REFUNDED'" @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">
-              <Icon name="dollar" size="sm" />
-              {{ t('payment.admin.refund') }}
-            </button>
+      <template v-else>
+        <div class="tabs inline-flex w-full sm:w-auto" role="tablist" :aria-label="t('payment.admin.tabs.orderManagement')">
+          <button
+            v-if="adminSettingsStore.paymentEnabled"
+            type="button"
+            role="tab"
+            class="tab flex-1 sm:flex-none"
+            :class="activeTab === 'payment' ? 'tab-active' : ''"
+            :aria-selected="activeTab === 'payment'"
+            @click="selectTab('payment')"
+          >
+            {{ t('payment.admin.tabs.orders') }}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            class="tab flex-1 sm:flex-none"
+            :class="activeTab === 'manual' ? 'tab-active' : ''"
+            :aria-selected="activeTab === 'manual'"
+            @click="selectTab('manual')"
+          >
+            {{ t('payment.admin.tabs.userAdjustments') }}
+          </button>
+        </div>
+
+        <div v-show="activeTab === 'payment'" class="space-y-4">
+          <!-- Filters -->
+          <div class="card p-4">
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex-1 sm:max-w-64">
+                <input v-model="orderSearch" type="text" :placeholder="t('payment.admin.searchOrders')" class="input" @input="debounceLoadOrders" />
+              </div>
+              <Select v-model="orderFilters.status" :options="statusFilterOptions" class="w-36" @change="loadOrders" />
+              <Select v-model="orderFilters.payment_type" :options="paymentTypeFilterOptions" class="w-40" @change="loadOrders" />
+              <Select v-model="orderFilters.order_type" :options="orderTypeFilterOptions" class="w-36" @change="loadOrders" />
+              <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
+                <button @click="loadOrders" :disabled="ordersLoading" class="btn btn-secondary" :title="t('common.refresh')">
+                  <Icon name="refresh" size="md" :class="ordersLoading ? 'animate-spin' : ''" />
+                </button>
+              </div>
+            </div>
           </div>
-        </template>
-      </OrderTable>
-      <Pagination v-if="orderPagination.total > 0" :page="orderPagination.page" :total="orderPagination.total" :page-size="orderPagination.page_size" @update:page="handleOrderPageChange" @update:pageSize="handleOrderPageSizeChange" />
+
+          <!-- Table -->
+          <OrderTable :orders="orders" :loading="ordersLoading" show-user>
+            <template #actions="{ row }">
+              <div class="flex items-center gap-1">
+                <button @click="showOrderDetail(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-dark-600">
+                  <Icon name="eye" size="sm" />
+                  {{ t('common.view') }}
+                </button>
+                <button v-if="row.status === 'PENDING'" @click="handleCancelOrder(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-yellow-600 hover:bg-yellow-50 dark:text-yellow-400 dark:hover:bg-yellow-900/20">
+                  <Icon name="x" size="sm" />
+                  {{ t('payment.orders.cancel') }}
+                </button>
+                <button v-if="row.status === 'FAILED'" @click="handleRetryOrder(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20">
+                  <Icon name="refresh" size="sm" />
+                  {{ t('payment.admin.retry') }}
+                </button>
+                <template v-if="row.status === 'REFUND_REQUESTED'">
+                  <span v-if="row.refund_amount" class="rounded-full bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">{{ creditedAmountSymbol }}{{ row.refund_amount.toFixed(2) }}</span>
+                  <button @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
+                    <Icon name="check" size="sm" />
+                    {{ t('payment.admin.approveRefund') }}
+                  </button>
+                </template>
+                <button v-else-if="row.status === 'REFUND_FAILED'" @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:text-purple-400 dark:hover:bg-purple-900/20">
+                  <Icon name="refresh" size="sm" />
+                  {{ t('payment.admin.retryRefund') }}
+                </button>
+                <button v-else-if="row.status === 'REFUND_PENDING'" :disabled="refundQueryingIds.has(row.id)" @click="handleQueryRefund(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-orange-600 hover:bg-orange-50 disabled:opacity-60 dark:text-orange-400 dark:hover:bg-orange-900/20">
+                  <Icon name="refresh" size="sm" :class="refundQueryingIds.has(row.id) ? 'animate-spin' : ''" />
+                  {{ t('payment.admin.queryRefundStatus') }}
+                </button>
+                <button v-else-if="row.status === 'COMPLETED' || row.status === 'PARTIALLY_REFUNDED'" @click="openRefundDialog(row)" class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20">
+                  <Icon name="dollar" size="sm" />
+                  {{ t('payment.admin.refund') }}
+                </button>
+              </div>
+            </template>
+          </OrderTable>
+          <Pagination v-if="orderPagination.total > 0" :page="orderPagination.page" :total="orderPagination.total" :page-size="orderPagination.page_size" @update:page="handleOrderPageChange" @update:pageSize="handleOrderPageSizeChange" />
+        </div>
+
+        <UserAdjustmentsPanel v-if="manualTabMounted" v-show="activeTab === 'manual'" />
+      </template>
     </div>
 
     <!-- Order Detail Dialog -->
@@ -116,9 +150,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { useAdminSettingsStore } from '@/stores/adminSettings'
 import { adminPaymentAPI } from '@/api/admin/payment'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatOrderDateTime } from '@/components/payment/orderUtils'
@@ -132,6 +168,7 @@ import AdminRefundDialog from '@/components/admin/payment/AdminRefundDialog.vue'
 import OrderStatusBadge from '@/components/payment/OrderStatusBadge.vue'
 import OrderTable from '@/components/payment/OrderTable.vue'
 import { currencySymbol } from '@/components/payment/currency'
+import UserAdjustmentsPanel from '@/components/admin/payment/UserAdjustmentsPanel.vue'
 
 interface AuditLog {
   id: number
@@ -143,6 +180,14 @@ interface AuditLog {
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const adminSettingsStore = useAdminSettingsStore()
+const route = useRoute()
+const router = useRouter()
+
+type OrdersTab = 'payment' | 'manual'
+const activeTab = ref<OrdersTab>(route.query.tab === 'manual' ? 'manual' : 'payment')
+const manualTabMounted = ref(activeTab.value === 'manual')
+const paymentOrdersLoaded = ref(false)
 
 const ordersLoading = ref(false)
 const orders = ref<PaymentOrder[]>([])
@@ -170,6 +215,7 @@ function debounceLoadOrders() {
 }
 
 async function loadOrders() {
+  if (!adminSettingsStore.paymentEnabled) return
   ordersLoading.value = true
   try {
     const res = await adminPaymentAPI.getOrders({
@@ -179,6 +225,7 @@ async function loadOrders() {
     })
     orders.value = res.data.items || []
     orderPagination.total = res.data.total || 0
+    paymentOrdersLoaded.value = true
   } catch (err: unknown) {
     appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error')))
   } finally { ordersLoading.value = false }
@@ -307,5 +354,57 @@ async function handleQueryRefund(order: PaymentOrder) {
 
 function formatDateTime(dateStr: string): string { return formatOrderDateTime(dateStr) }
 
-onMounted(() => loadOrders())
+function normalizedTab(): OrdersTab {
+  if (!adminSettingsStore.paymentEnabled) return 'manual'
+  return route.query.tab === 'manual' ? 'manual' : 'payment'
+}
+
+function syncTabFromRoute() {
+  if (!adminSettingsStore.loaded) return
+  activeTab.value = normalizedTab()
+  if (activeTab.value === 'manual') manualTabMounted.value = true
+
+  if (!adminSettingsStore.paymentEnabled && route.query.tab !== 'manual') {
+    void router.replace({ query: { ...route.query, tab: 'manual' } })
+  }
+}
+
+function selectTab(tab: OrdersTab) {
+  if (tab === 'payment' && !adminSettingsStore.paymentEnabled) return
+  activeTab.value = tab
+  if (tab === 'manual') manualTabMounted.value = true
+
+  const query = { ...route.query }
+  if (tab === 'manual') query.tab = 'manual'
+  else delete query.tab
+  void router.push({ query })
+}
+
+watch(
+  [
+    () => adminSettingsStore.loaded,
+    () => adminSettingsStore.paymentEnabled,
+    () => route.query.tab
+  ],
+  syncTabFromRoute,
+  { immediate: true }
+)
+
+watch(
+  [
+    () => adminSettingsStore.loaded,
+    () => adminSettingsStore.paymentEnabled,
+    activeTab
+  ],
+  ([loaded, paymentEnabled, tab]) => {
+    if (loaded && paymentEnabled && tab === 'payment' && !paymentOrdersLoaded.value) {
+      void loadOrders()
+    }
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
+  void adminSettingsStore.fetch()
+})
 </script>

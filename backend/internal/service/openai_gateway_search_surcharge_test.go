@@ -46,6 +46,37 @@ func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToTokens(t *testing.T) {
 	require.InDelta(t, 1.0105, cost.TotalCost, 1e-9)
 }
 
+func TestCalculateOpenAIRecordUsageCost_SearchIsAdditiveToImages(t *testing.T) {
+	t.Parallel()
+
+	imagePrice := 0.20
+	searchPrice := 10.0 // 100 calls = $1.0
+	svc := &OpenAIGatewayService{billingService: newTestBillingService()}
+	apiKey := &APIKey{Group: &Group{
+		ImagePrice1K:     &imagePrice,
+		SearchPricePer1k: &searchPrice,
+	}}
+
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ImageCount: 2, ImageSize: "1K", SearchCount: 100},
+		apiKey,
+		nil,
+		1.0,
+		1.0,
+		1.0,
+		1.0,
+		UsageTokens{},
+		"",
+		boolPtr(false),
+		time.Time{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, cost)
+	require.InDelta(t, 1.40, cost.TotalCost, 1e-9)
+	require.InDelta(t, 1.40, cost.ActualCost, 1e-9)
+}
+
 func TestCalculateOpenAIRecordUsageCost_SearchOnlyWhenNoTokenPricing(t *testing.T) {
 	t.Parallel()
 

@@ -132,6 +132,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 			if firstTokenMs == nil {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
+				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
 
 			// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式

@@ -92,6 +92,8 @@ type BatchImagePublicService struct {
 	BillingRepo       UsageBillingRepository
 	AuthCache         APIKeyAuthCacheInvalidator
 	Config            *config.Config
+	// Workspace 为 nil 时账号成本倍率退回账号自身值（工作区授权倍率不参与）。
+	Workspace *WorkspaceService
 }
 
 type BatchImagePricingSnapshot struct {
@@ -182,7 +184,7 @@ type BatchImageItemsQuery struct {
 	Cursor string
 }
 
-func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config) *BatchImagePublicService {
+func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRepository, groupRepo GroupRepository, userGroupRateRepo UserGroupRateRepository, queue BatchImageQueue, pricing *BatchImageModelPricingResolver, billingRepo UsageBillingRepository, authCache APIKeyAuthCacheInvalidator, cfg *config.Config, workspaceService *WorkspaceService) *BatchImagePublicService {
 	return &BatchImagePublicService{
 		Repo:              repo,
 		AccountRepo:       accountRepo,
@@ -194,6 +196,7 @@ func NewBatchImagePublicService(repo BatchImageRepository, accountRepo AccountRe
 		BillingRepo:       billingRepo,
 		AuthCache:         authCache,
 		Config:            cfg,
+		Workspace:         workspaceService,
 	}
 }
 
@@ -1064,10 +1067,8 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		)
 		holdMultiplier = discountMultiplier
 	}
-	accountMultiplier := 1.0
-	if account != nil {
-		accountMultiplier = account.BillingRateMultiplier()
-	}
+	// 账号倍率即与供应商的结算倍率，不掺工作区查询 —— 见 resolveAccountCostRate。
+	accountMultiplier := resolveAccountCostRate(account)
 	if accountMultiplier < 0 {
 		accountMultiplier = 0
 	}

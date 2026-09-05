@@ -244,6 +244,7 @@ import {
   startOAuthLogin,
   type OAuthLoginStart
 } from '@/api/auth'
+import { resolveLandingPath } from '@/router/landing'
 import type {
   ActionCaptchaRequestProof,
   LoginAgreementDocument,
@@ -556,6 +557,29 @@ function validateForm(): boolean {
   return isValid
 }
 
+// ==================== Post-login Redirect ====================
+
+/**
+ * 登录成功后跳转到与身份匹配的落地页。
+ *
+ * vendor 需要先补拉 /me：登录响应不含 workspace（与 /me 是两条独立的
+ * 序列化路径），拿不到权限档就无法判断该落到哪个管理页。补拉失败时
+ * resolveLandingPath 会退到用户面板，而非把人送进一片 403 的管理端。
+ */
+async function redirectAfterLogin(): Promise<void> {
+  if (authStore.isVendor && !authStore.workspace) {
+    await authStore.refreshUser().catch(() => undefined)
+  }
+
+  const target = resolveLandingPath({
+    isOwner: authStore.isOwner,
+    isVendor: authStore.isVendor,
+    workspace: authStore.workspace,
+    requestedRedirect: router.currentRoute.value.query.redirect as string | undefined
+  })
+  await router.push(target)
+}
+
 // ==================== Form Handlers ====================
 
 async function handleLogin(): Promise<void> {
@@ -600,9 +624,7 @@ async function handleLogin(): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await redirectAfterLogin()
   } catch (error: unknown) {
     errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', t('auth.loginFailed'))
 
@@ -642,8 +664,7 @@ async function handlePasskeyLogin(): Promise<void> {
     await authStore.loginWithPasskey(proof)
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await redirectAfterLogin()
   } catch (error: unknown) {
     const fallback = error instanceof DOMException && error.name === 'NotAllowedError'
       ? t('auth.passkeyCancelled')
@@ -710,9 +731,7 @@ async function handle2FAVerify(code: string): Promise<void> {
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
-    // Redirect to dashboard or intended route
-    const redirectTo = (router.currentRoute.value.query.redirect as string) || '/dashboard'
-    await router.push(redirectTo)
+    await redirectAfterLogin()
   } catch (error: unknown) {
     const err = error as { message?: string; response?: { data?: { message?: string } } }
     const message = err.response?.data?.message || err.message || t('profile.totp.loginFailed')

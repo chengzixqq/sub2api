@@ -306,6 +306,14 @@ func (s *groupRepoStub) BindAccountsToGroup(ctx context.Context, groupID int64, 
 	panic("unexpected BindAccountsToGroup call")
 }
 
+// LoadAccountCountsScoped 返回空 map 而非 panic。
+//
+// 只有 vendor 视角的分组列表会调它来改写全站计数；本文件测的是删除路径，
+// 走不到那里。缺键按零计数处理，空 map 是安全的中性值。
+func (s *groupRepoStub) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
+
 func (s *groupRepoStub) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
 	panic("unexpected GetAccountIDsByGroupIDs call")
 }
@@ -344,8 +352,29 @@ func (s *proxyRepoStub) GetByID(ctx context.Context, id int64) (*Proxy, error) {
 	panic("unexpected GetByID call")
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 返回一个占位代理而非 panic：删除、更新等写路径现在都要先过归属校验，
+// 而本 stub 服务的测试断言的是删除语义本身。归属过滤的正确性由
+// admin_proxy_workspace_scope_test.go 专门覆盖。
+func (s *proxyRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	return &Proxy{ID: id}, nil
+}
+
 func (s *proxyRepoStub) ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
 	panic("unexpected ListByIDs call")
+}
+
+// ListByIDsScoped 与 ListActiveScoped 是管理端按工作区收窄的代理读取。
+//
+// 沿用本桩的约定：不该被调到的方法就 panic —— 删除路径不读代理列表，
+// 静默返回 nil 会让漏掉归属过滤的测试假绿。
+func (s *proxyRepoStub) ListByIDsScoped(ctx context.Context, ids []int64) ([]Proxy, error) {
+	panic("unexpected ListByIDsScoped call")
+}
+
+func (s *proxyRepoStub) ListActiveScoped(ctx context.Context) ([]Proxy, error) {
+	panic("unexpected ListActiveScoped call")
 }
 
 func (s *proxyRepoStub) Update(ctx context.Context, proxy *Proxy) error {

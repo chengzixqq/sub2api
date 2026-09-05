@@ -14,6 +14,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adminuseradjustment"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -51,6 +52,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/workspace"
+	"github.com/Wei-Shaw/sub2api/ent/workspacegroupgrant"
+	"github.com/Wei-Shaw/sub2api/ent/workspacemember"
 )
 
 // ent aliases to avoid import conflicts in user's code.
@@ -114,6 +118,7 @@ func checkColumn(t, c string) error {
 			apikey.Table:                        apikey.ValidColumn,
 			account.Table:                       account.ValidColumn,
 			accountgroup.Table:                  accountgroup.ValidColumn,
+			adminuseradjustment.Table:           adminuseradjustment.ValidColumn,
 			announcement.Table:                  announcement.ValidColumn,
 			announcementread.Table:              announcementread.ValidColumn,
 			authidentity.Table:                  authidentity.ValidColumn,
@@ -150,6 +155,9 @@ func checkColumn(t, c string) error {
 			userattributevalue.Table:            userattributevalue.ValidColumn,
 			userplatformquota.Table:             userplatformquota.ValidColumn,
 			usersubscription.Table:              usersubscription.ValidColumn,
+			workspace.Table:                     workspace.ValidColumn,
+			workspacegroupgrant.Table:           workspacegroupgrant.ValidColumn,
+			workspacemember.Table:               workspacemember.ValidColumn,
 		})
 	})
 	return columnCheck(t, c)

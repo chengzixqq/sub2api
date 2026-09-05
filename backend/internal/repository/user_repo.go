@@ -23,6 +23,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
+	"github.com/shopspring/decimal"
 
 	entsql "entgo.io/ent/dialect/sql"
 )
@@ -33,6 +34,7 @@ type userRepository struct {
 }
 
 var _ service.RedeemUserAdjustmentRepository = (*userRepository)(nil)
+var _ service.ExactBalanceAdjustmentRepository = (*userRepository)(nil)
 
 func NewUserRepository(client *dbent.Client, sqlDB *sql.DB) service.UserRepository {
 	return newUserRepositoryWithSQL(client, sqlDB)
@@ -70,30 +72,31 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 
 	// 统一使用 ent 的事务：保证用户与允许分组的更新原子化，
 	// 并避免基于 *sql.Tx 手动构造 ent client 导致的 ExecQuerier 断言错误。
-	//
-	// 注意：ent 的 Client.Tx 不感知上下文中的事务（只检查 driver 类型），
-	// 因此必须显式检查 TxFromContext：当调用方已开启外部事务（如注册时的
-	// “建用户 + 占用邀请码”原子事务），直接复用其 client，由调用方统一提交/回滚，
-	// 否则用户写入会落入独立事务并自行提交，导致外层事务无法回滚（孤儿用户）。
+	var tx *dbent.Tx
+	var err error
+	ownsTx := false
+	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		tx = existingTx
+	} else {
+		tx, err = r.client.Tx(ctx)
+		ownsTx = err == nil
+	}
+	if err != nil {
+		return err
+	}
+
 	var txClient *dbent.Client
 	txCtx := ctx
-	var ownedTx *dbent.Tx
-	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
-		txClient = existingTx.Client()
+	if ownsTx {
+		defer func() { _ = tx.Rollback() }()
+		txClient = tx.Client()
+		txCtx = dbent.NewTxContext(ctx, tx)
 	} else {
-		tx, err := r.client.Tx(ctx)
-		switch {
-		case errors.Is(err, dbent.ErrTxStarted):
-			// r.client 本身已是事务绑定 client（client 注入式事务，如集成测试
-			// 夹具 tx.Client()）：直接复用，提交/回滚由 client 的持有方负责。
+		// 已处于外部事务中（ErrTxStarted），复用当前事务 client 并由调用方负责提交/回滚。
+		if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+			txClient = existingTx.Client()
+		} else {
 			txClient = r.client
-		case err != nil:
-			return err
-		default:
-			ownedTx = tx
-			defer func() { _ = ownedTx.Rollback() }()
-			txClient = tx.Client()
-			txCtx = dbent.NewTxContext(ctx, tx)
 		}
 	}
 
@@ -166,8 +169,8 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 		return err
 	}
 
-	if ownedTx != nil {
-		if err := ownedTx.Commit(); err != nil {
+	if ownsTx {
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 	}
@@ -177,7 +180,8 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 }
 
 func (r *userRepository) GetByID(ctx context.Context, id int64) (*service.User, error) {
-	m, err := r.client.User.Query().Where(dbuser.IDEQ(id)).Only(ctx)
+	client := clientFromContext(ctx, r.client)
+	m, err := client.User.Query().Where(dbuser.IDEQ(id)).Only(ctx)
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrUserNotFound, nil)
 	}
@@ -247,14 +251,22 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User, field
 	}
 
 	// 使用 ent 事务包裹用户更新与 allowed_groups 同步，避免跨层事务不一致。
-	tx, err := r.client.Tx(ctx)
-	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+	var tx *dbent.Tx
+	var err error
+	ownsTx := false
+	if existingTx := dbent.TxFromContext(ctx); existingTx != nil {
+		tx = existingTx
+	} else {
+		tx, err = r.client.Tx(ctx)
+		ownsTx = err == nil
+	}
+	if err != nil {
 		return err
 	}
 
 	var txClient *dbent.Client
 	txCtx := ctx
-	if err == nil {
+	if ownsTx {
 		defer func() { _ = tx.Rollback() }()
 		txClient = tx.Client()
 		txCtx = dbent.NewTxContext(ctx, tx)
@@ -357,7 +369,7 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User, field
 		return err
 	}
 
-	if tx != nil {
+	if ownsTx {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
@@ -941,13 +953,36 @@ func (r *userRepository) DeductAvailableBalance(ctx context.Context, id int64, a
 // 相比"读余额 → 算新值 → 整行写回"，这里把读与写压进同一条 UPDATE，
 // 并发的计费扣款不会被旧快照覆盖。
 func (r *userRepository) AdjustBalance(ctx context.Context, id int64, delta float64) (service.BalanceChange, error) {
+	normalizedDelta := decimal.NewFromFloat(delta).Round(8).StringFixed(8)
+	return r.AdjustBalanceExact(ctx, id, normalizedDelta)
+}
+
+func (r *userRepository) AdjustBalanceExact(ctx context.Context, id int64, delta string) (service.BalanceChange, error) {
+	normalizedDelta, err := decimal.NewFromString(delta)
+	if err != nil {
+		return service.BalanceChange{}, fmt.Errorf("parse balance delta: %w", err)
+	}
 	const updateSQL = `
-		UPDATE users
-		SET balance = balance + $1, updated_at = NOW()
-		WHERE id = $2 AND deleted_at IS NULL AND balance + $1 >= 0
-		RETURNING balance - $1, balance
+		/* admin_adjust_balance */
+		WITH input AS (
+			SELECT $1::numeric AS delta
+		), target AS (
+			SELECT id, balance AS before_value
+			FROM users
+			WHERE id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		), updated AS (
+			UPDATE users AS u
+			SET balance = target.before_value + input.delta, updated_at = NOW()
+			FROM target, input
+			WHERE u.id = target.id
+			  AND u.deleted_at IS NULL
+			  AND target.before_value + input.delta >= 0
+			RETURNING target.before_value, u.balance AS after_value
+		)
+		SELECT before_value, after_value FROM updated
 	`
-	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), updateSQL, delta, id)
+	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), updateSQL, normalizedDelta.StringFixed(8), id)
 	if err != nil {
 		return service.BalanceChange{}, err
 	}
@@ -960,27 +995,56 @@ func (r *userRepository) AdjustBalance(ctx context.Context, id int64, delta floa
 	if err != nil {
 		return service.BalanceChange{}, err
 	}
-	return service.BalanceChange{Old: current, New: current + delta}, service.ErrBalanceNegative
+	oldFloat, _ := current.Float64()
+	newExact := current.Add(normalizedDelta)
+	newFloat, _ := newExact.Float64()
+	return service.BalanceChange{
+		Old: oldFloat, New: newFloat,
+		OldExact: current.StringFixed(8), NewExact: newExact.StringFixed(8),
+	}, service.ErrBalanceNegative
 }
 
 // SetBalance 原子地把余额置为 value，并返回变更前后的值。
 func (r *userRepository) SetBalance(ctx context.Context, id int64, value float64) (service.BalanceChange, error) {
-	if value < 0 {
+	normalizedValue := decimal.NewFromFloat(value).Round(8).StringFixed(8)
+	return r.SetBalanceExact(ctx, id, normalizedValue)
+}
+
+func (r *userRepository) SetBalanceExact(ctx context.Context, id int64, value string) (service.BalanceChange, error) {
+	normalizedValue, err := decimal.NewFromString(value)
+	if err != nil {
+		return service.BalanceChange{}, fmt.Errorf("parse balance value: %w", err)
+	}
+	if normalizedValue.IsNegative() {
 		// 连同当前余额一起返回，便于上层给出可读的错误信息。
 		current, err := r.currentBalance(ctx, id)
 		if err != nil {
 			return service.BalanceChange{}, err
 		}
-		return service.BalanceChange{Old: current, New: value}, service.ErrBalanceNegative
+		oldFloat, _ := current.Float64()
+		newFloat, _ := normalizedValue.Float64()
+		return service.BalanceChange{
+			Old: oldFloat, New: newFloat,
+			OldExact: current.StringFixed(8), NewExact: normalizedValue.StringFixed(8),
+		}, service.ErrBalanceNegative
 	}
 	const updateSQL = `
-		UPDATE users AS u
-		SET balance = $1, updated_at = NOW()
-		FROM (SELECT id, balance FROM users WHERE id = $2 AND deleted_at IS NULL) AS prev
-		WHERE u.id = prev.id AND u.deleted_at IS NULL
-		RETURNING prev.balance, u.balance
+		/* admin_set_balance */
+		WITH target AS (
+			SELECT id, balance AS before_value
+			FROM users
+			WHERE id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		), updated AS (
+			UPDATE users AS u
+			SET balance = $1::numeric, updated_at = NOW()
+			FROM target
+			WHERE u.id = target.id AND u.deleted_at IS NULL
+			RETURNING target.before_value, u.balance AS after_value
+		)
+		SELECT before_value, after_value FROM updated
 	`
-	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), updateSQL, value, id)
+	change, ok, err := scanBalanceChange(ctx, clientFromContext(ctx, r.client), updateSQL, normalizedValue.StringFixed(8), id)
 	if err != nil {
 		return service.BalanceChange{}, err
 	}
@@ -991,11 +1055,11 @@ func (r *userRepository) SetBalance(ctx context.Context, id int64, value float64
 }
 
 // currentBalance 读取用户当前余额，用户不存在时返回 ErrUserNotFound。
-func (r *userRepository) currentBalance(ctx context.Context, id int64) (balance float64, err error) {
+func (r *userRepository) currentBalance(ctx context.Context, id int64) (balance decimal.Decimal, err error) {
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx,
 		`SELECT balance FROM users WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
-		return 0, err
+		return decimal.Zero, err
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil && err == nil {
@@ -1004,14 +1068,22 @@ func (r *userRepository) currentBalance(ctx context.Context, id int64) (balance 
 	}()
 	if !rows.Next() {
 		if rowsErr := rows.Err(); rowsErr != nil {
-			return 0, rowsErr
+			return decimal.Zero, rowsErr
 		}
-		return 0, service.ErrUserNotFound
+		return decimal.Zero, service.ErrUserNotFound
 	}
-	if err := rows.Scan(&balance); err != nil {
-		return 0, err
+	var raw string
+	if err := rows.Scan(&raw); err != nil {
+		return decimal.Zero, err
 	}
-	return balance, rows.Err()
+	if err := rows.Err(); err != nil {
+		return decimal.Zero, err
+	}
+	balance, err = decimal.NewFromString(raw)
+	if err != nil {
+		return decimal.Zero, fmt.Errorf("parse current balance: %w", err)
+	}
+	return balance, nil
 }
 
 // scanBalanceChange 执行一条 RETURNING 旧余额、新余额的语句。ok 为 false 表示语句未命中任何行。
@@ -1031,9 +1103,21 @@ func scanBalanceChange(ctx context.Context, client *dbent.Client, query string, 
 		}
 		return service.BalanceChange{}, false, nil
 	}
-	if err := rows.Scan(&change.Old, &change.New); err != nil {
+	if err := rows.Scan(&change.OldExact, &change.NewExact); err != nil {
 		return service.BalanceChange{}, false, err
 	}
+	oldValue, parseErr := decimal.NewFromString(change.OldExact)
+	if parseErr != nil {
+		return service.BalanceChange{}, false, fmt.Errorf("parse old balance: %w", parseErr)
+	}
+	newValue, parseErr := decimal.NewFromString(change.NewExact)
+	if parseErr != nil {
+		return service.BalanceChange{}, false, fmt.Errorf("parse new balance: %w", parseErr)
+	}
+	change.OldExact = oldValue.StringFixed(8)
+	change.NewExact = newValue.StringFixed(8)
+	change.Old, _ = oldValue.Float64()
+	change.New, _ = newValue.Float64()
 	return change, true, rows.Err()
 }
 
@@ -1449,7 +1533,7 @@ func (r *userRepository) loadAllowedGroups(ctx context.Context, userIDs []int64)
 		return out, nil
 	}
 
-	rows, err := r.client.UserAllowedGroup.Query().
+	rows, err := clientFromContext(ctx, r.client).UserAllowedGroup.Query().
 		Where(userallowedgroup.UserIDIn(userIDs...)).
 		All(ctx)
 	if err != nil {

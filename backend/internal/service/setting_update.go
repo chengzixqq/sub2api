@@ -418,6 +418,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 	updates[SettingKeyChannelMonitorHideThroughput] = strconv.FormatBool(settings.ChannelMonitorHideThroughput)
 	updates[SettingKeyChannelMonitorShowQuota] = strconv.FormatBool(settings.ChannelMonitorShowQuota)
+	updates[SettingKeyProbeCoalescingMode] = normalizeProbeCoalescingMode(settings.ProbeCoalescingMode)
+	updates[SettingKeyProbeCoalescingWindowSeconds] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingWindowSeconds), 60, 3600))
+	updates[SettingKeyProbeCoalescingLeaderTimeoutSeconds] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingLeaderTimeoutSeconds), 8, 60))
+	updates[SettingKeyProbeCoalescingAttemptBudget] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingAttemptBudget), 8, 64))
 
 	// Grok model mapping policy
 	if v := strings.TrimSpace(settings.GrokDefaultTextModel); v != "" {
@@ -543,6 +547,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	}
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
+	updates[SettingKeyFailureBillingUpstreamUsageOnly] = strconv.FormatBool(settings.FailureBillingUpstreamUsageOnly)
 
 	return updates, nil
 }
@@ -687,6 +692,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	if settings == nil {
 		return
 	}
+	s.invalidateFailureBillingUpstreamUsageOnlyCache(settings)
 
 	// 先使 inflight singleflight 失效，再刷新缓存，缩小旧值覆盖新值的竞态窗口
 	versionBoundsSF.Forget("version_bounds")

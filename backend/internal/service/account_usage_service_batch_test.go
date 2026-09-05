@@ -73,6 +73,9 @@ func (r *usageBatchLogRepoStub) GetUserBreakdownStats(context.Context, time.Time
 func (r *usageBatchLogRepoStub) GetAllGroupUsageSummary(context.Context, time.Time) ([]usagestats.GroupUsageSummary, error) {
 	return nil, nil
 }
+func (r *usageBatchLogRepoStub) GetAllGroupUsageSummaryScoped(context.Context, time.Time, int64) ([]usagestats.GroupUsageSummary, error) {
+	return nil, nil
+}
 func (r *usageBatchLogRepoStub) GetAPIKeyUsageTrend(context.Context, time.Time, time.Time, string, int) ([]usagestats.APIKeyUsageTrendPoint, error) {
 	return nil, nil
 }

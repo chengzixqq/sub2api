@@ -1155,8 +1155,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageCount := 0
 		searchCount := 0
 		var imageOutputSizes []string
+		var responseErr error
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			if streamResult != nil {
+				usage = streamResult.usage
+				firstTokenMs = streamResult.firstTokenMs
+				responseID = strings.TrimSpace(streamResult.responseID)
+				imageCount = streamResult.imageCount
+				imageOutputSizes = streamResult.imageOutputSizes
+				searchCount = streamResult.searchCount
+			}
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
@@ -1194,14 +1203,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					}
 					return s.handleErrorResponse(ctx, compactResp, c, account, body, resolveOpenAIErrorSchedulingModel(billingModel, upstreamModel))
 				}
-				return nil, err
+				if !hasOpenAIPartialUsage(usage) && imageCount == 0 && searchCount == 0 {
+					return nil, err
+				}
+				responseErr = err
 			}
-			usage = streamResult.usage
-			firstTokenMs = streamResult.firstTokenMs
-			responseID = strings.TrimSpace(streamResult.responseID)
-			imageCount = streamResult.imageCount
-			imageOutputSizes = streamResult.imageOutputSizes
-			searchCount = streamResult.searchCount
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 			if err != nil {
@@ -1226,11 +1232,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageOutputSizes = nonStreamResult.imageOutputSizes
 			searchCount = nonStreamResult.searchCount
 		}
-		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		if responseErr == nil {
+			s.bindHTTPResponseAccount(ctx, c, account, responseID)
+		}
 
 		// Extract and save Codex usage snapshot from response headers (for OAuth accounts).
 		// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
-		if account.UsesOpenAICodexProtocol() && !account.IsShadow() {
+		if responseErr == nil && account.UsesOpenAICodexProtocol() && !account.IsShadow() {
 			if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 			}
@@ -1272,8 +1280,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if searchCount > 0 && account != nil && account.IsGrok() {
 			forwardResult.SearchCount = searchCount
 		}
-		return forwardResult, nil
+		return forwardResult, responseErr
 	}
+}
+
+func hasOpenAIPartialUsage(usage *OpenAIUsage) bool {
+	return usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
+		usage.ImageInputTokens > 0 || usage.ImageOutputTokens > 0)
 }
 
 func shouldForwardOpenAIResponsesViaRawChatCompletions(account *Account) bool {

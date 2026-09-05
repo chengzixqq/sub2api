@@ -270,6 +270,13 @@ func (s *groupRepoStubForGroupUpdate) GetAccountIDsByGroupIDs(context.Context, [
 func (s *groupRepoStubForGroupUpdate) BindAccountsToGroup(context.Context, int64, []int64) error {
 	panic("unexpected")
 }
+// LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
+//
+// 本 stub 断言的是分组更新的字段级隔离，与列表计数无关。
+func (s *groupRepoStubForGroupUpdate) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
+
 func (s *groupRepoStubForGroupUpdate) UpdateSortOrders(context.Context, []GroupSortOrderUpdate) error {
 	panic("unexpected")
 }

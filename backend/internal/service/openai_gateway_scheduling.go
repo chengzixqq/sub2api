@@ -42,7 +42,7 @@ var explicitOpenAIHeaderSessionNames = []string{
 // fields: request/message IDs rotate every turn and would defeat sticky routing
 // and upstream prompt caching.
 func explicitOpenAIHeaderSessionID(c *gin.Context) string {
-	if c == nil {
+	if c == nil || c.Request == nil {
 		return ""
 	}
 

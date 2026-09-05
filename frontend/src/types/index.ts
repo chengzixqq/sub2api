@@ -84,7 +84,8 @@ export interface User {
   linuxdo_bound?: boolean
   oidc_bound?: boolean
   wechat_bound?: boolean
-  role: 'admin' | 'user' // User role for authorization
+  // 'vendor' 是代运营角色：能登录管理端，但只看得到自己工作区内的资源。
+  role: 'admin' | 'vendor' | 'user' // User role for authorization
   balance: number // User balance for API usage
   frozen_balance?: number // Balance currently held by async batch jobs
   concurrency: number // Allowed concurrent requests
@@ -290,8 +291,31 @@ export interface AuthResponse {
   user: User & { run_mode?: 'standard' | 'simple' }
 }
 
+/** 工作区的五个权限档。全 false 表示站长尚未开权限。 */
+export interface CurrentUserWorkspacePermissions {
+  account_manage: boolean
+  group_ops: boolean
+  group_billing: boolean
+  proxy_manage: boolean
+  monitor_view: boolean
+}
+
+/** 当前用户归属的工作区。仅 vendor 角色返回，站长与普通用户为 undefined。 */
+export interface CurrentUserWorkspace {
+  id: number
+  name: string
+  /**
+   * 权限档。用于挑选登录落地页与控制菜单显隐。
+   *
+   * 可选：旧版后端不返回此字段，此时按「档位未知」处理而非全部关闭
+   * —— 判空的调用方会退到用户面板，不会把 vendor 锁死在报错页。
+   */
+  permissions?: CurrentUserWorkspacePermissions
+}
+
 export interface CurrentUserResponse extends User {
   run_mode?: 'standard' | 'simple'
+  workspace?: CurrentUserWorkspace
 }
 
 // ==================== Subscription Types ====================
@@ -619,6 +643,7 @@ export interface AdminGroup extends Group {
   force_openai_fast: boolean
   free_openai_fast: boolean
   model_pricing: import('@/api/admin/channels').ChannelModelPricing[]
+  billing_locked?: boolean
   // 分组利润控制（openai/anthropic/gemini/grok/antigravity 分组可启用；margin/buffer 为小数存储）。
   // 仅管理员可见：与 rate_multiplier 相乘即可反推上游成本上限，不得下放到 Group。
   profit_control_enabled: boolean
@@ -1179,7 +1204,8 @@ export interface Account {
   proxy_fallback_origin_name?: string | null
   concurrency: number
   load_factor?: number | null
-  current_concurrency?: number // Real-time concurrency count from Redis
+	current_concurrency?: number // Real-time concurrency count from Redis
+	probe_concurrency?: number // Strict upstream probe leaders, shown separately in admin views
   scheduler_score?: {
     base_score: number
     sticky_score?: number
@@ -1719,6 +1745,11 @@ export interface UsageLog {
   // 计费模式
   billing_mode?: string | null
 
+  // 探针合并归因：用户仍按请求扣费，供应商成本仅记真实上游探针
+  probe_coalesced: boolean
+  probe_leader_request_id?: string | null
+  provider_cost_recorded: boolean
+
   created_at: string
 
   user?: User
@@ -1997,9 +2028,10 @@ export interface UpdateUserRequest {
   password?: string
   username?: string
   notes?: string
-  role?: 'admin' | 'user'
+  role?: 'admin' | 'user' | 'vendor'
   balance?: number
   concurrency?: number
+  adjustment_notes?: string
   rpm_limit?: number
   status?: 'active' | 'disabled'
   allowed_groups?: number[] | null

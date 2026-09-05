@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -243,6 +244,60 @@ func TestResolveOpenAIUpstreamEndpointPrefersForwardResult(t *testing.T) {
 			c.Set(ctxKeyInboundEndpoint, EndpointChatCompletions)
 			service.SetActualOpenAIUpstreamEndpoint(c, tt.runtimeEndpoint)
 			require.Equal(t, tt.want, resolveOpenAIUpstreamEndpoint(c, tt.account, tt.result))
+		})
+	}
+}
+
+// TestResolveOpenAIUpstreamEndpointKeepsNonChatInboundForAPIKeyAccounts 固化
+// openAIFailureSink 与各端点成功路径的 usage_logs.upstream_endpoint 归因口径一致。
+//
+// 成功路径（embeddings / images / alpha_search / grok_media）用
+// GetUpstreamEndpoint(c, account.Platform)，对这些 inbound 端点
+// DeriveUpstreamEndpoint 原样返回 inbound。失败路径的 openAIFailureSink 用
+// resolveOpenAIUpstreamEndpoint(c, account, nil)：前两个分支都取不到值时，
+// 「API-Key 账号且不走 Responses」这一分支曾无条件返回 /v1/chat/completions，
+// 把一次 embeddings 失败错误归因成 chat（不影响金额，只影响归因）。
+//
+// 该分支的本意是「chat 入站请求在这类账号上直连 Chat Completions 而非 Responses 桥」，
+// 所以它只应作用于 chat 系入站；非 chat 入站必须退回 GetUpstreamEndpoint。
+func TestResolveOpenAIUpstreamEndpointKeepsNonChatInboundForAPIKeyAccounts(t *testing.T) {
+	// API-Key 账号 + 显式标记不支持 Responses ⇒ 命中 chat 直连分支。
+	apiKeyChatOnly := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+	}
+
+	tests := []struct {
+		name    string
+		inbound string
+		want    string
+		// matchesSuccessPath 为真时额外断言与成功路径 GetUpstreamEndpoint 完全一致。
+		// chat 入站刻意不参与该断言：GetUpstreamEndpoint 对 chat 入站返回
+		// /v1/responses（OpenAI 默认走 Responses），而这类账号直连 Chat Completions
+		// 正是本分支存在的理由，二者本就应该不同。
+		matchesSuccessPath bool
+	}{
+		{"embeddings 保持 embeddings", EndpointEmbeddings, EndpointEmbeddings, true},
+		{"images generations 保持自身", EndpointImagesGenerations, EndpointImagesGenerations, true},
+		{"alpha search 保持自身", EndpointAlphaSearch, EndpointAlphaSearch, true},
+		// chat 入站仍须走直连分支，证明修法没有削弱该分支本来的作用。
+		{"chat 入站仍直连 chat", EndpointChatCompletions, EndpointChatCompletions, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tt.inbound, nil)
+			c.Set(ctxKeyInboundEndpoint, tt.inbound)
+
+			got := resolveOpenAIUpstreamEndpoint(c, apiKeyChatOnly, nil)
+			require.Equal(t, tt.want, got)
+			if tt.matchesSuccessPath {
+				require.Equal(t, GetUpstreamEndpoint(c, apiKeyChatOnly.Platform), got,
+					"失败路径与成功路径的 upstream_endpoint 口径必须一致")
+			}
 		})
 	}
 }

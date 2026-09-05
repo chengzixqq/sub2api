@@ -213,6 +213,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	searchCount := 0
 	imageCount := 0
 	var imageOutputSizes []string
+	var responseErr error
 	if reqStream {
 		maxLineSize := defaultMaxLineSize
 		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
@@ -223,15 +224,20 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 			resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, clientToolMapping, maxLineSize)
 		}
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, upstreamModel)
-		if err != nil {
-			return nil, err
+		if streamResult != nil {
+			usage = streamResult.usage
+			firstTokenMs = streamResult.firstTokenMs
+			responseID = strings.TrimSpace(streamResult.responseID)
+			searchCount = streamResult.searchCount
+			imageCount = streamResult.imageCount
+			imageOutputSizes = streamResult.imageOutputSizes
 		}
-		usage = streamResult.usage
-		firstTokenMs = streamResult.firstTokenMs
-		responseID = strings.TrimSpace(streamResult.responseID)
-		searchCount = streamResult.searchCount
-		imageCount = streamResult.imageCount
-		imageOutputSizes = streamResult.imageOutputSizes
+		if err != nil {
+			if !hasOpenAIPartialUsage(usage) && imageCount == 0 && searchCount == 0 {
+				return nil, err
+			}
+			responseErr = err
+		}
 	} else {
 		nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
 		if err != nil {
@@ -270,7 +276,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		result.ImageCount = imageCount
 		result.ImageOutputSizes = imageOutputSizes
 	}
-	return result, nil
+	return result, responseErr
 }
 
 func isGrokInvalidEncryptedContentResponse(statusCode int, body []byte) bool {

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -27,13 +28,14 @@ type AuthHandler struct {
 	redeemService        *service.RedeemService
 	totpService          *service.TotpService
 	userAttributeService *service.UserAttributeService
+	workspaceService     *service.WorkspaceService
 
 	dingTalkClientInstance *DingTalkClient
 	dingTalkClientMu       sync.Mutex
 }
 
 // NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(cfg *config.Config, authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, promoService *service.PromoService, redeemService *service.RedeemService, totpService *service.TotpService, userAttributeService *service.UserAttributeService) *AuthHandler {
+func NewAuthHandler(cfg *config.Config, authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, promoService *service.PromoService, redeemService *service.RedeemService, totpService *service.TotpService, userAttributeService *service.UserAttributeService, workspaceService *service.WorkspaceService) *AuthHandler {
 	return &AuthHandler{
 		cfg:                  cfg,
 		authService:          authService,
@@ -43,6 +45,7 @@ func NewAuthHandler(cfg *config.Config, authService *service.AuthService, userSe
 		redeemService:        redeemService,
 		totpService:          totpService,
 		userAttributeService: userAttributeService,
+		workspaceService:     workspaceService,
 	}
 }
 
@@ -440,9 +443,31 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 		return
 	}
 
+	// workspaceInfo 供前端按角色渲染：vendor 需要知道自己归属哪个工作区，
+	// 站长（admin）没有工作区归属，该字段整体省略。
+	//
+	// 权限档一并返回：vendor 登录后要落到一个自己有权访问的首页，
+	// 前端必须知道开了哪些档才能挑（否则只能盲跳 /admin/dashboard，
+	// 而该页大半端点对 vendor 是 403）。这是显示用途，
+	// 真正的权限边界仍由后端中间件裁决。
+	type workspacePermsInfo struct {
+		AccountManage bool `json:"account_manage"`
+		GroupOps      bool `json:"group_ops"`
+		GroupBilling  bool `json:"group_billing"`
+		ProxyManage   bool `json:"proxy_manage"`
+		MonitorView   bool `json:"monitor_view"`
+	}
+
+	type workspaceInfo struct {
+		ID          int64              `json:"id"`
+		Name        string             `json:"name"`
+		Permissions workspacePermsInfo `json:"permissions"`
+	}
+
 	type UserResponse struct {
 		userProfileResponse
-		RunMode string `json:"run_mode"`
+		RunMode   string         `json:"run_mode"`
+		Workspace *workspaceInfo `json:"workspace,omitempty"`
 	}
 
 	runMode := config.RunModeStandard
@@ -450,10 +475,32 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 		runMode = h.cfg.RunMode
 	}
 
-	response.Success(c, UserResponse{
+	resp := UserResponse{
 		userProfileResponse: userProfileResponseFromService(user, identities),
 		RunMode:             runMode,
-	})
+	}
+
+	// 取工作区归属失败不影响 /me 主体返回：前端拿不到 workspace 时
+	// 按「无工作区」渲染，权限判定仍由后端中间件兜底。
+	if h.workspaceService != nil && user.Role == domain.RoleVendor {
+		if ws, err := h.workspaceService.ResolveByUserID(c.Request.Context(), user.ID); err == nil && ws != nil {
+			resp.Workspace = &workspaceInfo{
+				ID:   ws.ID,
+				Name: ws.Name,
+				Permissions: workspacePermsInfo{
+					AccountManage: ws.Permissions.AccountManage,
+					GroupOps:      ws.Permissions.GroupOps,
+					GroupBilling:  ws.Permissions.GroupBilling,
+					ProxyManage:   ws.Permissions.ProxyManage,
+					MonitorView:   ws.Permissions.MonitorView,
+				},
+			}
+		} else if err != nil {
+			slog.Warn("auth_me_resolve_workspace_failed", "user_id", user.ID, "error", err)
+		}
+	}
+
+	response.Success(c, resp)
 }
 
 // ValidatePromoCodeRequest 验证优惠码请求

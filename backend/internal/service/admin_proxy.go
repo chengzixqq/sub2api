@@ -35,7 +35,7 @@ func (s *adminServiceImpl) ListProxiesWithAccountCount(ctx context.Context, page
 }
 
 func (s *adminServiceImpl) GetAllProxies(ctx context.Context) ([]Proxy, error) {
-	return s.proxyRepo.ListActive(ctx)
+	return s.proxyRepo.ListActiveScoped(ctx)
 }
 
 func (s *adminServiceImpl) GetAllProxiesWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error) {
@@ -48,11 +48,20 @@ func (s *adminServiceImpl) GetAllProxiesWithAccountCount(ctx context.Context) ([
 }
 
 func (s *adminServiceImpl) GetProxy(ctx context.Context, id int64) (*Proxy, error) {
-	return s.proxyRepo.GetByID(ctx, id)
+	return s.proxyRepo.GetByIDScoped(ctx, id)
+}
+
+// requireProxyAccess 校验调用者有权操作该代理，越权按不存在处理。
+//
+// 写路径必须先过这道校验：Update/Delete 只拿到 id，
+// 不查归属就等于任何 vendor 都能改写、删除别家代理。
+func (s *adminServiceImpl) requireProxyAccess(ctx context.Context, id int64) error {
+	_, err := s.proxyRepo.GetByIDScoped(ctx, id)
+	return err
 }
 
 func (s *adminServiceImpl) GetProxiesByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
-	return s.proxyRepo.ListByIDs(ctx, ids)
+	return s.proxyRepo.ListByIDsScoped(ctx, ids)
 }
 
 func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error) {
@@ -69,6 +78,13 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 		return nil, infraerrors.BadRequest("PROXY_WARN_DAYS_INVALID", "expiry_warn_days must be >= 0")
 	}
 
+	// 备用代理必须属于本工作区，理由同 UpdateProxy。
+	if input.BackupProxyID != nil && *input.BackupProxyID != 0 {
+		if err := s.requireProxyAccess(ctx, *input.BackupProxyID); err != nil {
+			return nil, err
+		}
+	}
+
 	proxy := &Proxy{
 		Name:           input.Name,
 		Protocol:       input.Protocol,
@@ -81,6 +97,9 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 		FallbackMode:   mode,
 		BackupProxyID:  input.BackupProxyID,
 		ExpiryWarnDays: input.ExpiryWarnDays,
+		// 归属取自调用者作用域而非请求体：vendor 建的代理必须落进自己
+		// 工作区，否则建完立刻从自己列表里消失（列表按 workspace_id 过滤）。
+		WorkspaceID: resolveNewAccountWorkspaceID(ctx),
 	}
 	if err := s.proxyRepo.Create(ctx, proxy); err != nil {
 		return nil, err
@@ -91,6 +110,16 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 }
 
 func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error) {
+	if err := s.requireProxyAccess(ctx, id); err != nil {
+		return nil, err
+	}
+	// 备用代理同样要校验归属：否则可把自己的代理挂到别家代理上，
+	// 借 fallback 链路探测对方代理的可用性。
+	if input.BackupProxyID != nil && *input.BackupProxyID != 0 {
+		if err := s.requireProxyAccess(ctx, *input.BackupProxyID); err != nil {
+			return nil, err
+		}
+	}
 	// 校验：backup_proxy_id 不能是自身
 	if input.BackupProxyID != nil && *input.BackupProxyID == id {
 		return nil, infraerrors.BadRequest("PROXY_BACKUP_SELF", "backup proxy cannot be itself")
@@ -147,6 +176,9 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 }
 
 func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
+	if err := s.requireProxyAccess(ctx, id); err != nil {
+		return err
+	}
 	count, err := s.proxyRepo.CountAccountsByProxyID(ctx, id)
 	if err != nil {
 		return err
@@ -164,6 +196,15 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 	}
 
 	for _, id := range ids {
+		// 越权并入 skip 而非整批失败：批量删除本就允许部分成功，
+		// 且 skip 理由统一用「不存在」，不暴露该 ID 归属他家。
+		if err := s.requireProxyAccess(ctx, id); err != nil {
+			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
+				ID:     id,
+				Reason: ErrProxyNotFound.Error(),
+			})
+			continue
+		}
 		count, err := s.proxyRepo.CountAccountsByProxyID(ctx, id)
 		if err != nil {
 			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
@@ -192,8 +233,30 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 	return result, nil
 }
 
+// GetProxyAccounts 列出挂在该代理上的账号摘要。
+//
+// 两道收窄：先校验代理归属，再按工作区过滤账号名单。
+// 后者不能省 —— 站长可能把自己的账号挂到某 vendor 的代理上，
+// 此时代理归属校验通过，但名单里仍会掺入别家账号。
 func (s *adminServiceImpl) GetProxyAccounts(ctx context.Context, proxyID int64) ([]ProxyAccountSummary, error) {
-	return s.proxyRepo.ListAccountSummariesByProxyID(ctx, proxyID)
+	if err := s.requireProxyAccess(ctx, proxyID); err != nil {
+		return nil, err
+	}
+	summaries, err := s.proxyRepo.ListAccountSummariesByProxyID(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	scope := ScopeFromContextOrDeny(ctx)
+	if scope.Unrestricted {
+		return summaries, nil
+	}
+	owned := make([]ProxyAccountSummary, 0, len(summaries))
+	for _, sum := range summaries {
+		if scope.OwnsWorkspaceID(sum.WorkspaceID) {
+			owned = append(owned, sum)
+		}
+	}
+	return owned, nil
 }
 
 func (s *adminServiceImpl) CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error) {
@@ -201,7 +264,9 @@ func (s *adminServiceImpl) CheckProxyExists(ctx context.Context, host string, po
 }
 
 func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error) {
-	proxy, err := s.proxyRepo.GetByID(ctx, id)
+	// 用 Scoped 而非共享 GetByID：测活会回写延迟快照，
+	// 且返回的出口 IP/地理位置本身就是别家代理的可识别信息。
+	proxy, err := s.proxyRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +310,8 @@ func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestR
 }
 
 func (s *adminServiceImpl) CheckProxyQuality(ctx context.Context, id int64) (*ProxyQualityCheckResult, error) {
-	proxy, err := s.proxyRepo.GetByID(ctx, id)
+	// 与 TestProxy 同理：质量检测同样回写快照并暴露出口信息。
+	proxy, err := s.proxyRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err
 	}

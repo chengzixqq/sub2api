@@ -418,7 +418,9 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 	_ = pr.Close()
 
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.False(t, result.usage.hasObservedTokens(),
+		"an error-only event may preserve stream state, but must not synthesize billable usage")
 
 	// typed error 必须可被 errors.As 匹配，RawData 必须保留上游 dataLine 原文
 	var sseErr *sseStreamErrorEventError

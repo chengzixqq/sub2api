@@ -64,8 +64,23 @@ func (m *mockProxyRepoForOAuth) GetByID(ctx context.Context, id int64) (*Proxy, 
 	}
 	return nil, fmt.Errorf("proxy not found")
 }
+
+// GetByIDScoped 委托给 GetByID：OAuth 授权取的是账号已配好的代理，
+// 走的不是管理端作用域路径。
+func (m *mockProxyRepoForOAuth) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	return m.GetByID(ctx, id)
+}
 func (m *mockProxyRepoForOAuth) ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
 	panic("ListByIDs not implemented")
+}
+
+// ListByIDsScoped 与 ListActiveScoped 是管理端按工作区收窄的代理读取。
+// OAuth 授权路径不经管理端列表，沿用本 mock 的 panic 约定。
+func (m *mockProxyRepoForOAuth) ListByIDsScoped(ctx context.Context, ids []int64) ([]Proxy, error) {
+	panic("ListByIDsScoped not implemented")
+}
+func (m *mockProxyRepoForOAuth) ListActiveScoped(ctx context.Context) ([]Proxy, error) {
+	panic("ListActiveScoped not implemented")
 }
 func (m *mockProxyRepoForOAuth) Update(ctx context.Context, proxy *Proxy) error {
 	panic("Update not implemented")

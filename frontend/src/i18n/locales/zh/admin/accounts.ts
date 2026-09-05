@@ -224,6 +224,9 @@ export default {
       subscriptionExpires: '到期',
       // 容量状态提示
       capacity: {
+        realConcurrency: '真实并发',
+        probeConcurrency: '探针并发（严格上游探测）',
+        probeShort: '探针',
         windowCost: {
           blocked: '5h窗口费用超限，账号暂停调度',
           stickyOnly: '5h窗口费用达阈值，仅允许粘性会话',

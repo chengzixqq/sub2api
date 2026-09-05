@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/shopspring/decimal"
 
 	entsql "entgo.io/ent/dialect/sql"
 )
@@ -23,7 +24,8 @@ func NewRedeemCodeRepository(client *dbent.Client) service.RedeemCodeRepository 
 }
 
 func (r *redeemCodeRepository) Create(ctx context.Context, code *service.RedeemCode) error {
-	created, err := r.client.RedeemCode.Create().
+	client := clientFromContext(ctx, r.client)
+	created, err := client.RedeemCode.Create().
 		SetCode(code.Code).
 		SetType(code.Type).
 		SetValue(code.Value).
@@ -47,10 +49,17 @@ func (r *redeemCodeRepository) CreateBatch(ctx context.Context, codes []service.
 		return nil
 	}
 
-	builders := make([]*dbent.RedeemCodeCreate, 0, len(codes))
+	client := clientFromContext(ctx, r.client)
+	for _, code := range codes {
+		if code.ValueExact != "" {
+			return r.createBatchExact(ctx, client, codes)
+		}
+	}
+	const createBatchSize = 1000
+	builders := make([]*dbent.RedeemCodeCreate, 0, min(len(codes), createBatchSize))
 	for i := range codes {
 		c := &codes[i]
-		b := r.client.RedeemCode.Create().
+		b := client.RedeemCode.Create().
 			SetCode(c.Code).
 			SetType(c.Type).
 			SetValue(c.Value).
@@ -62,9 +71,43 @@ func (r *redeemCodeRepository) CreateBatch(ctx context.Context, codes []service.
 			SetNillableUsedAt(c.UsedAt).
 			SetNillableGroupID(c.GroupID)
 		builders = append(builders, b)
+		if len(builders) == createBatchSize {
+			if err := client.RedeemCode.CreateBulk(builders...).Exec(ctx); err != nil {
+				return err
+			}
+			builders = builders[:0]
+		}
 	}
 
-	return r.client.RedeemCode.CreateBulk(builders...).Exec(ctx)
+	if len(builders) == 0 {
+		return nil
+	}
+	return client.RedeemCode.CreateBulk(builders...).Exec(ctx)
+}
+
+func (r *redeemCodeRepository) createBatchExact(ctx context.Context, client *dbent.Client, codes []service.RedeemCode) error {
+	const insertSQL = `
+INSERT INTO redeem_codes (
+    code, type, value, status, used_by, used_at, notes, created_at, expires_at, group_id, validity_days
+) VALUES ($1, $2, $3::numeric, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11)`
+	for i := range codes {
+		code := &codes[i]
+		value := code.ValueExact
+		if value == "" {
+			value = decimal.NewFromFloat(code.Value).Round(8).StringFixed(8)
+		}
+		createdAt := code.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		if _, err := client.ExecContext(ctx, insertSQL,
+			code.Code, code.Type, value, code.Status, code.UsedBy, code.UsedAt,
+			code.Notes, createdAt, code.ExpiresAt, code.GroupID, code.ValidityDays,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *redeemCodeRepository) GetByID(ctx context.Context, id int64) (*service.RedeemCode, error) {

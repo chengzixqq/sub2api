@@ -19,9 +19,26 @@ func TestCountGrokNativeSearchCallsFromJSONBytes(t *testing.T) {
 	require.Equal(t, 3, countGrokNativeSearchCallsFromJSONBytes(body))
 }
 
+func TestAccumulateSearchCountClampsAndSaturates(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	require.Equal(t, 2, AccumulateSearchCount(-1, 2, "test"))
+	require.Equal(t, 2, AccumulateSearchCount(1, 1, "test"))
+	require.Equal(t, maxInt, AccumulateSearchCount(maxInt, 1, "test"))
+}
+
 func TestCountGrokNativeSearchCallsFromJSONBytes_PrefersNestedResponse(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"output":[{"type":"web_search_call","id":"duplicate"}],"response":{"output":[{"type":"web_search_call","id":"duplicate"},{"type":"x_search_call","id":"xs1"}]}}`)
+	require.Equal(t, 2, countGrokNativeSearchCallsFromJSONBytes(body))
+}
+
+func TestCountGrokNativeSearchCallsFromJSONBytesDedupsCallIDs(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"output":[
+		{"type":"web_search_call","id":"same","call_id":"c1"},
+		{"type":"web_search_call","id":"same","call_id":"c1"},
+		{"type":"x_search_call","id":"different","call_id":"c2"}
+	]}`)
 	require.Equal(t, 2, countGrokNativeSearchCallsFromJSONBytes(body))
 }
 

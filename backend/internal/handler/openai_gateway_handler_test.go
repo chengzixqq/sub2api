@@ -1530,6 +1530,22 @@ func TestOpenAIResponsesWebSocket_PassthroughTracksModelPerTurn(t *testing.T) {
 		"each turn must be billed with its own channel-mapped model")
 }
 
+func TestOpenAIResponsesWebSocket_SecondMissingResponseIDTerminatesWithoutDuplicateBilling(t *testing.T) {
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:           `{"type":"response.create","model":"gpt-5.4","stream":false,"input":"turn one"}`,
+		secondPayload:          `{"type":"response.create","model":"gpt-5.4","stream":false,"input":"turn two"}`,
+		omitUpstreamResponseID: true,
+		expectedUsageLogs:      1,
+	})
+
+	require.Len(t, got.clientEvents, 2, "ambiguous terminal is forwarded before the session closes")
+	require.Len(t, got.logs, 1)
+	require.NotEmpty(t, got.logs[0].RequestID)
+	require.True(t, strings.HasSuffix(got.logs[0].RequestID, ":turn:1"))
+	require.False(t, strings.HasSuffix(got.logs[0].RequestID, ":turn:2"),
+		"an unidentified terminal after a completed turn must not create a second billing row")
+}
+
 func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKeysRemainsValid(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:  `{"type":"response.create","model":"public-alias","stream":false}`,
@@ -1884,6 +1900,8 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 type openAIResponsesWSUsageLogCase struct {
 	firstPayload              string
 	secondPayload             string
+	omitUpstreamResponseID    bool
+	expectedUsageLogs         int
 	userAgent                 *string
 	ingressMode               string
 	channelMapping            map[string]string
@@ -2186,6 +2204,7 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 		nil,
 		nil,
 		nil,
+		nil, // workspaceService
 	)
 	h := NewOpenAIGatewayHandler(
 		gatewaySvc,
@@ -2287,6 +2306,7 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 				nil,
 				nil,
 				nil,
+				nil,
 			)
 			h := NewOpenAIGatewayHandler(
 				gatewaySvc,
@@ -2369,6 +2389,7 @@ func TestOpenAIResponses_APIKeyPassthroughSSERateLimitUsesConfiguredPoolRetry(t 
 		nil,
 		nil,
 		nil,
+		nil, // workspaceService
 	)
 	h := NewOpenAIGatewayHandler(
 		gatewaySvc,
@@ -2529,6 +2550,7 @@ func TestOpenAIResponsesWebSocket_FailoverOnUpstreamUsageLimitEvent(t *testing.T
 		nil,
 		nil,
 		nil,
+		nil, // workspaceService
 	)
 
 	cache := &concurrencyCacheMock{
@@ -2718,6 +2740,7 @@ func TestOpenAIResponsesWebSocket_FirstOutputTimeoutWithoutDownstreamReusesClien
 		accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
 		service.NewBillingService(cfg, nil), rateLimitSvc, billingCacheSvc,
 		nil, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil,
+		nil, // workspaceService
 	)
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
@@ -2847,9 +2870,13 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				}
 			}
 
+			responseIDField := fmt.Sprintf(`"id":"resp_usage_e2e_%d",`, turn)
+			if tc.omitUpstreamResponseID {
+				responseIDField = ""
+			}
 			response := fmt.Sprintf(
-				`{"type":"response.completed","response":{"id":"resp_usage_e2e_%d","model":%q,"usage":{"input_tokens":2,"output_tokens":1}}}`,
-				turn,
+				`{"type":"response.completed","response":{%s"model":%q,"usage":{"input_tokens":2,"output_tokens":1}}}`,
+				responseIDField,
 				gjson.GetBytes(payload, "model").String(),
 			)
 			writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
@@ -2941,6 +2968,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil,
 		nil, // userPlatformQuotaRepo
+		nil, // workspaceService
 	)
 
 	cache := &concurrencyCacheMock{
@@ -3013,8 +3041,12 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
-	usageLogs := make([]*service.UsageLog, 0, turnCount)
-	for len(usageLogs) < turnCount {
+	expectedUsageLogs := tc.expectedUsageLogs
+	if expectedUsageLogs <= 0 {
+		expectedUsageLogs = turnCount
+	}
+	usageLogs := make([]*service.UsageLog, 0, expectedUsageLogs)
+	for len(usageLogs) < expectedUsageLogs {
 		select {
 		case usageLog := <-usageRepo.created:
 			require.NotNil(t, usageLog)

@@ -599,6 +599,7 @@ type ClaudeUsage struct {
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
 	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
 	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
 }
 
@@ -795,6 +796,7 @@ type GatewayService struct {
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	workspaceService      *WorkspaceService
 }
 
 // NewGatewayService creates a new GatewayService
@@ -827,6 +829,7 @@ func NewGatewayService(
 	compositeResolver *CompositeRouteResolver,
 	balanceNotifyService *BalanceNotifyService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	workspaceService *WorkspaceService,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -864,6 +867,7 @@ func NewGatewayService(
 		compositeResolver:     compositeResolver,
 		balanceNotifyService:  balanceNotifyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
+		workspaceService:      workspaceService,
 	}
 	if compositeResolver != nil {
 		compositeResolver.SetModelOwnershipResolver(svc.resolveCompositeModelOwnership)

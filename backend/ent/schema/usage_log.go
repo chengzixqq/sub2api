@@ -180,6 +180,14 @@ func (UsageLog) Fields() []ent.Field {
 		// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 		field.Bool("cache_ttl_overridden").
 			Default(false),
+		field.Bool("probe_coalesced").
+			Default(false),
+		field.String("probe_leader_request_id").
+			MaxLen(128).
+			Optional().
+			Nillable(),
+		field.Bool("provider_cost_recorded").
+			Default(true),
 
 		// 时间戳（只有 created_at，日志不可修改）
 		field.Time("created_at").
@@ -230,6 +238,8 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("model"),
 		index.Fields("requested_model"),
 		index.Fields("request_id"),
+		index.Fields("probe_leader_request_id"),
+		index.Fields("provider_cost_recorded", "created_at"),
 		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),
 		index.Fields("api_key_id", "created_at"),

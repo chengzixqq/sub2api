@@ -17,7 +17,11 @@ var (
 type ProxyRepository interface {
 	Create(ctx context.Context, proxy *Proxy) error
 	GetByID(ctx context.Context, id int64) (*Proxy, error)
+	// GetByIDScoped 供管理端使用，按调用者工作区收窄；网关路径请用 GetByID。
+	GetByIDScoped(ctx context.Context, id int64) (*Proxy, error)
 	ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error)
+	// ListByIDsScoped 供管理端使用，越权 ID 从结果中剔除；配置读取请用 ListByIDs。
+	ListByIDsScoped(ctx context.Context, ids []int64) ([]Proxy, error)
 	Update(ctx context.Context, proxy *Proxy) error
 	Delete(ctx context.Context, id int64) error
 
@@ -25,6 +29,8 @@ type ProxyRepository interface {
 	ListWithFilters(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]Proxy, *pagination.PaginationResult, error)
 	ListWithFiltersAndAccountCount(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]ProxyWithAccountCount, *pagination.PaginationResult, error)
 	ListActive(ctx context.Context) ([]Proxy, error)
+	// ListActiveScoped 供管理端使用，按调用者工作区收窄；巡检与同步请用 ListActive。
+	ListActiveScoped(ctx context.Context) ([]Proxy, error)
 	ListActiveWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error)
 
 	ExistsByHostPortAuth(ctx context.Context, host string, port int, username, password string) (bool, error)

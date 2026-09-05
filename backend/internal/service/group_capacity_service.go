@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"log"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // GroupCapacitySummary holds aggregated capacity for a single group.
@@ -34,6 +37,7 @@ type groupCapacityActiveGroupIDLister interface {
 
 type groupCapacityAccountLister interface {
 	ListSchedulableCapacityByGroupIDs(ctx context.Context, groupIDs []int64) ([]GroupAccountCapacityRow, error)
+	ListSchedulableCapacityByGroupIDsScoped(ctx context.Context, groupIDs []int64, workspaceID int64) ([]GroupAccountCapacityRow, error)
 }
 
 // GroupCapacityService aggregates per-group capacity from runtime data.
@@ -71,6 +75,19 @@ func (s *GroupCapacityService) GetAllGroupCapacity(ctx context.Context) ([]Group
 
 	if lister, ok := s.accountRepo.(groupCapacityAccountLister); ok {
 		return s.getGroupCapacitiesBatch(ctx, groupIDs, lister)
+	}
+
+	// 断言不成立时的降级是「静默」的：往 groupCapacityAccountLister 加方法
+	// 会让本来成立的断言无声失效，落到下面这条按 groupID 全量取数的路径。
+	// 因此这里留一条日志 —— 否则下次加方法时，症状会以别处的空指针或
+	// 容量数字偏大的形式出现，与真正的原因相隔甚远。
+	log.Printf("[WARN] GroupCapacityService: accountRepo 未实现 groupCapacityAccountLister，降级为逐组取数")
+
+	// 逐组路径走的是不带工作区参数的 ListSchedulableByGroupID，无法收窄。
+	// vendor 在此拿到的会是全站容量，能从并发与会话数反推别家账号规模，
+	// 所以宁可报错也不返回越权数据。
+	if scope, ok := ScopeFromContext(ctx); ok && scope.IsVendor() {
+		return nil, domain.ErrWorkspaceScopeViolation
 	}
 
 	return s.getGroupCapacitiesSequential(ctx, groupIDs), nil
@@ -122,7 +139,19 @@ func (s *GroupCapacityService) getGroupCapacitiesBatch(ctx context.Context, grou
 		return results, nil
 	}
 
-	rows, err := lister.ListSchedulableCapacityByGroupIDs(ctx, groupIDs)
+	// 按作用域取数：共享分组的容量若按全分组聚合，vendor 能从并发与
+	// 会话数反推别家的账号规模。站长仍走全站口径，一字未改。
+	//
+	// 只在「确实取到受限作用域」时收窄：本服务也被仪表盘等无作用域的
+	// 路径调用，把缺失当成受限会让那些路径拿到零容量。
+	// 与准入判定的取舍相反 —— 这里读不到作用域说明调用方不是管理端请求。
+	var rows []GroupAccountCapacityRow
+	var err error
+	if scope, ok := ScopeFromContext(ctx); ok && scope.IsVendor() {
+		rows, err = lister.ListSchedulableCapacityByGroupIDsScoped(ctx, groupIDs, scope.WorkspaceID)
+	} else {
+		rows, err = lister.ListSchedulableCapacityByGroupIDs(ctx, groupIDs)
+	}
 	if err != nil {
 		return nil, err
 	}

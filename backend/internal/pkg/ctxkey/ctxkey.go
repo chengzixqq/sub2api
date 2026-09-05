@@ -23,6 +23,17 @@ const (
 	// RequestID 为服务端生成/透传的请求 ID。
 	RequestID Key = "ctx_request_id"
 
+	// ProbeRequestID is the per-request ID assigned by probe coalescing. It is
+	// intentionally separate from RequestID/ClientRequestID so a probe leader
+	// and each synthetic follower retain independent billing idempotency keys
+	// while the follower attribution can point at the leader row.
+	ProbeRequestID Key = "ctx_probe_request_id"
+
+	// ProbeUsagePersistenceRequired marks a leader billing task as mandatory.
+	// The normal usage path keeps its historical best-effort log semantics; a
+	// probe leader must wait for a durable usage row before publishing health.
+	ProbeUsagePersistenceRequired Key = "ctx_probe_usage_persistence_required"
+
 	// ClientRequestID 客户端请求的唯一标识，用于追踪请求全生命周期（用于 Ops 监控与排障）。
 	ClientRequestID Key = "ctx_client_request_id"
 

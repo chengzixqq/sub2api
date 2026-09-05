@@ -26,6 +26,10 @@ const (
 	// 并发槽位键前缀（有序集合）
 	// 格式: concurrency:account:{accountID}
 	accountSlotKeyPrefix = "concurrency:account:"
+	// Probe leaders have their own stats-only sorted set. They remain subject
+	// to the regular account slot, but this key lets admin views split probe
+	// traffic from ordinary user traffic without changing scheduler limits.
+	probeAccountSlotKeyPrefix = "concurrency:probe:account:"
 	// 格式: concurrency:user:{userID}
 	userSlotKeyPrefix = "concurrency:user:"
 	// 格式: concurrency:api_key:{apiKeyID}
@@ -382,6 +386,10 @@ func accountSlotKey(accountID int64) string {
 	return fmt.Sprintf("%s%d", accountSlotKeyPrefix, accountID)
 }
 
+func probeAccountSlotKey(accountID int64) string {
+	return fmt.Sprintf("%s%d", probeAccountSlotKeyPrefix, accountID)
+}
+
 func userSlotKey(userID int64) string {
 	return fmt.Sprintf("%s%d", userSlotKeyPrefix, userID)
 }
@@ -699,6 +707,53 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 	result := make(map[int64]int, len(accountIDs))
 	for _, cmd := range cmds {
 		result[cmd.accountID] = int(cmd.zcardCmd.Val() + cmd.liveCmd.Val())
+	}
+	return result, nil
+}
+
+// TrackProbeAccountSlot records a strict probe leader in a stats-only sorted
+// set. It intentionally does not participate in account capacity admission.
+func (c *concurrencyCache) TrackProbeAccountSlot(ctx context.Context, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || accountID <= 0 || requestID == "" {
+		return nil
+	}
+	_, err := trackSlotScript.Run(ctx, c.rdb, []string{probeAccountSlotKey(accountID)}, c.slotTTLSeconds, requestID).Result()
+	return err
+}
+
+func (c *concurrencyCache) ReleaseProbeAccountSlot(ctx context.Context, accountID int64, requestID string) error {
+	if c == nil || c.rdb == nil || accountID <= 0 || requestID == "" {
+		return nil
+	}
+	return c.rdb.ZRem(ctx, probeAccountSlotKey(accountID), requestID).Err()
+}
+
+func (c *concurrencyCache) GetProbeAccountConcurrencyBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error) {
+	if c == nil || c.rdb == nil || len(accountIDs) == 0 {
+		return map[int64]int{}, nil
+	}
+	now, err := c.rdb.Time(ctx).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis TIME: %w", err)
+	}
+	cutoffTime := now.Unix() - int64(c.slotTTLSeconds)
+	pipe := c.rdb.Pipeline()
+	type probeCmd struct {
+		accountID int64
+		zcardCmd  *redis.IntCmd
+	}
+	cmds := make([]probeCmd, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		key := probeAccountSlotKey(accountID)
+		pipe.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(cutoffTime, 10))
+		cmds = append(cmds, probeCmd{accountID: accountID, zcardCmd: pipe.ZCard(ctx, key)})
+	}
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return nil, fmt.Errorf("pipeline exec: %w", err)
+	}
+	result := make(map[int64]int, len(accountIDs))
+	for _, cmd := range cmds {
+		result[cmd.accountID] = int(cmd.zcardCmd.Val())
 	}
 	return result, nil
 }

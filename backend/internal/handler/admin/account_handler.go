@@ -191,6 +191,7 @@ type CheckMixedChannelRequest struct {
 type AccountWithConcurrency struct {
 	*dto.Account
 	CurrentConcurrency int                          `json:"current_concurrency"`
+	ProbeConcurrency   int                          `json:"probe_concurrency"`
 	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
 	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
 	// 以下字段仅对 Anthropic OAuth/SetupToken 账号有效，且仅在启用相应功能时返回
@@ -227,14 +228,16 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	item := AccountWithConcurrency{
 		Account:            h.accountResponseFromService(account),
 		CurrentConcurrency: 0,
+		ProbeConcurrency:   0,
 	}
 	if account == nil {
 		return item
 	}
 
 	if h.concurrencyService != nil {
-		if counts, err := h.concurrencyService.GetAccountConcurrencyBatch(ctx, []int64{account.ID}); err == nil {
-			item.CurrentConcurrency = counts[account.ID]
+		if counts, err := h.concurrencyService.GetAccountConcurrencyBreakdownBatch(ctx, []int64{account.ID}); err == nil {
+			item.CurrentConcurrency = counts[account.ID].Current
+			item.ProbeConcurrency = counts[account.ID].Probe
 		}
 	}
 
@@ -556,6 +559,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	concurrencyCounts := make(map[int64]int)
+	probeConcurrencyCounts := make(map[int64]int)
 	var windowCosts map[int64]float64
 	var activeSessions map[int64]int
 	var rpmCounts map[int64]int
@@ -576,8 +580,11 @@ func (h *AccountHandler) List(c *gin.Context) {
 
 	// 始终获取并发数（Redis ZCARD，极低开销）
 	if h.concurrencyService != nil {
-		if cc, ccErr := h.concurrencyService.GetAccountConcurrencyBatch(c.Request.Context(), accountIDs); ccErr == nil && cc != nil {
-			concurrencyCounts = cc
+		if cc, ccErr := h.concurrencyService.GetAccountConcurrencyBreakdownBatch(c.Request.Context(), accountIDs); ccErr == nil && cc != nil {
+			for accountID, breakdown := range cc {
+				concurrencyCounts[accountID] = breakdown.Current
+				probeConcurrencyCounts[accountID] = breakdown.Probe
+			}
 		}
 	}
 
@@ -653,6 +660,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 		item := AccountWithConcurrency{
 			Account:            h.accountResponseFromService(acc),
 			CurrentConcurrency: concurrencyCounts[acc.ID],
+			ProbeConcurrency:   probeConcurrencyCounts[acc.ID],
 			SchedulerScore:     schedulerScores[acc.ID],
 			SchedulerScores:    schedulerGroupScores[acc.ID],
 		}
@@ -1094,6 +1102,13 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	// The account test service also serves background jobs and therefore accepts
+	// an unscoped repository read. Resolve the management scope before allowing a
+	// vendor request to start an upstream probe or mutate runtime state.
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	var req TestAccountRequest
 	// Allow empty body, model_id is optional
@@ -1123,6 +1138,13 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	// RateLimitService is also used by gateway/background paths and its account
+	// operations intentionally accept an unscoped ID. Check ownership before
+	// exposing the management recovery endpoint to a vendor.
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 
@@ -1511,6 +1533,13 @@ func (h *AccountHandler) GetStats(c *gin.Context) {
 	now := timezone.Now()
 	endTime := timezone.StartOfDay(now.AddDate(0, 0, 1))
 	startTime := timezone.StartOfDay(now.AddDate(0, 0, -days+1))
+
+	// 归属校验：用量服务按裸 account_id 取数，自身不带工作区概念。
+	// GetAccount 走 GetByIDScoped，别家账号在此即返回 not found（对外 404）。
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	stats, err := h.accountUsageService.GetAccountUsageStats(c.Request.Context(), accountID, startTime, endTime)
 	if err != nil {
@@ -2319,6 +2348,13 @@ func (h *AccountHandler) GetUsage(c *gin.Context) {
 		return
 	}
 
+	// 归属校验：用量服务按裸 account_id 取数，自身不带工作区概念。
+	// GetAccount 走 GetByIDScoped，别家账号在此即返回 not found（对外 404）。
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
 	source := c.DefaultQuery("source", "active")
 	force := c.Query("force") == "true"
 
@@ -2342,6 +2378,10 @@ func (h *AccountHandler) ClearRateLimit(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 
@@ -2391,6 +2431,10 @@ func (h *AccountHandler) GetTempUnschedulable(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	state, err := h.rateLimitService.GetTempUnschedStatus(c.Request.Context(), accountID)
 	if err != nil {
@@ -2417,6 +2461,10 @@ func (h *AccountHandler) ClearTempUnschedulable(c *gin.Context) {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	if err := h.rateLimitService.ClearTempUnschedulable(c.Request.Context(), accountID); err != nil {
 		response.ErrorFrom(c, err)
@@ -2432,6 +2480,12 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	// 与 GetUsage 同理：统计服务不带工作区概念，归属在此把关。
+	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 
@@ -2464,6 +2518,19 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
+	if len(accountIDs) == 0 {
+		response.Success(c, gin.H{"stats": map[string]any{}})
+		return
+	}
+
+	// 收窄必须在拼缓存键之前：键只由账号 ID 构成，不含工作区。
+	// 若先取数再裁剪结果，A 家写入的缓存会被 B 家按同一组 ID 命中，
+	// 收窄就只在首次未命中时生效，等于没有。
+	accountIDs, err := h.adminService.FilterAccountIDsByScope(c.Request.Context(), accountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	if len(accountIDs) == 0 {
 		response.Success(c, gin.H{"stats": map[string]any{}})
 		return
@@ -2510,6 +2577,22 @@ func (h *AccountHandler) GetBatchUsage(c *gin.Context) {
 	}
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
+	if len(accountIDs) == 0 {
+		response.Success(c, gin.H{
+			"usage":  map[string]any{},
+			"errors": map[string]string{},
+		})
+		return
+	}
+
+	// Scope before any forced upstream probe. Besides preventing cross-workspace
+	// reads, this ensures force=true cannot refresh or persist another vendor's
+	// account snapshot.
+	accountIDs, err := h.adminService.FilterAccountIDsByScope(c.Request.Context(), accountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	if len(accountIDs) == 0 {
 		response.Success(c, gin.H{
 			"usage":  map[string]any{},

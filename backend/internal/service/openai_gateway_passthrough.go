@@ -360,6 +360,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	responseID := ""
 	imageCount := 0
 	var imageOutputSizes []string
+	var responseErr error
 	for {
 		actualModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 		if actualModel == "" {
@@ -446,6 +447,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 		if reqStream {
 			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
+			if result != nil {
+				usage = result.usage
+				firstTokenMs = result.firstTokenMs
+				responseID = strings.TrimSpace(result.responseID)
+				imageCount = result.imageCount
+				imageOutputSizes = result.imageOutputSizes
+			}
 			if handleErr != nil {
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
 					c, account, requestedModel, body, handleErr, compactModelFallbackRetried, resp,
@@ -464,13 +472,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					return nil, s.handleErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
 				}
 				_ = resp.Body.Close()
-				return nil, handleErr
+				if !hasOpenAIPartialUsage(usage) && imageCount == 0 {
+					return nil, handleErr
+				}
+				responseErr = handleErr
 			}
-			usage = result.usage
-			firstTokenMs = result.firstTokenMs
-			responseID = strings.TrimSpace(result.responseID)
-			imageCount = result.imageCount
-			imageOutputSizes = result.imageOutputSizes
 		} else {
 			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
 			if handleErr != nil {
@@ -502,14 +508,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	defer func() { _ = resp.Body.Close() }()
 	serviceTier := extractOpenAIServiceTierFromBody(body)
-	s.bindHTTPResponseAccount(ctx, c, account, responseID)
+	if responseErr == nil {
+		s.bindHTTPResponseAccount(ctx, c, account, responseID)
+	}
 
 	// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
-	if !account.IsShadow() {
+	if responseErr == nil && account.UsesOpenAICodexProtocol() && !account.IsShadow() {
 		if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 		}
-	} else if account.ParentAccountID != nil {
+	} else if account.IsShadow() && account.ParentAccountID != nil {
 		notifyOpenAIAutoReset(*account.ParentAccountID)
 	}
 
@@ -540,7 +548,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		forwardResult.ImageOutputSizes = imageOutputSizes
 		forwardResult.BillingModel = imageBillingModel
 	}
-	return forwardResult, nil
+	return forwardResult, responseErr
 }
 
 func logOpenAIPassthroughInstructionsRejected(
@@ -2150,6 +2158,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if firstTokenMs == nil && openAIStreamDataStartsTTFT(trimmedData, eventType, forceFlushFailedEvent, ttftMode) {
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
+			}
+			// 只有上游真实内容帧才算「已投递」。lineStartsClientOutput 是「要不要写客户端」
+			// 的判定（黑名单，裸 error 与 response.incomplete 都会穿透），不能直接复用为计费
+			// 门控——收窄它会改变客户端写出行为。故这里独立用白名单判定。
+			if openAIResponsesStreamEventDeliversRealContent(trimmedData, eventType) {
+				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
 			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
 		}

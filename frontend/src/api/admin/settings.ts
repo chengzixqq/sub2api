@@ -16,6 +16,43 @@ export interface DefaultSubscriptionSetting {
   validity_days: number;
 }
 
+/** Owner-controlled probe coalescing settings. */
+export const PROBE_COALESCING_MODES = ["off", "shadow", "active"] as const;
+export type ProbeCoalescingMode = (typeof PROBE_COALESCING_MODES)[number];
+
+export const PROBE_COALESCING_DEFAULTS = {
+  mode: "shadow" as ProbeCoalescingMode,
+  window_seconds: 60,
+  leader_timeout_seconds: 8,
+  attempt_budget: 8,
+};
+
+export const PROBE_COALESCING_LIMITS = {
+  window_seconds: { min: 1, max: 3600 },
+  leader_timeout_seconds: { min: 1, max: 60 },
+  attempt_budget: { min: 1, max: 64 },
+} as const;
+
+export function normalizeProbeCoalescingMode(
+  value: unknown,
+): ProbeCoalescingMode {
+  return typeof value === "string" &&
+    (PROBE_COALESCING_MODES as readonly string[]).includes(value.trim().toLowerCase())
+    ? (value.trim().toLowerCase() as ProbeCoalescingMode)
+    : PROBE_COALESCING_DEFAULTS.mode;
+}
+
+export function normalizeProbeCoalescingInteger(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(numeric)));
+}
+
 // ── 平台限额类型 ──────────────────────────────────────────────────
 export type PlatformType = "anthropic" | "openai" | "gemini" | "antigravity" | "grok"
 export type QuotaWindowType = "daily" | "weekly" | "monthly"
@@ -720,6 +757,10 @@ export interface SystemSettings {
   channel_monitor_default_interval_seconds: number;
   channel_monitor_hide_throughput?: boolean;
   channel_monitor_show_quota?: boolean;
+  probe_coalescing_mode?: ProbeCoalescingMode;
+  probe_coalescing_window_seconds?: number;
+  probe_coalescing_leader_timeout_seconds?: number;
+  probe_coalescing_attempt_budget?: number;
 
   // Available Channels feature switch
   available_channels_enabled: boolean;
@@ -738,6 +779,9 @@ export interface SystemSettings {
 
   // Allow user view error requests
   allow_user_view_error_requests: boolean;
+
+  // Failure billing policy; owner-controlled, visible to all administrators.
+  failure_billing_upstream_usage_only: boolean;
 }
 
 export interface UpdateSettingsRequest {
@@ -1021,6 +1065,10 @@ export interface UpdateSettingsRequest {
   channel_monitor_default_interval_seconds?: number;
   channel_monitor_hide_throughput?: boolean;
   channel_monitor_show_quota?: boolean;
+  probe_coalescing_mode?: ProbeCoalescingMode;
+  probe_coalescing_window_seconds?: number;
+  probe_coalescing_leader_timeout_seconds?: number;
+  probe_coalescing_attempt_budget?: number;
 
   // Available Channels feature switch
   available_channels_enabled?: boolean;
@@ -1038,6 +1086,7 @@ export interface UpdateSettingsRequest {
   openai_fast_policy_settings?: OpenAIFastPolicySettings;
 
   allow_user_view_error_requests?: boolean;
+  failure_billing_upstream_usage_only?: boolean;
 }
 
 /**

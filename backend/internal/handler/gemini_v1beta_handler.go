@@ -253,6 +253,48 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		return
 	}
 
+	// Strict non-streaming Gemini monitor probes may reuse a verified health
+	// result after authentication, user concurrency and billing eligibility.
+	// Followers return before account selection, so they do not consume an
+	// upstream account slot; their usage is still billed independently.
+	var probeLease *ProbeLease
+	probeCandidateDetected := false
+	probeLeaderInstalled := false
+	// Gemini native probes carry the requested model in the URL rather than
+	// the JSON body. Do not compare against modelName here: composite routing
+	// may have already resolved it to a different upstream model.
+	if candidate, ok := probeCandidateForRequest(c, body, "", optionalGroupID(apiKey.GroupID), service.PlatformGemini, channelMapping.ChannelID); ok {
+		probeCandidateDetected = true
+		probeCtx := c.Request.Context()
+		syncProbeCoalescerSettings(h.probeCoalescer, h.settingService, probeCtx)
+		probeCtx, probeRequestID := prepareProbeAdmission(c, h.probeCoalescer)
+		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeRequestID)
+		if probeLease.IsExhausted() {
+			googleError(c, http.StatusServiceUnavailable, "Probe attempt budget exhausted")
+			return
+		}
+		if probeLease.IsFollower() {
+			handled, promoted, probeErr := resolveProbeFollower(c, probeLease, func(ctx context.Context, candidate ProbeCandidate, account *service.Account, leaderID string) error {
+				return h.billSyntheticProbe(c, apiKey, subscription, body, candidate, account, leaderID, channelMapping)
+			})
+			if handled {
+				if probeErr != nil {
+					status, _, message := probeResolutionError(probeErr)
+					googleError(c, status, message)
+				}
+				return
+			}
+			if promoted {
+				defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+				probeLeaderInstalled = true
+			}
+		}
+		if probeLease.IsLeader() && !probeLeaderInstalled {
+			defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+		}
+	}
+	markProbeAccountConcurrency(c, probeLease, probeCandidateDetected)
+
 	// 3) select account (sticky session based on request body)
 	// 优先使用 Gemini CLI 的会话标识（privileged-user-id + tmp 目录哈希）
 	sessionHash := extractGeminiCLISessionHash(c, body)
@@ -365,6 +407,17 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
 		c.Request = c.Request.WithContext(ctx)
 	}
+
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), h.settingService),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(effectiveAPIKeyPlatform(c, apiKey), body)
+		},
+		sink: h.claudeFailureSink(c, apiKey, subscription, reqModel, channelMapping, body),
+	})
+	defer guard.Flush()
 
 	for {
 		selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, modelName, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
@@ -487,6 +540,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		account = latest
 		selection.Account = latest
+		// Preserve the selected account snapshot only for a real probe leader;
+		// ordinary Gemini traffic should not add probe-only context state.
+		if probeLease != nil && probeLease.IsLeader() {
+			setProbeLeaderAccount(c, account)
+		}
 		// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已抢槽
 		// 的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。
 		if selection.ProfitGateActive() || !selection.Acquired {
@@ -496,6 +554,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		}
 		// 账号槽位/等待计数需要在超时或断开时安全回收
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
+
+		guard.ObserveAttempt(account)
 
 		// 5) forward (根据平台分流)
 		var result *service.ForwardResult
@@ -523,6 +583,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			accountReleaseFunc()
 		}
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveForwardResult(result)
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
@@ -569,9 +631,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		forceCacheBilling := fs.ForceCacheBilling
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
-		// 长上下文阶梯由目录数据驱动，统一在计费路径内生效，入口无需声明。
-		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+		guard.MarkSettled()
+		recordUsage := func(ctx context.Context) error {
+			return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
 				QuotaPlatform:      quotaPlatform,
 				APIKey:             apiKey,
@@ -588,7 +650,10 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-			}); err != nil {
+			})
+		}
+		if probeLease != nil && probeLease.IsLeader() {
+			if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 				logger.L().With(
 					zap.String("component", "handler.gemini_v1beta.models"),
 					zap.Int64("user_id", authSubject.UserID),
@@ -598,7 +663,20 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 					zap.Int64("account_id", account.ID),
 				).Error("gemini.record_usage_failed", zap.Error(err))
 			}
-		})
+		} else {
+			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if err := recordUsage(ctx); err != nil {
+					logger.L().With(
+						zap.String("component", "handler.gemini_v1beta.models"),
+						zap.Int64("user_id", authSubject.UserID),
+						zap.Int64("api_key_id", apiKey.ID),
+						zap.Any("group_id", apiKey.GroupID),
+						zap.String("model", modelName),
+						zap.Int64("account_id", account.ID),
+					).Error("gemini.record_usage_failed", zap.Error(err))
+				}
+			})
+		}
 		reqLog.Debug("gemini.request_completed",
 			zap.Int64("account_id", account.ID),
 			zap.Int("switch_count", fs.SwitchCount),

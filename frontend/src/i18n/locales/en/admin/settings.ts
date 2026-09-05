@@ -447,6 +447,13 @@ export default {
         saved: 'Upstream rate auto detection settings saved',
         saveFailed: 'Failed to save upstream rate auto detection settings'
       },
+      failureBilling: {
+        title: 'Failure Billing Policy',
+        description: 'Choose whether failed requests may be settled from local estimates when upstream usage is unavailable.',
+        upstreamUsageOnly: 'Require upstream usage or a confirmed billable action',
+        upstreamUsageOnlyHint: 'When enabled, failed_estimated settlements are disabled. Explicit upstream token/image usage and confirmed upstream actions remain billable.',
+        ownerOnly: 'Only the site owner can change this policy.'
+      },
       ollamaCloudUsage: {
         title: 'Ollama Cloud Usage Refresh',
         description: 'Refresh official Ollama settings-page usage driven by model requests for individually opted-in accounts. Disabled by default. Idle accounts are not polled.',

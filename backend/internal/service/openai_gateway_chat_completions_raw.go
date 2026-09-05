@@ -338,6 +338,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
 				}
+				// 投递标记与 firstTokenMs（TTFT，既有语义）拆开门控：原门控只排除
+				// usage-only 尾块，错误帧/骨架 chunk 仍会置位，导致上游零 token 产出
+				// 的请求被计费 = 多算。这里改判 choices[].delta 是否真的带出内容。
+				if openAIChatStreamChunkDeliversRealContent(payload) {
+					c.Set(GatewayUpstreamDeliveredKey, true)
+				}
 			}
 		}
 		line = applyOllamaCloudRawChatCompletionsSSELine(account, line)

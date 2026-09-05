@@ -120,6 +120,11 @@ func RateMultiplier(v float64) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldRateMultiplier, v))
 }
 
+// WorkspaceID applies equality check predicate on the "workspace_id" field. It's identical to WorkspaceIDEQ.
+func WorkspaceID(v int64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldWorkspaceID, v))
+}
+
 // Status applies equality check predicate on the "status" field. It's identical to StatusEQ.
 func Status(v string) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldStatus, v))
@@ -843,6 +848,46 @@ func RateMultiplierLT(v float64) predicate.Account {
 // RateMultiplierLTE applies the LTE predicate on the "rate_multiplier" field.
 func RateMultiplierLTE(v float64) predicate.Account {
 	return predicate.Account(sql.FieldLTE(FieldRateMultiplier, v))
+}
+
+// WorkspaceIDEQ applies the EQ predicate on the "workspace_id" field.
+func WorkspaceIDEQ(v int64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDNEQ applies the NEQ predicate on the "workspace_id" field.
+func WorkspaceIDNEQ(v int64) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDIn applies the In predicate on the "workspace_id" field.
+func WorkspaceIDIn(vs ...int64) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldWorkspaceID, vs...))
+}
+
+// WorkspaceIDNotIn applies the NotIn predicate on the "workspace_id" field.
+func WorkspaceIDNotIn(vs ...int64) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldWorkspaceID, vs...))
+}
+
+// WorkspaceIDGT applies the GT predicate on the "workspace_id" field.
+func WorkspaceIDGT(v int64) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDGTE applies the GTE predicate on the "workspace_id" field.
+func WorkspaceIDGTE(v int64) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDLT applies the LT predicate on the "workspace_id" field.
+func WorkspaceIDLT(v int64) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldWorkspaceID, v))
+}
+
+// WorkspaceIDLTE applies the LTE predicate on the "workspace_id" field.
+func WorkspaceIDLTE(v int64) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldWorkspaceID, v))
 }
 
 // StatusEQ applies the EQ predicate on the "status" field.

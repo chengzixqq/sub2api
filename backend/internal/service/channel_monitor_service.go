@@ -146,6 +146,11 @@ func (s *ChannelMonitorService) Get(ctx context.Context, id int64) (*ChannelMoni
 
 // Create 创建监控（内部加密 api_key）。
 func (s *ChannelMonitorService) Create(ctx context.Context, p ChannelMonitorCreateParams) (*ChannelMonitor, error) {
+	// New monitors default to quota; omitted fields on existing-row updates
+	// continue to normalize as probe in defaultCheckMode.
+	if strings.TrimSpace(p.CheckMode) == "" {
+		p.CheckMode = MonitorCheckModeQuota
+	}
 	if err := validateCreateParams(p); err != nil {
 		return nil, err
 	}

@@ -147,7 +147,7 @@ func TestAdminUpdateAccountExtraStripsSeedAndLeavesAtomicEnsureToRepository(t *t
 func TestBulkUpdateAccountsDoesNotPrewriteCodexSeed(t *testing.T) {
 	repo := &upstreamBillingProbeAccountRepo{}
 
-	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 		AccountIDs: []int64{301, 302},
 		Extra: map[string]any{
 			codexFingerprintModeExtraKey: "session",
@@ -202,7 +202,7 @@ func TestDuplicateCreatePathMintsFreshSeedWhenEligible(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	account, err := buildAccountForCreate(&CreateAccountInput{
+	account, err := buildAccountForCreate(context.Background(), &CreateAccountInput{
 		Name:     "eligible-copy",
 		Platform: PlatformOpenAI,
 		Type:     AccountTypeOAuth,

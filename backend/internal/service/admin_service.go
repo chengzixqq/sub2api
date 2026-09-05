@@ -6,6 +6,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -18,7 +19,7 @@ type AdminService interface {
 	CreateUser(ctx context.Context, input *CreateUserInput) (*User, error)
 	UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error)
 	DeleteUser(ctx context.Context, id int64) error
-	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
+	UpdateUserBalance(ctx context.Context, userID int64, balance string, operation string, notes string) (*User, error)
 	BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error)
 	BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error)
@@ -31,6 +32,21 @@ type AdminService interface {
 	BindUserAuthIdentity(ctx context.Context, userID int64, input AdminBindAuthIdentityInput) (*AdminBoundAuthIdentity, error)
 
 	// Group management
+
+	// FilterGroupIDsByScope 按调用者作用域裁剪分组 ID 集合。
+	//
+	// 给那些不经 adminService 取数的汇总端点（用量、容量）用：
+	// 它们各自走独立 service，无法在此处收窄，只能拿到结果后按本方法过滤。
+	// admin 原样返回，vendor 只留已授权分组。
+	FilterGroupIDsByScope(ctx context.Context, ids []int64) ([]int64, error)
+
+	// FilterAccountIDsByScope 按调用者作用域裁剪账号 ID 集合。
+	//
+	// 给批量统计端点用。必须在取数与拼缓存键之前调用：那些端点的缓存键
+	// 只由账号 ID 构成，若先取数再裁剪，A 家写入的结果会被 B 家按同一组
+	// ID 命中缓存，收窄形同虚设。
+	FilterAccountIDsByScope(ctx context.Context, ids []int64) ([]int64, error)
+
 	ListGroups(ctx context.Context, page, pageSize int, platform, status, search string, isExclusive *bool, sortBy, sortOrder string) ([]Group, int64, error)
 	GetAllGroups(ctx context.Context) ([]Group, error)
 	GetAllGroupsByPlatform(ctx context.Context, platform string) ([]Group, error)
@@ -169,6 +185,8 @@ type UpdateUserInput struct {
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64
+	// AdjustmentNotes is attached only when Concurrency changes.
+	AdjustmentNotes string
 	// ActorAdminID 执行本次操作的管理员ID(来自JWT)，仅用于权限敏感操作的审计日志。
 	ActorAdminID int64
 }
@@ -663,6 +681,7 @@ type adminServiceImpl struct {
 	proxyRepo            ProxyRepository
 	apiKeyRepo           APIKeyRepository
 	redeemCodeRepo       RedeemCodeRepository
+	adjustmentRepo       AdminUserAdjustmentRepository
 	userGroupRateRepo    UserGroupRateRepository
 	userRPMCache         UserRPMCache
 	billingCacheService  *BillingCacheService
@@ -678,6 +697,7 @@ type adminServiceImpl struct {
 	affiliateService     adminRechargeAffiliateAccruer
 	compositeRouteRepo   CompositeModelRouteRepository
 	compositeResolver    *CompositeRouteResolver
+	workspaceScopeCache  workspaceAccountScopeInvalidator
 	// 分组平台变更后用来失效渠道缓存；可为 nil（缓存会在 TTL 到期后自然重建）
 	channelCacheInvalidator ChannelCacheInvalidator
 }
@@ -692,6 +712,221 @@ type adminRechargeAffiliateAccruer interface {
 	AccrueInviteRebate(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64) (float64, error)
 }
 
+// invalidateWorkspaceAccountScope 安全地失效账号白名单缓存。
+//
+// 用 *WorkspaceService 装入接口字段时，即便指针为 nil，接口值本身也非 nil，
+// 直接调用会 panic。测试与部分装配路径确实会传 nil，因此统一走这里。
+// workspaceID 为 0 表示账号不属于任何工作区，无缓存可失效。
+func (s *adminServiceImpl) invalidateWorkspaceAccountScope(workspaceID int64) {
+	if workspaceID <= 0 {
+		return
+	}
+	if ws, ok := s.workspaceScopeCache.(*WorkspaceService); ok && ws == nil {
+		return
+	}
+	if s.workspaceScopeCache == nil {
+		return
+	}
+	s.workspaceScopeCache.InvalidateAccountIDs(workspaceID)
+}
+
+// workspaceAccountScopeInvalidator 在账号归属发生变化后失效账号白名单缓存。
+//
+// 窄接口而非直接依赖 *WorkspaceService：这里只需要「失效」这一个动作，
+// 与 authCacheInvalidator 同一范式。
+//
+// 必须在账号新建、删除、改变 workspace_id 后调用。漏调的后果不对称：
+// 新建漏调只是新账号用量最长 30s 不可见；账号移出工作区漏调则是原 vendor
+// 在缓存过期前仍能查到该账号用量 —— 越权。
+//
+// ListGrantedGroupIDs 一并挂在这里而非另起字段：装配路径与 nil 判定
+// 已由 workspaceScopeCache 统一承担，再加一个同源字段只会多一处漏装风险。
+type workspaceAccountScopeInvalidator interface {
+	InvalidateAccountIDs(workspaceID int64)
+	ListGrantedGroupIDs(ctx context.Context, workspaceID int64) ([]int64, error)
+	// IsGroupShared 用于共享分组的计费锁定：一个分组被授权给多家工作区时，
+	// 任何一家改倍率都会直接改掉其他家的结算口径，因此计费档自动失效。
+	IsGroupShared(ctx context.Context, groupID int64) (bool, error)
+}
+
+// grantedGroupIDs 返回当前作用域可见的分组 ID 集合。
+//
+// 返回 nil map 表示不限制（站长）。供应商即便一个分组都没授权，
+// 也返回空 map 而非 nil —— 二者语义相反，混淆会让未授权 vendor 看到全站分组。
+//
+// 工作区服务缺失时返回错误而非放行：分组读路径同时暴露容量、费率与用量，
+// 装配疏漏若静默回落为不受限，等于把全站分组交给所有 vendor。
+func (s *adminServiceImpl) grantedGroupIDs(ctx context.Context) (map[int64]struct{}, error) {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return nil, nil
+	}
+	// 两种 nil 都要挡：接口本身为 nil，以及接口装了一个 nil 的
+	// *WorkspaceService（此时 s.workspaceScopeCache != nil，调用会 panic）。
+	if s.workspaceScopeCache == nil {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
+	if ws, ok := s.workspaceScopeCache.(*WorkspaceService); ok && ws == nil {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
+	ids, err := s.workspaceScopeCache.ListGrantedGroupIDs(ctx, scope.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	granted := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		granted[id] = struct{}{}
+	}
+	return granted, nil
+}
+
+// filterGroupsByScope 按作用域过滤分组切片，原地复用底层数组。
+func (s *adminServiceImpl) filterGroupsByScope(ctx context.Context, groups []Group) ([]Group, error) {
+	granted, err := s.grantedGroupIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
+		return groups, nil
+	}
+	out := make([]Group, 0, len(groups))
+	for _, g := range groups {
+		if _, ok := granted[g.ID]; ok {
+			out = append(out, g)
+		}
+	}
+	if err := s.markSharedGroupBillingLocks(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *adminServiceImpl) markSharedGroupBillingLocks(ctx context.Context, groups []Group) error {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() || !scope.Perms.GroupBilling || len(groups) == 0 {
+		return nil
+	}
+	if s.workspaceScopeCache == nil {
+		return domain.ErrWorkspaceScopeViolation
+	}
+	if ws, ok := s.workspaceScopeCache.(*WorkspaceService); ok && ws == nil {
+		return domain.ErrWorkspaceScopeViolation
+	}
+	for i := range groups {
+		shared, err := s.workspaceScopeCache.IsGroupShared(ctx, groups[i].ID)
+		if err != nil {
+			return err
+		}
+		groups[i].BillingLocked = shared
+	}
+	return nil
+}
+
+// requireGroupAccess 校验单个分组是否在作用域内。
+//
+// 越权返回 ErrWorkspaceScopeViolation（对外 404），与账号侧一致：
+// 若回 403，vendor 可借错误码差异探测出其他分组的存在性。
+func (s *adminServiceImpl) requireGroupAccess(ctx context.Context, groupID int64) error {
+	granted, err := s.grantedGroupIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if granted == nil {
+		return nil
+	}
+	if _, ok := granted[groupID]; !ok {
+		return domain.ErrWorkspaceScopeViolation
+	}
+	return nil
+}
+
+// requireAccountAccess 校验单个账号是否属于调用方工作区。
+//
+// 存在的理由：账号的状态类操作（清错、清限流、切换可调度、临时不可调度、
+// 删除）都只收一个裸 account_id，此前各入口自行决定是否 GetByIDScoped，
+// 有几处把 scoped 读放在写之后当回显用 —— 写已落库，读不到也回滚不了。
+// 统一收口成前置校验，新增此类入口时照抄一行即可。
+//
+// 越权返回 ErrWorkspaceScopeViolation（对外 404）而非 403：错误码差异
+// 本身就是存在性探针，403 会告诉 vendor「这个 ID 有主」。
+//
+// 与 requireGroupAccess 的 nil 语义一致：admin 不受限直接放行。
+func (s *adminServiceImpl) requireAccountAccess(ctx context.Context, accountID int64) error {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return nil
+	}
+	// GetByIDScoped 自带工作区过滤：不属于本工作区时返回 not found。
+	// 刻意不用 GetByID 再比对 WorkspaceID —— 那要求每个调用方都记得比对，
+	// 正是本函数要消灭的那类疏漏。
+	account, err := s.accountRepo.GetByIDScoped(ctx, accountID)
+	if err != nil {
+		return domain.ErrWorkspaceScopeViolation
+	}
+	if account == nil {
+		return domain.ErrWorkspaceScopeViolation
+	}
+	return nil
+}
+
+// filterAccountValuesByScope 把值类型账号切片收窄到调用方工作区名下。
+//
+// 与 filterAccountsByScope（指针版，admin_account.go）同一判定，
+// 只是取数路径返回的是 []Account 而非 []*Account。共用 OwnsWorkspaceID，
+// 不查白名单缓存 —— 行内的 WorkspaceID 就是权威值，多查一次只会引入偏差。
+//
+// 用于共享分组：分组授权判定的是「这个分组可见」，判不了「组内哪些账号
+// 是自家的」。A、B 两家共用一个分组时，按 groupID 取到的账号是两家的总和，
+// 由此聚合出的任何结果（模型候选、能力清单）都会漏出对方的上游覆盖面。
+func (s *adminServiceImpl) filterAccountValuesByScope(ctx context.Context, accounts []Account) []Account {
+	scope := ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return accounts
+	}
+	out := make([]Account, 0, len(accounts))
+	for i := range accounts {
+		if scope.OwnsWorkspaceID(accounts[i].WorkspaceID) {
+			out = append(out, accounts[i])
+		}
+	}
+	return out
+}
+
+// FilterGroupIDsByScope 按作用域裁剪分组 ID 集合。
+//
+// 供用量/容量这类走独立 service 的汇总端点使用：它们不经本 service 取数，
+// 只能在拿到结果后按此方法剔除未授权分组。
+func (s *adminServiceImpl) FilterGroupIDsByScope(ctx context.Context, ids []int64) ([]int64, error) {
+	granted, err := s.grantedGroupIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if granted == nil {
+		return ids, nil
+	}
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := granted[id]; ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// FilterAccountIDsByScope 按作用域裁剪账号 ID 集合。
+//
+// 与 FilterGroupIDsByScope 同一范式，但服务对象是批量统计端点，
+// 且必须在拼缓存键之前调用 —— 那些端点的键只含账号 ID，
+// 先取数再裁剪会让 A 家的结果被 B 家按同一组 ID 命中。
+//
+// admin 原样返回同一切片；vendor 即便一个账号都没有也返回空切片而非 nil，
+// 二者语义相反，混淆会把全部请求的 ID 当成已授权。
+// 实现委托给 scopedAccountIDs：按传入 ID 回表比对 workspace_id，
+// 与批量写端点走同一判定，避免两套收窄逻辑各自漂移。
+func (s *adminServiceImpl) FilterAccountIDsByScope(ctx context.Context, ids []int64) ([]int64, error) {
+	return s.scopedAccountIDs(ctx, ids)
+}
+
 type userGroupRateBatchReader interface {
 	GetByUserIDs(ctx context.Context, userIDs []int64) (map[int64]map[int64]float64, error)
 }
@@ -704,6 +939,7 @@ func NewAdminService(
 	proxyRepo ProxyRepository,
 	apiKeyRepo APIKeyRepository,
 	redeemCodeRepo RedeemCodeRepository,
+	adjustmentRepo AdminUserAdjustmentRepository,
 	userGroupRateRepo UserGroupRateRepository,
 	userRPMCache UserRPMCache,
 	billingCacheService *BillingCacheService,
@@ -719,34 +955,36 @@ func NewAdminService(
 	affiliateService *AffiliateService,
 	compositeRouteRepo CompositeModelRouteRepository,
 	compositeResolver *CompositeRouteResolver,
+	workspaceScopeCache *WorkspaceService,
 	channelCacheInvalidator ChannelCacheInvalidator,
 ) AdminService {
 	return &adminServiceImpl{
-		userRepo:             userRepo,
-		groupRepo:            groupRepo,
-		groupDuplicateRepo:   groupRepo,
-		accountRepo:          accountRepo,
-		accountDuplicateRepo: accountRepo,
-		accountBillingRepo:   accountRepo,
-		proxyRepo:            proxyRepo,
-		apiKeyRepo:           apiKeyRepo,
-		redeemCodeRepo:       redeemCodeRepo,
-		userGroupRateRepo:    userGroupRateRepo,
-		userRPMCache:         userRPMCache,
-		billingCacheService:  billingCacheService,
-		proxyProber:          proxyProber,
-		proxyLatencyCache:    proxyLatencyCache,
-		authCacheInvalidator: authCacheInvalidator,
-		entClient:            entClient,
-		settingService:       settingService,
-		defaultSubAssigner:   defaultSubAssigner,
-		userSubRepo:          userSubRepo,
-		privacyClientFactory: privacyClientFactory,
-		runtimeBlocker:       runtimeBlocker,
-		affiliateService:     affiliateService,
-		compositeRouteRepo:   compositeRouteRepo,
-		compositeResolver:    compositeResolver,
-
+		userRepo:                userRepo,
+		groupRepo:               groupRepo,
+		groupDuplicateRepo:      groupRepo,
+		accountRepo:             accountRepo,
+		accountDuplicateRepo:    accountRepo,
+		accountBillingRepo:      accountRepo,
+		proxyRepo:               proxyRepo,
+		apiKeyRepo:              apiKeyRepo,
+		redeemCodeRepo:          redeemCodeRepo,
+		adjustmentRepo:          adjustmentRepo,
+		userGroupRateRepo:       userGroupRateRepo,
+		userRPMCache:            userRPMCache,
+		billingCacheService:     billingCacheService,
+		proxyProber:             proxyProber,
+		proxyLatencyCache:       proxyLatencyCache,
+		authCacheInvalidator:    authCacheInvalidator,
+		entClient:               entClient,
+		settingService:          settingService,
+		defaultSubAssigner:      defaultSubAssigner,
+		userSubRepo:             userSubRepo,
+		privacyClientFactory:    privacyClientFactory,
+		runtimeBlocker:          runtimeBlocker,
+		affiliateService:        affiliateService,
+		compositeRouteRepo:      compositeRouteRepo,
+		compositeResolver:       compositeResolver,
+		workspaceScopeCache:     workspaceScopeCache,
 		channelCacheInvalidator: channelCacheInvalidator,
 	}
 }

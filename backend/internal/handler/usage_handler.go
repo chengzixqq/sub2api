@@ -625,6 +625,8 @@ type BatchAPIKeysUsageRequest struct {
 	APIKeyIDs []int64 `json:"api_key_ids" binding:"required"`
 }
 
+const maxDashboardAPIKeyUsageIDs = 1000
+
 // DashboardAPIKeysUsage handles getting usage stats for user's own API keys
 // POST /api/v1/usage/dashboard/api-keys-usage
 func (h *UsageHandler) DashboardAPIKeysUsage(c *gin.Context) {
@@ -645,9 +647,9 @@ func (h *UsageHandler) DashboardAPIKeysUsage(c *gin.Context) {
 		return
 	}
 
-	// Limit the number of API key IDs to prevent SQL parameter overflow
-	if len(req.APIKeyIDs) > 100 {
-		response.BadRequest(c, "Too many API key IDs (maximum 100 allowed)")
+	// Match the largest supported API key list page while keeping request size bounded.
+	if len(req.APIKeyIDs) > maxDashboardAPIKeyUsageIDs {
+		response.BadRequest(c, "Too many API key IDs (maximum 1000 allowed)")
 		return
 	}
 

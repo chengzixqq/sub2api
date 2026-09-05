@@ -110,6 +110,7 @@ var (
 		{Name: "load_factor", Type: field.TypeInt, Nullable: true},
 		{Name: "priority", Type: field.TypeInt, Default: 50},
 		{Name: "rate_multiplier", Type: field.TypeFloat64, Default: 1, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
+		{Name: "workspace_id", Type: field.TypeInt64, Default: 1},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
 		{Name: "error_message", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "last_used_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
@@ -136,13 +137,13 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "accounts_proxies_proxy",
-				Columns:    []*schema.Column{AccountsColumns[30]},
+				Columns:    []*schema.Column{AccountsColumns[31]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "accounts_accounts_children",
-				Columns:    []*schema.Column{AccountsColumns[31]},
+				Columns:    []*schema.Column{AccountsColumns[32]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.Restrict,
 			},
@@ -161,12 +162,12 @@ var (
 			{
 				Name:    "account_status",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[15]},
+				Columns: []*schema.Column{AccountsColumns[16]},
 			},
 			{
 				Name:    "account_proxy_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[30]},
+				Columns: []*schema.Column{AccountsColumns[31]},
 			},
 			{
 				Name:    "account_priority",
@@ -176,27 +177,27 @@ var (
 			{
 				Name:    "account_last_used_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[17]},
+				Columns: []*schema.Column{AccountsColumns[18]},
 			},
 			{
 				Name:    "account_schedulable",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[20]},
+				Columns: []*schema.Column{AccountsColumns[21]},
 			},
 			{
 				Name:    "account_rate_limited_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[21]},
+				Columns: []*schema.Column{AccountsColumns[22]},
 			},
 			{
 				Name:    "account_rate_limit_reset_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[22]},
+				Columns: []*schema.Column{AccountsColumns[23]},
 			},
 			{
 				Name:    "account_overload_until",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[23]},
+				Columns: []*schema.Column{AccountsColumns[24]},
 			},
 			{
 				Name:    "account_platform_priority",
@@ -206,7 +207,7 @@ var (
 			{
 				Name:    "account_priority_status",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[13], AccountsColumns[15]},
+				Columns: []*schema.Column{AccountsColumns[13], AccountsColumns[16]},
 			},
 			{
 				Name:    "account_deleted_at",
@@ -216,7 +217,12 @@ var (
 			{
 				Name:    "account_parent_account_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[31]},
+				Columns: []*schema.Column{AccountsColumns[32]},
+			},
+			{
+				Name:    "account_workspace_id",
+				Unique:  false,
+				Columns: []*schema.Column{AccountsColumns[15]},
 			},
 		},
 	}
@@ -256,6 +262,107 @@ var (
 				Name:    "accountgroup_priority",
 				Unique:  false,
 				Columns: []*schema.Column{AccountGroupsColumns[0]},
+			},
+		},
+	}
+	// AdminUserAdjustmentsColumns holds the columns for the "admin_user_adjustments" table.
+	AdminUserAdjustmentsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "action_id", Type: field.TypeUUID},
+		{Name: "kind", Type: field.TypeString, Size: 20},
+		{Name: "operation", Type: field.TypeString, Size: 20},
+		{Name: "requested_value", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "delta", Type: field.TypeString, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "before_value", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "after_value", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "user_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "user_email", Type: field.TypeString, Nullable: true, Size: 255},
+		{Name: "user_name", Type: field.TypeString, Nullable: true, Size: 100},
+		{Name: "operator_user_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "operator_email", Type: field.TypeString, Nullable: true, Size: 255},
+		{Name: "operator_name", Type: field.TypeString, Nullable: true, Size: 100},
+		{Name: "notes", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "client_ip", Type: field.TypeString, Nullable: true, Size: 64},
+		{Name: "auth_method", Type: field.TypeString, Nullable: true, Size: 32},
+		{Name: "request_id", Type: field.TypeString, Nullable: true, Size: 128},
+		{Name: "source", Type: field.TypeString, Size: 64},
+		{Name: "legacy_redeem_code_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+	}
+	// AdminUserAdjustmentsTable holds the schema information for the "admin_user_adjustments" table.
+	AdminUserAdjustmentsTable = &schema.Table{
+		Name:       "admin_user_adjustments",
+		Columns:    AdminUserAdjustmentsColumns,
+		PrimaryKey: []*schema.Column{AdminUserAdjustmentsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "idx_admin_user_adjustments_created",
+				Unique:  false,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Annotation: &entsql.IndexAnnotation{
+					DescColumns: map[string]bool{
+						AdminUserAdjustmentsColumns[20].Name: true,
+
+						AdminUserAdjustmentsColumns[0].Name: true,
+					},
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_user_created",
+				Unique:  false,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[8], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Annotation: &entsql.IndexAnnotation{
+					DescColumns: map[string]bool{
+						AdminUserAdjustmentsColumns[20].Name: true,
+
+						AdminUserAdjustmentsColumns[0].Name: true,
+					},
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_operator_created",
+				Unique:  false,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[11], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Annotation: &entsql.IndexAnnotation{
+					DescColumns: map[string]bool{
+						AdminUserAdjustmentsColumns[20].Name: true,
+
+						AdminUserAdjustmentsColumns[0].Name: true,
+					},
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_kind_created",
+				Unique:  false,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[2], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Annotation: &entsql.IndexAnnotation{
+					DescColumns: map[string]bool{
+						AdminUserAdjustmentsColumns[20].Name: true,
+
+						AdminUserAdjustmentsColumns[0].Name: true,
+					},
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_action",
+				Unique:  false,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[1]},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_action_user_kind",
+				Unique:  true,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[1], AdminUserAdjustmentsColumns[8], AdminUserAdjustmentsColumns[2]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "user_id IS NOT NULL",
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_legacy_redeem",
+				Unique:  true,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[19]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "legacy_redeem_code_id IS NOT NULL",
+				},
 			},
 		},
 	}
@@ -1412,6 +1519,7 @@ var (
 		{Name: "expires_at", Type: field.TypeTime, Nullable: true},
 		{Name: "fallback_mode", Type: field.TypeString, Size: 20, Default: "none"},
 		{Name: "expiry_warn_days", Type: field.TypeInt, Default: 7},
+		{Name: "workspace_id", Type: field.TypeInt64, Default: 1},
 		{Name: "backup_proxy_id", Type: field.TypeInt64, Unique: true, Nullable: true},
 	}
 	// ProxiesTable holds the schema information for the "proxies" table.
@@ -1422,7 +1530,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "proxies_proxies_backup_proxy",
-				Columns:    []*schema.Column{ProxiesColumns[14]},
+				Columns:    []*schema.Column{ProxiesColumns[15]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1445,6 +1553,11 @@ var (
 			},
 			{
 				Name:    "proxy_backup_proxy_id",
+				Unique:  false,
+				Columns: []*schema.Column{ProxiesColumns[15]},
+			},
+			{
+				Name:    "proxy_workspace_id",
 				Unique:  false,
 				Columns: []*schema.Column{ProxiesColumns[14]},
 			},
@@ -1676,6 +1789,9 @@ var (
 		{Name: "video_resolution", Type: field.TypeString, Nullable: true, Size: 10},
 		{Name: "video_duration_seconds", Type: field.TypeInt, Nullable: true},
 		{Name: "cache_ttl_overridden", Type: field.TypeBool, Default: false},
+		{Name: "probe_coalesced", Type: field.TypeBool, Default: false},
+		{Name: "probe_leader_request_id", Type: field.TypeString, Nullable: true, Size: 128},
+		{Name: "provider_cost_recorded", Type: field.TypeBool, Default: true},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "api_key_id", Type: field.TypeInt64},
 		{Name: "account_id", Type: field.TypeInt64},
@@ -1691,31 +1807,31 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "usage_logs_api_keys_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[43]},
+				Columns:    []*schema.Column{UsageLogsColumns[46]},
 				RefColumns: []*schema.Column{APIKeysColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_accounts_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[44]},
+				Columns:    []*schema.Column{UsageLogsColumns[47]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_groups_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[45]},
+				Columns:    []*schema.Column{UsageLogsColumns[48]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "usage_logs_users_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[46]},
+				Columns:    []*schema.Column{UsageLogsColumns[49]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_user_subscriptions_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[47]},
+				Columns:    []*schema.Column{UsageLogsColumns[50]},
 				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1724,32 +1840,32 @@ var (
 			{
 				Name:    "usagelog_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[46]},
+				Columns: []*schema.Column{UsageLogsColumns[49]},
 			},
 			{
 				Name:    "usagelog_api_key_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[46]},
 			},
 			{
 				Name:    "usagelog_account_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[44]},
+				Columns: []*schema.Column{UsageLogsColumns[47]},
 			},
 			{
 				Name:    "usagelog_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[45]},
+				Columns: []*schema.Column{UsageLogsColumns[48]},
 			},
 			{
 				Name:    "usagelog_subscription_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[47]},
+				Columns: []*schema.Column{UsageLogsColumns[50]},
 			},
 			{
 				Name:    "usagelog_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[42]},
+				Columns: []*schema.Column{UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_model",
@@ -1767,19 +1883,29 @@ var (
 				Columns: []*schema.Column{UsageLogsColumns[1]},
 			},
 			{
+				Name:    "usagelog_probe_leader_request_id",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[43]},
+			},
+			{
+				Name:    "usagelog_provider_cost_recorded_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[44], UsageLogsColumns[45]},
+			},
+			{
 				Name:    "usagelog_user_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[46], UsageLogsColumns[42]},
+				Columns: []*schema.Column{UsageLogsColumns[49], UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_api_key_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[43], UsageLogsColumns[42]},
+				Columns: []*schema.Column{UsageLogsColumns[46], UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_group_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[45], UsageLogsColumns[42]},
+				Columns: []*schema.Column{UsageLogsColumns[48], UsageLogsColumns[45]},
 			},
 		},
 	}
@@ -2085,11 +2211,123 @@ var (
 			},
 		},
 	}
+	// WorkspacesColumns holds the columns for the "workspaces" table.
+	WorkspacesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "description", Type: field.TypeString, Size: 500, Default: ""},
+		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "perm_account_manage", Type: field.TypeBool, Default: false},
+		{Name: "perm_group_ops", Type: field.TypeBool, Default: false},
+		{Name: "perm_group_billing", Type: field.TypeBool, Default: false},
+		{Name: "perm_proxy_manage", Type: field.TypeBool, Default: false},
+		{Name: "perm_monitor_view", Type: field.TypeBool, Default: false},
+		{Name: "settlement_rate_min", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
+		{Name: "settlement_rate_max", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
+	}
+	// WorkspacesTable holds the schema information for the "workspaces" table.
+	WorkspacesTable = &schema.Table{
+		Name:       "workspaces",
+		Columns:    WorkspacesColumns,
+		PrimaryKey: []*schema.Column{WorkspacesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "workspace_status",
+				Unique:  false,
+				Columns: []*schema.Column{WorkspacesColumns[6]},
+			},
+			{
+				Name:    "workspace_deleted_at",
+				Unique:  false,
+				Columns: []*schema.Column{WorkspacesColumns[3]},
+			},
+		},
+	}
+	// WorkspaceGroupGrantsColumns holds the columns for the "workspace_group_grants" table.
+	WorkspaceGroupGrantsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "base_priority", Type: field.TypeInt, Default: 50},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "workspace_id", Type: field.TypeInt64},
+		{Name: "group_id", Type: field.TypeInt64},
+	}
+	// WorkspaceGroupGrantsTable holds the schema information for the "workspace_group_grants" table.
+	WorkspaceGroupGrantsTable = &schema.Table{
+		Name:       "workspace_group_grants",
+		Columns:    WorkspaceGroupGrantsColumns,
+		PrimaryKey: []*schema.Column{WorkspaceGroupGrantsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "workspace_group_grants_workspaces_workspace",
+				Columns:    []*schema.Column{WorkspaceGroupGrantsColumns[5]},
+				RefColumns: []*schema.Column{WorkspacesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "workspace_group_grants_groups_group",
+				Columns:    []*schema.Column{WorkspaceGroupGrantsColumns[6]},
+				RefColumns: []*schema.Column{GroupsColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "workspacegroupgrant_workspace_id_group_id",
+				Unique:  true,
+				Columns: []*schema.Column{WorkspaceGroupGrantsColumns[5], WorkspaceGroupGrantsColumns[6]},
+			},
+			{
+				Name:    "workspacegroupgrant_group_id",
+				Unique:  false,
+				Columns: []*schema.Column{WorkspaceGroupGrantsColumns[6]},
+			},
+		},
+	}
+	// WorkspaceMembersColumns holds the columns for the "workspace_members" table.
+	WorkspaceMembersColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "workspace_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// WorkspaceMembersTable holds the schema information for the "workspace_members" table.
+	WorkspaceMembersTable = &schema.Table{
+		Name:       "workspace_members",
+		Columns:    WorkspaceMembersColumns,
+		PrimaryKey: []*schema.Column{WorkspaceMembersColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "workspace_members_workspaces_members",
+				Columns:    []*schema.Column{WorkspaceMembersColumns[2]},
+				RefColumns: []*schema.Column{WorkspacesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "workspace_members_users_user",
+				Columns:    []*schema.Column{WorkspaceMembersColumns[3]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "workspacemember_workspace_id",
+				Unique:  false,
+				Columns: []*schema.Column{WorkspaceMembersColumns[2]},
+			},
+		},
+	}
 	// Tables holds all the tables in the schema.
 	Tables = []*schema.Table{
 		APIKeysTable,
 		AccountsTable,
 		AccountGroupsTable,
+		AdminUserAdjustmentsTable,
 		AnnouncementsTable,
 		AnnouncementReadsTable,
 		AuthIdentitiesTable,
@@ -2126,6 +2364,9 @@ var (
 		UserAttributeValuesTable,
 		UserPlatformQuotasTable,
 		UserSubscriptionsTable,
+		WorkspacesTable,
+		WorkspaceGroupGrantsTable,
+		WorkspaceMembersTable,
 	}
 )
 
@@ -2144,6 +2385,9 @@ func init() {
 	AccountGroupsTable.ForeignKeys[1].RefTable = GroupsTable
 	AccountGroupsTable.Annotation = &entsql.Annotation{
 		Table: "account_groups",
+	}
+	AdminUserAdjustmentsTable.Annotation = &entsql.Annotation{
+		Table: "admin_user_adjustments",
 	}
 	AnnouncementsTable.Annotation = &entsql.Annotation{
 		Table: "announcements",
@@ -2282,5 +2526,18 @@ func init() {
 	UserSubscriptionsTable.ForeignKeys[2].RefTable = UsersTable
 	UserSubscriptionsTable.Annotation = &entsql.Annotation{
 		Table: "user_subscriptions",
+	}
+	WorkspacesTable.Annotation = &entsql.Annotation{
+		Table: "workspaces",
+	}
+	WorkspaceGroupGrantsTable.ForeignKeys[0].RefTable = WorkspacesTable
+	WorkspaceGroupGrantsTable.ForeignKeys[1].RefTable = GroupsTable
+	WorkspaceGroupGrantsTable.Annotation = &entsql.Annotation{
+		Table: "workspace_group_grants",
+	}
+	WorkspaceMembersTable.ForeignKeys[0].RefTable = WorkspacesTable
+	WorkspaceMembersTable.ForeignKeys[1].RefTable = UsersTable
+	WorkspaceMembersTable.Annotation = &entsql.Annotation{
+		Table: "workspace_members",
 	}
 }

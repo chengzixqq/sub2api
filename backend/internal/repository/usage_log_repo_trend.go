@@ -101,7 +101,7 @@ func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, e
 			COALESCE(us.username, '') as username,
 			COUNT(*) as requests,
 			COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(u.total_cost), 0) as cost,
+			COALESCE(SUM(u.total_cost) FILTER (WHERE u.provider_cost_recorded), 0) as cost,
 			COALESCE(SUM(u.actual_cost), 0) as actual_cost
 		FROM usage_logs u
 		LEFT JOIN users us ON u.user_id = us.id
@@ -235,7 +235,7 @@ func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, user
 			COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(total_cost), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
 			COALESCE(SUM(actual_cost), 0) as actual_cost
 		FROM usage_logs
 		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
@@ -278,7 +278,7 @@ func (r *usageLogRepository) GetUsageTrendWithUsageFilters(ctx context.Context, 
 }
 
 func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string, upstreamModelMismatch *bool, nativeCompactionV2 *bool) (results []TrendDataPoint, err error) {
-	if shouldUsePreaggregatedTrend(granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType, billingMode, upstreamModelMismatch, nativeCompactionV2) {
+	if shouldUsePreaggregatedTrend(ctx, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType, billingMode, upstreamModelMismatch, nativeCompactionV2) {
 		aggregated, aggregatedErr := r.getUsageTrendFromAggregates(ctx, startTime, endTime, granularity)
 		if aggregatedErr == nil && len(aggregated) > 0 {
 			return aggregated, nil
@@ -296,7 +296,7 @@ func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, start
 			COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(total_cost), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
 			COALESCE(SUM(actual_cost), 0) as actual_cost
 		FROM usage_logs
 		WHERE created_at >= $1 AND created_at < $2
@@ -319,6 +319,8 @@ func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, start
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
 		args = append(args, groupID)
 	}
+	scopeSQL, args := appendUsageAccountScope(ctx, "account_id", args)
+	query += scopeSQL
 	query, args = appendUsageLogModelQueryFilter(query, args, model, modelSource)
 	query, args = appendRequestTypeOrStreamQueryFilter(query, args, requestType, stream)
 	query, args = appendNativeCompactionV2QueryFilter(query, args, nativeCompactionV2, "")
@@ -352,8 +354,14 @@ func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, start
 	return results, nil
 }
 
-func shouldUsePreaggregatedTrend(granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8, billingMode string, upstreamModelMismatch *bool, nativeCompactionV2 *bool) bool {
+func shouldUsePreaggregatedTrend(ctx context.Context, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8, billingMode string, upstreamModelMismatch *bool, nativeCompactionV2 *bool) bool {
 	if granularity != "day" && granularity != "hour" {
+		return false
+	}
+	// 预聚合表按时间桶汇总全站数据，没有 workspace/account 维度，
+	// 无法施加账号白名单。受作用域约束的请求必须回落到原表查询，
+	// 否则 vendor 会看到全站趋势。牺牲这部分查询性能换取隔离正确性。
+	if usageAccountScopeRestricted(ctx) {
 		return false
 	}
 	return userID == 0 &&
@@ -448,9 +456,9 @@ func (r *usageLogRepository) getModelStatsWithFiltersBySource(ctx context.Contex
 	actualCostExpr := "COALESCE(SUM(actual_cost), 0) as actual_cost"
 	// 当仅按 account_id 聚合时，实际费用使用账号倍率（total_cost * account_rate_multiplier）。
 	if accountID > 0 && userID == 0 && apiKeyID == 0 {
-		actualCostExpr = "COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as actual_cost"
+		actualCostExpr = "COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as actual_cost"
 	}
-	accountCostExpr := "COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) as account_cost"
+	accountCostExpr := "COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as account_cost"
 	modelExpr := resolveModelDimensionExpression(source)
 
 	query := fmt.Sprintf(`
@@ -462,7 +470,7 @@ func (r *usageLogRepository) getModelStatsWithFiltersBySource(ctx context.Contex
 			COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(total_cost), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
 			%s,
 			%s
 		FROM usage_logs
@@ -486,6 +494,8 @@ func (r *usageLogRepository) getModelStatsWithFiltersBySource(ctx context.Contex
 		query += fmt.Sprintf(" AND group_id = $%d", len(args)+1)
 		args = append(args, groupID)
 	}
+	scopeSQL, args := appendUsageAccountScope(ctx, "account_id", args)
+	query += scopeSQL
 	if strings.TrimSpace(model) != "" {
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
 		args = append(args, model)
@@ -538,9 +548,9 @@ func (r *usageLogRepository) getGroupStatsWithFilters(ctx context.Context, start
 			COALESCE(g.name, '') as group_name,
 			COUNT(*) as requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(ul.total_cost), 0) as cost,
+			COALESCE(SUM(ul.total_cost) FILTER (WHERE ul.provider_cost_recorded), 0) as cost,
 			COALESCE(SUM(ul.actual_cost), 0) as actual_cost,
-			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1)), 0) as account_cost
+			COALESCE(SUM(CASE WHEN ul.provider_cost_recorded THEN COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1) ELSE 0 END), 0) as account_cost
 		FROM usage_logs ul
 		LEFT JOIN groups g ON g.id = ul.group_id
 		WHERE ul.created_at >= $1 AND ul.created_at < $2
@@ -562,6 +572,15 @@ func (r *usageLogRepository) getGroupStatsWithFilters(ctx context.Context, start
 	if groupID > 0 {
 		query += fmt.Sprintf(" AND ul.group_id = $%d", len(args)+1)
 		args = append(args, groupID)
+	}
+	scopeSQL, args := appendUsageAccountScope(ctx, "ul.account_id", args)
+	query += scopeSQL
+	groupScopeSQL, args, restricted := appendUsageGroupGrantScope(ctx, "ul.group_id", args)
+	query += groupScopeSQL
+	if restricted {
+		// Restricted vendor views only include logs tied to an enabled group
+		// grant; soft-deleted groups are hidden as well.
+		query += " AND g.deleted_at IS NULL"
 	}
 	if strings.TrimSpace(model) != "" {
 		modelExpr := resolveModelDimensionExpressionWithAlias(usagestats.ModelSourceRequested, "ul")
@@ -624,9 +643,9 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 			COALESCE(SUM(ul.output_tokens), 0) as output_tokens,
 			COALESCE(SUM(ul.cache_creation_tokens + ul.cache_read_tokens), 0) as cache_tokens,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(ul.total_cost), 0) as cost,
+			COALESCE(SUM(ul.total_cost) FILTER (WHERE ul.provider_cost_recorded), 0) as cost,
 			COALESCE(SUM(ul.actual_cost), 0) as actual_cost,
-			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1)), 0) as account_cost
+			COALESCE(SUM(CASE WHEN ul.provider_cost_recorded THEN COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1) ELSE 0 END), 0) as account_cost
 		FROM usage_logs ul
 		LEFT JOIN users u ON u.id = ul.user_id
 		WHERE ul.created_at >= $1 AND ul.created_at < $2
@@ -723,6 +742,88 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 // GetAllGroupUsageSummary 返回所有分组在服务端配置时区内的今日、昨日与当前保留记录累计金额。
 func (r *usageLogRepository) GetAllGroupUsageSummary(ctx context.Context, todayStart time.Time) ([]usagestats.GroupUsageSummary, error) {
 	return r.getAllGroupUsageSummaryFromRollups(ctx, todayStart)
+}
+
+// GetAllGroupUsageSummaryScoped 与 GetAllGroupUsageSummary 同口径，但只统计
+// 归属指定工作区的账号所产生的用量。
+//
+// 单独开一个方法而不给原方法加可选参数：原方法服务站长与仪表盘，
+// 是全站口径的唯一事实来源，加分支会让"全站"与"某家"共用一条语句，
+// 日后任何一侧改动都可能悄悄改掉另一侧的账目。
+//
+// 共享分组是这个方法存在的全部理由：分组同时授权给 A、B 两家时，
+// 行级过滤能让 A 看到该分组，却拦不住行内金额是 A+B 的合计 ——
+// A 由此可反推 B 的营收规模。
+func (r *usageLogRepository) GetAllGroupUsageSummaryScoped(
+	ctx context.Context,
+	todayStart time.Time,
+	workspaceID int64,
+) ([]usagestats.GroupUsageSummary, error) {
+	if workspaceID <= 0 {
+		// A scoped call must never silently fall back to legacy workspace_id=0
+		// accounts. Middleware supplies a positive workspace ID; reject malformed
+		// service contexts before touching the database.
+		return nil, fmt.Errorf("scoped group usage summary requires a positive workspace id, got %d", workspaceID)
+	}
+
+	// todayStart is already at the caller's local midnight. Owners use the
+	// server-timezone rollup; vendors pass their legacy request timezone here.
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+
+	// Materialize the workspace account set once, aggregate only those usage
+	// rows, then left-join every group so an authorized shared group with no
+	// usage still appears as a zero row. This avoids the previous full
+	// usage_logs x groups left join while keeping workspace isolation in SQL.
+	query := `
+		WITH target_accounts AS MATERIALIZED (
+			SELECT id
+			FROM accounts
+			WHERE workspace_id = $3
+				AND deleted_at IS NULL
+		), scoped AS (
+			SELECT
+				ul.group_id,
+				COALESCE(SUM(ul.actual_cost), 0) AS total_cost,
+				COALESCE(SUM(CASE
+					WHEN ul.created_at >= $1 THEN ul.actual_cost ELSE 0
+				END), 0) AS today_cost,
+				COALESCE(SUM(CASE
+					WHEN ul.created_at >= $2 AND ul.created_at < $1
+					THEN ul.actual_cost ELSE 0
+				END), 0) AS yesterday_cost
+			FROM usage_logs ul
+			JOIN target_accounts ta ON ta.id = ul.account_id
+			WHERE ul.group_id IS NOT NULL
+			GROUP BY ul.group_id
+		)
+		SELECT
+			g.id AS group_id,
+			COALESCE(scoped.total_cost, 0) AS total_cost,
+			COALESCE(scoped.today_cost, 0) AS today_cost,
+			COALESCE(scoped.yesterday_cost, 0) AS yesterday_cost
+		FROM groups g
+		LEFT JOIN scoped ON scoped.group_id = g.id
+		WHERE g.deleted_at IS NULL
+		ORDER BY g.id
+	`
+
+	rows, err := r.sql.QueryContext(ctx, query, todayStart, yesterdayStart, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var results []usagestats.GroupUsageSummary
+	for rows.Next() {
+		var row usagestats.GroupUsageSummary
+		if err := rows.Scan(&row.GroupID, &row.TotalCost, &row.TodayCost, &row.YesterdayCost); err != nil {
+			return nil, err
+		}
+		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // resolveModelDimensionExpression maps model source type to a safe SQL expression.

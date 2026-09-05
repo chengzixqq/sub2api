@@ -28,6 +28,17 @@ func (m *mockAccountRepoForGemini) GetByID(ctx context.Context, id int64) (*Acco
 	return nil, errors.New("account not found")
 }
 
+// GetByIDScoped 委托给 GetByID：本 mock 服务的是网关转发路径，
+// 那条路径不带工作区作用域，归属过滤只存在于管理端。
+func (m *mockAccountRepoForGemini) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return m.GetByID(ctx, id)
+}
+
+// ListIDsByWorkspace 返回空：网关路径不做工作区归属复核。
+func (m *mockAccountRepoForGemini) ListIDsByWorkspace(ctx context.Context, workspaceID int64) ([]int64, error) {
+	return nil, nil
+}
+
 func (m *mockAccountRepoForGemini) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
 	var result []*Account
 	for _, id := range ids {
@@ -260,6 +271,14 @@ func (m *mockGroupRepoForGemini) BindAccountsToGroup(ctx context.Context, groupI
 
 func (m *mockGroupRepoForGemini) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
 	return nil, nil
+}
+
+// LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
+//
+// 与本 mock 的其余方法同理：服务的是网关转发路径，
+// 那条路径不带工作区作用域，返回空 map 即可。
+func (m *mockGroupRepoForGemini) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
 }
 
 func (m *mockGroupRepoForGemini) UpdateSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {

@@ -43,11 +43,21 @@ func NewGrokOAuthHandler(
 }
 
 type GrokGenerateAuthURLRequest struct {
+	AccountID   *int64 `json:"account_id"`
 	ProxyID     *int64 `json:"proxy_id"`
 	RedirectURI string `json:"redirect_uri"`
 }
 
 func (h *GrokOAuthHandler) GetCapabilities(c *gin.Context) {
+	accountID, err := parseOptionalGrokAccountID(c.Query("account_id"))
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if _, err := h.constrainGrokReauthProxy(c.Request.Context(), accountID, nil); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	response.Success(c, h.grokOAuthService.GetCapabilities())
 }
 
@@ -56,7 +66,12 @@ func (h *GrokOAuthHandler) GenerateAuthURL(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		req = GrokGenerateAuthURLRequest{}
 	}
-	result, err := h.grokOAuthService.GenerateAuthURL(c.Request.Context(), req.ProxyID, req.RedirectURI)
+	proxyID, err := h.constrainGrokReauthProxy(c.Request.Context(), req.AccountID, req.ProxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	result, err := h.grokOAuthService.GenerateAuthURL(c.Request.Context(), proxyID, req.RedirectURI)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -65,6 +80,7 @@ func (h *GrokOAuthHandler) GenerateAuthURL(c *gin.Context) {
 }
 
 type GrokExchangeCodeRequest struct {
+	AccountID   *int64 `json:"account_id"`
 	SessionID   string `json:"session_id" binding:"required"`
 	Code        string `json:"code" binding:"required"`
 	State       string `json:"state"`
@@ -78,12 +94,17 @@ func (h *GrokOAuthHandler) ExchangeCode(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, err := h.constrainGrokReauthProxy(c.Request.Context(), req.AccountID, req.ProxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	tokenInfo, err := h.grokOAuthService.ExchangeCode(c.Request.Context(), &service.GrokExchangeCodeInput{
 		SessionID:   req.SessionID,
 		Code:        req.Code,
 		State:       req.State,
 		RedirectURI: req.RedirectURI,
-		ProxyID:     req.ProxyID,
+		ProxyID:     proxyID,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -93,6 +114,7 @@ func (h *GrokOAuthHandler) ExchangeCode(c *gin.Context) {
 }
 
 type GrokRefreshTokenRequest struct {
+	AccountID    *int64 `json:"account_id"`
 	RefreshToken string `json:"refresh_token"`
 	RT           string `json:"rt"`
 	ClientID     string `json:"client_id"`
@@ -100,8 +122,9 @@ type GrokRefreshTokenRequest struct {
 }
 
 type GrokSSOTokenRequest struct {
-	SSOToken string `json:"sso_token"`
-	ProxyID  *int64 `json:"proxy_id"`
+	AccountID *int64 `json:"account_id"`
+	SSOToken  string `json:"sso_token"`
+	ProxyID   *int64 `json:"proxy_id"`
 }
 
 type GrokPasswordAuthorizeRequest struct {
@@ -124,10 +147,15 @@ func (h *GrokOAuthHandler) RefreshToken(c *gin.Context) {
 		response.BadRequest(c, "refresh_token is required")
 		return
 	}
+	proxyID, err := h.constrainGrokReauthProxy(c.Request.Context(), req.AccountID, req.ProxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
 	var proxyURL string
-	if req.ProxyID != nil {
-		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
+	if proxyID != nil {
+		proxy, err := h.adminService.GetProxy(c.Request.Context(), *proxyID)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -154,12 +182,62 @@ func (h *GrokOAuthHandler) ValidateSSOToken(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	tokenInfo, err := h.grokOAuthService.ValidateSSOToken(c.Request.Context(), req.SSOToken, req.ProxyID)
+	proxyID, err := h.constrainGrokReauthProxy(c.Request.Context(), req.AccountID, req.ProxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	tokenInfo, err := h.grokOAuthService.ValidateSSOToken(c.Request.Context(), req.SSOToken, proxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, tokenInfo)
+}
+
+func parseOptionalGrokAccountID(raw string) (*int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return nil, infraerrors.BadRequest("GROK_OAUTH_ACCOUNT_INVALID", "account_id must be a positive integer")
+	}
+	return &id, nil
+}
+
+// constrainGrokReauthProxy leaves station-owner helper calls unchanged. A
+// vendor, however, may only use these helpers to reauthorize an existing Grok
+// account in its workspace, and the transport proxy is derived from that
+// account instead of trusting a caller-provided proxy_id.
+func (h *GrokOAuthHandler) constrainGrokReauthProxy(ctx context.Context, accountID, requestedProxyID *int64) (*int64, error) {
+	scope := service.ScopeFromContextOrDeny(ctx)
+	if !scope.IsVendor() {
+		return requestedProxyID, nil
+	}
+	if err := scope.RequireAccountManage(); err != nil {
+		return nil, err
+	}
+	if accountID == nil || *accountID <= 0 {
+		return nil, infraerrors.BadRequest("GROK_OAUTH_ACCOUNT_REQUIRED", "account_id is required for workspace reauthorization")
+	}
+	if h == nil || h.adminService == nil {
+		return nil, infraerrors.InternalServer("GROK_OAUTH_ACCOUNT_SERVICE_UNAVAILABLE", "account service is unavailable")
+	}
+	account, err := h.adminService.GetAccount(ctx, *accountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil || account.Platform != service.PlatformGrok {
+		return nil, infraerrors.BadRequest("GROK_OAUTH_INVALID_ACCOUNT", "account is not a Grok account")
+	}
+	if account.ProxyID != nil {
+		if _, err := h.adminService.GetProxy(ctx, *account.ProxyID); err != nil {
+			return nil, err
+		}
+	}
+	return account.ProxyID, nil
 }
 
 // AuthorizePassword exchanges email/password for Build OAuth tokens via SSO conversion.

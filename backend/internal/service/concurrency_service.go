@@ -55,6 +55,15 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+// ProbeConcurrencyCache is an optional extension implemented by Redis-backed
+// caches. Keeping it separate preserves the lightweight ConcurrencyCache
+// contract used by tests and alternate cache implementations.
+type ProbeConcurrencyCache interface {
+	TrackProbeAccountSlot(ctx context.Context, accountID int64, requestID string) error
+	ReleaseProbeAccountSlot(ctx context.Context, accountID int64, requestID string) error
+	GetProbeAccountConcurrencyBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error)
+}
+
 type APIKeyConcurrencyCache interface {
 	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
@@ -329,6 +338,14 @@ type AccountLoadInfo struct {
 	LoadRate           int // 0-100+ (percent)
 }
 
+// AccountConcurrencyBreakdown separates ordinary account traffic from strict
+// upstream probe leaders. Ordinary traffic remains the existing account-slot
+// count after probe slots are removed.
+type AccountConcurrencyBreakdown struct {
+	Current int
+	Probe   int
+}
+
 type UserLoadInfo struct {
 	UserID             int64
 	CurrentConcurrency int
@@ -340,16 +357,22 @@ type UserLoadInfo struct {
 // If the account is at max concurrency, it waits until a slot is available or timeout.
 // Returns a release function that MUST be called when the request completes.
 func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
-	// If maxConcurrency is 0 or negative, no limit
-	if maxConcurrency <= 0 {
-		return &AcquireResult{
-			Acquired:    true,
-			ReleaseFunc: func() {}, // no-op
-		}, nil
-	}
-
 	// Generate unique request ID for this slot
 	requestID := generateRequestID()
+
+	// If maxConcurrency is 0 or negative, no limit. A strict probe still gets
+	// its independent display counter even when the account has no hard limit.
+	if maxConcurrency <= 0 {
+		probeRelease := s.trackProbeAccountSlot(ctx, accountID, requestID)
+		return &AcquireResult{
+			Acquired: true,
+			ReleaseFunc: func() {
+				if probeRelease != nil {
+					probeRelease()
+				}
+			},
+		}, nil
+	}
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
 	if err != nil {
@@ -357,6 +380,7 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 	}
 
 	if acquired {
+		probeRelease := s.trackProbeAccountSlot(ctx, accountID, requestID)
 		return &AcquireResult{
 			Acquired: true,
 			ReleaseFunc: func() {
@@ -364,6 +388,9 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 				defer cancel()
 				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
 					logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
+				}
+				if probeRelease != nil {
+					probeRelease()
 				}
 			},
 		}, nil
@@ -373,6 +400,39 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		Acquired:    false,
 		ReleaseFunc: nil,
 	}, nil
+}
+
+const probeSlotOperationTimeout = 2 * time.Second
+
+// trackProbeAccountSlot mirrors the regular slot lifecycle in a separate
+// Redis sorted set. It is fail-open for alternate caches and Redis errors: a
+// metrics failure must never reject a user request or alter account limits.
+func (s *ConcurrencyService) trackProbeAccountSlot(ctx context.Context, accountID int64, requestID string) func() {
+	if s == nil || s.cache == nil || accountID <= 0 || requestID == "" || !ProbeAccountConcurrencyEnabled(ctx) {
+		return nil
+	}
+	cache, ok := s.cache.(ProbeConcurrencyCache)
+	if !ok {
+		return nil
+	}
+	baseCtx := context.Background()
+	if ctx != nil {
+		baseCtx = context.WithoutCancel(ctx)
+	}
+	trackCtx, cancel := context.WithTimeout(baseCtx, probeSlotOperationTimeout)
+	err := cache.TrackProbeAccountSlot(trackCtx, accountID, requestID)
+	cancel()
+	if err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: failed to track probe account slot for %d (req=%s): %v", accountID, requestID, err)
+		return nil
+	}
+	return func() {
+		bgCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		if err := cache.ReleaseProbeAccountSlot(bgCtx, accountID, requestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release probe account slot for %d (req=%s): %v", accountID, requestID, err)
+		}
+	}
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.
@@ -768,4 +828,41 @@ func (s *ConcurrencyService) GetAccountConcurrencyBatch(ctx context.Context, acc
 	defer cancel()
 
 	return s.cache.GetAccountConcurrencyBatch(redisCtx, accountIDs)
+}
+
+// GetAccountConcurrencyBreakdownBatch returns ordinary and probe counts for
+// administrative views. The existing GetAccountConcurrencyBatch method keeps
+// its original raw-slot semantics for schedulers and operational callers.
+func (s *ConcurrencyService) GetAccountConcurrencyBreakdownBatch(ctx context.Context, accountIDs []int64) (map[int64]AccountConcurrencyBreakdown, error) {
+	result := make(map[int64]AccountConcurrencyBreakdown, len(accountIDs))
+	if len(accountIDs) == 0 {
+		return result, nil
+	}
+	if s == nil || s.cache == nil {
+		return result, nil
+	}
+	regular, err := s.GetAccountConcurrencyBatch(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	probe := make(map[int64]int, len(accountIDs))
+	if s != nil && s.cache != nil {
+		if cache, ok := s.cache.(ProbeConcurrencyCache); ok {
+			probeCtx, cancel := context.WithTimeout(context.Background(), probeSlotOperationTimeout)
+			probe, _ = cache.GetProbeAccountConcurrencyBatch(probeCtx, accountIDs)
+			cancel()
+		}
+	}
+	for _, accountID := range accountIDs {
+		p := probe[accountID]
+		if p < 0 {
+			p = 0
+		}
+		current := regular[accountID] - p
+		if current < 0 {
+			current = 0
+		}
+		result[accountID] = AccountConcurrencyBreakdown{Current: current, Probe: p}
+	}
+	return result, nil
 }

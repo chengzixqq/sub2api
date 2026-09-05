@@ -50,6 +50,14 @@ func (s *openAIRecordUsageAccountRepoStub) GetByID(_ context.Context, _ int64) (
 	return s.account, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (s *openAIRecordUsageAccountRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *openAIRecordUsageBillingRepoStub) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
 	s.calls++
 	s.lastCmd = cmd
@@ -124,6 +132,34 @@ func TestRecordCyberPolicyUsageLog_NonStreamZeroTokensZeroCost(t *testing.T) {
 	require.Equal(t, 0, usageRepo.lastLog.OutputTokens)
 	require.Zero(t, usageRepo.lastLog.TotalCost)
 	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+}
+
+func TestRecordCyberPolicyUsageLog_IncludesSearchSurcharge(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
+	searchPrice := 10.0
+	apiKey := &APIKey{
+		ID:    2,
+		User:  &User{ID: 1},
+		Group: &Group{SearchPricePer1k: &searchPrice},
+	}
+	account := &Account{ID: 3, Platform: PlatformGrok}
+
+	svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+		APIKey:      apiKey,
+		Account:     account,
+		RequestID:   "rid-cyber-search",
+		Model:       "grok-4.5",
+		SearchCount: 2,
+	})
+
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+	require.Greater(t, usageRepo.lastLog.ActualCost, 0.0)
+	require.Equal(t, 1, userRepo.deductCalls)
 }
 
 func TestRecordCyberPolicyUsageLog_SkipsWhenIncomplete(t *testing.T) {
@@ -245,6 +281,7 @@ func newOpenAIRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo U
 		nil,
 		nil,
 		nil, // userPlatformQuotaRepo
+		nil, // workspaceService
 	)
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		rateRepo,
@@ -341,6 +378,48 @@ func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing
 	require.Zero(t, billingRepo.lastCmd.APIKeyQuotaCost)
 	require.Zero(t, billingRepo.lastCmd.APIKeyRateLimitCost)
 	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_CoalescedFollowerBillsUserWithoutProviderCost(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "probe-follower-openai",
+			Model:     "gpt-5.1",
+			Usage: OpenAIUsage{
+				InputTokens:  1200,
+				OutputTokens: 80,
+			},
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    1100,
+			Quota: 100,
+			Group: &Group{RateMultiplier: 1},
+		},
+		User:                 &User{ID: 2100},
+		Account:              &Account{ID: 3100, Type: AccountTypeAPIKey},
+		ProbeCoalesced:       true,
+		ProbeLeaderRequestID: "probe-leader-openai",
+		ProviderCostRecorded: false,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Greater(t, billingRepo.lastCmd.BalanceCost, 0.0, "the follower still charges the requesting user")
+	require.Zero(t, billingRepo.lastCmd.AccountQuotaCost, "a follower must not duplicate provider/account cost")
+	require.NotNil(t, usageRepo.lastLog)
+	require.True(t, usageRepo.lastLog.ProbeCoalesced)
+	require.False(t, usageRepo.lastLog.ProviderCostRecorded)
+	require.NotNil(t, usageRepo.lastLog.ProbeLeaderRequestID)
+	require.Equal(t, "probe-leader-openai", *usageRepo.lastLog.ProbeLeaderRequestID)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_MissingPricingRecordsZeroCostUsageLog(t *testing.T) {
@@ -1681,9 +1760,9 @@ func TestOpenAIGatewayServiceRecordUsage_BillsMappedRequestsUsingRequestedModel(
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
 	require.Equal(t, "gpt-5.1", usageRepo.lastLog.Model)
-	require.Equal(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost)
+	require.Equal(t, QuantizeUsageBillingAmount(expectedCost.ActualCost), usageRepo.lastLog.ActualCost)
 	require.Equal(t, expectedCost.TotalCost, usageRepo.lastLog.TotalCost)
-	require.Equal(t, expectedCost.ActualCost, userRepo.lastAmount)
+	require.Equal(t, QuantizeUsageBillingAmount(expectedCost.ActualCost), userRepo.lastAmount)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ChannelMappedDoesNotOverrideBillingModelWhenUnmapped(t *testing.T) {
@@ -1723,7 +1802,7 @@ func TestOpenAIGatewayServiceRecordUsage_ChannelMappedDoesNotOverrideBillingMode
 
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
-	require.Equal(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost)
+	require.Equal(t, QuantizeUsageBillingAmount(expectedCost.ActualCost), usageRepo.lastLog.ActualCost)
 	require.True(t, usageRepo.lastLog.ActualCost > 0, "cost must not be zero")
 }
 
@@ -1764,7 +1843,7 @@ func TestOpenAIGatewayServiceRecordUsage_ChannelMappedOverridesBillingModelWhenM
 
 	require.NoError(t, err)
 	require.NotNil(t, usageRepo.lastLog)
-	require.Equal(t, expectedCost.ActualCost, usageRepo.lastLog.ActualCost)
+	require.Equal(t, QuantizeUsageBillingAmount(expectedCost.ActualCost), usageRepo.lastLog.ActualCost)
 	require.True(t, usageRepo.lastLog.ActualCost > 0, "cost must not be zero")
 }
 

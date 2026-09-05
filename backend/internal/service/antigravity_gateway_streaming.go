@@ -237,7 +237,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 				}
 				sendErrorEvent("stream_read_error")
-				return nil, ev.err
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 			}
 
 			lastDataAt = time.Now()
@@ -282,6 +282,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				if firstTokenMs == nil {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
+					c.Set(GatewayUpstreamDeliveredKey, true)
 				}
 
 				cw.Fprintf("data: %s\n\n", payload)
@@ -400,7 +401,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, ev.err
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 			}
 
 			line := ev.line
@@ -475,7 +476,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamToNonStreaming(c *gin.Cont
 				continue
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity non-stream)")
-			return nil, fmt.Errorf("stream data interval timeout")
+			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 		}
 	}
 
@@ -812,6 +813,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 	var lastWithParts map[string]any
 	var collectedParts []map[string]any // 收集所有 parts（包括 text、thinking、functionCall、inlineData 等）
 	var meaningfulResponse bool
+	usage := &ClaudeUsage{}
 
 	type scanEvent struct {
 		line string
@@ -873,7 +875,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity claude non-stream): max_size=%d error=%v", maxLineSize, ev.err)
 				}
-				return nil, nil, ev.err
+				return nil, &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 			}
 
 			line := ev.line
@@ -901,6 +903,9 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 			}
 
 			last = parsed
+			if observed := extractGeminiUsage(inner); observed != nil {
+				usage = observed
+			}
 
 			// 保留最后一个有 parts 的响应，并收集所有 parts
 			parts := extractGeminiParts(parsed)
@@ -924,7 +929,7 @@ func (s *AntigravityGatewayService) collectClaudeStreamResponse(c *gin.Context, 
 				continue
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity claude non-stream)")
-			return nil, nil, fmt.Errorf("stream data interval timeout")
+			return nil, &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 		}
 	}
 
@@ -961,7 +966,7 @@ returnResponse:
 	}
 
 	// 转换为 service.ClaudeUsage
-	usage := &ClaudeUsage{
+	usage = &ClaudeUsage{
 		InputTokens:              agUsage.InputTokens,
 		OutputTokens:             agUsage.OutputTokens,
 		CacheCreationInputTokens: agUsage.CacheCreationInputTokens,
@@ -979,11 +984,11 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 	if err != nil {
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {
-			return nil, err
+			return streamRes, err
 		}
 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+			return streamRes, err
 		}
 
 		errMsg := "Failed to parse upstream response"
@@ -996,7 +1001,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 			errType = "response_too_large"
 		}
 
-		return nil, s.writeClaudeError(c, http.StatusBadGateway, errType, errMsg)
+		return streamRes, s.writeClaudeError(c, http.StatusBadGateway, errType, errMsg)
 	}
 	c.Data(http.StatusOK, "application/json", claudeResp)
 	return streamRes, nil
@@ -1147,10 +1152,10 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity): max_size=%d error=%v", maxLineSize, ev.err)
 					sendErrorEvent("response_too_large")
-					return &antigravityStreamResult{usage: convertUsage(nil), firstTokenMs: firstTokenMs}, ev.err
+					return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, ev.err
 				}
 				sendErrorEvent("stream_read_error")
-				return nil, fmt.Errorf("stream read error: %w", ev.err)
+				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
 			lastDataAt = time.Now()
@@ -1162,6 +1167,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 				if firstTokenMs == nil {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
+					c.Set(GatewayUpstreamDeliveredKey, true)
 				}
 				cw.Write(claudeEvents)
 			}
@@ -1177,7 +1183,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")
-			return &antigravityStreamResult{usage: convertUsage(nil), firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if cw.Disconnected() {

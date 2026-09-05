@@ -113,6 +113,13 @@ func (Account) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(1.0),
 
+		// workspace_id: 资源归属工作区（供应商代运营）。
+		// 单值列即可：一个账号只可能由一家供应商提供。
+		// 默认 1 = 站长直管，存量数据无需搬运。
+		field.Int64("workspace_id").
+			Default(1).
+			Comment("Owning workspace; 1 = platform-managed."),
+
 		// status: 账户状态，如 "active", "error", "disabled"
 		field.String("status").
 			MaxLen(20).
@@ -249,5 +256,6 @@ func (Account) Indexes() []ent.Index {
 		index.Fields("priority", "status"),
 		index.Fields("deleted_at"), // 软删除查询优化
 		index.Fields("parent_account_id"),
+		index.Fields("workspace_id"), // 供应商作用域过滤
 	}
 }

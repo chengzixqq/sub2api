@@ -25,13 +25,28 @@ func TestResolveUsageBillingRequestID_ClientWinsOverPlainUpstream(t *testing.T) 
 	require.Equal(t, "client:client-shared-id", got)
 }
 
+func TestResolveUsageBillingRequestID_ProbeContextBeatsReusedClientID(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-shared-id")
+	ctx = context.WithValue(ctx, ctxkey.ProbeRequestID, "probe:follower-1")
+	got := resolveUsageBillingRequestID(ctx, "volatile-upstream-id")
+	require.Equal(t, "probe:follower-1", got)
+}
+
 func TestIsForcedUsageBillingRequestID(t *testing.T) {
 	t.Parallel()
 	require.True(t, isForcedUsageBillingRequestID("web_search:x"))
 	require.True(t, isForcedUsageBillingRequestID("grok-video:task-1"))
 	require.True(t, isForcedUsageBillingRequestID("grok_audio:up-1"))
 	require.True(t, isForcedUsageBillingRequestID("grok_realtime:sess-1"))
+	require.True(t, isForcedUsageBillingRequestID("probe:server-request-1"))
 	require.False(t, isForcedUsageBillingRequestID("resp_abc"))
+}
+
+func TestResolveUsageBillingRequestID_ForcedProbeBeatsClientID(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-shared-id")
+	require.Equal(t, "probe:server-request-1", resolveUsageBillingRequestID(ctx, "probe:server-request-1"))
 }
 
 func TestStableGrokAudioBillingRequestID(t *testing.T) {

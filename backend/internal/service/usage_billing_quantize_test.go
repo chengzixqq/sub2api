@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"math"
 	"testing"
 
@@ -174,6 +176,66 @@ func TestNormalizePreservesExplicitFingerprint(t *testing.T) {
 
 	require.Equal(t, "preset-fingerprint", cmd.RequestFingerprint)
 	require.LessOrEqual(t, decimalPlaces(cmd.BalanceCost), int32(UsageBillingMonetaryScale))
+}
+
+func TestApplyUsageBillingPropagatesOneQuantizedAmountAcrossLocalChain(t *testing.T) {
+	const (
+		rawActual      = 0.000078125
+		rawAccountBase = 0.000062505
+		accountRate    = 1.25
+	)
+	groupID := int64(7)
+	quotaUpdater := &openAIRecordUsageAPIKeyQuotaStub{}
+	p := &postUsageBillingParams{
+		Cost: &CostBreakdown{
+			TotalCost:  rawAccountBase,
+			ActualCost: rawActual,
+		},
+		User: &User{ID: 1},
+		APIKey: &APIKey{
+			ID:          2,
+			GroupID:     &groupID,
+			Quota:       1,
+			RateLimit5h: 1,
+		},
+		Account: &Account{
+			ID:    3,
+			Type:  AccountTypeAPIKey,
+			Extra: map[string]any{"quota_limit": 1.0},
+		},
+		AccountRateMultiplier: accountRate,
+		APIKeyService:         quotaUpdater,
+	}
+	accountStatsCost := rawAccountBase
+	usageLog := &UsageLog{
+		RequestID:        "req-full-chain-quantize",
+		UserID:           1,
+		APIKeyID:         2,
+		AccountID:        3,
+		AccountStatsCost: &accountStatsCost,
+		ActualCost:       rawActual,
+	}
+	stopErr := errors.New("stop after command capture")
+	repo := &openAIRecordUsageBillingRepoStub{err: stopErr}
+
+	_, err := applyUsageBilling(context.Background(), usageLog.RequestID, usageLog, p, &billingDeps{}, repo)
+	require.ErrorIs(t, err, stopErr)
+	require.NotNil(t, repo.lastCmd)
+
+	wantActual := QuantizeUsageBillingAmount(rawActual)
+	wantTotal := QuantizeUsageBillingAmount(rawAccountBase)
+	require.Equal(t, wantActual, repo.lastCmd.BalanceCost)
+	require.Equal(t, wantActual, repo.lastCmd.APIKeyQuotaCost)
+	require.Equal(t, wantActual, repo.lastCmd.APIKeyRateLimitCost)
+	require.Equal(t, wantActual, p.Cost.ActualCost)
+	require.Equal(t, wantTotal, usageLog.TotalCost)
+	require.Equal(t, wantActual, usageLog.ActualCost)
+	require.Equal(t, wantTotal, *usageLog.AccountStatsCost)
+	require.Equal(t, QuantizeUsageBillingAmount(rawAccountBase*accountRate), repo.lastCmd.AccountQuotaCost)
+	require.Equal(t, repo.lastCmd.AccountQuotaCost, quantizedAccountBillingCost(p))
+	require.LessOrEqual(t, decimalPlaces(usageLog.TotalCost), int32(UsageBillingMonetaryScale))
+	require.LessOrEqual(t, decimalPlaces(usageLog.ActualCost), int32(UsageBillingMonetaryScale))
+	require.LessOrEqual(t, decimalPlaces(*usageLog.AccountStatsCost), int32(UsageBillingMonetaryScale))
 }
 
 func TestQuantizeUsageBillingAmountPassesThroughNonFinite(t *testing.T) {

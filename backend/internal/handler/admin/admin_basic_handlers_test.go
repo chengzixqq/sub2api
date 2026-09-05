@@ -138,6 +138,19 @@ func TestUserHandlerEndpoints(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestUserHandlerBalancePreservesDecimalToken(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users/1/balance",
+		bytes.NewBufferString(`{"balance":999999999999.00000001,"operation":"set"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "999999999999.00000001", adminSvc.lastBalanceInput)
+}
+
 func TestUserHandlerBindAuthIdentityMapsRequest(t *testing.T) {
 	router, adminSvc := setupAdminRouter()
 

@@ -69,6 +69,13 @@ func (s *stubGroupRepoForAvailable) UpdateSortOrders(ctx context.Context, update
 	return nil
 }
 
+// LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
+//
+// 渠道广场面向终端用户，不经工作区作用域，返回空 map 即可。
+func (s *stubGroupRepoForAvailable) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
+
 // newAvailableChannelService 构造一个 ChannelService，channelRepo.ListAll 返回给定 channels，
 // groupRepo 由参数决定。传入空 stub 表示「活跃分组列表为空」。
 func newAvailableChannelService(channels []Channel, groupRepo GroupRepository) *ChannelService {

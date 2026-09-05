@@ -64,6 +64,10 @@ func (Proxy) Fields() []ent.Field {
 		field.Int("expiry_warn_days").
 			Default(7).
 			Comment("Days before expiry to flag as expiring-soon (per proxy)."),
+		// workspace_id: 资源归属工作区（供应商代运营）。1 = 站长直管。
+		field.Int64("workspace_id").
+			Default(1).
+			Comment("Owning workspace; 1 = platform-managed."),
 	}
 }
 
@@ -85,5 +89,6 @@ func (Proxy) Indexes() []ent.Index {
 		index.Fields("deleted_at"),
 		index.Fields("expires_at"),
 		index.Fields("backup_proxy_id"),
+		index.Fields("workspace_id"),
 	}
 }

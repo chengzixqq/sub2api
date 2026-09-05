@@ -88,13 +88,39 @@ func (s *AuditLogService) Record(entry *AuditLog) {
 }
 
 // List 分页查询审计日志。
+//
+// 作用域由本方法依据请求上下文强制覆写，忽略 filter 中传入的 WorkspaceID ——
+// 该字段是内部约束而非用户可控筛选项。
 func (s *AuditLogService) List(ctx context.Context, filter *AuditLogFilter) (*AuditLogList, error) {
+	if filter == nil {
+		filter = &AuditLogFilter{}
+	}
+	scope := ScopeFromContextOrDeny(ctx)
+	if scope.Unrestricted {
+		filter.WorkspaceID = nil
+	} else {
+		wid := scope.WorkspaceID
+		filter.WorkspaceID = &wid
+	}
 	return s.repo.List(ctx, filter)
 }
 
 // GetByID 查询单条详情。
+//
+// 越权访问返回 ErrAuditLogNotFound 而非 403：不泄露「该 id 存在但不属于你」。
 func (s *AuditLogService) GetByID(ctx context.Context, id int64) (*AuditLog, error) {
-	return s.repo.GetByID(ctx, id)
+	log, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	scope := ScopeFromContextOrDeny(ctx)
+	if scope.Unrestricted {
+		return log, nil
+	}
+	if log.WorkspaceID == nil || *log.WorkspaceID != scope.WorkspaceID {
+		return nil, ErrAuditLogNotFound
+	}
+	return log, nil
 }
 
 // ClearAll 全量清空审计日志并写入留痕记录。

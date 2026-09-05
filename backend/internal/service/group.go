@@ -74,6 +74,9 @@ type Group struct {
 	// Token intervals are selected only when LongContextPricingEnabled is true.
 	LongContextPricingEnabled bool
 	ModelPricing              []ChannelModelPricing
+	// BillingLocked is transient admin-view metadata. Shared workspace grants
+	// lock billing fields for vendors; it is never persisted.
+	BillingLocked bool
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool

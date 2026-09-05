@@ -753,7 +753,8 @@
           />
           <p class="input-hint">{{ t('admin.accounts.loadFactorHint') }}</p>
         </div>
-        <div>
+        <!-- 优先级对 vendor 隐藏：后端强制取授权的 base_priority -->
+        <div v-if="canSetPriority">
           <div class="mb-3 flex items-center justify-between">
             <label
               id="bulk-edit-priority-label"
@@ -781,7 +782,8 @@
             aria-labelledby="bulk-edit-priority-label"
           />
         </div>
-        <div>
+        <!-- 账号级倍率同理：vendor 的结算走工作区授权倍率 -->
+        <div v-if="canSetAccountRate">
           <div class="mb-3 flex items-center justify-between">
             <label
               id="bulk-edit-rate-multiplier-label"
@@ -1516,6 +1518,7 @@ import {
   resolveOpenAIWSModeConcurrencyHintKey
 } from '@/utils/openaiWsMode'
 import type { OpenAIWSMode } from '@/utils/openaiWsMode'
+import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 interface Props {
   show: boolean
   accountIds: number[]
@@ -1540,6 +1543,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const appStore = useAppStore()
+
+// 站长恒真；vendor 侧这两个字段由后端强制覆盖。
+const { canSetPriority, canSetAccountRate } = useWorkspacePerms()
 
 // Platform awareness
 const targetMode = computed(() => props.target?.mode ?? 'selected')
@@ -1951,11 +1957,13 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.load_factor = (lf != null && !Number.isNaN(lf) && lf > 0) ? lf : 0
   }
 
-  if (enablePriority.value) {
+  // 同时判权限档：字段虽已隐藏，但开关是独立 ref，
+  // 加这道守卫后即便状态残留也不会提交注定被后端忽略的字段。
+  if (enablePriority.value && canSetPriority.value) {
     updates.priority = priority.value
   }
 
-  if (enableRateMultiplier.value) {
+  if (enableRateMultiplier.value && canSetAccountRate.value) {
     updates.rate_multiplier = rateMultiplier.value
   }
 

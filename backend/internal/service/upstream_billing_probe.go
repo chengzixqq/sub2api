@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -238,9 +239,10 @@ func normalizeUpstreamBillingProbeSettings(settings *UpstreamBillingProbeSetting
 
 // UpstreamBillingProbeService discovers a remote Sub2API billing snapshot.
 type UpstreamBillingProbeService struct {
-	accountRepo        AccountRepository
-	accountTestService *AccountTestService
-	settingService     *SettingService
+	accountRepo         AccountRepository
+	accountTestService  *AccountTestService
+	settingService      *SettingService
+	workspaceRepository WorkspaceRepository
 
 	parentCtx    context.Context
 	parentCancel context.CancelFunc
@@ -291,15 +293,27 @@ func (s *UpstreamBillingProbeService) SetLeaderLock(lockCache LeaderLockCache, d
 	s.db = db
 }
 
+// SetWorkspaceRepository supplies the workspace policy used by automatic
+// upstream rate synchronization. A missing policy source fails closed for
+// vendor workspaces; station-owned accounts keep the legacy sync behavior.
+func (s *UpstreamBillingProbeService) SetWorkspaceRepository(repo WorkspaceRepository) {
+	if s == nil {
+		return
+	}
+	s.workspaceRepository = repo
+}
+
 // ProvideUpstreamBillingProbeService starts the process-wide periodic runner.
 func ProvideUpstreamBillingProbeService(
 	accountRepo AccountRepository,
 	accountTestService *AccountTestService,
 	settingService *SettingService,
+	workspaceRepository WorkspaceRepository,
 	lockCache LeaderLockCache,
 	db *sql.DB,
 ) *UpstreamBillingProbeService {
 	svc := NewUpstreamBillingProbeService(accountRepo, accountTestService, settingService)
+	svc.SetWorkspaceRepository(workspaceRepository)
 	svc.SetLeaderLock(lockCache, db)
 	svc.Start()
 	return svc
@@ -717,8 +731,18 @@ func (s *UpstreamBillingProbeService) probeLoadedAccount(ctx context.Context, ac
 	previousRate := account.BillingRateMultiplier()
 	if upstreamBillingRateSyncEnabled(account) {
 		if value, valid := upstreamBillingProbeSyncRate(data); valid {
-			syncRate = &value
-			snapshot.SyncedRateMultiplier = &value
+			if s.rateSyncAllowedByWorkspace(ctx, account, value) {
+				syncRate = &value
+				snapshot.SyncedRateMultiplier = &value
+			} else {
+				slog.Warn("upstream_billing_rate_sync_workspace_rejected",
+					"source", "upstream_billing_probe",
+					"account_id", account.ID,
+					"workspace_id", account.WorkspaceID,
+					"declared_resolved_rate_multiplier", value,
+					"current_rate_multiplier", previousRate,
+				)
+			}
 		} else {
 			declared, _ := resolveAccountExtraNumber(data, "resolved_rate_multiplier")
 			slog.Warn("upstream_billing_rate_sync_rejected",
@@ -1092,6 +1116,37 @@ func upstreamBillingRateSyncEnabled(account *Account) bool {
 	}
 	enabled, ok := account.Extra[UpstreamBillingRateSyncEnabledExtraKey].(bool)
 	return ok && enabled && upstreamBillingProbeEnabled(account)
+}
+
+func (s *UpstreamBillingProbeService) rateSyncAllowedByWorkspace(
+	ctx context.Context,
+	account *Account,
+	rate float64,
+) bool {
+	if account == nil || account.WorkspaceID == 0 || account.WorkspaceID == domain.DefaultWorkspaceID {
+		return true
+	}
+	if s == nil || s.workspaceRepository == nil {
+		slog.Warn("upstream_billing_rate_sync_workspace_policy_unavailable",
+			"source", "upstream_billing_probe",
+			"account_id", account.ID,
+			"workspace_id", account.WorkspaceID,
+			"declared_resolved_rate_multiplier", rate,
+		)
+		return false
+	}
+	workspace, err := s.workspaceRepository.GetByID(ctx, account.WorkspaceID)
+	if err != nil || workspace == nil {
+		slog.Warn("upstream_billing_rate_sync_workspace_lookup_failed",
+			"source", "upstream_billing_probe",
+			"account_id", account.ID,
+			"workspace_id", account.WorkspaceID,
+			"declared_resolved_rate_multiplier", rate,
+			"error", err,
+		)
+		return false
+	}
+	return workspace.ValidateSettlementRate(rate) == nil
 }
 
 func (s *UpstreamBillingProbeService) currentTime() time.Time {

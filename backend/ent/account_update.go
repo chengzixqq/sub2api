@@ -268,6 +268,27 @@ func (_u *AccountUpdate) AddRateMultiplier(v float64) *AccountUpdate {
 	return _u
 }
 
+// SetWorkspaceID sets the "workspace_id" field.
+func (_u *AccountUpdate) SetWorkspaceID(v int64) *AccountUpdate {
+	_u.mutation.ResetWorkspaceID()
+	_u.mutation.SetWorkspaceID(v)
+	return _u
+}
+
+// SetNillableWorkspaceID sets the "workspace_id" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableWorkspaceID(v *int64) *AccountUpdate {
+	if v != nil {
+		_u.SetWorkspaceID(*v)
+	}
+	return _u
+}
+
+// AddWorkspaceID adds value to the "workspace_id" field.
+func (_u *AccountUpdate) AddWorkspaceID(v int64) *AccountUpdate {
+	_u.mutation.AddWorkspaceID(v)
+	return _u
+}
+
 // SetStatus sets the "status" field.
 func (_u *AccountUpdate) SetStatus(v string) *AccountUpdate {
 	_u.mutation.SetStatus(v)
@@ -868,6 +889,12 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedRateMultiplier(); ok {
 		_spec.AddField(account.FieldRateMultiplier, field.TypeFloat64, value)
 	}
+	if value, ok := _u.mutation.WorkspaceID(); ok {
+		_spec.SetField(account.FieldWorkspaceID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedWorkspaceID(); ok {
+		_spec.AddField(account.FieldWorkspaceID, field.TypeInt64, value)
+	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(account.FieldStatus, field.TypeString, value)
 	}
@@ -1405,6 +1432,27 @@ func (_u *AccountUpdateOne) SetNillableRateMultiplier(v *float64) *AccountUpdate
 // AddRateMultiplier adds value to the "rate_multiplier" field.
 func (_u *AccountUpdateOne) AddRateMultiplier(v float64) *AccountUpdateOne {
 	_u.mutation.AddRateMultiplier(v)
+	return _u
+}
+
+// SetWorkspaceID sets the "workspace_id" field.
+func (_u *AccountUpdateOne) SetWorkspaceID(v int64) *AccountUpdateOne {
+	_u.mutation.ResetWorkspaceID()
+	_u.mutation.SetWorkspaceID(v)
+	return _u
+}
+
+// SetNillableWorkspaceID sets the "workspace_id" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableWorkspaceID(v *int64) *AccountUpdateOne {
+	if v != nil {
+		_u.SetWorkspaceID(*v)
+	}
+	return _u
+}
+
+// AddWorkspaceID adds value to the "workspace_id" field.
+func (_u *AccountUpdateOne) AddWorkspaceID(v int64) *AccountUpdateOne {
+	_u.mutation.AddWorkspaceID(v)
 	return _u
 }
 
@@ -2037,6 +2085,12 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 	}
 	if value, ok := _u.mutation.AddedRateMultiplier(); ok {
 		_spec.AddField(account.FieldRateMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.WorkspaceID(); ok {
+		_spec.SetField(account.FieldWorkspaceID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedWorkspaceID(); ok {
+		_spec.AddField(account.FieldWorkspaceID, field.TypeInt64, value)
 	}
 	if value, ok := _u.mutation.Status(); ok {
 		_spec.SetField(account.FieldStatus, field.TypeString, value)

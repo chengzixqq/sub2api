@@ -1443,6 +1443,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
 		}
+		// 投递标记与 firstTokenMs 拆开：原门控对任何有效 data 帧置位，包括下方
+		// case "error", "response.failed" 分支处理的错误帧 ⇒ 零投递请求被计费 = 多算。
+		if openAIImagesStreamDataDeliversRealContent(dataBytes) {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+		}
 		s.parseOpenAIImagesSSEUsageBytes(dataBytes, &usage)
 		if !gjson.ValidBytes(dataBytes) {
 			return

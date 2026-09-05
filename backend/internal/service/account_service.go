@@ -50,6 +50,13 @@ type OAuthRefreshCandidatePager interface {
 type AccountRepository interface {
 	Create(ctx context.Context, account *Account) error
 	GetByID(ctx context.Context, id int64) (*Account, error)
+	// GetByIDScoped 按 context 中的工作区作用域取单个账号，越权 ID 返回
+	// ErrAccountNotFound。仅管理端读写入口使用；网关调度与后台任务须继续
+	// 用 GetByID，它们的 context 不带作用域。
+	GetByIDScoped(ctx context.Context, id int64) (*Account, error)
+	// ListIDsByWorkspace 返回工作区名下全部账号 ID。空切片表示该工作区
+	// 无账号，调用方须让用量查询返回零结果而非退化为全量。
+	ListIDsByWorkspace(ctx context.Context, workspaceID int64) ([]int64, error)
 	// GetByIDs fetches accounts by IDs in a single query.
 	// It should return all accounts found (missing IDs are ignored).
 	GetByIDs(ctx context.Context, ids []int64) ([]*Account, error)

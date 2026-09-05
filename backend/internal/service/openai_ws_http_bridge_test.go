@@ -1428,6 +1428,46 @@ func TestProxyOpenAIWSHTTPBridgeTurnForGrokDefaultsEmptyModelTo45(t *testing.T) 
 	require.Len(t, events, 2)
 }
 
+func TestProxyOpenAIWSHTTPBridgeTurnCountsGrokSearchOncePerTurn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	searchItem := `{"type":"web_search_call","id":"search_1","status":"completed"}`
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.output_item.done","item":` + searchItem + `}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_search","model":"grok-4.5","output":[` + searchItem + `],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+			"",
+		}, "\n"))),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          72,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"base_url": xai.DefaultCLIBaseURL},
+	}
+	payload := []byte(`{"type":"response.create","generate":true,"stream":true,"model":"grok-4.5","input":"hi"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+
+	result, err := svc.proxyOpenAIWSHTTPBridgeTurn(
+		context.Background(), c, account, "access-token", payload, len(payload),
+		"grok-4.5", "", "", "", "", 1,
+		func([]byte) error { return nil },
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.SearchCount, "item.done and response.completed must not double bill one search")
+}
+
 func TestProxyOpenAIWSHTTPBridgeTurnPromotesCodexAdditionalToolsForMixedCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

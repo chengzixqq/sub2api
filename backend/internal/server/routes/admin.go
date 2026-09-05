@@ -19,12 +19,16 @@ func RegisterAdminRoutes(
 	stepUpAuth middleware.StepUpAuthMiddleware,
 	settingService *service.SettingService,
 	panelRateLimiter *middleware.PanelRateLimiter,
+	workspaceService *service.WorkspaceService,
 ) {
 	// 插件 UI 使用短时能力 URL，仅提供经过安装校验的静态资源。
 	v1.GET("/plugin-ui/:token/*path", h.Admin.Plugin.ServeUIAsset)
 
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
+	// 工作区作用域解析紧跟鉴权：admin 不受限，vendor 收窄到自己工作区。
+	// 放在审计之前，越权请求在入审计日志前即被 403 拦下。
+	admin.Use(middleware.NewVendorScopeMiddleware(workspaceService))
 	// 面板全局按用户限流（默认管理员豁免，可在系统设置中关闭豁免）
 	admin.Use(panelRateLimiter.Global())
 	// 审计中间件挂在认证之后：所有管理面变更类操作 + 敏感读取入审计日志
@@ -39,9 +43,13 @@ func RegisterAdminRoutes(
 
 		// 用户管理
 		registerUserManagementRoutes(admin, h)
+		registerUserAdjustmentRoutes(admin, h)
 
 		// 分组管理
 		registerGroupRoutes(admin, h)
+
+		// 工作区管理
+		registerWorkspaceRoutes(admin, h)
 
 		// 账号管理
 		registerAccountRoutes(admin, h, stepUpAuth)
@@ -130,6 +138,15 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+	}
+}
+
+func registerUserAdjustmentRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	adjustments := admin.Group("/user-adjustments")
+	adjustments.Use(middleware.AdminOnly())
+	{
+		adjustments.GET("", h.Admin.UserAdjustment.List)
+		adjustments.GET("/export", h.Admin.UserAdjustment.Export)
 	}
 }
 
@@ -351,6 +368,35 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.PUT("/:id/rpm-overrides", h.Admin.Group.BatchSetGroupRPMOverrides)
 		groups.DELETE("/:id/rpm-overrides", h.Admin.Group.ClearGroupRPMOverrides)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
+	}
+}
+
+// registerWorkspaceRoutes 注册工作区管理路由。
+//
+// 除 /me 外全部为站长专属：vendor 未在
+// middleware.vendorAllowedRoutes 中登记这些前缀，因此一律 403。
+// 注意 /me 段必须先于 /:id 注册，否则会被当作 id 捕获。
+func registerWorkspaceRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	workspaces := admin.Group("/workspaces")
+	{
+		// vendor 自读：读到自己的权限档、结算区间与授权分组。
+		// 调价不在此 —— 倍率挂在账号上，走 /admin/accounts/:id。
+		workspaces.GET("/me", h.Admin.Workspace.GetMine)
+
+		// 以下为站长专属。
+		workspaces.GET("", h.Admin.Workspace.List)
+		workspaces.POST("", h.Admin.Workspace.Create)
+		workspaces.GET("/:id", h.Admin.Workspace.Get)
+		workspaces.PUT("/:id", h.Admin.Workspace.Update)
+		workspaces.DELETE("/:id", h.Admin.Workspace.Delete)
+
+		workspaces.GET("/:id/members", h.Admin.Workspace.ListMembers)
+		workspaces.POST("/:id/members", h.Admin.Workspace.AddMember)
+		workspaces.DELETE("/:id/members/:user_id", h.Admin.Workspace.RemoveMember)
+
+		workspaces.GET("/:id/grants", h.Admin.Workspace.ListGrants)
+		workspaces.PUT("/:id/grants", h.Admin.Workspace.UpsertGrant)
+		workspaces.DELETE("/:id/grants/:group_id", h.Admin.Workspace.DeleteGrant)
 	}
 }
 

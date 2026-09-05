@@ -117,6 +117,24 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	}
 	routingStart := time.Now()
 
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(service.PlatformOpenAI, body)
+		},
+		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			APIKey:              apiKey,
+			Subscription:        subscription,
+			ReqModel:            reqModel,
+			ChannelUsageFields:  clientRequestedUsageFields(c, channelMapping, reqModel, ""),
+			RequestPayloadBytes: body,
+			Component:           "handler.openai_gateway.embeddings",
+		}),
+	})
+	defer guard.Flush()
 	// 分组利润控制：embeddings 文本入口请求级装门并固定 pricingAt。
 	embPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(embPricingCtx)
@@ -184,6 +202,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		guard.ObserveAttempt(account)
 		forwardStart := time.Now()
 
 		forwardBody := body
@@ -209,6 +228,8 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, responseLatencyMs)
 
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveOpenAIForwardResult(result)
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
@@ -258,6 +279,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
 
+		guard.MarkSettled()
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
 				Result:             result,

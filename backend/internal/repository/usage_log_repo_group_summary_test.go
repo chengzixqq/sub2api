@@ -31,3 +31,35 @@ func TestUsageLogRepositoryGetAllGroupUsageSummaryUsesRollupTail(t *testing.T) {
 	require.InDelta(t, 2.5, result[0].YesterdayCost, 0.0000001)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestUsageLogRepositoryGetAllGroupUsageSummaryScopedUsesWorkspaceAccounts(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := newUsageLogRepositoryWithSQL(nil, db)
+	todayStart := time.Date(2026, 8, 19, 16, 0, 0, 0, time.UTC)
+	yesterdayStart := todayStart.AddDate(0, 0, -1)
+
+	mock.ExpectQuery(`(?s)WITH target_accounts AS MATERIALIZED.*JOIN target_accounts.*yesterday_cost.*LEFT JOIN scoped.*WHERE g\.deleted_at IS NULL`).
+		WithArgs(todayStart, yesterdayStart, int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"group_id", "total_cost", "today_cost", "yesterday_cost"}).
+			AddRow(int64(7), 12.5, 1.25, 2.5))
+
+	result, err := repo.GetAllGroupUsageSummaryScoped(context.Background(), todayStart, 42)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	require.Equal(t, int64(7), result[0].GroupID)
+	require.InDelta(t, 12.5, result[0].TotalCost, 0.0000001)
+	require.InDelta(t, 1.25, result[0].TodayCost, 0.0000001)
+	require.InDelta(t, 2.5, result[0].YesterdayCost, 0.0000001)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryGetAllGroupUsageSummaryScopedRejectsInvalidWorkspace(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := newUsageLogRepositoryWithSQL(nil, db)
+
+	result, err := repo.GetAllGroupUsageSummaryScoped(context.Background(), time.Now(), 0)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "positive workspace id")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

@@ -14,9 +14,9 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/tidwall/gjson"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // 重试相关常量
@@ -812,6 +812,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			var sseErr *sseStreamErrorEventError
 			if errors.As(err, &sseErr) {
 				// 上游 HTTP 200 + SSE 流体内出现 event:error 帧。
+				// 保留 StatusCode=403 以兼容既有 failover/客户端响应语义，
+				// 但补全 ResponseBody 与 ops 上下文，让运维日志能反映上游真实错误。
 				body := []byte(sseErr.RawData)
 				semanticStatus := http.StatusForbidden
 				if c.Writer.Size() == writerSizeBeforeStream && gjson.GetBytes(body, "error.type").String() == "overloaded_error" {
@@ -856,10 +858,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					truncateString(sseErr.RawData, 1000),
 				)
 
-				return nil, &UpstreamFailoverError{
+				failoverErr := &UpstreamFailoverError{
 					StatusCode:   semanticStatus,
 					ResponseBody: body,
 				}
+				if partial := partialStreamUsageResult(c, resp, streamResult, originalModel, mappedModel, startTime, failoverErr); partial != nil {
+					return partial, failoverErr
+				}
+				return nil, failoverErr
 			}
 			// 流中断（缺失 terminal 事件、读错误、数据间隔超时等）时保留已观测到的
 			// usage 与错误一起返回，handler 在错误处理完成后照常提交 usage 记录。

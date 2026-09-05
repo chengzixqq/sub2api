@@ -1098,6 +1098,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				ms := int(time.Since(turnStart).Milliseconds())
 				firstTokenMs = &ms
 			}
+			if isTokenEvent {
+				c.Set(GatewayUpstreamDeliveredKey, true)
+			}
 			if openAIWSMessageShouldParseUsage(eventType, upstreamMessage) {
 				parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
 			}

@@ -34,6 +34,14 @@ func (r *poolHealthAccountRepo) GetByID(_ context.Context, _ int64) (*Account, e
 	return nil, ErrAccountNotFound
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *poolHealthAccountRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
+}
+
 func (r *poolHealthAccountRepo) ListOAuthRefreshCandidatePage(_ context.Context, options OAuthRefreshPageOptions) (*OAuthRefreshCandidatePage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -184,6 +192,14 @@ func (r *productionPathRateRepo) GetByID(_ context.Context, id int64) (*Account,
 		return nil, ErrAccountNotFound
 	}
 	return snapshotOAuthRefreshAccount(account), nil
+}
+
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (r *productionPathRateRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	return r.GetByID(ctx, id)
 }
 
 func (r *productionPathRateRepo) UpdateCredentials(_ context.Context, id int64, credentials map[string]any) error {

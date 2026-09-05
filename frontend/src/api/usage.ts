@@ -332,6 +332,8 @@ export interface BatchApiKeysUsageResponse {
   stats: Record<string, BatchApiKeyUsageStats>
 }
 
+const API_KEY_USAGE_BATCH_SIZE = 1000
+
 /**
  * Get batch usage stats for user's own API keys
  * @param apiKeyIds - Array of API key IDs
@@ -344,16 +346,26 @@ export async function getDashboardApiKeysUsage(
     signal?: AbortSignal
   }
 ): Promise<BatchApiKeysUsageResponse> {
-  const { data } = await apiClient.post<BatchApiKeysUsageResponse>(
-    '/usage/dashboard/api-keys-usage',
-    {
-      api_key_ids: apiKeyIds
-    },
-    {
-      signal: options?.signal
-    }
+  const uniqueApiKeyIds = Array.from(
+    new Set(apiKeyIds.filter((id) => Number.isSafeInteger(id) && id > 0))
   )
-  return data
+  const stats: Record<string, BatchApiKeyUsageStats> = {}
+
+  for (let offset = 0; offset < uniqueApiKeyIds.length; offset += API_KEY_USAGE_BATCH_SIZE) {
+    const batch = uniqueApiKeyIds.slice(offset, offset + API_KEY_USAGE_BATCH_SIZE)
+    const { data } = await apiClient.post<BatchApiKeysUsageResponse>(
+      '/usage/dashboard/api-keys-usage',
+      {
+        api_key_ids: batch
+      },
+      {
+        signal: options?.signal
+      }
+    )
+    Object.assign(stats, data.stats)
+  }
+
+  return { stats }
 }
 
 export async function listMyErrorRequests(

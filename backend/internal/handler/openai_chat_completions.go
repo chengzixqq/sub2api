@@ -145,6 +145,41 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	var probeLease *ProbeLease
+	probeCandidateDetected := false
+	probeLeaderInstalled := false
+	if candidate, ok := probeCandidateForRequest(c, body, reqModel, optionalGroupID(apiKey.GroupID), requestPlatform, channelMapping.ChannelID); ok {
+		probeCandidateDetected = true
+		probeCtx := c.Request.Context()
+		syncProbeCoalescerSettings(h.probeCoalescer, nil, probeCtx)
+		probeCtx, probeRequestID := prepareProbeAdmission(c, h.probeCoalescer)
+		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeRequestID)
+		if probeLease.IsExhausted() {
+			h.errorResponse(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted")
+			return
+		}
+		if probeLease.IsFollower() {
+			handled, promoted, probeErr := resolveProbeFollower(c, probeLease, func(ctx context.Context, candidate ProbeCandidate, account *service.Account, leaderID string) error {
+				return h.billSyntheticProbe(c, apiKey, subscription, body, candidate, account, leaderID, channelMapping)
+			})
+			if handled {
+				if probeErr != nil {
+					status, code, message := probeResolutionError(probeErr)
+					h.handleStreamingAwareError(c, status, code, message, streamStarted)
+				}
+				return
+			}
+			if promoted {
+				defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+				probeLeaderInstalled = true
+			}
+		}
+		if probeLease.IsLeader() && !probeLeaderInstalled {
+			defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+		}
+	}
+	markProbeAccountConcurrency(c, probeLease, probeCandidateDetected)
+
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 
@@ -156,6 +191,24 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput: billingAttemptOutputReset(c),
+		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		estimatedPromptTokens: func() int {
+			return service.EstimateFailurePromptTokens(requestPlatform, body)
+		},
+		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			APIKey:              apiKey,
+			Subscription:        subscription,
+			ReqModel:            reqModel,
+			ChannelUsageFields:  clientRequestedUsageFields(c, channelMapping, reqModel, ""),
+			RequestPayloadBytes: body,
+			Component:           "handler.openai_gateway.chat_completions",
+		}),
+	})
+	defer guard.Flush()
 	// 分组利润控制：chat completions 文本入口请求级装门并固定 pricingAt。
 	ccPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(ccPricingCtx)
@@ -218,6 +271,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setProbeLeaderAccount(c, account)
 
 		accountReleaseFunc, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
@@ -233,6 +287,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
+		guard.ObserveAttempt(account)
 		forwardStart := time.Now()
 
 		forwardBody := body
@@ -248,11 +303,25 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, promptCacheKey, "")
 		}()
+		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
+		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
+		if result != nil {
+			result.SearchCount = searchSnapshot.CumulativeSearchCount
+		}
 		var cyberBlockBodyChat []byte
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyChat = body
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		// cyber 已按上游真实 usage 记了一笔账，它就是这次请求的结算，请求级失败兜底必须让路：
+		// 流式 cyber 会先置位 GatewayUpstreamDeliveredKey（token 事件处），而 cyber 返回的是裸
+		// error（非 *UpstreamFailoverError），Flush 的 `ferr == nil && !outputStarted` 早退不成立，
+		// 不 MarkSettled 就会在 cyber 那笔之外再按整份估算 prompt 记第二笔 = 多算。
+		if h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body), cyberUsageObservation{
+			SearchCount: searchSnapshot.CumulativeSearchCount,
+			Result:      result,
+		}) {
+			guard.MarkSettled()
+		}
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -278,42 +347,64 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
 			cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-			h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
-				if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-					Result:             res,
-					APIKey:             apiKey,
-					User:               apiKey.User,
-					Account:            account,
-					Subscription:       subscription,
-					InboundEndpoint:    inboundEndpoint,
-					UpstreamEndpoint:   upstreamEndpoint,
-					UserAgent:          userAgent,
-					IPAddress:          clientIP,
-					APIKeyService:      h.apiKeyService,
-					QuotaPlatform:      quotaPlatform,
-					SessionID:          sessionID,
-					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
-					PricingAt:          pricingAt,
-					CyberBlocked:       cyberBlocked,
-				}); err != nil {
-					logger.L().With(
-						zap.String("component", "handler.openai_gateway.chat_completions"),
-						zap.Int64("user_id", subject.UserID),
-						zap.Int64("api_key_id", apiKey.ID),
-						zap.Any("group_id", apiKey.GroupID),
-						zap.String("model", reqModel),
-						zap.Int64("account_id", account.ID),
-					).Error("openai_chat_completions.record_usage_failed", zap.Error(err))
+			if err == nil || openAIForwardResultHasActualBillableUsage(res) {
+				guard.MarkSettled()
+				recordUsage := func(ctx context.Context) error {
+					return h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+						Result:             res,
+						APIKey:             apiKey,
+						User:               apiKey.User,
+						Account:            account,
+						Subscription:       subscription,
+						InboundEndpoint:    inboundEndpoint,
+						UpstreamEndpoint:   upstreamEndpoint,
+						UserAgent:          userAgent,
+						IPAddress:          clientIP,
+						APIKeyService:      h.apiKeyService,
+						QuotaPlatform:      quotaPlatform,
+						SessionID:          sessionID,
+						ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
+						PricingAt:          pricingAt,
+						CyberBlocked:       cyberBlocked,
+					})
 				}
-			})
+				if probeLease != nil && probeLease.IsLeader() {
+					if recordErr := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, err == nil); recordErr != nil {
+						logger.L().With(
+							zap.String("component", "handler.openai_gateway.chat_completions"),
+							zap.Int64("user_id", subject.UserID),
+							zap.Int64("api_key_id", apiKey.ID),
+							zap.Any("group_id", apiKey.GroupID),
+							zap.String("model", reqModel),
+							zap.Int64("account_id", account.ID),
+						).Error("openai_chat_completions.record_usage_failed", zap.Error(recordErr))
+					}
+				} else {
+					h.submitOpenAIUsageRecordTask(c.Request.Context(), res, func(ctx context.Context) {
+						if recordErr := recordUsage(ctx); recordErr != nil {
+							logger.L().With(
+								zap.String("component", "handler.openai_gateway.chat_completions"),
+								zap.Int64("user_id", subject.UserID),
+								zap.Int64("api_key_id", apiKey.ID),
+								zap.Any("group_id", apiKey.GroupID),
+								zap.String("model", reqModel),
+								zap.Int64("account_id", account.ID),
+							).Error("openai_chat_completions.record_usage_failed", zap.Error(recordErr))
+						}
+					})
+				}
+			}
 		}
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai_chat_completions.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
 					zap.Int("image_count", result.ImageCount),
 					zap.Error(err),
 				)
+				h.gatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(reqModel), false, result.FirstTokenMs)
+				return
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
@@ -402,6 +493,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, reqModel, false, result), true, nil)
 		}
 
+		guard.MarkSettled()
 		submitChatUsage(result)
 		reqLog.Debug("openai_chat_completions.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -425,8 +517,13 @@ func resolveOpenAIUpstreamEndpoint(c *gin.Context, account *service.Account, res
 	if endpoint := service.GetActualOpenAIUpstreamEndpoint(c); endpoint != "" {
 		return endpoint
 	}
+	// API-Key 账号且未探测到 Responses 支持时直连 Chat Completions。该判断只
+	// 对 chat 系入站成立：embeddings / images / alpha_search 等端点没有 Chat
+	// Completions 形态，硬编码 chat 会把这些端点的失败错误归因成 chat
+	// （usage_logs.upstream_endpoint），与其成功路径的 GetUpstreamEndpoint 口径不一致。
 	if account != nil && account.Type == service.AccountTypeAPIKey &&
-		!openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		!openai_compat.ShouldUseResponsesAPI(account.Extra) &&
+		isChatFamilyInboundEndpoint(GetInboundEndpoint(c)) {
 		return EndpointChatCompletions
 	}
 	return GetUpstreamEndpoint(c, account.Platform)

@@ -144,6 +144,42 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
+	var probeLease *ProbeLease
+	probeCandidateDetected := false
+	probeLeaderInstalled := false
+	probeTarget := effectiveAPIKeyPlatform(c, apiKey)
+	if candidate, ok := probeCandidateForRequest(c, body, reqModel, optionalGroupID(apiKey.GroupID), probeTarget, channelMapping.ChannelID); ok {
+		probeCandidateDetected = true
+		probeCtx := c.Request.Context()
+		syncProbeCoalescerSettings(h.probeCoalescer, h.settingService, probeCtx)
+		probeCtx, probeRequestID := prepareProbeAdmission(c, h.probeCoalescer)
+		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeRequestID)
+		if probeLease.IsExhausted() {
+			h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted")
+			return
+		}
+		if probeLease.IsFollower() {
+			handled, promoted, probeErr := resolveProbeFollower(c, probeLease, func(ctx context.Context, candidate ProbeCandidate, account *service.Account, leaderID string) error {
+				return h.billSyntheticProbe(c, apiKey, subscription, body, candidate, account, leaderID, channelMapping)
+			})
+			if handled {
+				if probeErr != nil {
+					status, code, message := probeResolutionError(probeErr)
+					h.chatCompletionsErrorResponse(c, status, code, message)
+				}
+				return
+			}
+			if promoted {
+				defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+				probeLeaderInstalled = true
+			}
+		}
+		if probeLease.IsLeader() && !probeLeaderInstalled {
+			defer installProbeLeader(c, probeLease, requestIDForProbe(c))()
+		}
+	}
+	markProbeAccountConcurrency(c, probeLease, probeCandidateDetected)
+
 	// Parse request for session hash
 	bodyRef := service.NewRequestBodyRef(body)
 	parsedReq, _ := service.ParseGatewayRequest(bodyRef, "chat_completions")
@@ -166,6 +202,15 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 	if groupPlatform == service.PlatformGemini {
 		fs = NewFailoverState(h.maxAccountSwitchesGemini, false)
 	}
+
+	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
+	guard := newBillingSettlementGuard(guardDeps{
+		resetAttemptOutput:    billingAttemptOutputReset(c),
+		upstreamUsageOnly:     failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), h.settingService),
+		estimatedPromptTokens: func() int { return service.EstimateFailurePromptTokens(groupPlatform, body) },
+		sink:                  h.claudeFailureSink(c, apiKey, subscription, reqModel, channelMapping, body),
+	})
+	defer guard.Flush()
 
 	for {
 		if c.Request.Context().Err() != nil {
@@ -204,6 +249,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		account := selection.Account
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setProbeLeaderAccount(c, account)
 
 		// 4. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc
@@ -244,6 +290,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		account = latest
 		selection.Account = latest
+		setProbeLeaderAccount(c, account)
 		if selection.ProfitGateActive() {
 			if err := h.gatewayService.BindStickySessionAfterProfitAdmission(admissionCtx, apiKey.GroupID, selectionSessionHash, account.ID); err != nil {
 				reqLog.Warn("gateway.cc.bind_sticky_session_after_profit_admission_failed", zap.Int64("account_id", account.ID), zap.Error(err))
@@ -258,6 +305,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			fs.FailedAccountIDs[account.ID] = struct{}{}
 			continue
 		}
+
+		guard.ObserveAttempt(account)
 
 		// 5. Forward request
 		writerSizeBeforeForward := c.Writer.Size()
@@ -295,6 +344,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 
 		if err != nil {
+			guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
+			guard.ObserveForwardResult(result)
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
@@ -337,8 +388,9 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 		sessionID := service.ExtractClientSessionID(c)
 		stampForwardRequestedReasoningEffort(result, service.RequestedReasoningEffortFromContext(c.Request.Context()))
-		h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-			if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+		guard.MarkSettled()
+		recordUsage := func(ctx context.Context) error {
+			return h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 				Result:             result,
 				QuotaPlatform:      quotaPlatform,
 				APIKey:             apiKey,
@@ -354,13 +406,25 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
-			}); err != nil {
+			})
+		}
+		if probeLease != nil && probeLease.IsLeader() {
+			if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 				reqLog.Error("gateway.cc.record_usage_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
 				)
 			}
-		})
+		} else {
+			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
+				if err := recordUsage(ctx); err != nil {
+					reqLog.Error("gateway.cc.record_usage_failed",
+						zap.Int64("account_id", account.ID),
+						zap.Error(err),
+					)
+				}
+			})
+		}
 		return
 	}
 }

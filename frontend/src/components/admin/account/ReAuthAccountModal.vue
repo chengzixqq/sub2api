@@ -379,7 +379,7 @@ const handleGenerateUrl = async () => {
   } else if (isAntigravity.value) {
     await antigravityOAuth.generateAuthUrl(props.account.proxy_id)
   } else if (isGrok.value) {
-    await grokOAuth.generateAuthUrl(props.account.proxy_id)
+    await grokOAuth.generateAuthUrl(props.account.proxy_id, props.account.id)
   } else {
     await claudeOAuth.generateAuthUrl(addMethod.value, props.account.proxy_id)
   }
@@ -506,7 +506,8 @@ const handleExchangeCode = async () => {
       code: authCode.trim(),
       sessionId,
       state: stateToUse,
-      proxyId: props.account.proxy_id
+      proxyId: props.account.proxy_id,
+      accountId: props.account.id
     })
     if (!tokenInfo) return
 
@@ -706,7 +707,11 @@ const handleGrokImportSSO = async (ssoInput: string) => {
   grokOAuth.loading.value = true
   grokOAuth.error.value = ''
   try {
-    const tokenInfo = await grokOAuth.validateSSOToken(ssoToken, props.account.proxy_id)
+    const tokenInfo = await grokOAuth.validateSSOToken(
+      ssoToken,
+      props.account.proxy_id,
+      props.account.id
+    )
     if (!tokenInfo) return
     await applyGrokReauthTokenInfo(tokenInfo)
   } catch (error: any) {
@@ -735,7 +740,11 @@ const handleGrokValidateRefreshToken = async (refreshTokenInput: string) => {
   grokOAuth.loading.value = true
   grokOAuth.error.value = ''
   try {
-    const tokenInfo = await grokOAuth.validateRefreshToken(refreshToken, props.account.proxy_id)
+    const tokenInfo = await grokOAuth.validateRefreshToken(
+      refreshToken,
+      props.account.proxy_id,
+      props.account.id
+    )
     if (!tokenInfo) return
     await applyGrokReauthTokenInfo(tokenInfo)
   } catch (error: any) {

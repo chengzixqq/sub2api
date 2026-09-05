@@ -534,6 +534,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
+					c.Set(GatewayUpstreamDeliveredKey, true)
 				}
 				parseSSEUsagePassthrough(data, usage)
 			} else {

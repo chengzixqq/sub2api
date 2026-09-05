@@ -20,6 +20,14 @@ func (s *updatingProxyRepoStub) GetByID(context.Context, int64) (*Proxy, error) 
 	return &copy, nil
 }
 
+// GetByIDScoped 是管理端专用的带归属过滤读取。
+//
+// 委托给 GetByID：本 stub 服务的测试与工作区归属无关，
+// 归属过滤的语义由专门的作用域测试覆盖。
+func (s *updatingProxyRepoStub) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *updatingProxyRepoStub) Update(_ context.Context, proxy *Proxy) error {
 	s.updateCalls++
 	copy := *proxy

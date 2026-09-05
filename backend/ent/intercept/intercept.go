@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/ent/adminuseradjustment"
 	"github.com/Wei-Shaw/sub2api/ent/announcement"
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -48,6 +49,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/userattributevalue"
 	"github.com/Wei-Shaw/sub2api/ent/userplatformquota"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
+	"github.com/Wei-Shaw/sub2api/ent/workspace"
+	"github.com/Wei-Shaw/sub2api/ent/workspacegroupgrant"
+	"github.com/Wei-Shaw/sub2api/ent/workspacemember"
 )
 
 // The Query interface represents an operation that queries a graph.
@@ -185,6 +189,33 @@ func (f TraverseAccountGroup) Traverse(ctx context.Context, q ent.Query) error {
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.AccountGroupQuery", q)
+}
+
+// The AdminUserAdjustmentFunc type is an adapter to allow the use of ordinary function as a Querier.
+type AdminUserAdjustmentFunc func(context.Context, *ent.AdminUserAdjustmentQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f AdminUserAdjustmentFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.AdminUserAdjustmentQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.AdminUserAdjustmentQuery", q)
+}
+
+// The TraverseAdminUserAdjustment type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseAdminUserAdjustment func(context.Context, *ent.AdminUserAdjustmentQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseAdminUserAdjustment) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseAdminUserAdjustment) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.AdminUserAdjustmentQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.AdminUserAdjustmentQuery", q)
 }
 
 // The AnnouncementFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -1159,6 +1190,87 @@ func (f TraverseUserSubscription) Traverse(ctx context.Context, q ent.Query) err
 	return fmt.Errorf("unexpected query type %T. expect *ent.UserSubscriptionQuery", q)
 }
 
+// The WorkspaceFunc type is an adapter to allow the use of ordinary function as a Querier.
+type WorkspaceFunc func(context.Context, *ent.WorkspaceQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f WorkspaceFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.WorkspaceQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceQuery", q)
+}
+
+// The TraverseWorkspace type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseWorkspace func(context.Context, *ent.WorkspaceQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseWorkspace) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseWorkspace) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.WorkspaceQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceQuery", q)
+}
+
+// The WorkspaceGroupGrantFunc type is an adapter to allow the use of ordinary function as a Querier.
+type WorkspaceGroupGrantFunc func(context.Context, *ent.WorkspaceGroupGrantQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f WorkspaceGroupGrantFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.WorkspaceGroupGrantQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceGroupGrantQuery", q)
+}
+
+// The TraverseWorkspaceGroupGrant type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseWorkspaceGroupGrant func(context.Context, *ent.WorkspaceGroupGrantQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseWorkspaceGroupGrant) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseWorkspaceGroupGrant) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.WorkspaceGroupGrantQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceGroupGrantQuery", q)
+}
+
+// The WorkspaceMemberFunc type is an adapter to allow the use of ordinary function as a Querier.
+type WorkspaceMemberFunc func(context.Context, *ent.WorkspaceMemberQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f WorkspaceMemberFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.WorkspaceMemberQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceMemberQuery", q)
+}
+
+// The TraverseWorkspaceMember type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseWorkspaceMember func(context.Context, *ent.WorkspaceMemberQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseWorkspaceMember) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseWorkspaceMember) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.WorkspaceMemberQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.WorkspaceMemberQuery", q)
+}
+
 // NewQuery returns the generic Query interface for the given typed query.
 func NewQuery(q ent.Query) (Query, error) {
 	switch q := q.(type) {
@@ -1168,6 +1280,8 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.AccountQuery, predicate.Account, account.OrderOption]{typ: ent.TypeAccount, tq: q}, nil
 	case *ent.AccountGroupQuery:
 		return &query[*ent.AccountGroupQuery, predicate.AccountGroup, accountgroup.OrderOption]{typ: ent.TypeAccountGroup, tq: q}, nil
+	case *ent.AdminUserAdjustmentQuery:
+		return &query[*ent.AdminUserAdjustmentQuery, predicate.AdminUserAdjustment, adminuseradjustment.OrderOption]{typ: ent.TypeAdminUserAdjustment, tq: q}, nil
 	case *ent.AnnouncementQuery:
 		return &query[*ent.AnnouncementQuery, predicate.Announcement, announcement.OrderOption]{typ: ent.TypeAnnouncement, tq: q}, nil
 	case *ent.AnnouncementReadQuery:
@@ -1240,6 +1354,12 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.UserPlatformQuotaQuery, predicate.UserPlatformQuota, userplatformquota.OrderOption]{typ: ent.TypeUserPlatformQuota, tq: q}, nil
 	case *ent.UserSubscriptionQuery:
 		return &query[*ent.UserSubscriptionQuery, predicate.UserSubscription, usersubscription.OrderOption]{typ: ent.TypeUserSubscription, tq: q}, nil
+	case *ent.WorkspaceQuery:
+		return &query[*ent.WorkspaceQuery, predicate.Workspace, workspace.OrderOption]{typ: ent.TypeWorkspace, tq: q}, nil
+	case *ent.WorkspaceGroupGrantQuery:
+		return &query[*ent.WorkspaceGroupGrantQuery, predicate.WorkspaceGroupGrant, workspacegroupgrant.OrderOption]{typ: ent.TypeWorkspaceGroupGrant, tq: q}, nil
+	case *ent.WorkspaceMemberQuery:
+		return &query[*ent.WorkspaceMemberQuery, predicate.WorkspaceMember, workspacemember.OrderOption]{typ: ent.TypeWorkspaceMember, tq: q}, nil
 	default:
 		return nil, fmt.Errorf("unknown query type %T", q)
 	}

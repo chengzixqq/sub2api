@@ -147,6 +147,15 @@ func (s *groupRepoStubForAdmin) BindAccountsToGroup(_ context.Context, groupID i
 	panic("unexpected BindAccountsToGroup call")
 }
 
+// LoadAccountCountsScoped 返回空 map 而非 panic。
+//
+// 该方法只在 vendor 视角的分组列表里被调用来改写全站计数；
+// 本文件的用例都是站长视角，走不到这条分支。缺键按零计数处理，
+// 空 map 是安全的中性值。
+func (s *groupRepoStubForAdmin) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
+
 func (s *groupRepoStubForAdmin) GetAccountIDsByGroupIDs(_ context.Context, groupIDs []int64) ([]int64, error) {
 	if s.getAccountIDsByGroupIDsFn != nil {
 		return s.getAccountIDsByGroupIDsFn(groupIDs)
@@ -192,7 +201,7 @@ func TestAdminService_UpdateGroup_RejectsTimePricing(t *testing.T) {
 		TimePricing: validTimePricingForTest(),
 	}}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{ModelPricing: &pricing})
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{ModelPricing: &pricing})
 
 	require.Error(t, err)
 	appErr := infraerrors.FromError(err)
@@ -296,7 +305,7 @@ func TestAdminService_ListGroups_PassesSortParams(t *testing.T) {
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, _, err := svc.ListGroups(context.Background(), 3, 25, PlatformOpenAI, StatusActive, "needle", nil, "account_count", "ASC")
+	_, _, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 3, 25, PlatformOpenAI, StatusActive, "needle", nil, "account_count", "ASC")
 	require.NoError(t, err)
 	require.Equal(t, pagination.PaginationParams{
 		Page:      3,
@@ -325,7 +334,7 @@ func TestAdminService_CreateGroup_WithImagePricing(t *testing.T) {
 		ImagePrice4K:   &price4K,
 	}
 
-	group, err := svc.CreateGroup(context.Background(), input)
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -360,7 +369,7 @@ func TestAdminService_CreateGroup_WithVideoPricing(t *testing.T) {
 		VideoPrice1080P:      &price1080P,
 	}
 
-	group, err := svc.CreateGroup(context.Background(), input)
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -388,7 +397,7 @@ func TestAdminService_CreateGroup_NilImagePricing(t *testing.T) {
 		// ImagePrice 字段全部为 nil
 	}
 
-	group, err := svc.CreateGroup(context.Background(), input)
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -403,7 +412,7 @@ func TestAdminService_CreateGroup_DefaultsGrokMediaGenerationEnabled(t *testing.
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:           "grok-media",
 		Description:    "Grok media group",
 		Platform:       PlatformGrok,
@@ -420,7 +429,7 @@ func TestAdminService_CreateGroup_PreservesNonGrokImageGenerationDisabled(t *tes
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:           "anthropic-text",
 		Description:    "Anthropic text group",
 		Platform:       PlatformAnthropic,
@@ -437,7 +446,7 @@ func TestAdminService_CreateGroup_DisablesBatchImageWhenImageGenerationDisabled(
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                      "gemini-no-image",
 		Description:               "Gemini group without image generation",
 		Platform:                  PlatformGemini,
@@ -457,7 +466,7 @@ func TestAdminService_CreateGroup_DisablesBatchImageForNonGeminiPlatform(t *test
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                      "openai-image",
 		Description:               "OpenAI image group",
 		Platform:                  PlatformOpenAI,
@@ -494,7 +503,7 @@ func TestAdminService_UpdateGroup_WithImagePricing(t *testing.T) {
 		ImagePrice4K: &price4K,
 	}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, input)
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -532,7 +541,7 @@ func TestAdminService_UpdateGroup_WithVideoPricing(t *testing.T) {
 		VideoPrice1080P:      &price1080P,
 	}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, input)
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -564,7 +573,7 @@ func TestAdminService_UpdateGroup_PartialImagePricing(t *testing.T) {
 		// ImagePrice2K 和 ImagePrice4K 为 nil，不更新
 	}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, input)
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, input)
 	require.NoError(t, err)
 	require.NotNil(t, group)
 
@@ -592,7 +601,7 @@ func TestAdminService_UpdateGroup_PreservesImageGenerationControlsWhenOmitted(t 
 	svc := &adminServiceImpl{groupRepo: repo}
 
 	updatedDesc := "updated"
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		Description: &updatedDesc,
 	})
 	require.NoError(t, err)
@@ -619,7 +628,7 @@ func TestAdminService_UpdateGroup_LimitFieldsPartialUpdate(t *testing.T) {
 
 	t.Run("non-quota update preserves all limits", func(t *testing.T) {
 		description := "updated"
-		group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{Description: &description})
+		group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existingGroup.ID, &UpdateGroupInput{Description: &description})
 		require.NoError(t, err)
 		require.Equal(t, 10.0, *group.DailyLimitUSD)
 		require.Equal(t, 20.0, *group.WeeklyLimitUSD)
@@ -628,7 +637,7 @@ func TestAdminService_UpdateGroup_LimitFieldsPartialUpdate(t *testing.T) {
 
 	t.Run("explicit changes and unlimited clear only touched limits", func(t *testing.T) {
 		newDaily, unlimited := 15.0, -1.0
-		group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{
+		group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existingGroup.ID, &UpdateGroupInput{
 			DailyLimitUSD:  &newDaily,
 			WeeklyLimitUSD: &unlimited,
 		})
@@ -652,7 +661,7 @@ func TestAdminService_UpdateGroup_DisablesBatchImageWhenImageGenerationDisabled(
 	svc := &adminServiceImpl{groupRepo: repo}
 	disabled := false
 
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		AllowImageGeneration: &disabled,
 	})
 	require.NoError(t, err)
@@ -675,7 +684,7 @@ func TestAdminService_UpdateGroup_DisablesBatchImageWhenPlatformChangesFromGemin
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		Platform: PlatformOpenAI,
 	})
 	require.NoError(t, err)
@@ -698,7 +707,7 @@ func TestAdminService_UpdateGroup_ClearsDescriptionWhenEmptyString(t *testing.T)
 	svc := &adminServiceImpl{groupRepo: repo}
 
 	empty := ""
-	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		Description: &empty,
 	})
 	require.NoError(t, err)
@@ -717,7 +726,7 @@ func TestAdminService_UpdateGroup_PreservesDescriptionWhenNil(t *testing.T) {
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		Description: nil,
 	})
 	require.NoError(t, err)
@@ -737,7 +746,7 @@ func TestAdminService_UpdateGroup_RejectsNegativeImageRateMultiplier(t *testing.
 	svc := &adminServiceImpl{groupRepo: repo}
 	negative := -0.1
 
-	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		ImageRateMultiplier: &negative,
 	})
 	require.Error(t, err)
@@ -750,7 +759,7 @@ func TestAdminService_CreateGroup_BatchImagePricingSettings(t *testing.T) {
 	discount := 0.8
 	hold := 0.9
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                         "batch-image-pricing",
 		Platform:                     PlatformGemini,
 		RateMultiplier:               1,
@@ -772,7 +781,7 @@ func TestAdminService_CreateGroup_RejectsHoldBelowDiscount(t *testing.T) {
 
 	// hold < discount 时，成功率足够高的批量任务实际成本会超过冻结额，
 	// 结算永远失败，必须在配置入口拒绝。
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                         "batch-image-pricing-invalid",
 		Platform:                     PlatformGemini,
 		RateMultiplier:               1,
@@ -808,7 +817,7 @@ func TestAdminService_GroupBatchImagePricingValidation(t *testing.T) {
 			repo := &groupRepoStubForAdmin{}
 			svc := &adminServiceImpl{groupRepo: repo}
 
-			_, err := svc.CreateGroup(context.Background(), tt.input)
+			_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), tt.input)
 			require.Error(t, err)
 			require.Nil(t, repo.created)
 		})
@@ -827,7 +836,7 @@ func TestAdminService_UpdateGroup_RejectsNegativeVideoRateMultiplier(t *testing.
 	svc := &adminServiceImpl{groupRepo: repo}
 	negative := -0.1
 
-	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		VideoRateMultiplier: &negative,
 	})
 	require.Error(t, err)
@@ -850,7 +859,7 @@ func TestAdminService_UpdateGroup_InvalidatesAuthCacheOnRPMLimitChange(t *testin
 	}
 
 	rpmLimit := 60
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		RPMLimit: &rpmLimit,
 	})
 	require.NoError(t, err)
@@ -914,7 +923,7 @@ func TestAdminService_UpdateGroup_ReasoningEffortMappingsTriState(t *testing.T) 
 			repo := &groupRepoStubForAdmin{getByID: existing}
 			svc := &adminServiceImpl{groupRepo: repo}
 
-			_, err := svc.UpdateGroup(context.Background(), existing.ID, tt.input)
+			_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, tt.input)
 
 			require.NoError(t, err)
 			require.Equal(t, tt.want, repo.updated.ReasoningEffortMappings)
@@ -938,7 +947,7 @@ func TestAdminService_UpdateGroup_RejectsInvalidReasoningEffortMappings(t *testi
 		{From: " MAX ", To: "high"},
 	}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		ReasoningEffortMappings: &invalid,
 	})
 
@@ -960,7 +969,7 @@ func TestAdminService_UpdateGroup_ClearsReasoningPolicyForUnsupportedPlatform(t 
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{Platform: PlatformAnthropic})
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{Platform: PlatformAnthropic})
 
 	require.NoError(t, err)
 	require.Empty(t, repo.updated.MaxReasoningEffort)
@@ -983,7 +992,7 @@ func TestAdminService_UpdateGroup_ClearsPeakRateWhenChangingToStandard(t *testin
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		SubscriptionType: SubscriptionTypeStandard,
 	})
 	require.NoError(t, err)
@@ -1000,7 +1009,7 @@ func TestAdminService_CreateGroup_NormalizesMessagesDispatchModelConfig(t *testi
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:           "dispatch-group",
 		Description:    "dispatch config",
 		Platform:       PlatformOpenAI,
@@ -1037,7 +1046,7 @@ func TestAdminService_UpdateGroup_NormalizesMessagesDispatchModelConfig(t *testi
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		MessagesDispatchModelConfig: &OpenAIMessagesDispatchModelConfig{
 			SonnetMappedModel: " gpt-5.4-medium ",
 			ExactModelMappings: map[string]string{
@@ -1060,7 +1069,7 @@ func TestAdminService_CreateGroup_ClearsMessagesDispatchFieldsForNonOpenAIPlatfo
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                  "anthropic-group",
 		Description:           "non-openai",
 		Platform:              PlatformAnthropic,
@@ -1131,7 +1140,7 @@ func TestAdminService_UpdateGroup_ClearsForceOpenAIFastWhenPlatformChanges(t *te
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existingGroup.ID, &UpdateGroupInput{
 		Platform: PlatformAnthropic,
 	})
 
@@ -1150,7 +1159,7 @@ func TestAdminService_UpdateGroup_ForceOpenAIFastInvalidatesAuthCache(t *testing
 	svc := &adminServiceImpl{groupRepo: repo, authCacheInvalidator: invalidator}
 	enabled := true
 
-	group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existingGroup.ID, &UpdateGroupInput{
 		ForceOpenAIFast: &enabled,
 		FreeOpenAIFast:  &enabled,
 	})
@@ -1173,7 +1182,7 @@ func TestAdminService_UpdateCompositeGroupPreservesLive(t *testing.T) {
 	svc := &adminServiceImpl{groupRepo: repo}
 	allowLive := true
 
-	group, err := svc.UpdateGroup(context.Background(), existingGroup.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existingGroup.ID, &UpdateGroupInput{
 		AllowLive: &allowLive,
 	})
 
@@ -1199,7 +1208,7 @@ func TestAdminService_UpdateGroup_ClearsMessagesDispatchFieldsWhenPlatformChange
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{
 		Platform: PlatformAnthropic,
 	})
 	require.NoError(t, err)
@@ -1225,7 +1234,7 @@ func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 		}
 		svc := &adminServiceImpl{groupRepo: repo}
 
-		groups, total, err := svc.ListGroups(context.Background(), 1, 20, "", "", "alpha", nil, "", "")
+		groups, total, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 1, 20, "", "", "alpha", nil, "", "")
 		require.NoError(t, err)
 		require.Equal(t, int64(1), total)
 		require.Equal(t, []Group{{ID: 1, Name: "alpha"}}, groups)
@@ -1243,7 +1252,7 @@ func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 		}
 		svc := &adminServiceImpl{groupRepo: repo}
 
-		groups, total, err := svc.ListGroups(context.Background(), 2, 10, "", "", "", nil, "", "")
+		groups, total, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 2, 10, "", "", "", nil, "", "")
 		require.NoError(t, err)
 		require.Empty(t, groups)
 		require.Equal(t, int64(0), total)
@@ -1262,7 +1271,7 @@ func TestAdminService_ListGroups_WithSearch(t *testing.T) {
 		}
 		svc := &adminServiceImpl{groupRepo: repo}
 
-		groups, total, err := svc.ListGroups(context.Background(), 3, 50, PlatformAntigravity, StatusActive, "beta", &isExclusive, "", "")
+		groups, total, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 3, 50, PlatformAntigravity, StatusActive, "beta", &isExclusive, "", "")
 		require.NoError(t, err)
 		require.Equal(t, int64(42), total)
 		require.Equal(t, []Group{{ID: 2, Name: "beta"}}, groups)
@@ -1294,7 +1303,7 @@ func TestAdminService_ValidateFallbackGroup_DetectsCycle(t *testing.T) {
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	err := svc.validateFallbackGroup(context.Background(), groupID, fallbackID)
+	err := svc.validateFallbackGroup(WithScope(context.Background(), AdminScope()), groupID, fallbackID)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "fallback group cycle")
 }
@@ -1368,6 +1377,12 @@ func (s *groupRepoStubForFallbackCycle) GetAccountIDsByGroupIDs(_ context.Contex
 
 func (s *groupRepoStubForFallbackCycle) UpdateSortOrders(_ context.Context, _ []GroupSortOrderUpdate) error {
 	return nil
+}
+
+// LoadAccountCountsScoped 返回空 map：只有 vendor 视角的分组列表会调它
+// 改写全站计数，降级链路测试走不到那里。缺键按零计数处理。
+func (s *groupRepoStubForFallbackCycle) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
 }
 
 type groupRepoStubForInvalidRequestFallback struct {
@@ -1445,6 +1460,11 @@ func (s *groupRepoStubForInvalidRequestFallback) UpdateSortOrders(_ context.Cont
 	return nil
 }
 
+// LoadAccountCountsScoped 返回空 map，理由同 groupRepoStubForFallbackCycle。
+func (s *groupRepoStubForInvalidRequestFallback) LoadAccountCountsScoped(context.Context, []int64, int64) (map[int64]GroupAccountCounts, error) {
+	return map[int64]GroupAccountCounts{}, nil
+}
+
 func TestAdminService_CreateGroup_InvalidRequestFallbackRejectsUnsupportedPlatform(t *testing.T) {
 	fallbackID := int64(10)
 	repo := &groupRepoStubForInvalidRequestFallback{
@@ -1454,7 +1474,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackRejectsUnsupportedPlatfo
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                            "g1",
 		Platform:                        PlatformOpenAI,
 		RateMultiplier:                  1.0,
@@ -1475,7 +1495,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackRejectsSubscription(t *t
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                            "g1",
 		Platform:                        PlatformAnthropic,
 		RateMultiplier:                  1.0,
@@ -1530,7 +1550,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackRejectsFallbackGroup(t *
 			}
 			svc := &adminServiceImpl{groupRepo: repo}
 
-			_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+			_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 				Name:                            "g1",
 				Platform:                        PlatformAnthropic,
 				RateMultiplier:                  1.0,
@@ -1549,7 +1569,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackNotFound(t *testing.T) {
 	repo := &groupRepoStubForInvalidRequestFallback{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                            "g1",
 		Platform:                        PlatformAnthropic,
 		RateMultiplier:                  1.0,
@@ -1570,7 +1590,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackAllowsAntigravity(t *tes
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                            "g1",
 		Platform:                        PlatformAntigravity,
 		RateMultiplier:                  1.0,
@@ -1588,7 +1608,7 @@ func TestAdminService_CreateGroup_InvalidRequestFallbackClearsOnZero(t *testing.
 	repo := &groupRepoStubForInvalidRequestFallback{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:                            "g1",
 		Platform:                        PlatformAnthropic,
 		RateMultiplier:                  1.0,
@@ -1619,7 +1639,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackPlatformMismatch(t *test
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		Platform: PlatformOpenAI,
 	})
 	require.Error(t, err)
@@ -1645,7 +1665,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackSubscriptionMismatch(t *
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		SubscriptionType: SubscriptionTypeSubscription,
 	})
 	require.Error(t, err)
@@ -1672,7 +1692,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackClearsOnZero(t *testing.
 	svc := &adminServiceImpl{groupRepo: repo}
 
 	clear := int64(0)
-	group, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		Platform:                        PlatformOpenAI,
 		FallbackGroupIDOnInvalidRequest: &clear,
 	})
@@ -1699,7 +1719,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackRejectsFallbackGroup(t *
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		FallbackGroupIDOnInvalidRequest: &fallbackID,
 	})
 	require.Error(t, err)
@@ -1724,7 +1744,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackSetSuccess(t *testing.T)
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		FallbackGroupIDOnInvalidRequest: &fallbackID,
 	})
 	require.NoError(t, err)
@@ -1750,7 +1770,7 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackAllowsAntigravity(t *tes
 	}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	group, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		FallbackGroupIDOnInvalidRequest: &fallbackID,
 	})
 	require.NoError(t, err)
@@ -1766,7 +1786,7 @@ func TestAdminService_CreateCompositeRoute_RejectsNonCompositeGroup(t *testing.T
 	routeRepo := &compositeRouteRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
 
-	_, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+	_, err := svc.CreateCompositeRoute(WithScope(context.Background(), AdminScope()), 7, CompositeRouteInput{
 		PublicModel:    "router/gpt-5",
 		TargetPlatform: PlatformOpenAI,
 		Enabled:        true,
@@ -1784,7 +1804,7 @@ func TestAdminService_CreateCompositeRoute_NormalizesAndPersists(t *testing.T) {
 	routeRepo := &compositeRouteRepoStubForAdmin{nextID: 99}
 	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
 
-	route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+	route, err := svc.CreateCompositeRoute(WithScope(context.Background(), AdminScope()), 7, CompositeRouteInput{
 		PublicModel:    " router/gpt- ",
 		MatchType:      CompositeRouteMatchPrefix,
 		TargetPlatform: PlatformOpenAI,
@@ -1817,7 +1837,7 @@ func TestAdminService_CreateCompositeRoute_ExactEmptyUpstreamBackfillsPublicMode
 	routeRepo := &compositeRouteRepoStubForAdmin{nextID: 99}
 	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
 
-	route, err := svc.CreateCompositeRoute(context.Background(), 7, CompositeRouteInput{
+	route, err := svc.CreateCompositeRoute(WithScope(context.Background(), AdminScope()), 7, CompositeRouteInput{
 		PublicModel:    "openrouter/gpt-5",
 		MatchType:      CompositeRouteMatchExact,
 		TargetPlatform: PlatformOpenAI,
@@ -1843,7 +1863,7 @@ func TestAdminService_UpdateAndDeleteCompositeRouteRequireRouteOwnership(t *test
 	}
 	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
 
-	updated, err := svc.UpdateCompositeRoute(context.Background(), 7, 11, CompositeRouteInput{
+	updated, err := svc.UpdateCompositeRoute(WithScope(context.Background(), AdminScope()), 7, 11, CompositeRouteInput{
 		PublicModel:    "router/gpt-5",
 		TargetPlatform: PlatformGemini,
 		UpstreamModel:  "gemini-2.5-pro",
@@ -1857,11 +1877,11 @@ func TestAdminService_UpdateAndDeleteCompositeRouteRequireRouteOwnership(t *test
 	require.Equal(t, "gemini-2.5-pro", updated.UpstreamModel)
 	require.Equal(t, updated, routeRepo.updated)
 
-	err = svc.DeleteCompositeRoute(context.Background(), 7, 12)
+	err = svc.DeleteCompositeRoute(WithScope(context.Background(), AdminScope()), 7, 12)
 	require.ErrorIs(t, err, ErrCompositeRouteNotFound)
 	require.Empty(t, routeRepo.deleted)
 
-	err = svc.DeleteCompositeRoute(context.Background(), 7, 11)
+	err = svc.DeleteCompositeRoute(WithScope(context.Background(), AdminScope()), 7, 11)
 	require.NoError(t, err)
 	require.Equal(t, []int64{11}, routeRepo.deleted)
 }
@@ -1887,7 +1907,7 @@ func TestAdminService_PreviewCompositeRouteUsesExplicitRoutes(t *testing.T) {
 	}
 	svc := &adminServiceImpl{groupRepo: groupRepo, compositeRouteRepo: routeRepo}
 
-	decision, err := svc.PreviewCompositeRoute(context.Background(), 7, CompositeRoutePreviewRequest{
+	decision, err := svc.PreviewCompositeRoute(WithScope(context.Background(), AdminScope()), 7, CompositeRoutePreviewRequest{
 		Model:    "openrouter/claude",
 		Endpoint: CompositeRouteEndpointMessages,
 	})

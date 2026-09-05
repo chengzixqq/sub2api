@@ -413,26 +413,37 @@ handleSuccess:
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
+	var responseErr error
 
 	if stream {
 		// 客户端要求流式，直接透传
 		streamRes, err := s.handleGeminiStreamingResponse(c, resp, startTime)
+		if streamRes != nil {
+			usage = streamRes.usage
+			firstTokenMs = streamRes.firstTokenMs
+			clientDisconnect = streamRes.clientDisconnect
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
-			return nil, err
+			if streamRes == nil {
+				return nil, err
+			}
+			responseErr = err
 		}
-		usage = streamRes.usage
-		firstTokenMs = streamRes.firstTokenMs
-		clientDisconnect = streamRes.clientDisconnect
 	} else {
 		// 客户端要求非流式，收集流式响应后返回
 		streamRes, err := s.handleGeminiStreamToNonStreaming(c, resp, startTime)
+		if streamRes != nil {
+			usage = streamRes.usage
+			firstTokenMs = streamRes.firstTokenMs
+		}
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_collect_error error=%v", prefix, err)
-			return nil, err
+			if streamRes == nil {
+				return nil, err
+			}
+			responseErr = err
 		}
-		usage = streamRes.usage
-		firstTokenMs = streamRes.firstTokenMs
 	}
 
 	if usage == nil {
@@ -460,7 +471,7 @@ handleSuccess:
 		ImageCount:                    imageCount,
 		ImageSize:                     imageSize,
 		ImageInputSize:                imageInputSize,
-	}, nil
+	}, responseErr
 }
 
 // cleanGeminiRequest 清理 Gemini 请求体中的 Schema

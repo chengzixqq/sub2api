@@ -91,7 +91,8 @@ func TestUpdateAccountRoutesRateIntentThroughAtomicBillingUpdater(t *testing.T) 
 	}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	updated, err := svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{Name: "after"})
+	adminCtx := WithScope(context.Background(), AdminScope())
+	updated, err := svc.UpdateAccount(adminCtx, accountID, &UpdateAccountInput{Name: "after"})
 	require.NoError(t, err)
 	require.Equal(t, 1, repo.updateCalls)
 	require.Nil(t, repo.lastExplicitRate)
@@ -101,7 +102,7 @@ func TestUpdateAccountRoutesRateIntentThroughAtomicBillingUpdater(t *testing.T) 
 	// （同步仍开启时的手工倍率由 TestUpdateAccountRejectsManualRateWhileRateSyncEnabled 覆盖）。
 	zero := 0.0
 	syncDisabled := false
-	updated, err = svc.UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+	updated, err = svc.UpdateAccount(adminCtx, accountID, &UpdateAccountInput{
 		RateSyncEnabled: &syncDisabled,
 		RateMultiplier:  &zero,
 	})
@@ -458,7 +459,7 @@ func TestUpdateAccountRejectsManualRateWhileRateSyncEnabled(t *testing.T) {
 		accountID := int64(153)
 		repo := newRepo(accountID, mergeMap(nil, syncEnabled))
 
-		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(WithScope(context.Background(), AdminScope()), accountID, &UpdateAccountInput{
 			RateMultiplier: &manualRate,
 		})
 
@@ -471,7 +472,7 @@ func TestUpdateAccountRejectsManualRateWhileRateSyncEnabled(t *testing.T) {
 		repo := newRepo(accountID, map[string]any{})
 		enable := true
 
-		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(WithScope(context.Background(), AdminScope()), accountID, &UpdateAccountInput{
 			RateSyncEnabled: &enable,
 			RateMultiplier:  &manualRate,
 		})
@@ -486,7 +487,7 @@ func TestUpdateAccountRejectsManualRateWhileRateSyncEnabled(t *testing.T) {
 		repo := newRepo(accountID, mergeMap(nil, syncEnabled))
 		disable := false
 
-		updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(WithScope(context.Background(), AdminScope()), accountID, &UpdateAccountInput{
 			RateSyncEnabled: &disable,
 			RateMultiplier:  &manualRate,
 		})
@@ -501,7 +502,7 @@ func TestUpdateAccountRejectsManualRateWhileRateSyncEnabled(t *testing.T) {
 		accountID := int64(156)
 		repo := newRepo(accountID, map[string]any{UpstreamBillingProbeEnabledExtraKey: true})
 
-		updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), accountID, &UpdateAccountInput{
+		updated, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(WithScope(context.Background(), AdminScope()), accountID, &UpdateAccountInput{
 			RateMultiplier: &manualRate,
 		})
 
@@ -632,7 +633,7 @@ func TestBulkUpdateAccountsDropsManagedUpstreamBillingProbeState(t *testing.T) {
 		},
 	}
 
-	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	result, err := svc.BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), input)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Success)
@@ -651,7 +652,7 @@ func TestBulkUpdateAccountsAcceptsDedicatedUpstreamBillingProbeSetting(t *testin
 				2: {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 			}}
 
-			result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+			result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 				AccountIDs:   []int64{1, 2},
 				ProbeEnabled: &enabled,
 			})
@@ -677,7 +678,7 @@ func TestBulkUpdateAccountsRejectsProbeSettingForIneligibleTargetBeforeWrite(t *
 				2: {ID: 2, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
 			}}
 
-			_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+			_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 				AccountIDs:   []int64{1, 2},
 				ProbeEnabled: &enabled,
 			})
@@ -694,7 +695,7 @@ func TestBulkUpdateAccountsRejectsProbeSettingWhenTargetIsMissing(t *testing.T) 
 		1: {ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 	}}
 
-	_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+	_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), &BulkUpdateAccountsInput{
 		AccountIDs:   []int64{1, 2},
 		ProbeEnabled: &enabled,
 	})
@@ -710,7 +711,7 @@ func TestBulkUpdateAccountsInvalidatesProbeSnapshotForIdentityCredentials(t *tes
 		Credentials: map[string]any{"api_key": "sk-new"},
 	}
 
-	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), input)
+	result, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), input)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Success)
@@ -727,7 +728,7 @@ func TestBulkUpdateAccountsInvalidatesProbeSnapshotForProxyUpdate(t *testing.T) 
 		ProxyID:    &proxyID,
 	}
 
-	result, err := (&adminServiceImpl{accountRepo: &upstreamBillingProbeAdminRepo{baseRepo}}).BulkUpdateAccounts(context.Background(), input)
+	result, err := (&adminServiceImpl{accountRepo: &upstreamBillingProbeAdminRepo{baseRepo}}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), input)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, result.Success)
@@ -743,7 +744,7 @@ func TestBulkUpdateAccountsKeepsProbeSnapshotForUnrelatedCredentials(t *testing.
 		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-old": "gpt-new"}},
 	}
 
-	_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(context.Background(), input)
+	_, err := (&adminServiceImpl{accountRepo: repo}).BulkUpdateAccounts(WithScope(context.Background(), AdminScope()), input)
 
 	require.NoError(t, err)
 	require.Len(t, repo.bulkUpdates, 1)

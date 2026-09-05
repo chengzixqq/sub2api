@@ -546,6 +546,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		isTokenEvent := isOpenAIWSTokenEvent(eventType)
 		if isTokenEvent {
 			tokenEventCount++
+			c.Set(GatewayUpstreamDeliveredKey, true)
 		}
 		isTerminalEvent := isOpenAIWSTerminalEvent(eventType)
 		if isTerminalEvent {

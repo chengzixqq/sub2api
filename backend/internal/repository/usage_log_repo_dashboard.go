@@ -285,13 +285,14 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 		WITH scoped AS (
 			SELECT
 				created_at,
+				provider_cost_recorded,
 				input_tokens,
 				output_tokens,
 				cache_creation_tokens,
 				cache_read_tokens,
-				total_cost,
+				CASE WHEN provider_cost_recorded THEN total_cost ELSE 0 END AS total_cost,
 				actual_cost,
-				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
+				CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END AS account_cost,
 				COALESCE(duration_ms, 0) AS duration_ms
 			FROM usage_logs
 			WHERE created_at >= LEAST($1::timestamptz, $3::timestamptz)
@@ -303,7 +304,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded AND created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_actual_cost,
 			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_account_cost,
 			COALESCE(SUM(duration_ms) FILTER (WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz), 0) AS total_duration_ms,
@@ -312,7 +313,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsFromUsageLogs(ctx context.Co
 			COALESCE(SUM(output_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded AND created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_cost,
 			COALESCE(SUM(actual_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_actual_cost,
 			COALESCE(SUM(account_cost) FILTER (WHERE created_at >= $3::timestamptz AND created_at < $4::timestamptz), 0) AS today_account_cost
 		FROM scoped
@@ -410,7 +411,7 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
@@ -442,7 +443,7 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as today_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as today_cost,
 			COALESCE(SUM(actual_cost), 0) as today_actual_cost
 		FROM usage_logs
 		WHERE user_id = $1 AND created_at >= $2
@@ -474,24 +475,30 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 
 	// 按"有效平台"维度拆分（group.platform 优先，否则 account.platform）。
 	// 与 ops 路径口径一致；HAVING 过滤掉无法确定平台的行（避免出现空字符串平台）。
-	// 与上面 totalStatsQuery/todayStatsQuery 的总值可能略微差异，原因有二：
+	//
+	// usageLogSuccessFilterUL 不拼进 WHERE，而是以 FILTER (WHERE ...) 的形式只施加在
+	// total_requests/today_requests 两个计数列上：被计费的失败行产生了真实的上游费用，
+	// total_tokens/total_actual_cost/today_tokens/today_actual_cost 必须包含它们，否则会与
+	// 不做该过滤的 totalStatsQuery/todayStatsQuery、usage_dashboard_daily 对不上账；但这些行
+	// 不算"成功请求"，因此不计入请求数。
+	//
+	// 与上面 totalStatsQuery/todayStatsQuery 的请求数仍可能有差异，原因有二：
 	//   1) 无平台归属的极少数行（group/account 都没 platform）会被 HAVING 排除；
-	//   2) usageLogSuccessFilterUL 会把 actual_cost = 0 的失败 placeholder 行排除，
-	//      而 totalStatsQuery/todayStatsQuery 没有这层过滤、会把这些行的 request 计数算进去。
+	//   2) 被计费的失败行会被 totalStatsQuery/todayStatsQuery（未做成功过滤）计入请求数，
+	//      但不计入 platformQuery 的 total_requests/today_requests。
 	platformQuery := `
 		SELECT
 			` + usageLogEffectivePlatformExpr + ` as platform,
-			COUNT(*) as total_requests,
+			COUNT(*) FILTER (WHERE ` + usageLogSuccessFilterUL + `) as total_requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(ul.actual_cost), 0) as total_actual_cost,
-			COUNT(*) FILTER (WHERE ul.created_at >= $2) as today_requests,
+			COUNT(*) FILTER (WHERE ul.created_at >= $2 AND ` + usageLogSuccessFilterUL + `) as today_requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_tokens,
 			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2), 0) as today_actual_cost
 		FROM usage_logs ul
 		LEFT JOIN groups g ON g.id = ul.group_id
 		LEFT JOIN accounts a ON a.id = ul.account_id
 		WHERE ul.user_id = $1
-		  AND ` + usageLogSuccessFilterUL + `
 		GROUP BY ` + usageLogEffectivePlatformExpr + `
 		HAVING ` + usageLogEffectivePlatformExpr + ` IS NOT NULL AND ` + usageLogEffectivePlatformExpr + ` <> ''
 		ORDER BY total_actual_cost DESC
@@ -562,7 +569,7 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
@@ -594,7 +601,7 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as today_cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as today_cost,
 			COALESCE(SUM(actual_cost), 0) as today_actual_cost
 		FROM usage_logs
 		WHERE api_key_id = $1 AND created_at >= $2

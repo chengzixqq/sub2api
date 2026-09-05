@@ -18,6 +18,9 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
+    isOwner: true,
+    isVendor: false,
+    workspace: undefined,
     get isSimpleMode() {
       return authIsSimpleMode.value
     }

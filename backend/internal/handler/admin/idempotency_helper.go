@@ -67,6 +67,54 @@ func executeAdminIdempotentJSON(
 	executeAdminIdempotentJSONWithMode(c, scope, payload, ttl, idempotencyStoreUnavailableFailClose, execute)
 }
 
+func idempotencyBusinessResultCommitted(result *service.IdempotencyExecuteResult, err error) bool {
+	if result == nil || infraerrors.Code(err) != infraerrors.Code(service.ErrIdempotencyStoreUnavail) {
+		return false
+	}
+	return infraerrors.FromError(err).Metadata["stage"] == "mark_succeeded"
+}
+
+// executeAdminOptionalIdempotentJSON preserves legacy callers that do not send
+// a key while making retries deterministic for callers that do.
+func executeAdminOptionalIdempotentJSON(
+	c *gin.Context,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	execute func(context.Context) (any, error),
+) {
+	coordinator := service.DefaultIdempotencyCoordinator()
+	if coordinator == nil {
+		data, err := execute(c.Request.Context())
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, data)
+		return
+	}
+	result, err := coordinator.Execute(c.Request.Context(), service.IdempotencyExecuteOptions{
+		Scope: scope, ActorScope: adminActorScope(c), Method: c.Request.Method, Route: c.FullPath(),
+		IdempotencyKey: c.GetHeader("Idempotency-Key"), Payload: payload, RequireKey: false, TTL: ttl,
+	}, execute)
+	if idempotencyBusinessResultCommitted(result, err) {
+		c.Header("X-Idempotency-Degraded", "result-committed")
+		response.Success(c, result.Data)
+		return
+	}
+	if err != nil {
+		if retryAfter := service.RetryAfterSecondsFromError(err); retryAfter > 0 {
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+	if result != nil && result.Replayed {
+		c.Header("X-Idempotency-Replayed", "true")
+	}
+	response.Success(c, result.Data)
+}
+
 func executeAdminIdempotentJSONFailOpenOnStoreUnavailable(
 	c *gin.Context,
 	scope string,
@@ -86,6 +134,11 @@ func executeAdminIdempotentJSONWithMode(
 	execute func(context.Context) (any, error),
 ) {
 	result, err := executeAdminIdempotent(c, scope, payload, ttl, execute)
+	if idempotencyBusinessResultCommitted(result, err) {
+		c.Header("X-Idempotency-Degraded", "result-committed")
+		response.Success(c, result.Data)
+		return
+	}
 	if err != nil {
 		if infraerrors.Code(err) == infraerrors.Code(service.ErrIdempotencyStoreUnavail) {
 			strategy := "fail_close"

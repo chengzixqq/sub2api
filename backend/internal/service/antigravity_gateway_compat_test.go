@@ -696,7 +696,10 @@ func TestAntigravityCompatStreamErrorCommitsSingleTerminalFrame(t *testing.T) {
 	result, err := svc.handleResponsesStreamingFromAntigravity(c, resp, time.Now(), "gemini-3.1-pro-high")
 
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 8, result.usage.InputTokens)
+	require.Equal(t, 1, result.usage.OutputTokens)
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, 1, strings.Count(recorder.Body.String(), "event: error"))
 }

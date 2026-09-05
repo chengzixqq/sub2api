@@ -71,7 +71,11 @@ func (s *duplicateAccountRepoStub) FindByExtraField(_ context.Context, key strin
 }
 
 func TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState(t *testing.T) {
-	ctx := context.Background()
+	// 必须显式带站长作用域：复制会继承源账号的分组，而
+	// requireGroupIDsGranted 对 vendor 逐个校验授权。裸 context.Background()
+	// 拿到的是零值 Scope —— Unrestricted=false 即 vendor，
+	// 且 WorkspaceID=0 一个分组都授权不到，复制会以 404 失败。
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newDuplicateAccountRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
 
@@ -267,7 +271,10 @@ func TestDuplicateAccountPreservesUngroupedState(t *testing.T) {
 }
 
 func TestDuplicateAccountAtomicCreateFailureLeavesNoOrphan(t *testing.T) {
-	ctx := context.Background()
+	// 站长作用域，理由同 TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState：
+	// 源账号带分组 7，零值 Scope 会在授权校验处先以 404 失败，
+	// 断言的原子性错误根本走不到。
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newDuplicateAccountRepoStub()
 	svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
 	source := &Account{

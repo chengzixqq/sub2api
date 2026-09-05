@@ -25,7 +25,7 @@ func NewAuditLogRepository(db *sql.DB) service.AuditLogRepository {
 
 const auditLogInsertColumns = `created_at, actor_user_id, actor_email, actor_role, auth_method,
 credential_masked, action, method, path, request_id, client_ip, user_agent,
-request_body, status_code, latency_ms, extra`
+request_body, status_code, latency_ms, extra, workspace_id`
 
 func auditLogInsertValues(log *service.AuditLog) []any {
 	createdAt := log.CreatedAt
@@ -55,6 +55,7 @@ func auditLogInsertValues(log *service.AuditLog) []any {
 		log.StatusCode,
 		log.LatencyMs,
 		extraJSON,
+		nullInt64Ptr(log.WorkspaceID),
 	}
 }
 
@@ -74,7 +75,7 @@ func (r *auditLogRepository) BatchInsert(ctx context.Context, logs []*service.Au
 		"audit_logs",
 		"created_at", "actor_user_id", "actor_email", "actor_role", "auth_method",
 		"credential_masked", "action", "method", "path", "request_id", "client_ip", "user_agent",
-		"request_body", "status_code", "latency_ms", "extra",
+		"request_body", "status_code", "latency_ms", "extra", "workspace_id",
 	))
 	if err != nil {
 		_ = tx.Rollback()
@@ -171,6 +172,12 @@ func buildAuditLogsWhere(filter *service.AuditLogFilter) (string, []any) {
 		idx := itoa(len(args))
 		clauses = append(clauses, "(l.path ILIKE $"+idx+" OR l.action ILIKE $"+idx+" OR l.actor_email ILIKE $"+idx+")")
 	}
+	// 作用域约束：仅取本工作区记录。不含 IS NULL —— 站长/系统操作
+	// 对 vendor 不可见。
+	if filter.WorkspaceID != nil {
+		args = append(args, *filter.WorkspaceID)
+		clauses = append(clauses, "l.workspace_id = $"+itoa(len(args)))
+	}
 
 	return "WHERE " + strings.Join(clauses, " AND "), args
 }
@@ -192,11 +199,13 @@ const auditLogSelectColumns = `
   COALESCE(l.request_body, ''),
   l.status_code,
   l.latency_ms,
-  COALESCE(l.extra::text, '{}')`
+  COALESCE(l.extra::text, '{}'),
+  l.workspace_id`
 
 func scanAuditLogRow(scan func(dest ...any) error) (*service.AuditLog, error) {
 	item := &service.AuditLog{}
 	var actorUserID sql.NullInt64
+	var workspaceID sql.NullInt64
 	var extraRaw string
 	if err := scan(
 		&item.ID,
@@ -216,12 +225,17 @@ func scanAuditLogRow(scan func(dest ...any) error) (*service.AuditLog, error) {
 		&item.StatusCode,
 		&item.LatencyMs,
 		&extraRaw,
+		&workspaceID,
 	); err != nil {
 		return nil, err
 	}
 	if actorUserID.Valid {
 		v := actorUserID.Int64
 		item.ActorUserID = &v
+	}
+	if workspaceID.Valid {
+		v := workspaceID.Int64
+		item.WorkspaceID = &v
 	}
 	extraRaw = strings.TrimSpace(extraRaw)
 	if extraRaw != "" && extraRaw != "null" && extraRaw != "{}" {

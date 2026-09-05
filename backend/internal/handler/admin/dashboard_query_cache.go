@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 var (
@@ -79,6 +80,11 @@ func snapshotPayloadAs[T any](payload any) (T, error) {
 	return typed, nil
 }
 
+func usageQueryCacheRestricted(ctx context.Context) bool {
+	_, restricted := service.UsageAccountScopeFrom(ctx)
+	return restricted
+}
+
 func (h *DashboardHandler) getUsageTrendCached(
 	ctx context.Context,
 	startTime, endTime time.Time,
@@ -91,6 +97,14 @@ func (h *DashboardHandler) getUsageTrendCached(
 	billingType *int8,
 	upstreamModelMismatch *bool,
 ) ([]usagestats.TrendDataPoint, bool, error) {
+	if usageQueryCacheRestricted(ctx) {
+		trend, err := h.dashboardService.GetUsageTrendWithUsageFilters(ctx, startTime, endTime, granularity, usagestats.UsageLogFilters{
+			UserID: userID, APIKeyID: apiKeyID, AccountID: accountID, GroupID: groupID,
+			Model: model, RequestType: requestType, Stream: stream, NativeCompactionV2: nativeCompactionV2, BillingType: billingType,
+			UpstreamModelMismatch: upstreamModelMismatch,
+		})
+		return trend, false, err
+	}
 	key := mustMarshalDashboardCacheKey(dashboardTrendCacheKey{
 		StartTime:             startTime.UTC().Format(time.RFC3339),
 		EndTime:               endTime.UTC().Format(time.RFC3339),
@@ -131,6 +145,14 @@ func (h *DashboardHandler) getModelStatsCached(
 	billingType *int8,
 	upstreamModelMismatch *bool,
 ) ([]usagestats.ModelStat, bool, error) {
+	if usageQueryCacheRestricted(ctx) {
+		stats, err := h.dashboardService.GetModelStatsWithUsageFiltersBySource(ctx, startTime, endTime, usagestats.UsageLogFilters{
+			UserID: userID, APIKeyID: apiKeyID, AccountID: accountID, GroupID: groupID,
+			RequestType: requestType, Stream: stream, NativeCompactionV2: nativeCompactionV2, BillingType: billingType,
+			UpstreamModelMismatch: upstreamModelMismatch,
+		}, modelSource)
+		return stats, false, err
+	}
 	key := mustMarshalDashboardCacheKey(dashboardModelGroupCacheKey{
 		StartTime:             startTime.UTC().Format(time.RFC3339),
 		EndTime:               endTime.UTC().Format(time.RFC3339),
@@ -169,6 +191,14 @@ func (h *DashboardHandler) getGroupStatsCached(
 	billingType *int8,
 	upstreamModelMismatch *bool,
 ) ([]usagestats.GroupStat, bool, error) {
+	if usageQueryCacheRestricted(ctx) {
+		stats, err := h.dashboardService.GetGroupStatsWithUsageFilters(ctx, startTime, endTime, usagestats.UsageLogFilters{
+			UserID: userID, APIKeyID: apiKeyID, AccountID: accountID, GroupID: groupID,
+			RequestType: requestType, Stream: stream, NativeCompactionV2: nativeCompactionV2, BillingType: billingType,
+			UpstreamModelMismatch: upstreamModelMismatch,
+		})
+		return stats, false, err
+	}
 	key := mustMarshalDashboardCacheKey(dashboardModelGroupCacheKey{
 		StartTime:             startTime.UTC().Format(time.RFC3339),
 		EndTime:               endTime.UTC().Format(time.RFC3339),

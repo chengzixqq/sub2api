@@ -947,6 +947,54 @@ func (_u *UsageLogUpdate) SetNillableCacheTTLOverridden(v *bool) *UsageLogUpdate
 	return _u
 }
 
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (_u *UsageLogUpdate) SetProbeCoalesced(v bool) *UsageLogUpdate {
+	_u.mutation.SetProbeCoalesced(v)
+	return _u
+}
+
+// SetNillableProbeCoalesced sets the "probe_coalesced" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableProbeCoalesced(v *bool) *UsageLogUpdate {
+	if v != nil {
+		_u.SetProbeCoalesced(*v)
+	}
+	return _u
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (_u *UsageLogUpdate) SetProbeLeaderRequestID(v string) *UsageLogUpdate {
+	_u.mutation.SetProbeLeaderRequestID(v)
+	return _u
+}
+
+// SetNillableProbeLeaderRequestID sets the "probe_leader_request_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableProbeLeaderRequestID(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetProbeLeaderRequestID(*v)
+	}
+	return _u
+}
+
+// ClearProbeLeaderRequestID clears the value of the "probe_leader_request_id" field.
+func (_u *UsageLogUpdate) ClearProbeLeaderRequestID() *UsageLogUpdate {
+	_u.mutation.ClearProbeLeaderRequestID()
+	return _u
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (_u *UsageLogUpdate) SetProviderCostRecorded(v bool) *UsageLogUpdate {
+	_u.mutation.SetProviderCostRecorded(v)
+	return _u
+}
+
+// SetNillableProviderCostRecorded sets the "provider_cost_recorded" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableProviderCostRecorded(v *bool) *UsageLogUpdate {
+	if v != nil {
+		_u.SetProviderCostRecorded(*v)
+	}
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *UsageLogUpdate) SetUser(v *User) *UsageLogUpdate {
 	return _u.SetUserID(v.ID)
@@ -1109,6 +1157,11 @@ func (_u *UsageLogUpdate) check() error {
 	if v, ok := _u.mutation.VideoResolution(); ok {
 		if err := usagelog.VideoResolutionValidator(v); err != nil {
 			return &ValidationError{Name: "video_resolution", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_resolution": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProbeLeaderRequestID(); ok {
+		if err := usagelog.ProbeLeaderRequestIDValidator(v); err != nil {
+			return &ValidationError{Name: "probe_leader_request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.probe_leader_request_id": %w`, err)}
 		}
 	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
@@ -1380,6 +1433,18 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ProbeCoalesced(); ok {
+		_spec.SetField(usagelog.FieldProbeCoalesced, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ProbeLeaderRequestID(); ok {
+		_spec.SetField(usagelog.FieldProbeLeaderRequestID, field.TypeString, value)
+	}
+	if _u.mutation.ProbeLeaderRequestIDCleared() {
+		_spec.ClearField(usagelog.FieldProbeLeaderRequestID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ProviderCostRecorded(); ok {
+		_spec.SetField(usagelog.FieldProviderCostRecorded, field.TypeBool, value)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -2461,6 +2526,54 @@ func (_u *UsageLogUpdateOne) SetNillableCacheTTLOverridden(v *bool) *UsageLogUpd
 	return _u
 }
 
+// SetProbeCoalesced sets the "probe_coalesced" field.
+func (_u *UsageLogUpdateOne) SetProbeCoalesced(v bool) *UsageLogUpdateOne {
+	_u.mutation.SetProbeCoalesced(v)
+	return _u
+}
+
+// SetNillableProbeCoalesced sets the "probe_coalesced" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableProbeCoalesced(v *bool) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetProbeCoalesced(*v)
+	}
+	return _u
+}
+
+// SetProbeLeaderRequestID sets the "probe_leader_request_id" field.
+func (_u *UsageLogUpdateOne) SetProbeLeaderRequestID(v string) *UsageLogUpdateOne {
+	_u.mutation.SetProbeLeaderRequestID(v)
+	return _u
+}
+
+// SetNillableProbeLeaderRequestID sets the "probe_leader_request_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableProbeLeaderRequestID(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetProbeLeaderRequestID(*v)
+	}
+	return _u
+}
+
+// ClearProbeLeaderRequestID clears the value of the "probe_leader_request_id" field.
+func (_u *UsageLogUpdateOne) ClearProbeLeaderRequestID() *UsageLogUpdateOne {
+	_u.mutation.ClearProbeLeaderRequestID()
+	return _u
+}
+
+// SetProviderCostRecorded sets the "provider_cost_recorded" field.
+func (_u *UsageLogUpdateOne) SetProviderCostRecorded(v bool) *UsageLogUpdateOne {
+	_u.mutation.SetProviderCostRecorded(v)
+	return _u
+}
+
+// SetNillableProviderCostRecorded sets the "provider_cost_recorded" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableProviderCostRecorded(v *bool) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetProviderCostRecorded(*v)
+	}
+	return _u
+}
+
 // SetUser sets the "user" edge to the User entity.
 func (_u *UsageLogUpdateOne) SetUser(v *User) *UsageLogUpdateOne {
 	return _u.SetUserID(v.ID)
@@ -2636,6 +2749,11 @@ func (_u *UsageLogUpdateOne) check() error {
 	if v, ok := _u.mutation.VideoResolution(); ok {
 		if err := usagelog.VideoResolutionValidator(v); err != nil {
 			return &ValidationError{Name: "video_resolution", err: fmt.Errorf(`ent: validator failed for field "UsageLog.video_resolution": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.ProbeLeaderRequestID(); ok {
+		if err := usagelog.ProbeLeaderRequestIDValidator(v); err != nil {
+			return &ValidationError{Name: "probe_leader_request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.probe_leader_request_id": %w`, err)}
 		}
 	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
@@ -2924,6 +3042,18 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.CacheTTLOverridden(); ok {
 		_spec.SetField(usagelog.FieldCacheTTLOverridden, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ProbeCoalesced(); ok {
+		_spec.SetField(usagelog.FieldProbeCoalesced, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ProbeLeaderRequestID(); ok {
+		_spec.SetField(usagelog.FieldProbeLeaderRequestID, field.TypeString, value)
+	}
+	if _u.mutation.ProbeLeaderRequestIDCleared() {
+		_spec.ClearField(usagelog.FieldProbeLeaderRequestID, field.TypeString)
+	}
+	if value, ok := _u.mutation.ProviderCostRecorded(); ok {
+		_spec.SetField(usagelog.FieldProviderCostRecorded, field.TypeBool, value)
 	}
 	if _u.mutation.UserCleared() {
 		edge := &sqlgraph.EdgeSpec{
