@@ -32,7 +32,7 @@ func newSessionIDUsageLog(sessionID *string) *service.UsageLog {
 // arg slice / arg-type table so the INSERT column lists stay in sync. The
 // native compaction field precedes created_at, followed by probe attribution.
 func TestPrepareUsageLogInsert_SessionIDArgWiring(t *testing.T) {
-	require.Len(t, usageLogInsertArgTypes, 65, "arg-type table must include requested/native fields and probe attribution")
+	require.Len(t, usageLogInsertArgTypes, 66, "arg-type table must include requested/native fields and probe attribution")
 	sessionID := "sess-persisted-123"
 	prepared := prepareUsageLogInsert(newSessionIDUsageLog(&sessionID))
 

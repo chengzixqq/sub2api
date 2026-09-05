@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 22 // v22: group free_openai_fast and reasoning policy fields
+const apiKeyAuthSnapshotVersion = 23 // v23: group codex_models_manifest_config field
 
 func cloneAuthInt64Ptr(in *int64) *int64 {
 	if in == nil {
@@ -526,6 +526,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			DefaultMappedModel:              apiKey.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     cloneAuthDispatchConfig(apiKey.Group.MessagesDispatchModelConfig),
 			ModelsListConfig:                cloneAuthModelsListConfig(apiKey.Group.ModelsListConfig),
+			CodexModelsManifestConfig:       apiKey.Group.CodexModelsManifestConfig,
 			RPMLimit:                        apiKey.Group.RPMLimit,
 			MaxReasoningEffort:              apiKey.Group.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:     apiKey.Group.MaxReasoningEffortOverLimit,
@@ -627,6 +628,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			DefaultMappedModel:              snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     cloneAuthDispatchConfig(snapshot.Group.MessagesDispatchModelConfig),
 			ModelsListConfig:                cloneAuthModelsListConfig(snapshot.Group.ModelsListConfig),
+			CodexModelsManifestConfig:       snapshot.Group.CodexModelsManifestConfig,
 			RPMLimit:                        snapshot.Group.RPMLimit,
 			MaxReasoningEffort:              snapshot.Group.MaxReasoningEffort,
 			MaxReasoningEffortOverLimit:     snapshot.Group.MaxReasoningEffortOverLimit,
