@@ -843,7 +843,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon, ownerOnly: true },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring, ownerOnly: true },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true, ownerOnly: true },
-    { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
+    { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
     // 工作区是「发放权限」的入口，仅站长可见（与路由 requiresOwner 一致）。
     { path: '/admin/workspaces', label: t('nav.workspaces'), icon: FolderIcon, hideInSimpleMode: true, ownerOnly: true },
     // 结算总览是 ownerOnly 的反面：只对 vendor 有意义（站长看这页是空的）。

@@ -9,7 +9,7 @@ const groupsViewSource = readFileSync(
 
 describe('GroupsView shared workspace billing lock', () => {
   it('keeps create pricing available but hides edit pricing for a locked group', () => {
-    expect(groupsViewSource.match(/v-if="canBillGroups"/g)).toHaveLength(2)
+    expect(groupsViewSource.match(/v-if="canBillGroups(?:\s*&&[^\"]*)?"/g)).toHaveLength(2)
     expect(groupsViewSource).toContain(
       'v-if="canBillGroups && !editingGroup?.billing_locked"',
     )

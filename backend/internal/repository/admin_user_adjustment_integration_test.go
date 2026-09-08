@@ -522,7 +522,7 @@ func newAdjustmentIntegrationAdminServiceWithGroupRates(
 	groupRateRepo service.UserGroupRateRepository,
 ) service.AdminService {
 	return service.NewAdminService(
-		userRepo, nil, nil, nil, nil, redeemRepo, adjustmentRepo, groupRateRepo, nil, nil,
+		nil, userRepo, nil, nil, nil, nil, redeemRepo, adjustmentRepo, groupRateRepo, nil, nil,
 		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }

@@ -65,7 +65,7 @@ func TestAPIKeyAuthSnapshotDoesNotAliasMutablePricingInputs(t *testing.T) {
 			ModelRouting:                map[string][]int64{"claude-*": {11, 12}},
 			SupportedModelScopes:        []string{"claude"},
 			MessagesDispatchModelConfig: OpenAIMessagesDispatchModelConfig{ExactModelMappings: map[string]string{"a": "b"}},
-			ModelsListConfig:            GroupModelsListConfig{Models: []string{"m1"}},
+			ModelAllowlist:              GroupModelAllowlist{Enabled: true, Models: []string{"m1"}},
 			ReasoningEffortMappings:     []ReasoningEffortMapping{{From: "low", To: "minimal"}},
 		},
 	}
@@ -77,7 +77,7 @@ func TestAPIKeyAuthSnapshotDoesNotAliasMutablePricingInputs(t *testing.T) {
 	apiKey.Group.ModelRouting["claude-*"][0] = 99
 	apiKey.Group.SupportedModelScopes[0] = "changed"
 	apiKey.Group.MessagesDispatchModelConfig.ExactModelMappings["a"] = "changed"
-	apiKey.Group.ModelsListConfig.Models[0] = "changed"
+	apiKey.Group.ModelAllowlist.Models[0] = "changed"
 	apiKey.Group.ReasoningEffortMappings[0].To = "changed"
 
 	restored := svc.snapshotToAPIKey("k", snapshot)
@@ -87,6 +87,10 @@ func TestAPIKeyAuthSnapshotDoesNotAliasMutablePricingInputs(t *testing.T) {
 	require.Equal(t, int64(11), restored.Group.ModelRouting["claude-*"][0])
 	require.Equal(t, "claude", restored.Group.SupportedModelScopes[0])
 	require.Equal(t, "b", restored.Group.MessagesDispatchModelConfig.ExactModelMappings["a"])
-	require.Equal(t, "m1", restored.Group.ModelsListConfig.Models[0])
+	require.Equal(t, "m1", restored.Group.ModelAllowlist.Models[0])
+	require.True(t, restored.Group.ModelAllowlist.Allows("m1"))
+	require.False(t, restored.Group.ModelAllowlist.Allows("changed"))
+	restored.Group.ModelAllowlist.Models[0] = "another"
+	require.Equal(t, "m1", svc.snapshotToAPIKey("k", snapshot).Group.ModelAllowlist.Models[0])
 	require.Equal(t, "minimal", restored.Group.ReasoningEffortMappings[0].To)
 }

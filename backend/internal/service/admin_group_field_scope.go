@@ -196,8 +196,8 @@ func clearOpsFields(in *UpdateGroupInput) []string {
 	if in.MessagesDispatchModelConfig != nil {
 		drop("messages_dispatch_model_config", func() { in.MessagesDispatchModelConfig = nil })
 	}
-	if in.ModelsListConfig != nil {
-		drop("models_list_config", func() { in.ModelsListConfig = nil })
+	if in.ModelAllowlist != nil {
+		drop("model_allowlist", func() { in.ModelAllowlist = nil })
 	}
 	if in.RPMLimit != nil {
 		drop("rpm_limit", func() { in.RPMLimit = nil })

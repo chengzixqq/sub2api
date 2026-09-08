@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 23 // v23: group codex_models_manifest_config field
+const apiKeyAuthSnapshotVersion = 24 // v24: group model_allowlist field (renamed from models_list_config, enforcing semantics)
 
 func cloneAuthInt64Ptr(in *int64) *int64 {
 	if in == nil {
@@ -96,7 +96,7 @@ func cloneAuthStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneAuthModelsListConfig(in GroupModelsListConfig) GroupModelsListConfig {
+func cloneAuthModelAllowlist(in GroupModelAllowlist) GroupModelAllowlist {
 	in.Models = cloneAuthStrings(in.Models)
 	return in
 }
@@ -525,7 +525,7 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			FreeOpenAIFast:                  apiKey.Group.FreeOpenAIFast,
 			DefaultMappedModel:              apiKey.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     cloneAuthDispatchConfig(apiKey.Group.MessagesDispatchModelConfig),
-			ModelsListConfig:                cloneAuthModelsListConfig(apiKey.Group.ModelsListConfig),
+			ModelAllowlist:                  cloneAuthModelAllowlist(apiKey.Group.ModelAllowlist),
 			CodexModelsManifestConfig:       apiKey.Group.CodexModelsManifestConfig,
 			RPMLimit:                        apiKey.Group.RPMLimit,
 			MaxReasoningEffort:              apiKey.Group.MaxReasoningEffort,
@@ -627,7 +627,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			FreeOpenAIFast:                  snapshot.Group.FreeOpenAIFast,
 			DefaultMappedModel:              snapshot.Group.DefaultMappedModel,
 			MessagesDispatchModelConfig:     cloneAuthDispatchConfig(snapshot.Group.MessagesDispatchModelConfig),
-			ModelsListConfig:                cloneAuthModelsListConfig(snapshot.Group.ModelsListConfig),
+			ModelAllowlist:                  cloneAuthModelAllowlist(snapshot.Group.ModelAllowlist),
 			CodexModelsManifestConfig:       snapshot.Group.CodexModelsManifestConfig,
 			RPMLimit:                        snapshot.Group.RPMLimit,
 			MaxReasoningEffort:              snapshot.Group.MaxReasoningEffort,
