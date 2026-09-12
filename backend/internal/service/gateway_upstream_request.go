@@ -668,6 +668,33 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 			result.filterSet[rule.BetaToken] = struct{}{}
 		}
 	}
+	// Apply the customization policy to beta tokens that are not represented by
+	// an explicit rule. Native API-key passthrough can preserve unknown client
+	// declarations in magic mode; strict/translated paths filter them.
+	if customization.UnknownBetaAction != ClaudeUnknownBetaPass && betaHeader != "" {
+		known := make(map[string]struct{}, len(settings.Rules))
+		for _, rule := range settings.Rules {
+			if token := strings.TrimSpace(rule.BetaToken); token != "" {
+				known[token] = struct{}{}
+			}
+		}
+		native := account != nil && account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey
+		for _, token := range strings.Split(betaHeader, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			if _, ok := known[token]; ok {
+				continue
+			}
+			if customization.UnknownBetaAction == ClaudeUnknownBetaFilter || !native {
+				if result.filterSet == nil {
+					result.filterSet = make(map[string]struct{})
+				}
+				result.filterSet[token] = struct{}{}
+			}
+		}
+	}
 	return result
 }
 
