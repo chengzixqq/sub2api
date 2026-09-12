@@ -79,7 +79,7 @@ import { Icon } from '@/components/icons'
 import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 import type { Account } from '@/types'
 
-const props = defineProps<{ show: boolean; account: Account | null; position: { top: number; left: number } | null }>()
+const props = defineProps<{ show: boolean; account: Account | null; anchorRect: DOMRect | null }>()
 const emit = defineEmits(['close', 'test', 'stats', 'schedule', 'duplicate', 'reauth', 'refresh-token', 'recover-state', 'reset-quota', 'set-privacy', 'create-spark-shadow', 'settlement'])
 const { t } = useI18n()
 // 结算倍率入口只对供应商有意义：站长没有「自己的工作区」，
