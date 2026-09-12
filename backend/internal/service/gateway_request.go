@@ -928,7 +928,11 @@ const anthropicBetaContextManagementToken = "context-management-2025-06-27"
 // 返回 (sanitized, changed)：changed 表示是否发生实际删除，供调用方决定
 // 是否重用原 body 引用。
 func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string) ([]byte, bool) {
-	return sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, anthropicBetaHeader, ClaudeFallbackNativePassthrough, true)
+	// Legacy callers (Antigravity/compatibility routes) use the conservative
+	// capability-only sanitizer. The Claude managed and API-key paths opt into
+	// the explicit policy-aware helper below. An empty policy selects the legacy
+	// beta-gated behavior (preserve only when the matching beta is present).
+	return sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, anthropicBetaHeader, "", true)
 }
 
 // sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy applies capability
@@ -956,9 +960,12 @@ func sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body []byte, anthropic
 		body, changed = b, true
 	}
 
-	// Fallback fields are preserved only on native/automatic passthrough when
-	// the client also supplied the corresponding beta. Strict and OAuth mimic
-	// modes strip them regardless of client body contents.
+	// Fallback fields are preserved on native/automatic passthrough exactly as
+	// the client sent them. The passthrough contract is to leave client fallback
+	// semantics untouched; in particular, do not manufacture a beta header or
+	// silently delete the trigger when a client uses an upstream-compatible
+	// fallback field without advertising the beta token. Strict and OAuth mimic
+	// modes still strip these non-standard fields.
 	if fallbackPolicy == ClaudeFallbackStrict || !nativePassthrough {
 		if b, deleted := deleteAnthropicBodyField(body, "fallbacks"); deleted {
 			body, changed = b, true
@@ -966,7 +973,7 @@ func sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body []byte, anthropic
 		if b, deleted := deleteAnthropicBodyField(body, "fallback_credit_token"); deleted {
 			body, changed = b, true
 		}
-	} else {
+	} else if fallbackPolicy == "" {
 		if b, deleted := stripAnthropicBodyFieldUnlessBeta(body, "fallbacks", anthropicBetaHeader, claude.BetaServerSideFallback); deleted {
 			body, changed = b, true
 		}

@@ -182,8 +182,10 @@ func TestBuildUpstreamRequest_OAuthMimicHaiku_StripsFallbacksEndToEnd(t *testing
 		"mimic beta 集合本身不受影响")
 }
 
-// API-key passthrough + 客户端 header 未带 fallback beta → strip
-func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsFallbacksWhenClientHeaderMissingBeta(t *testing.T) {
+// API-key passthrough + 客户端 header 未带 fallback beta → 仍原样透传。
+// 自动透传的约定是保留客户端 fallback 语义；网关不擅自删除触发字段，
+// 也不替客户端补 beta header。
+func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_PreservesFallbacksWhenClientHeaderMissingBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -197,8 +199,12 @@ func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsFallbacksWhenClien
 		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
 	)
 	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, req), "fallbacks").Exists(),
-		"API-key passthrough + 客户端未带 fallback beta → strip body 字段")
+	outBody := readUpstreamBodyForTest(t, req)
+	require.True(t, gjson.GetBytes(outBody, "fallbacks").Exists(),
+		"API-key passthrough + 客户端未带 fallback beta → 仍保留 body 字段")
+	require.Equal(t, "default", gjson.GetBytes(outBody, "fallbacks").String())
+	require.Equal(t, "oauth-2025-04-20", getHeaderRaw(req.Header, "anthropic-beta"),
+		"透传不应替客户端补 server-side-fallback beta")
 }
 
 // API-key passthrough + 客户端 header 带 fallback beta → 保留（不过度删除）
