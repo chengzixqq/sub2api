@@ -402,7 +402,7 @@ func (s *GatewayService) applyClaudeCodeOAuthMimicryToBody(
 		if fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header); err == nil && fp != nil {
 			mimicMPT := false
 			if s.settingService != nil {
-				_, mimicMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
+				mimicMPT = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account).MetadataPassthrough
 			}
 			if !mimicMPT {
 				if uid := s.buildOAuthMetadataUserIDFromBody(ctx, account, fp, body); uid != "" {
