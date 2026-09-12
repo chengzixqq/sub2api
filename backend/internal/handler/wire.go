@@ -119,6 +119,7 @@ func ProvideGatewayHandler(
 	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
+	geminiCompatService.SetSettingService(settingService)
 	h.securityAuditCoordinator = coordinator
 	return h
 }

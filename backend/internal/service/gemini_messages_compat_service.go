@@ -55,6 +55,15 @@ type GeminiMessagesCompatService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
+	settingService            *SettingService
+}
+
+// SetSettingService attaches optional compatibility settings without changing
+// the constructor signature used by existing callers and tests.
+func (s *GeminiMessagesCompatService) SetSettingService(settings *SettingService) {
+	if s != nil {
+		s.settingService = settings
+	}
 }
 
 func (s *GeminiMessagesCompatService) readUpstreamErrorBody(resp *http.Response) []byte {
@@ -582,6 +591,10 @@ func (s *GeminiMessagesCompatService) SelectAccountForAIStudioEndpoints(ctx cont
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
+		policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+		c.Set(redactUpstreamURLContextKey, policy.URLRedactionEnabled)
+	}
 	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
 
