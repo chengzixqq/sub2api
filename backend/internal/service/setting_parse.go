@@ -195,6 +195,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyProbeCoalescingWindowSeconds:         "60",
 		SettingKeyProbeCoalescingLeaderTimeoutSeconds:  "8",
 		SettingKeyProbeCoalescingAttemptBudget:         "8",
+		SettingKeyChannelMonitorHideUserRanking:        "false",
 
 		// Grok compatibility defaults: cross-client mapping stays enabled unless
 		// operators explicitly disable it.
@@ -813,6 +814,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.ProbeCoalescingWindowSeconds = parseProbePositive(settings[SettingKeyProbeCoalescingWindowSeconds], 60, 3600)
 	result.ProbeCoalescingLeaderTimeoutSeconds = parseProbePositive(settings[SettingKeyProbeCoalescingLeaderTimeoutSeconds], 8, 60)
 	result.ProbeCoalescingAttemptBudget = parseProbePositive(settings[SettingKeyProbeCoalescingAttemptBudget], 8, 64)
+	result.ChannelMonitorHideUserRanking = isTrueSettingValue(settings[SettingKeyChannelMonitorHideUserRanking])
 
 	// Grok default mapping policy
 	result.GrokDefaultTextModel = strings.TrimSpace(settings[SettingKeyGrokDefaultTextModel])
@@ -1014,6 +1016,15 @@ func clampAffiliateRebateRate(value float64) float64 {
 func isFalseSettingValue(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "false", "0", "off", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTrueSettingValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "on", "enabled":
 		return true
 	default:
 		return false

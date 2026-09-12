@@ -639,6 +639,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/customization',
+    name: 'AdminCustomization',
+    component: () => import('@/views/admin/CustomizationView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Claude Compatibility',
+      titleKey: 'admin.customization.title',
+      descriptionKey: 'admin.customization.description'
+    }
+  },
+  {
     path: '/admin/risk-control',
     name: 'AdminRiskControl',
     component: () => import('@/views/admin/RiskControlView.vue'),

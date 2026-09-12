@@ -90,6 +90,7 @@ export default {
     },
     view: 'View',
     settings: 'Settings',
+    customization: 'Claude Compatibility',
     chooseFile: 'Choose File',
     upload: 'Upload',
     remove: 'Remove',

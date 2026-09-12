@@ -428,6 +428,12 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
+	if redact, _ := c.Get(redactUpstreamURLContextKey); redact == true {
+		ev.UpstreamURL = redactUpstreamURL(ev.UpstreamURL)
+		ev.UpstreamResponseBody = redactUpstreamURLs(ev.UpstreamResponseBody)
+		ev.Message = redactUpstreamURLs(ev.Message)
+		ev.Detail = redactUpstreamURLs(ev.Detail)
+	}
 	ev.Kind = strings.TrimSpace(ev.Kind)
 	ev.Stage = strings.TrimSpace(ev.Stage)
 	ev.Scope = strings.TrimSpace(ev.Scope)

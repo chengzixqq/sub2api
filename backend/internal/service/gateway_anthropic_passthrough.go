@@ -91,6 +91,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, err
 		}
 	}
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
 
 	var resp *http.Response
 	retryStart := time.Now()
@@ -120,7 +124,48 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 		}
 
-		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
+		// Keep passthrough body intact by default, but allow the same opt-in
+		// post-error signature retry as the managed gateway path. This is the
+		// only thinking rectifier in passthrough; no pre-filter is applied.
+		if resp.StatusCode == http.StatusBadRequest && claudePolicy.ThinkingSignatureRetryEnabled {
+			respBody, readErr := s.readUpstreamErrorBody(resp)
+			if readErr == nil && s.shouldRectifySignatureError(ctx, account, respBody, input.RequestModel) {
+				_ = resp.Body.Close()
+				filteredBody := FilterThinkingBlocksForRetry(input.Body, input.RequestModel)
+				retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+				retryReq, retryWireBody, buildErr := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(retryCtx, c, account, filteredBody, token)
+				releaseRetryCtx()
+				if buildErr == nil {
+					retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+					if retryErr == nil && retryResp != nil {
+						if retryResp.StatusCode < 400 {
+							resp = retryResp
+							input.Body = retryWireBody
+							if input.Parsed != nil {
+								if err := input.Parsed.ReplaceBody(retryWireBody); err != nil {
+									_ = retryResp.Body.Close()
+									return nil, err
+								}
+							}
+							logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: signature retry succeeded", account.ID)
+						} else {
+							if retryResp.Body != nil {
+								_ = retryResp.Body.Close()
+							}
+							resp = &http.Response{StatusCode: retryResp.StatusCode, Header: retryResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(respBody))}
+						}
+					} else {
+						resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
+					}
+				} else {
+					resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
+				}
+			} else if readErr == nil {
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
+		}
+
+		// 透传分支不执行通用 400 body 降级；上面的签名重试是唯一例外。
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
@@ -150,7 +195,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 					Passthrough:        true,
 					Kind:               "retry",
-					Message:            extractUpstreamErrorMessage(respBody),
+					Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -195,7 +240,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
 				Passthrough:        true,
 				Kind:               "retry_exhausted_failover",
-				Message:            extractUpstreamErrorMessage(respBody),
+				Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -231,7 +276,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			UpstreamRequestID:  resp.Header.Get("x-request-id"),
 			Passthrough:        true,
 			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
+			Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -321,7 +366,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
 		clientBeta = beta
 	}
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, clientBeta, claudePolicy.FallbackPolicy, true); changed {
 		body = sanitized
 	}
 

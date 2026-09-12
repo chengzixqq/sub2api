@@ -34,6 +34,9 @@ export default {
           showQuota: 'Show channel usage/balance to users',
           showQuotaHint:
             'When on, quota-mode channel monitors expose the linked account usage windows/balance on the user Channel Status page. Disabled by default; admins always see it.',
+          hideUserRanking: 'Hide user ranking from users',
+          hideUserRankingHint:
+            'When on, the user Channel Monitor V2 page hides the user ranking tab and the user API returns no ranking rows. Admins still see the ranking.',
         },
         availableChannels: {
           title: 'Available Channels',
@@ -101,8 +104,8 @@ export default {
               code: 'Invite Code',
               rate: 'Custom Rate',
               actions: 'Actions',
-            },
-          },
+      },
+    },
           modal: {
             addTitle: 'Add Custom User',
             editTitle: 'Edit Custom Settings',
@@ -1377,5 +1380,17 @@ export default {
       loadFailed: 'Failed to load profiles',
       saveFailed: 'Failed to save profile',
       deleteFailed: 'Failed to delete profile'
+    },
+    customization: {
+      title: 'Claude Compatibility',
+      description: 'Control Claude fallback, thinking, beta, and redaction behavior. Account overrides take precedence over global settings.',
+      accountTitle: 'Account-level Claude overrides',
+      accountHint: 'Choose inherit to follow the global policy. Account settings take precedence.',
+      inherit: 'Inherit global',
+      presets: { magic: 'Magic compatibility', official: 'Official compatibility', custom: 'Custom' },
+      options: { native_passthrough: 'Native / automatic passthrough', strict: 'Official strict', fable_native_passthrough: 'Fable passthrough', capability_aware: 'Capability aware', official_strict: 'Official strict', client_passthrough: 'Client passthrough', pass_on_native_only: 'Pass on native exits only', filter: 'Filter unknown beta', pass: 'Pass all' },
+      fields: {
+        fallback_policy: { label: 'Fallback policy', hint: 'Recommended: native/automatic passthrough; preserve client fallback fields only on native exits.' }, beta_policy_mode: { label: 'Beta policy', hint: 'Recommended: capability aware, keeping body fields and beta headers consistent.' }, unknown_beta_action: { label: 'Unknown beta behavior', hint: 'Recommended: pass only on native exits to avoid 400 responses.' }, thinking_prefilter_enabled: { label: 'Thinking pre-filter', hint: 'Recommended off in magic mode to preserve client signatures and history.' }, thinking_signature_retry_enabled: { label: 'Retry signature errors', hint: 'Recommended on; retry only after an explicit upstream signature error.' }, thinking_tool_downgrade_retry_enabled: { label: 'Retry with downgraded tool signatures', hint: 'Recommended on for the second compatibility retry stage.' }, fingerprint_unification: { label: 'Fingerprint unification', hint: 'Unifies X-Stainless headers for users sharing an OAuth account.' }, metadata_passthrough: { label: 'Metadata passthrough', hint: 'Recommended on; turning it off may inject compatibility metadata.' }, url_redaction_enabled: { label: 'API key URL redaction', hint: 'Recommended on; affects errors, logs, and diagnostics only, never the actual request URL.' }
+      }
     }
 }

@@ -11,6 +11,52 @@ import type {
   NotifyEmailEntry,
 } from "@/types";
 
+export interface ClaudeCustomizationSettings {
+  preset: "official" | "magic" | "custom";
+  fallback_policy: "strict" | "native_passthrough" | "fable_native_passthrough";
+  thinking_prefilter_enabled: boolean;
+  thinking_signature_retry_enabled: boolean;
+  thinking_tool_downgrade_retry_enabled: boolean;
+  beta_policy_mode: "official_strict" | "capability_aware" | "client_passthrough";
+  unknown_beta_action: "filter" | "pass_on_native_only" | "pass";
+  fingerprint_unification: boolean;
+  metadata_passthrough: boolean;
+  url_redaction_enabled: boolean;
+}
+
+export interface ClaudeCustomizationResponse {
+  global: ClaudeCustomizationSettings;
+  defaults?: ClaudeCustomizationSettings;
+  overrides?: Record<string, unknown>;
+  effective?: ClaudeCustomizationSettings;
+  precedence?: string[];
+}
+
+export async function getClaudeCustomization(): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.get<ClaudeCustomizationResponse>("/admin/settings/customization");
+  return data;
+}
+
+export async function updateClaudeCustomization(
+  settings: ClaudeCustomizationSettings,
+): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.put<ClaudeCustomizationResponse>(
+    "/admin/settings/customization",
+    settings,
+  );
+  return data;
+}
+
+export async function applyClaudeCustomizationPreset(
+  preset: ClaudeCustomizationSettings["preset"],
+): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.post<ClaudeCustomizationResponse>(
+    "/admin/settings/customization/apply-preset",
+    { preset },
+  );
+  return data;
+}
+
 export interface DefaultSubscriptionSetting {
   group_id: number;
   validity_days: number;
@@ -75,17 +121,19 @@ export type SchedulingThresholdPlatformType =
   | "grok"
   | "kimi"
   | "zhipu"
+  | "minimax"
 
 export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformType, number>
 
 // 与后端 AllowedSchedulingThresholdPlatforms 保持一致（deepseek 为余额型，
-// 走余额检测而非用量阈值）。
+// 走余额检测而非用量阈值；minimax Coding/Token Plan 有 5h/weekly 窗口）。
 export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] = [
   "openai",
   "anthropic",
   "grok",
   "kimi",
   "zhipu",
+  "minimax",
 ]
 
 export function normalizeAccountSchedulingThresholdsMap(
@@ -761,6 +809,7 @@ export interface SystemSettings {
   probe_coalescing_window_seconds?: number;
   probe_coalescing_leader_timeout_seconds?: number;
   probe_coalescing_attempt_budget?: number;
+  channel_monitor_hide_user_ranking?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled: boolean;
@@ -1069,6 +1118,7 @@ export interface UpdateSettingsRequest {
   probe_coalescing_window_seconds?: number;
   probe_coalescing_leader_timeout_seconds?: number;
   probe_coalescing_attempt_budget?: number;
+  channel_monitor_hide_user_ranking?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled?: boolean;
@@ -1632,6 +1682,9 @@ export const settingsAPI = {
   updateWebSearchEmulationConfig,
   testWebSearchEmulation,
   resetWebSearchUsage,
+  getClaudeCustomization,
+  updateClaudeCustomization,
+  applyClaudeCustomizationPreset,
 };
 
 export default settingsAPI;

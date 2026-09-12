@@ -110,6 +110,12 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 	if !ShouldRectifyThinkingSignatureError(mappedModel) {
 		return false
 	}
+	if s.settingService != nil {
+		customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
+		if !customization.ThinkingSignatureRetryEnabled {
+			return false
+		}
+	}
 	if account.Type == AccountTypeAPIKey {
 		// API Key 账号：独立开关，一次读取配置
 		settings, err := s.settingService.GetRectifierSettings(ctx)

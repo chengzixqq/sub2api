@@ -56,8 +56,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
 	enableFP, enableMPT := true, false
+	claudePolicy := DefaultClaudeCustomizationSettings()
 	if s.settingService != nil {
-		enableFP, enableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+		enableFP = claudePolicy.FingerprintUnification
+		enableMPT = claudePolicy.MetadataPassthrough
 	}
 	if account.IsOAuth() && s.identityService != nil {
 		// 1. 获取或创建指纹（包含随机生成的ClientID）
@@ -113,7 +116,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, !mimicClaudeCode); changed {
 		body = sanitized
 	}
 
@@ -630,12 +633,19 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 	if s.settingService == nil {
 		return betaPolicyResult{}
 	}
+	// Client passthrough intentionally leaves client-declared beta tokens alone
+	// on native Anthropic paths. Provider-specific builders still apply their
+	// protocol allowlists (Vertex/Bedrock) after this policy check.
+	customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
+	if customization.BetaPolicyMode == ClaudeBetaClientPassthrough {
+		return betaPolicyResult{}
+	}
 	settings, err := s.settingService.GetBetaPolicySettings(ctx)
 	if err != nil || settings == nil {
 		return betaPolicyResult{}
 	}
-	isOAuth := account.IsOAuth()
-	isBedrock := account.IsBedrock()
+	isOAuth := account != nil && account.IsOAuth()
+	isBedrock := account != nil && account.IsBedrock()
 	var result betaPolicyResult
 	for _, rule := range settings.Rules {
 		if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {

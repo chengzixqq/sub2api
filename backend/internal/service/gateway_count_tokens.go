@@ -163,7 +163,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
-	if resp.StatusCode == 400 && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if resp.StatusCode == 400 && claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 		logger.LegacyPrintf("service.gateway", "Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
 
 		filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
@@ -391,7 +395,11 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
 		clientBeta = beta
 	}
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, clientBeta, claudePolicy.FallbackPolicy, true); changed {
 		body = sanitized
 	}
 
@@ -468,8 +476,11 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）
 	// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
 	ctEnableFP, ctEnableMPT := true, false
+	claudePolicy := DefaultClaudeCustomizationSettings()
 	if s.settingService != nil {
-		ctEnableFP, ctEnableMPT, _ = s.settingService.GetGatewayForwardingSettings(ctx)
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+		ctEnableFP = claudePolicy.FingerprintUnification
+		ctEnableMPT = claudePolicy.MetadataPassthrough
 	}
 	var ctFingerprint *Fingerprint
 	if account.IsOAuth() && s.identityService != nil {
@@ -509,7 +520,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, !mimicClaudeCode); changed {
 		body = sanitized
 	}
 

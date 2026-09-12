@@ -7142,16 +7142,29 @@
                 </p>
               </div>
 
-              <div v-if="form.channel_monitor_mode === 'v2'" class="flex items-start justify-between gap-4">
-                <div class="min-w-0">
-                  <p class="text-sm font-medium text-gray-900 dark:text-white">
-                    {{ t('admin.settings.features.channelMonitor.hideThroughput') }}
-                  </p>
-                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t('admin.settings.features.channelMonitor.hideThroughputHint') }}
-                  </p>
+              <div v-if="form.channel_monitor_mode === 'v2'" class="space-y-4">
+                <div class="flex items-start justify-between gap-4">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium text-gray-900 dark:text-white">
+                      {{ t('admin.settings.features.channelMonitor.hideThroughput') }}
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.features.channelMonitor.hideThroughputHint') }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.channel_monitor_hide_throughput" />
                 </div>
-                <Toggle v-model="form.channel_monitor_hide_throughput" />
+                <div class="flex items-start justify-between gap-4">
+                  <div class="min-w-0">
+                    <p class="text-sm font-medium text-gray-900 dark:text-white">
+                      {{ t('admin.settings.features.channelMonitor.hideUserRanking') }}
+                    </p>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t('admin.settings.features.channelMonitor.hideUserRankingHint') }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.channel_monitor_hide_user_ranking" />
+                </div>
               </div>
 
               <div v-if="form.channel_monitor_mode === 'v1'" class="flex items-start justify-between gap-4">
@@ -9566,6 +9579,7 @@ type SettingsForm = Omit<
   probe_coalescing_window_seconds: number;
   probe_coalescing_leader_timeout_seconds: number;
   probe_coalescing_attempt_budget: number;
+  channel_monitor_hide_user_ranking: boolean;
   smtp_password: string;
   turnstile_secret_key: string;
   tencent_captcha_app_secret_key: string;
@@ -9885,6 +9899,7 @@ const form = reactive<SettingsForm>({
   probe_coalescing_leader_timeout_seconds:
     PROBE_COALESCING_DEFAULTS.leader_timeout_seconds,
   probe_coalescing_attempt_budget: PROBE_COALESCING_DEFAULTS.attempt_budget,
+  channel_monitor_hide_user_ranking: false,
   // Available Channels feature switch
   available_channels_enabled: false,
   // Model Plaza feature switches + description
@@ -10893,7 +10908,7 @@ async function loadSettings() {
     form.channel_monitor_show_quota = Boolean(
       settings.channel_monitor_show_quota
     );
-    form.probe_coalescing_mode = normalizeProbeCoalescingMode(
+  	form.probe_coalescing_mode = normalizeProbeCoalescingMode(
       settings.probe_coalescing_mode,
     );
     form.probe_coalescing_window_seconds = normalizeProbeCoalescingInteger(
@@ -10909,11 +10924,14 @@ async function loadSettings() {
         PROBE_COALESCING_LIMITS.leader_timeout_seconds.min,
         PROBE_COALESCING_LIMITS.leader_timeout_seconds.max,
       );
-    form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
+  	form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
       settings.probe_coalescing_attempt_budget,
       PROBE_COALESCING_DEFAULTS.attempt_budget,
       PROBE_COALESCING_LIMITS.attempt_budget.min,
       PROBE_COALESCING_LIMITS.attempt_budget.max,
+	);
+    form.channel_monitor_hide_user_ranking = Boolean(
+      settings.channel_monitor_hide_user_ranking
     );
     form.login_agreement_updated_at =
       settings.login_agreement_updated_at || "2026-03-31";
@@ -11594,6 +11612,7 @@ async function saveSettings() {
         Number(form.channel_monitor_default_interval_seconds) || 60,
       channel_monitor_hide_throughput: Boolean(form.channel_monitor_hide_throughput),
       channel_monitor_show_quota: Boolean(form.channel_monitor_show_quota),
+      channel_monitor_hide_user_ranking: Boolean(form.channel_monitor_hide_user_ranking),
       // Available Channels feature switch
       available_channels_enabled: form.available_channels_enabled,
       // Model Plaza feature switches + description

@@ -291,7 +291,9 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 
 	// 等待后台刷新真正失败并落地（失败会写入 backoff 时间戳），
 	// 只有在这之后读取快照，才能验证旧配置没有被失败的刷新清掉。
+	// Windows 单调时钟步进约 0.5ms，两次相邻调用可能读到同一时刻，需反复调用才能观察到 TTL 过期。
 	require.Eventually(t, func() bool {
+		_, _ = svc.Check(context.Background(), input)
 		_, calls := repo.calls()
 		return calls >= 2 && svc.runtimeRefreshRetryAt.Load() > 0
 	}, time.Second, time.Millisecond)

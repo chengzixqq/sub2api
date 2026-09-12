@@ -928,6 +928,14 @@ const anthropicBetaContextManagementToken = "context-management-2025-06-27"
 // 返回 (sanitized, changed)：changed 表示是否发生实际删除，供调用方决定
 // 是否重用原 body 引用。
 func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string) ([]byte, bool) {
+	return sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, anthropicBetaHeader, ClaudeFallbackNativePassthrough, true)
+}
+
+// sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy applies capability
+// sanitization and the configured fallback policy. Native/API-key passthrough
+// may retain client-declared fallback fields when their beta is present;
+// OAuth mimic and strict mode never manufacture or retain those fields.
+func sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body []byte, anthropicBetaHeader, fallbackPolicy string, nativePassthrough bool) ([]byte, bool) {
 	if len(body) == 0 {
 		return body, false
 	}
@@ -948,23 +956,38 @@ func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string)
 		body, changed = b, true
 	}
 
-	// fallbacks：server-side refusal fallback，仅接受 server-side-fallback beta。
-	if b, deleted := stripAnthropicBodyFieldUnlessBeta(
-		body, "fallbacks", anthropicBetaHeader, claude.BetaServerSideFallback,
-	); deleted {
-		body, changed = b, true
-	}
-
-	// fallback_credit_token：server-side-fallback 或（新旧任一）fallback-credit beta
-	// 任意一个即可保留。
-	if b, deleted := stripAnthropicBodyFieldUnlessBeta(
-		body, "fallback_credit_token", anthropicBetaHeader,
-		claude.BetaServerSideFallback, claude.BetaFallbackCredit, claude.BetaFallbackCreditLegacy,
-	); deleted {
-		body, changed = b, true
+	// Fallback fields are preserved only on native/automatic passthrough when
+	// the client also supplied the corresponding beta. Strict and OAuth mimic
+	// modes strip them regardless of client body contents.
+	if fallbackPolicy == ClaudeFallbackStrict || !nativePassthrough {
+		if b, deleted := deleteAnthropicBodyField(body, "fallbacks"); deleted {
+			body, changed = b, true
+		}
+		if b, deleted := deleteAnthropicBodyField(body, "fallback_credit_token"); deleted {
+			body, changed = b, true
+		}
+	} else {
+		if b, deleted := stripAnthropicBodyFieldUnlessBeta(body, "fallbacks", anthropicBetaHeader, claude.BetaServerSideFallback); deleted {
+			body, changed = b, true
+		}
+		if b, deleted := stripAnthropicBodyFieldUnlessBeta(body, "fallback_credit_token", anthropicBetaHeader, claude.BetaServerSideFallback, claude.BetaFallbackCredit, claude.BetaFallbackCreditLegacy); deleted {
+			body, changed = b, true
+		}
 	}
 
 	return body, changed
+}
+
+func deleteAnthropicBodyField(body []byte, field string) ([]byte, bool) {
+	if !gjson.GetBytes(body, field).Exists() {
+		return body, false
+	}
+	b, err := sjson.DeleteBytes(body, field)
+	if err != nil {
+		logger.LegacyPrintf("service.gateway", "[BetaFieldSanitize] sjson.DeleteBytes(%s) failed: %v", field, err)
+		return body, false
+	}
+	return b, true
 }
 
 // stripAnthropicBodyFieldUnlessBeta 当 field 存在且 anthropic-beta header 不含

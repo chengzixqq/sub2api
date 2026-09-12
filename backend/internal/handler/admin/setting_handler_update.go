@@ -340,6 +340,7 @@ type UpdateSettingsRequest struct {
 	ProbeCoalescingWindowSeconds        int    `json:"probe_coalescing_window_seconds"`
 	ProbeCoalescingLeaderTimeoutSeconds int    `json:"probe_coalescing_leader_timeout_seconds"`
 	ProbeCoalescingAttemptBudget        int    `json:"probe_coalescing_attempt_budget"`
+	ChannelMonitorHideUserRanking        *bool   `json:"channel_monitor_hide_user_ranking"`
 
 	// Grok model mapping policy
 	GrokDefaultTextModel           *string `json:"grok_default_text_model"`
@@ -1957,6 +1958,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.ProbeCoalescingAttemptBudget
 		}(),
+		ChannelMonitorHideUserRanking: func() bool {
+			if req.ChannelMonitorHideUserRanking != nil {
+				return *req.ChannelMonitorHideUserRanking
+			}
+			return previousSettings.ChannelMonitorHideUserRanking
+		}(),
 		GrokDefaultTextModel: func() string {
 			if req.GrokDefaultTextModel != nil {
 				return *req.GrokDefaultTextModel
@@ -2421,6 +2428,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		ProbeCoalescingWindowSeconds:         updatedSettings.ProbeCoalescingWindowSeconds,
 		ProbeCoalescingLeaderTimeoutSeconds:  updatedSettings.ProbeCoalescingLeaderTimeoutSeconds,
 		ProbeCoalescingAttemptBudget:         updatedSettings.ProbeCoalescingAttemptBudget,
+		ChannelMonitorHideUserRanking:        updatedSettings.ChannelMonitorHideUserRanking,
 
 		GrokDefaultTextModel:           updatedSettings.GrokDefaultTextModel,
 		GrokCrossClientModelMapEnabled: updatedSettings.GrokCrossClientModelMapEnabled,

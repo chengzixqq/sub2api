@@ -93,6 +93,17 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	// Resolve the effective Claude compatibility policy once for this request.
+	// Account-level overrides take precedence over the global policy and are
+	// reused by every retry attempt through gin.Context.
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if c != nil {
+		redact := claudePolicy.URLRedactionEnabled && account != nil && account.Type == AccountTypeAPIKey
+		c.Set(redactUpstreamURLContextKey, redact)
+	}
 	// Anthropic Fast is requested with speed=fast rather than OpenAI's
 	// service_tier. Attach it at this shared boundary so passthrough, OAuth and
 	// partial-stream results all use the same billing and usage-log path.
@@ -219,7 +230,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
 				// metadata 透传开启时跳过 metadata 注入
-				_, mimicMPT, _ := s.settingService.GetGatewayForwardingSettings(ctx)
+				mimicMPT := claudePolicy.MetadataPassthrough
 				if !mimicMPT {
 					if metadataUserID := s.buildOAuthMetadataUserID(parsed, account, fp); metadataUserID != "" {
 						normalizeOpts.injectMetadata = true
@@ -357,8 +368,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	//
 	// 仅 anthropic-strict 模型族执行此过滤；passback-required 上游 (DeepSeek/Kimi/GLM 等)
 	// 要求历史 thinking block 原样回传，过滤反而制造 400。reqModel 此时已是映射后的模型 ID。
-	if err := replaceBody(FilterThinkingBlocks(body, reqModel)); err != nil {
-		return nil, err
+	if claudePolicy.ThinkingPrefilterEnabled {
+		if err := replaceBody(FilterThinkingBlocks(body, reqModel)); err != nil {
+			return nil, err
+		}
 	}
 	// Chinese LLM thinking.type 协议差异补正（如 MiniMax 只接受 adaptive；Anthropic-SDK
 	// 客户端默认发 enabled）。仅对 passback-required 上游生效（claude-* 不会进来）。
@@ -403,7 +416,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if readErr == nil {
 				_ = resp.Body.Close()
 
-				if s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
+				if claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						ProxyID:            opsUpstreamProxyID(account),
 						ProxyName:          opsUpstreamProxyName(account),
@@ -414,7 +427,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						UpstreamRequestID:  resp.Header.Get("x-request-id"),
 						UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 						Kind:               "signature_error",
-						Message:            extractUpstreamErrorMessage(respBody),
+						Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 						Detail: func() string {
 							if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 								return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -486,7 +499,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									}(),
 								})
 								msg2 := extractUpstreamErrorMessage(retryRespBody)
-								if looksLikeToolSignatureError(msg2) && time.Since(retryStart) < maxRetryElapsed {
+								if claudePolicy.ThinkingToolDowngradeRetryEnabled && looksLikeToolSignatureError(msg2) && time.Since(retryStart) < maxRetryElapsed {
 									logger.LegacyPrintf("service.gateway", "Account %d: signature retry still failing and looks tool-related, retrying with tool blocks downgraded", account.ID)
 									filteredBody2 := FilterSignatureSensitiveBlocksForRetry(body, reqModel)
 									retryCtx2, releaseRetryCtx2 := detachStreamUpstreamContext(ctx, reqStream)
@@ -548,7 +561,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					break
 				}
 				// 不是签名错误（或整流器已关闭），继续检查 budget 约束
-				errMsg := extractUpstreamErrorMessage(respBody)
+				errMsg := sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody))
 				if isThinkingBudgetConstraintError(errMsg) && s.settingService.IsBudgetRectifierEnabled(ctx) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						ProxyID:            opsUpstreamProxyID(account),
@@ -632,7 +645,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
 					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 					Kind:               "retry",
-					Message:            extractUpstreamErrorMessage(respBody),
+					Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -687,7 +700,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
 				Kind:               "retry_exhausted_failover",
-				Message:            extractUpstreamErrorMessage(respBody),
+				Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -723,7 +736,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			UpstreamStatusCode: resp.StatusCode,
 			UpstreamRequestID:  resp.Header.Get("x-request-id"),
 			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
+			Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
@@ -749,7 +762,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			if s.shouldFailoverOn400(respBody) {
-				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+				upstreamMsg := strings.TrimSpace(sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 				upstreamDetail := ""
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {

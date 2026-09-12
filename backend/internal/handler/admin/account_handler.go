@@ -65,6 +65,7 @@ type AccountHandler struct {
 	grokImportProber        grokImportProber
 	upstreamBillingProbe    *service.UpstreamBillingProbeService
 	ollamaCloudUsage        *service.OllamaCloudUsageService
+	settingService          *service.SettingService
 	cfg                     *config.Config
 }
 
@@ -75,6 +76,15 @@ func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamB
 
 func (h *AccountHandler) SetOllamaCloudUsageService(usage *service.OllamaCloudUsageService) {
 	h.ollamaCloudUsage = usage
+}
+
+// SetClaudeCustomizationService attaches the shared settings service used by
+// account-level compatibility policy endpoints. Keeping this as a setter
+// preserves the existing constructor contract used by tests and Wire.
+func (h *AccountHandler) SetClaudeCustomizationService(settings *service.SettingService) {
+	if h != nil {
+		h.settingService = settings
+	}
 }
 
 // NewAccountHandler creates a new admin account handler

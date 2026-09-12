@@ -928,6 +928,7 @@ const adminNavItems = computed((): NavItem[] => {
     filtered.push({ path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon })
     if (canSeeSettings) {
       filtered.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+      filtered.push({ path: '/admin/customization', label: t('nav.customization'), icon: CogIcon })
     }
     for (const cm of customMenuItemsForAdmin.value) {
       filtered.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
@@ -937,6 +938,7 @@ const adminNavItems = computed((): NavItem[] => {
 
   if (canSeeSettings) {
     visible.push({ path: '/admin/settings', label: t('nav.settings'), icon: CogIcon })
+    visible.push({ path: '/admin/customization', label: t('nav.customization'), icon: CogIcon })
   }
   for (const cm of customMenuItemsForAdmin.value) {
     visible.push({ path: `/custom/${cm.id}`, label: cm.label, icon: null, iconSvg: cm.icon_svg })
