@@ -22,6 +22,10 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
 	}
+	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
+		policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+		c.Set(redactUpstreamURLContextKey, policy.URLRedactionEnabled)
+	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body.Bytes()
