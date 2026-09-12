@@ -33,8 +33,11 @@ import { onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { applyClaudeCustomizationPreset, getClaudeCustomization, updateClaudeCustomization, type ClaudeCustomizationSettings } from '@/api/admin/settings'
+import { useAppStore } from '@/stores/app'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 const { t } = useI18n()
+const appStore = useAppStore()
 const presets = ['magic', 'official', 'custom'] as const
 const fields = [
   { key: 'fallback_policy', type: 'select', options: ['native_passthrough', 'strict', 'fable_native_passthrough'] },
@@ -55,8 +58,31 @@ const form = reactive<ClaudeCustomizationSettings>({
 })
 const saving = ref(false)
 const message = ref('')
-async function load() { Object.assign(form, (await getClaudeCustomization()).global) }
-async function applyPreset(preset: ClaudeCustomizationSettings['preset']) { Object.assign(form, (await applyClaudeCustomizationPreset(preset)).global) }
-async function save() { saving.value = true; message.value = ''; try { Object.assign(form, (await updateClaudeCustomization(form)).global); message.value = t('common.saved') } finally { saving.value = false } }
+async function load() {
+  try {
+    Object.assign(form, (await getClaudeCustomization()).global)
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  }
+}
+async function applyPreset(preset: ClaudeCustomizationSettings['preset']) {
+  try {
+    Object.assign(form, (await applyClaudeCustomizationPreset(preset)).global)
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  }
+}
+async function save() {
+  saving.value = true
+  message.value = ''
+  try {
+    Object.assign(form, (await updateClaudeCustomization(form)).global)
+    message.value = t('common.saved')
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    saving.value = false
+  }
+}
 onMounted(load)
 </script>
