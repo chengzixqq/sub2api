@@ -10908,7 +10908,7 @@ async function loadSettings() {
     form.channel_monitor_show_quota = Boolean(
       settings.channel_monitor_show_quota
     );
-  	form.probe_coalescing_mode = normalizeProbeCoalescingMode(
+	form.probe_coalescing_mode = normalizeProbeCoalescingMode(
       settings.probe_coalescing_mode,
     );
     form.probe_coalescing_window_seconds = normalizeProbeCoalescingInteger(
@@ -10924,12 +10924,12 @@ async function loadSettings() {
         PROBE_COALESCING_LIMITS.leader_timeout_seconds.min,
         PROBE_COALESCING_LIMITS.leader_timeout_seconds.max,
       );
-  	form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
+	form.probe_coalescing_attempt_budget = normalizeProbeCoalescingInteger(
       settings.probe_coalescing_attempt_budget,
       PROBE_COALESCING_DEFAULTS.attempt_budget,
       PROBE_COALESCING_LIMITS.attempt_budget.min,
       PROBE_COALESCING_LIMITS.attempt_budget.max,
-	);
+	    );
     form.channel_monitor_hide_user_ranking = Boolean(
       settings.channel_monitor_hide_user_ranking
     );
