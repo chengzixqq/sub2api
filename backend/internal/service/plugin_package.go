@@ -150,13 +150,9 @@ func (i *PluginPackageInstaller) Install(ctx context.Context, reader io.Reader, 
 		return nil, fmt.Errorf("提交插件安装目录: %w", err)
 	}
 	extracted = true
-	// zip.OpenReader keeps the uploaded artifact open. Windows refuses to
-	// rename an open file, so release the reader before moving it into the
-	// durable packages directory. The deferred close remains a harmless
-	// fallback for earlier error paths.
-	if err := archive.Close(); err != nil {
-		return nil, fmt.Errorf("关闭插件包读取器: %w", err)
-	}
+	// closeArchive already released the reader before the install directory was
+	// renamed. Keep the idempotent deferred cleanup as the only close path so
+	// Windows does not turn a second Close into a false installation failure.
 
 	artifactPath := filepath.Join(packagesDir, manifest.ID+"-"+manifest.Version+"-"+artifactSHA[:12]+"-"+installNonce+".s2plugin")
 	if err := os.Rename(tempPath, artifactPath); err != nil {
