@@ -34,6 +34,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
+		policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+		c.Set(redactUpstreamURLContextKey, policy.URLRedactionEnabled)
+	}
 	ClearActualOpenAIUpstreamEndpoint(c)
 	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")

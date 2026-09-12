@@ -771,6 +771,11 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 ) (*OpenAIForwardResult, error) {
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(context.Background(), account, body)
+	if c != nil {
+		if redact, _ := c.Get(redactUpstreamURLContextKey); redact == true {
+			body = []byte(redactUpstreamURLs(string(body)))
+		}
+	}
 
 	// cyber_policy：兼容路径（Chat Completions / Anthropic）以各自格式回写错误，
 	// 不原样透传 responses 格式的 cyber body（否则对下游格式不合法）。cyber 是上游网络
