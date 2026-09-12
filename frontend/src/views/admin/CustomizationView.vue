@@ -12,10 +12,10 @@
         <div class="grid gap-5 md:grid-cols-2">
           <label v-for="field in fields" :key="field.key" class="block">
             <span class="text-sm font-medium text-gray-800 dark:text-gray-100">{{ t(`admin.customization.fields.${field.key}.label`) }}</span>
-            <select v-if="field.type === 'select'" v-model="form[field.key]" class="input mt-1 w-full">
+            <select v-if="field.type === 'select'" v-model="form[field.key]" class="input mt-1 w-full" @change="form.preset = 'custom'">
               <option v-for="option in field.options" :key="option" :value="option">{{ t(`admin.customization.options.${option}`) }}</option>
             </select>
-            <input v-else v-model="form[field.key]" type="checkbox" class="mt-2 h-4 w-4" />
+            <input v-else v-model="form[field.key]" type="checkbox" class="mt-2 h-4 w-4" @change="form.preset = 'custom'" />
             <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t(`admin.customization.fields.${field.key}.hint`) }}</span>
           </label>
         </div>
