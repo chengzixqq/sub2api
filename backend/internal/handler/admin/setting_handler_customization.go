@@ -65,7 +65,15 @@ func (h *SettingHandler) ApplyClaudeCustomizationPreset(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	response.Success(c, gin.H{"global": cfg})
+	// SetClaudeCustomizationSettings materializes built-in presets on its value
+	// receiver before persisting. Reload it so the response reflects the exact
+	// values now active instead of the pre-existing fields from the old preset.
+	persisted, err := h.settingService.GetClaudeCustomizationSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"global": persisted})
 }
 
 // ResetClaudeCustomization restores the recommended magic preset.
