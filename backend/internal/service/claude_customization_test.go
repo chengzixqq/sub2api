@@ -92,6 +92,24 @@ func TestClaudeCustomization_AccountOverridesHavePrecedence(t *testing.T) {
 	require.Len(t, overrides, 2)
 }
 
+func TestClaudeCustomization_RequestKeepsGlobalPolicyWhenAccountOverridesAreMalformed(t *testing.T) {
+	repo := &claudeCustomizationRepoStub{}
+	global := DefaultClaudeCustomizationSettings()
+	global.Preset = ClaudePresetCustom
+	global.FallbackPolicy = ClaudeFallbackStrict
+	raw, err := json.Marshal(global)
+	require.NoError(t, err)
+	repo.value = string(raw)
+
+	svc := NewSettingService(repo, &config.Config{})
+	account := &Account{ID: 66, Extra: map[string]any{
+		AccountClaudeCustomizationExtraKey: "malformed",
+	}}
+
+	got := svc.ResolveClaudeCustomizationForRequest(context.Background(), nil, account)
+	require.Equal(t, ClaudeFallbackStrict, got.FallbackPolicy)
+}
+
 func TestClaudeCustomization_RequestCacheIsScopedToAccount(t *testing.T) {
 	repo := &claudeCustomizationRepoStub{}
 	global := DefaultClaudeCustomizationSettings()

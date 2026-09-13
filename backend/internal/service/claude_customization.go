@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // SettingKeyClaudeCustomization stores the global Claude compatibility policy.
@@ -245,7 +248,11 @@ func (s *SettingService) ResolveClaudeCustomizationForRequest(ctx context.Contex
 	}
 	policy, _, err := s.ResolveClaudeCustomization(ctx, account)
 	if err != nil {
-		policy = defaults
+		// ResolveClaudeCustomization returns the best valid lower-precedence
+		// layer with its error: global when an account override is malformed,
+		// or defaults when the global setting cannot be read. Keep that layer
+		// instead of discarding a valid global policy.
+		s.logClaudeCustomizationResolveFailure(ctx, account, err)
 	}
 	if c != nil {
 		var accountID int64
@@ -255,6 +262,31 @@ func (s *SettingService) ResolveClaudeCustomizationForRequest(ctx context.Contex
 		c.Set(claudeCustomizationRequestContextKey, claudeCustomizationRequestPolicy{accountID: accountID, policy: policy})
 	}
 	return policy
+}
+
+const claudeCustomizationResolveErrorLogInterval = time.Minute
+
+func (s *SettingService) logClaudeCustomizationResolveFailure(ctx context.Context, account *Account, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := s.claudeCustomizationErrorLogAt.Load()
+	if last != 0 && now-last < int64(claudeCustomizationResolveErrorLogInterval) {
+		return
+	}
+	if !s.claudeCustomizationErrorLogAt.CompareAndSwap(last, now) {
+		return
+	}
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	logger.FromContext(ctx).Warn(
+		"claude.customization_resolve_failed; using best available policy layer",
+		zap.Int64("account_id", accountID),
+		zap.Error(err),
+	)
 }
 
 func applyClaudeCustomizationOverrides(cfg *ClaudeCustomizationSettings, overrides map[string]any) {
