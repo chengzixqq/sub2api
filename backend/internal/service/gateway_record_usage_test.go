@@ -225,8 +225,9 @@ func TestGatewayServiceRecordUsage_GeminiFlashThinkingTierUsesCatalogPrice(t *te
 			require.NotNil(t, usageRepo.lastLog)
 			require.Equal(t, model, usageRepo.lastLog.Model)
 			require.InDelta(t, 0.02007585, usageRepo.lastLog.TotalCost, 1e-12)
-			require.InDelta(t, 0.0030113775, usageRepo.lastLog.ActualCost, 1e-12)
-			require.InDelta(t, 0.0030113775, userRepo.lastAmount, 1e-12)
+			expectedActual := QuantizeUsageBillingAmount(0.0030113775)
+			require.Equal(t, expectedActual, usageRepo.lastLog.ActualCost)
+			require.Equal(t, expectedActual, userRepo.lastAmount)
 		})
 	}
 }

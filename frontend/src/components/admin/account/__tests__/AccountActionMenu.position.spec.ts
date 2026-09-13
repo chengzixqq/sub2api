@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import AccountActionMenu from '../AccountActionMenu.vue'
 import type { Account } from '@/types'
 
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key })
-}))
+vi.mock('vue-i18n', async () => {
+  const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
+  return {
+    ...actual,
+    useI18n: () => ({ t: (key: string) => key })
+  }
+})
 
 const account = {
   id: 1,
@@ -41,6 +46,7 @@ enableAutoUnmount(afterEach)
 
 describe('AccountActionMenu viewport positioning', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     menuHeight = 305
     setViewport(1024, 768)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
