@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +90,24 @@ func TestClaudeCustomization_AccountOverridesHavePrecedence(t *testing.T) {
 	require.False(t, got.ThinkingPrefilterEnabled)
 	require.Equal(t, ClaudeFallbackStrict, got.FallbackPolicy)
 	require.Len(t, overrides, 2)
+}
+
+func TestClaudeCustomization_RequestCacheIsScopedToAccount(t *testing.T) {
+	repo := &claudeCustomizationRepoStub{}
+	global := DefaultClaudeCustomizationSettings()
+	raw, err := json.Marshal(global)
+	require.NoError(t, err)
+	repo.value = string(raw)
+	svc := NewSettingService(repo, &config.Config{})
+	c, _ := gin.CreateTestContext(nil)
+	first := &Account{ID: 1, Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{
+		"fallback_policy": ClaudeFallbackStrict,
+	}}}
+	second := &Account{ID: 2, Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{
+		"fallback_policy": ClaudeFallbackNativePassthrough,
+	}}}
+	require.Equal(t, ClaudeFallbackStrict, svc.ResolveClaudeCustomizationForRequest(context.Background(), c, first).FallbackPolicy)
+	require.Equal(t, ClaudeFallbackNativePassthrough, svc.ResolveClaudeCustomizationForRequest(context.Background(), c, second).FallbackPolicy)
 }
 
 func TestNormalizeClaudeCustomizationOverridesRejectsUnsafeFields(t *testing.T) {

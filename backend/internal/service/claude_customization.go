@@ -19,6 +19,11 @@ const AccountClaudeCustomizationExtraKey = "claude_customization_overrides"
 
 const claudeCustomizationRequestContextKey = "claude_customization_policy"
 
+type claudeCustomizationRequestPolicy struct {
+	accountID int64
+	policy    ClaudeCustomizationSettings
+}
+
 const (
 	ClaudePresetOfficial = "official"
 	ClaudePresetCustom   = "custom"
@@ -227,8 +232,14 @@ func (s *SettingService) ResolveClaudeCustomizationForRequest(ctx context.Contex
 	}
 	if c != nil {
 		if value, ok := c.Get(claudeCustomizationRequestContextKey); ok {
-			if policy, ok := value.(ClaudeCustomizationSettings); ok {
-				return policy
+			if cached, ok := value.(claudeCustomizationRequestPolicy); ok {
+				var accountID int64
+				if account != nil {
+					accountID = account.ID
+				}
+				if cached.accountID == accountID {
+					return cached.policy
+				}
 			}
 		}
 	}
@@ -237,7 +248,11 @@ func (s *SettingService) ResolveClaudeCustomizationForRequest(ctx context.Contex
 		policy = defaults
 	}
 	if c != nil {
-		c.Set(claudeCustomizationRequestContextKey, policy)
+		var accountID int64
+		if account != nil {
+			accountID = account.ID
+		}
+		c.Set(claudeCustomizationRequestContextKey, claudeCustomizationRequestPolicy{accountID: accountID, policy: policy})
 	}
 	return policy
 }
