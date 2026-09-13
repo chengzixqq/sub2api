@@ -105,7 +105,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	//   5) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
 	policyFilterSet := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
 	effectiveDropSet := mergeDropSets(policyFilterSet)
-	effectiveDropSet = preserveNativeAnthropicFallbackBetas(account, claudePolicy.FallbackPolicy, effectiveDropSet)
+	effectiveDropSet = applyNativeAnthropicFallbackBetaPolicy(account, claudePolicy.FallbackPolicy, effectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, effectiveDropSet,
 	)
@@ -729,30 +729,31 @@ func mergeDropSets(policySet map[string]struct{}, extra ...string) map[string]st
 	return m
 }
 
-// preserveNativeAnthropicFallbackBetas removes fallback beta names from a
-// dynamic drop set for native API-key forwarding. Fallback remains owned by
-// the configured upstream even if a generic policy later classifies the token
-// as filterable. Strict mode intentionally keeps the filtering behavior.
-func preserveNativeAnthropicFallbackBetas(account *Account, fallbackPolicy string, dropSet map[string]struct{}) map[string]struct{} {
-	if !isNativeAnthropicAPIKeyAccount(account) ||
-		fallbackPolicy == ClaudeFallbackStrict || len(dropSet) == 0 {
+// applyNativeAnthropicFallbackBetaPolicy keeps upstream fallback capability
+// tokens on native API-key forwarding, while explicit strict mode removes
+// them. The returned set is copied only when it actually needs modification.
+func applyNativeAnthropicFallbackBetaPolicy(account *Account, fallbackPolicy string, dropSet map[string]struct{}) map[string]struct{} {
+	if !isNativeAnthropicAPIKeyAccount(account) {
 		return dropSet
 	}
-	var preserved map[string]struct{}
+	if fallbackPolicy == ClaudeFallbackStrict {
+		strict := make(map[string]struct{}, len(dropSet)+3)
+		for token := range dropSet {
+			strict[token] = struct{}{}
+		}
+		strict[claude.BetaServerSideFallback] = struct{}{}
+		strict[claude.BetaFallbackCredit] = struct{}{}
+		strict[claude.BetaFallbackCreditLegacy] = struct{}{}
+		return strict
+	}
+	if len(dropSet) == 0 {
+		return dropSet
+	}
+	preserved := make(map[string]struct{}, len(dropSet))
 	for token := range dropSet {
 		if !isAnthropicFallbackBetaToken(token) {
-			continue
+			preserved[token] = struct{}{}
 		}
-		if preserved == nil {
-			preserved = make(map[string]struct{}, len(dropSet))
-			for key := range dropSet {
-				preserved[key] = struct{}{}
-			}
-		}
-		delete(preserved, token)
-	}
-	if preserved == nil {
-		return dropSet
 	}
 	return preserved
 }
@@ -803,7 +804,7 @@ func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Cont
 		}
 	}
 	betaHeader := ""
-	if c != nil {
+	if c != nil && c.Request != nil {
 		betaHeader = c.GetHeader("anthropic-beta")
 	}
 	return s.evaluateBetaPolicy(ctx, betaHeader, account, model).filterSet
@@ -883,6 +884,21 @@ func isAnthropicFallbackBetaToken(token string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func applyStrictAnthropicFallbackBetaHeader(header http.Header, fallbackPolicy string) {
+	if header == nil || fallbackPolicy != ClaudeFallbackStrict {
+		return
+	}
+	beta := stripBetaTokens(getHeaderRaw(header, "anthropic-beta"), []string{
+		claude.BetaServerSideFallback,
+		claude.BetaFallbackCredit,
+		claude.BetaFallbackCreditLegacy,
+	})
+	deleteHeaderAllForms(header, "anthropic-beta")
+	if beta != "" {
+		setHeaderRaw(header, "anthropic-beta", beta)
 	}
 }
 
