@@ -247,7 +247,13 @@ func TestNativeAnthropicAPIKeyPaths_StrictModeRemovesFallbackContract(t *testing
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 			c.Request.Header.Set("anthropic-beta", betaHeader)
-			account := &Account{ID: 904, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "upstream-key"}}
+			account := &Account{ID: 904, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"api_key":                    "upstream-key",
+				credKeyHeaderOverrideEnabled: true,
+				credKeyHeaderOverrides: map[string]any{
+					"anthropic-beta": betaHeader,
+				},
+			}}
 			svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
 
 			req, wireBody, err := tt.build(svc, c, account)
@@ -259,6 +265,42 @@ func TestNativeAnthropicAPIKeyPaths_StrictModeRemovesFallbackContract(t *testing
 			require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaFallbackCredit))
 		})
 	}
+
+	t.Run("count_tokens automatic passthrough", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+		account := &Account{ID: 905, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+			"api_key":                    "upstream-key",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"anthropic-beta": betaHeader,
+			},
+		}}
+		svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
+
+		req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-key")
+		require.NoError(t, err)
+		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaServerSideFallback))
+		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaFallbackCredit))
+	})
+
+	t.Run("count_tokens managed", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+		account := &Account{ID: 906, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+			"api_key":                    "upstream-key",
+			credKeyHeaderOverrideEnabled: true,
+			credKeyHeaderOverrides: map[string]any{
+				"anthropic-beta": betaHeader,
+			},
+		}}
+		svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
+
+		req, _, err := svc.buildCountTokensRequest(context.Background(), c, account, body, "upstream-key", "apikey", "claude-fable-5", false)
+		require.NoError(t, err)
+		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaServerSideFallback))
+		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaFallbackCredit))
+	})
 }
 
 func TestBetaPolicyFilterCacheIsScopedToAccountAndModel(t *testing.T) {
@@ -268,7 +310,77 @@ func TestBetaPolicyFilterCacheIsScopedToAccountAndModel(t *testing.T) {
 	setBetaPolicyFilterSet(c, first, "claude-fable-5", map[string]struct{}{"filtered-beta": {}})
 
 	svc := &GatewayService{}
-	require.Contains(t, svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-fable-5"), "filtered-beta")
-	require.NotContains(t, svc.getBetaPolicyFilterSet(context.Background(), c, second, "claude-fable-5"), "filtered-beta")
-	require.NotContains(t, svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-opus-5"), "filtered-beta")
+	filterSet, err := svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-fable-5")
+	require.NoError(t, err)
+	require.Contains(t, filterSet, "filtered-beta")
+	filterSet, err = svc.getBetaPolicyFilterSet(context.Background(), c, second, "claude-fable-5")
+	require.NoError(t, err)
+	require.NotContains(t, filterSet, "filtered-beta")
+	filterSet, err = svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-opus-5")
+	require.NoError(t, err)
+	require.NotContains(t, filterSet, "filtered-beta")
+}
+
+func TestBetaPolicyMappedModelBlockIsPropagatedAfterCacheMiss(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	globalRaw, err := json.Marshal(DefaultClaudeCustomizationSettings())
+	require.NoError(t, err)
+	betaRaw, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
+		BetaToken:      "mapped-model-only-beta",
+		Action:         BetaPolicyActionBlock,
+		Scope:          BetaPolicyScopeAPIKey,
+		ModelWhitelist: []string{"claude-opus-5"},
+		FallbackAction: BetaPolicyActionPass,
+	}}})
+	require.NoError(t, err)
+	repo := &fallbackPolicySettingRepo{values: map[string]string{
+		SettingKeyClaudeCustomization: string(globalRaw),
+		SettingKeyBetaPolicySettings:  string(betaRaw),
+	}}
+	svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
+	account := &Account{ID: 907, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "upstream-key"}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("anthropic-beta", "mapped-model-only-beta")
+
+	// Forward initially evaluates the client alias, then the account mapping
+	// selects claude-opus-5. Cache the alias result to reproduce that transition.
+	initial := svc.evaluateBetaPolicy(context.Background(), c.GetHeader("anthropic-beta"), account, "client-alias")
+	require.Nil(t, initial.blockErr)
+	setBetaPolicyFilterSet(c, account, "client-alias", initial.filterSet)
+
+	_, _, err = svc.buildUpstreamRequest(
+		context.Background(), c, account,
+		[]byte(`{"model":"claude-opus-5","messages":[]}`),
+		"upstream-key", "apikey", "claude-opus-5", false, false,
+	)
+	var blocked *BetaBlockedError
+	require.ErrorAs(t, err, &blocked)
+}
+
+func TestNativeAnthropicAPIKeyNonStrictDoesNotBlockFallbackBeta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	globalRaw, err := json.Marshal(DefaultClaudeCustomizationSettings())
+	require.NoError(t, err)
+	betaRaw, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
+		BetaToken: claude.BetaServerSideFallback,
+		Action:    BetaPolicyActionBlock,
+		Scope:     BetaPolicyScopeAPIKey,
+	}}})
+	require.NoError(t, err)
+	repo := &fallbackPolicySettingRepo{values: map[string]string{
+		SettingKeyClaudeCustomization: string(globalRaw),
+		SettingKeyBetaPolicySettings:  string(betaRaw),
+	}}
+	svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
+	account := &Account{ID: 908, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "upstream-key"}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("anthropic-beta", claude.BetaServerSideFallback)
+	body := []byte(`{"model":"claude-fable-5","fallbacks":"default","messages":[]}`)
+
+	req, wireBody, err := svc.buildUpstreamRequest(context.Background(), c, account, body, "upstream-key", "apikey", "claude-fable-5", false, false)
+	require.NoError(t, err)
+	require.Equal(t, claude.BetaServerSideFallback, getHeaderRaw(req.Header, "anthropic-beta"))
+	require.True(t, gjson.GetBytes(wireBody, "fallbacks").Exists())
 }

@@ -103,7 +103,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	//      被 Anthropic 判 third-party）
 	//   4) NewRequest（body 至此最终敲定）
 	//   5) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
-	policyFilterSet := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
+	policyFilterSet, err := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
+	if err != nil {
+		return nil, nil, err
+	}
 	effectiveDropSet := mergeDropSets(policyFilterSet)
 	effectiveDropSet = applyNativeAnthropicFallbackBetaPolicy(account, claudePolicy.FallbackPolicy, effectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
@@ -197,8 +200,11 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）。
-	// 放在所有 header 逻辑之后，确保配置值对同名头拥有最终决定权。
+	// 放在通用 header 逻辑之后；严格协议边界仍在下方做最终过滤。
 	account.ApplyHeaderOverrides(req.Header)
+	// Strict is a protocol boundary, so an account-level header override must
+	// not be able to reintroduce fallback capability tokens after sanitization.
+	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -655,10 +661,11 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 		}
 		effectiveAction, effectiveErrMsg := resolveRuleAction(rule, model)
 		// Fallback is owned by the configured upstream for native API-key
-		// forwarding. Do not let a generic beta policy rule remove the token that
-		// enables that upstream behavior unless strict mode was explicitly chosen.
+		// forwarding. Do not let a generic beta policy rule filter or block the
+		// token that enables that upstream behavior unless strict mode was chosen.
 		if nativeAnthropicAPIKey && customization.FallbackPolicy != ClaudeFallbackStrict &&
-			isAnthropicFallbackBetaToken(rule.BetaToken) && effectiveAction == BetaPolicyActionFilter {
+			isAnthropicFallbackBetaToken(rule.BetaToken) &&
+			(effectiveAction == BetaPolicyActionFilter || effectiveAction == BetaPolicyActionBlock) {
 			continue
 		}
 		switch effectiveAction {
@@ -789,7 +796,7 @@ func setBetaPolicyFilterSet(c *gin.Context, account *Account, model string, filt
 // In the /v1/messages path, Forward() evaluates the policy first and caches the result;
 // buildUpstreamRequest reuses it (zero extra DB calls). In the count_tokens path, this
 // evaluates on demand (one DB call).
-func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Context, account *Account, model string) map[string]struct{} {
+func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Context, account *Account, model string) (map[string]struct{}, error) {
 	if c != nil {
 		if v, ok := c.Get(betaPolicyFilterSetKey); ok {
 			if cached, ok := v.(betaPolicyFilterCache); ok {
@@ -798,7 +805,7 @@ func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Cont
 					accountID = account.ID
 				}
 				if cached.accountID == accountID && cached.model == model {
-					return cached.filterSet
+					return cached.filterSet, nil
 				}
 			}
 		}
@@ -807,7 +814,11 @@ func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Cont
 	if c != nil && c.Request != nil {
 		betaHeader = c.GetHeader("anthropic-beta")
 	}
-	return s.evaluateBetaPolicy(ctx, betaHeader, account, model).filterSet
+	policy := s.evaluateBetaPolicy(ctx, betaHeader, account, model)
+	if policy.blockErr != nil {
+		return nil, policy.blockErr
+	}
+	return policy.filterSet, nil
 }
 
 // betaPolicyScopeMatches checks whether a rule's scope matches the current account type.

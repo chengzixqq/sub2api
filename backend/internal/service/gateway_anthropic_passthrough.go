@@ -411,10 +411,10 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if getHeaderRaw(req.Header, "anthropic-version") == "" {
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
-	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
-
-	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	// 账号级请求头覆写覆盖通用来源；严格协议边界仍在下方做最终过滤。
 	account.ApplyHeaderOverrides(req.Header)
+	// Strict remains authoritative over account-level header overrides.
+	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
 
 	return req, body, nil
 }
@@ -531,6 +531,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		keepaliveCh = keepaliveTimer.C
 	}
 	lastDataAt := time.Now()
+	inErrorEvent := false
 	resetKeepaliveTimer := func() {
 		if keepaliveTimer == nil {
 			return
@@ -584,6 +585,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if gjson.Get(trimmed, "type").String() == "error" {
+					inErrorEvent = true
+				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
@@ -596,13 +600,21 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				parseSSEUsagePassthrough(data, usage)
 			} else {
 				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
-					sawTerminalEvent = true
+				if strings.HasPrefix(trimmed, "event:") {
+					eventName := strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+					inErrorEvent = strings.EqualFold(eventName, "error")
+					if anthropicStreamEventIsTerminal(eventName, "") {
+						sawTerminalEvent = true
+					}
 				}
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				clientLine := []byte(line)
+				if inErrorEvent {
+					clientLine = redactUpstreamResponseBodyForClient(c, clientLine)
+				}
+				restored := string(reverseToolNamesIfPresent(c, clientLine))
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -615,6 +627,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					lastDataAt = time.Now()
 					resetKeepaliveTimer()
 					inPartialEvent = false
+					inErrorEvent = false
 				} else {
 					inPartialEvent = true
 				}
