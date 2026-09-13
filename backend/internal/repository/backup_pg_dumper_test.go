@@ -28,6 +28,7 @@ func TestPgDumperHelperProcess(t *testing.T) {
 }
 
 func pgDumperHelperCommand(ctx context.Context, output string, fail bool) *exec.Cmd {
+	//nolint:gosec // os.Args[0] is the Go-created test binary, not external input.
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestPgDumperHelperProcess", "--")
 	cmd.Env = append(os.Environ(), pgDumperHelperEnv+"=1", "PG_DUMPER_HELPER_OUTPUT="+output)
 	if fail {

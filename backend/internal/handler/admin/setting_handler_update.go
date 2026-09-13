@@ -340,7 +340,7 @@ type UpdateSettingsRequest struct {
 	ProbeCoalescingWindowSeconds        int    `json:"probe_coalescing_window_seconds"`
 	ProbeCoalescingLeaderTimeoutSeconds int    `json:"probe_coalescing_leader_timeout_seconds"`
 	ProbeCoalescingAttemptBudget        int    `json:"probe_coalescing_attempt_budget"`
-	ChannelMonitorHideUserRanking        *bool   `json:"channel_monitor_hide_user_ranking"`
+	ChannelMonitorHideUserRanking       *bool  `json:"channel_monitor_hide_user_ranking"`
 
 	// Grok model mapping policy
 	GrokDefaultTextModel           *string `json:"grok_default_text_model"`
