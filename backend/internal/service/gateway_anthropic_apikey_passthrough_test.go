@@ -1190,6 +1190,31 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuc
 	require.Equal(t, upstreamJSON, rec.Body.String())
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_PreservesUpstreamFallbackResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-fable-5","max_tokens":200000,"fallbacks":"default","messages":[]}`)
+	upstreamJSON := `{"id":"msg_fallback","type":"message","model":"claude-opus-5","content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-5"},"trigger":{"category":"bio"}},{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"iterations":[{"type":"fallback_message","model":"claude-opus-5"}]}}`
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-fallback"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamJSON)),
+	}}
+	svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+	account := newAnthropicAPIKeyAccountForTest()
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "claude-fable-5", "claude-fable-5", false, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "claude-opus-5", result.UpstreamResponseModel)
+	require.JSONEq(t, upstreamJSON, rec.Body.String())
+	require.Equal(t, "fallback", gjson.Get(rec.Body.String(), "content.0.type").String())
+	require.Equal(t, "claude-opus-5", gjson.Get(rec.Body.String(), "usage.iterations.0.model").String())
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_InvalidTokenType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
