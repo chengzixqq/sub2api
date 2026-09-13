@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -217,6 +218,23 @@ func TestGatewayHandleStreamingAwareError_ResponsesStreamingEmitsResponseFailed(
 	_, errObj := parseResponsesFailedSSE(t, w.Body.String())
 	assert.Equal(t, "upstream_error", errObj["code"])
 	assert.Equal(t, "upstream gone", errObj["message"])
+}
+
+func TestGatewayHandleStreamingAwareError_RedactsURLForClientAndOps(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointMessages)
+	c.Set("claude_customization_redact_upstream_url", true)
+	h := &GatewayHandler{}
+
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error",
+		"request failed at https://private-upstream.example/v1/messages?key=secret", true)
+
+	require.NotContains(t, w.Body.String(), "private-upstream.example")
+	require.NotContains(t, w.Body.String(), "key=secret")
+	require.Contains(t, w.Body.String(), "https://***.***/v1/messages")
+	streamErr, ok := service.GetOpsStreamError(c)
+	require.True(t, ok)
+	require.NotContains(t, streamErr.Message, "private-upstream.example")
+	require.Equal(t, "request failed at https://***.***/v1/messages", streamErr.Message)
 }
 
 func TestGatewayAdmissionError_SynchronousIncludesGatewayCode(t *testing.T) {

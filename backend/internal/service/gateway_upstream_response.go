@@ -380,8 +380,8 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	if readErr != nil {
 		// 读取失败时 body 可能被截断，错误分类会基于不完整数据；记录日志以便排查，
 		// 避免静默吞掉导致误判。
-		logger.LegacyPrintf("service.gateway", "[Forward] Failed to fully read upstream error body: Account=%d(%s) Status=%d err=%v",
-			account.ID, account.Name, resp.StatusCode, readErr)
+		logger.LegacyPrintf("service.gateway", "[Forward] Failed to fully read upstream error body: Account=%d(%s) Status=%d err=%s",
+			account.ID, account.Name, resp.StatusCode, sanitizeUpstreamErrorMessageForContext(c, readErr.Error()))
 	}
 
 	// 调试日志：打印上游错误响应
@@ -391,6 +391,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	safeUpstreamMsg := sanitizeUpstreamErrorMessageForContext(c, upstreamMsg)
 
 	// Print a compact upstream request fingerprint when we hit the Claude Code OAuth
 	// credential scope error. This avoids requiring env-var tweaks in a fixed deploy.
@@ -473,7 +474,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			},
 		})
 
-		summary := upstreamMsg
+		summary := safeUpstreamMsg
 		if summary == "" {
 			summary = errMsg
 		}
@@ -494,9 +495,9 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		// copy written downstream.
 		clientBody := redactUpstreamResponseBodyForClient(c, body)
 		c.Data(http.StatusBadRequest, "application/json", clientBody)
-		summary := upstreamMsg
+		summary := safeUpstreamMsg
 		if summary == "" {
-			summary = truncateForLog(body, 512)
+			summary = truncateForLog(redactUpstreamResponseBodyForClient(c, body), 512)
 		}
 		if summary == "" {
 			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -537,10 +538,10 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		},
 	})
 
-	if upstreamMsg == "" {
+	if safeUpstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
-	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, safeUpstreamMsg)
 }
 
 func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, resp *http.Response, account *Account) {
@@ -580,6 +581,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	safeUpstreamMsg := sanitizeUpstreamErrorMessageForContext(c, upstreamMsg)
 
 	if isClaudeCodeCredentialScopeError(upstreamMsg) && c != nil {
 		if v, ok := c.Get(claudeMimicDebugInfoKey); ok {
@@ -643,7 +645,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			},
 		})
 
-		summary := upstreamMsg
+		summary := safeUpstreamMsg
 		if summary == "" {
 			summary = errMsg
 		}
@@ -662,10 +664,10 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		},
 	})
 
-	if upstreamMsg == "" {
+	if safeUpstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d (retries exhausted)", resp.StatusCode)
 	}
-	return nil, fmt.Errorf("upstream error: %d (retries exhausted) message=%s", resp.StatusCode, upstreamMsg)
+	return nil, fmt.Errorf("upstream error: %d (retries exhausted) message=%s", resp.StatusCode, safeUpstreamMsg)
 }
 
 // streamingResult 流式响应结果
@@ -1059,11 +1061,11 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 若尚未向客户端写过任何字节，包成 UpstreamFailoverError 让 handler 层走 failover/重试。
 				// 已经开始写流时 SSE 协议无 resume，只能透传错误事件给客户端。
 				// 注意:面向客户端的 disconnectMsg 必须用 sanitizeStreamError 剥离地址,
-				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
-				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
+				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。日志保留
+				// 错误类别，但仍遵循请求级上游 URL 脱敏策略。
 				disconnectMsg := "upstream stream disconnected: " + sanitizeStreamError(ev.err)
 				if !c.Writer.Written() {
-					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
+					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %s", account.ID, sanitizeUpstreamErrorMessageForContext(c, ev.err.Error()))
 					body, _ := json.Marshal(map[string]any{
 						"type": "error",
 						"error": map[string]string{

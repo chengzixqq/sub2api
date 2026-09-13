@@ -1132,6 +1132,8 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 				return
 			}
 		}
+		persistentMessage := service.SanitizeUpstreamErrorMessageForContext(c, parsed.Message)
+		persistentBody := []byte(service.SanitizeUpstreamErrorMessageForContext(c, string(body)))
 
 		// Skip logging if a passthrough rule with skip_monitoring=true matched.
 		if shouldSkipFinalOpsFailure(c) {
@@ -1226,9 +1228,9 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			IsBusinessLimited: isBusinessLimited,
 			IsCountTokens:     isCountTokensRequest(c),
 
-			ErrorMessage: parsed.Message,
+			ErrorMessage: persistentMessage,
 			// Sanitize each SSE data payload before the body enters the async queue.
-			ErrorBody:   sanitizeOpsSSEDataForPersistence(body),
+			ErrorBody:   sanitizeOpsSSEDataForPersistence(persistentBody),
 			ErrorSource: errorSource,
 			ErrorOwner:  errorOwner,
 
@@ -1237,7 +1239,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		applyOpsLatencyFieldsFromContext(c, entry)
 		applyOpsUpstreamFieldsFromContext(c, entry)
 		if parsed.StreamFailure {
-			if message := strings.TrimSpace(parsed.Message); message != "" {
+			if message := strings.TrimSpace(persistentMessage); message != "" {
 				entry.UpstreamErrorMessage = &message
 			}
 			if status >= 400 {
@@ -1436,6 +1438,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 	}
 	normalizedType := normalizeOpsErrorType(streamErr.ErrType, streamErr.Code)
 	phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, streamErr.Message, streamErr.Code, classifyStatus)
+	persistentMessage := service.SanitizeUpstreamErrorMessageForContext(c, streamErr.Message)
 	recordedStatus := wireStatus
 	if streamErr.CountTowardsSLA && streamErr.IntendedStatus >= 400 {
 		recordedStatus = streamErr.IntendedStatus
@@ -1443,7 +1446,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 	errorBody := ""
 	if streamErr.Code != "" {
 		if payload, err := json.Marshal(gin.H{"error": gin.H{
-			"type": normalizedType, "code": streamErr.Code, "message": streamErr.Message,
+			"type": normalizedType, "code": streamErr.Code, "message": persistentMessage,
 		}}); err == nil {
 			errorBody = string(payload)
 		}
@@ -1522,7 +1525,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		IsBusinessLimited: isBusinessLimited,
 		IsCountTokens:     isCountTokensRequest(c),
 
-		ErrorMessage: streamErr.Message,
+		ErrorMessage: persistentMessage,
 		ErrorBody:    errorBody,
 		ErrorSource:  errorSource,
 		ErrorOwner:   errorOwner,

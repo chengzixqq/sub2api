@@ -687,8 +687,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			// 调试日志：打印重试耗尽后的错误响应
+			logBody := redactUpstreamResponseBodyForClient(c, respBody)
 			logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -724,8 +725,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		// 调试日志：打印上游错误响应
+		logBody := redactUpstreamResponseBodyForClient(c, respBody)
 		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -786,10 +788,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				})
 
 				if s.cfg.Gateway.LogUpstreamErrorBody {
+					logBody := redactUpstreamResponseBodyForClient(c, respBody)
 					logger.LegacyPrintf("service.gateway",
 						"Account %d: 400 error, attempting failover: %s",
 						account.ID,
-						truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+						truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 					)
 				} else {
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
@@ -865,10 +868,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					Detail:             upstreamDetail,
 				})
 
+				logBody := redactUpstreamResponseBodyForClient(c, []byte(sseErr.RawData))
 				logger.LegacyPrintf("service.gateway",
 					"[Forward] SSE error event in stream: Account=%d(%s) RequestID=%s Body=%s",
 					account.ID, account.Name, resp.Header.Get("x-request-id"),
-					truncateString(sseErr.RawData, 1000),
+					truncateString(string(logBody), 1000),
 				)
 
 				failoverErr := &UpstreamFailoverError{

@@ -628,6 +628,26 @@ func TestLogOpsStreamError_RecordsInBandConcurrencyLimit(t *testing.T) {
 	require.Equal(t, "Concurrency limit exceeded for account, please retry later", job.entry.ErrorMessage)
 }
 
+func TestLogOpsStreamError_RedactsURLAtPersistenceBoundary(t *testing.T) {
+	setupOpsErrorLogTestQueue(t, 2)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Set("claude_customization_redact_upstream_url", true)
+	service.MarkOpsStreamFailure(c, "upstream_error", "upstream_failed",
+		"request failed at https://private-upstream.example/v1/messages?key=secret", http.StatusBadGateway)
+
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	logOpsStreamError(c, ops, http.StatusOK)
+
+	job := <-opsErrorLogQueue
+	require.NotContains(t, job.entry.ErrorMessage, "private-upstream.example")
+	require.NotContains(t, job.entry.ErrorBody, "private-upstream.example")
+	require.NotContains(t, job.entry.ErrorBody, "key=secret")
+	require.Contains(t, job.entry.ErrorMessage, "https://***.***/v1/messages")
+	require.Contains(t, job.entry.ErrorBody, "https://***.***/v1/messages")
+}
+
 func TestLogOpsStreamError_UpstreamFailureCountsTowardsSLA(t *testing.T) {
 	setupOpsErrorLogTestQueue(t, 4)
 
@@ -1847,6 +1867,30 @@ func TestSanitizeOpsSSEDataForPersistence_RedactsJSONFields(t *testing.T) {
 	require.NotContains(t, sanitized, "sk-secret")
 	require.Contains(t, sanitized, `"authorization":"[REDACTED]"`)
 	require.Contains(t, sanitized, `"api_key":"[REDACTED]"`)
+}
+
+func TestOpsErrorLoggerMiddleware_RedactsURLInTerminalSSE(t *testing.T) {
+	setupOpsErrorLogTestQueue(t, 2)
+	gin.SetMode(gin.TestMode)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	router := gin.New()
+	router.Use(OpsErrorLoggerMiddleware(ops))
+	router.POST("/v1/messages", func(c *gin.Context) {
+		c.Set("claude_customization_redact_upstream_url", true)
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.WriteString("event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"request failed at https://private-upstream.example/v1/messages?key=secret\"}}\n\n")
+	})
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, int64(1), OpsErrorLogQueueLength())
+	job := <-opsErrorLogQueue
+	require.NotContains(t, job.entry.ErrorMessage, "private-upstream.example")
+	require.NotContains(t, job.entry.ErrorBody, "private-upstream.example")
+	require.NotContains(t, job.entry.ErrorBody, "key=secret")
+	require.Contains(t, job.entry.ErrorMessage, "https://***.***/v1/messages")
+	require.Contains(t, job.entry.ErrorBody, "https://***.***/v1/messages")
 }
 
 func TestSanitizeOpsSSEDataForPersistence_DropsTruncatedJSONFragment(t *testing.T) {
