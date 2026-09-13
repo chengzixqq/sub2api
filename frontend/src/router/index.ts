@@ -647,7 +647,7 @@ const routes: RouteRecordRaw[] = [
       requiresAdmin: true,
       title: 'Claude Compatibility',
       titleKey: 'admin.customization.title',
-      descriptionKey: 'admin.customization.description'
+      descriptionKey: 'admin.customization.headerDescription'
     }
   },
   {
