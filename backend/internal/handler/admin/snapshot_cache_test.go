@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,7 +94,7 @@ func TestSnapshotCache_ETagFormat(t *testing.T) {
 
 func TestBuildETagFromAny_UnmarshalablePayload(t *testing.T) {
 	// channels are not JSON-serializable
-	etag := buildETagFromAny(make(chan int))
+	etag := usagequery.CacheETag(make(chan int))
 	require.Empty(t, etag)
 }
 

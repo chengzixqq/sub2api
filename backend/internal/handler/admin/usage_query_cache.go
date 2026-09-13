@@ -24,16 +24,18 @@ type usageStatsCacheKeyData struct {
 	NativeCompactionV2    *bool  `json:"native_compaction_v2"`
 	BillingType           *int8  `json:"billing_type"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
+	ModelFilterSource     string `json:"model_filter_source"`
+	RequestID             string `json:"request_id"`
 }
 
 func usageStatsCacheKey(filters usagestats.UsageLogFilters) string {
 	start := ""
 	if filters.StartTime != nil {
-		start = filters.StartTime.UTC().Format(time.RFC3339)
+		start = filters.StartTime.UTC().Format(time.RFC3339Nano)
 	}
 	end := ""
 	if filters.EndTime != nil {
-		end = filters.EndTime.UTC().Format(time.RFC3339)
+		end = filters.EndTime.UTC().Format(time.RFC3339Nano)
 	}
 	return mustMarshalDashboardCacheKey(usageStatsCacheKeyData{
 		StartTime:             start,
@@ -49,18 +51,16 @@ func usageStatsCacheKey(filters usagestats.UsageLogFilters) string {
 		NativeCompactionV2:    filters.NativeCompactionV2,
 		BillingType:           filters.BillingType,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
+		ModelFilterSource:     filters.ModelFilterSource,
+		RequestID:             filters.RequestID,
 	})
 }
 
 // getStatsCached 命中则返回缓存,未命中则回源 usageService 并写缓存。
 func (h *UsageHandler) getStatsCached(ctx context.Context, filters usagestats.UsageLogFilters) (*usagestats.UsageStats, bool, error) {
-	if usageQueryCacheRestricted(ctx) {
-		stats, err := h.usageService.GetStatsWithFilters(ctx, filters)
-		return stats, false, err
-	}
-	key := usageStatsCacheKey(filters)
-	entry, hit, err := usageStatsCache.GetOrLoad(key, func() (any, error) {
-		return h.usageService.GetStatsWithFilters(ctx, filters)
+	key := scopedUsageCacheKey(ctx, usageStatsCacheKey(filters))
+	entry, hit, err := usageStatsCache.GetOrLoadContext(ctx, key, func(work context.Context) (any, error) {
+		return h.usageService.GetStatsWithFilters(work, filters)
 	})
 	if err != nil {
 		return nil, hit, err

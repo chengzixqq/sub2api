@@ -28,8 +28,10 @@ func TestParseTimeRange(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/?start_date=bad&timezone=UTC", nil)
 	c.Request = req
 	start, end = parseTimeRange(c)
-	require.False(t, start.IsZero())
-	require.False(t, end.IsZero())
+	require.True(t, start.IsZero())
+	require.True(t, end.IsZero())
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.True(t, c.IsAborted())
 }
 
 func TestParseOpsViewParam(t *testing.T) {

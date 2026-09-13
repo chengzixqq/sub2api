@@ -1,13 +1,13 @@
 package admin
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -120,6 +120,17 @@ func (h *OpsHandler) GetErrorLogs(c *gin.Context) {
 	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
 	// buildOpsErrorLogsWhere 以 COALESCE(requested_model, model) 比对。
 	filter.Model = strings.TrimSpace(c.Query("model"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
+	for name, target := range map[string]**int64{"user_id": &filter.UserID, "api_key_id": &filter.APIKeyID} {
+		if raw := strings.TrimSpace(c.Query(name)); raw != "" {
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id <= 0 {
+				response.BadRequest(c, "Invalid "+name)
+				return
+			}
+			*target = &id
+		}
+	}
 
 	// 请求错误语义:client-visible status>=400 守卫恒生效（未设
 	// IncludeRecoveredUpstream 时 phase=upstream 不再绕过守卫），故
@@ -208,7 +219,7 @@ func (h *OpsHandler) GetErrorLogs(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Paginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize)
+	response.UsagePaginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize, false, dashboardQueryMetadata(c))
 }
 
 // ListRequestErrors lists client-visible request errors.
@@ -249,6 +260,17 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
 	// buildOpsErrorLogsWhere 以 COALESCE(requested_model, model) 比对。
 	filter.Model = strings.TrimSpace(c.Query("model"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
+	for name, target := range map[string]**int64{"user_id": &filter.UserID, "api_key_id": &filter.APIKeyID} {
+		if raw := strings.TrimSpace(c.Query(name)); raw != "" {
+			id, err := strconv.ParseInt(raw, 10, 64)
+			if err != nil || id <= 0 {
+				response.BadRequest(c, "Invalid "+name)
+				return
+			}
+			*target = &id
+		}
+	}
 
 	// 请求错误语义:client-visible status>=400 守卫恒生效（未设
 	// IncludeRecoveredUpstream 时 phase=upstream 不再绕过守卫），故
@@ -321,7 +343,7 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Paginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize)
+	response.UsagePaginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize, false, dashboardQueryMetadata(c))
 }
 
 // GetRequestError returns request error detail.
@@ -696,47 +718,6 @@ func (h *OpsHandler) UpdateErrorResolution(c *gin.Context) {
 }
 
 func parseOpsTimeRange(c *gin.Context, defaultRange string) (time.Time, time.Time, error) {
-	startStr := strings.TrimSpace(c.Query("start_time"))
-	endStr := strings.TrimSpace(c.Query("end_time"))
-
-	parseTS := func(s string) (time.Time, error) {
-		if s == "" {
-			return time.Time{}, nil
-		}
-		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
-			return t, nil
-		}
-		return time.Parse(time.RFC3339, s)
-	}
-
-	start, err := parseTS(startStr)
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	end, err := parseTS(endStr)
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-
-	// start/end explicitly provided (even partially)
-	if startStr != "" || endStr != "" {
-		if end.IsZero() {
-			end = time.Now()
-		}
-		if start.IsZero() {
-			dur, _ := parseOpsDuration(defaultRange)
-			start = end.Add(-dur)
-		}
-		if start.After(end) {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid time range: start_time must be <= end_time")
-		}
-		if end.Sub(start) > 30*24*time.Hour {
-			return time.Time{}, time.Time{}, fmt.Errorf("invalid time range: max window is 30 days")
-		}
-		return start, end, nil
-	}
-
-	// time_range fallback
 	tr := strings.TrimSpace(c.Query("time_range"))
 	if tr == "" {
 		tr = defaultRange
@@ -745,13 +726,14 @@ func parseOpsTimeRange(c *gin.Context, defaultRange string) (time.Time, time.Tim
 	if !ok {
 		dur, _ = parseOpsDuration(defaultRange)
 	}
-
-	end = time.Now()
-	start = end.Add(-dur)
-	if end.Sub(start) > 30*24*time.Hour {
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid time range: max window is 30 days")
+	end := time.Now()
+	start := end.Add(-dur)
+	r, err := usagequery.ParseRange(c.Request.URL.Query(), &start, &end)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
 	}
-	return start, end, nil
+	c.Set("usage_query_range", r)
+	return *r.Start, *r.End, nil
 }
 
 func parseOpsDuration(v string) (time.Duration, bool) {

@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -44,24 +45,29 @@ func NewUsageHandler(
 
 // CreateUsageCleanupTaskRequest represents cleanup task creation request
 type CreateUsageCleanupTaskRequest struct {
-	StartDate   string  `json:"start_date"`
-	EndDate     string  `json:"end_date"`
-	UserID      *int64  `json:"user_id"`
-	APIKeyID    *int64  `json:"api_key_id"`
-	AccountID   *int64  `json:"account_id"`
-	GroupID     *int64  `json:"group_id"`
-	Model       *string `json:"model"`
-	RequestType *string `json:"request_type"`
-	Stream      *bool   `json:"stream"`
-	BillingType *int8   `json:"billing_type"`
-	Timezone    string  `json:"timezone"`
+	NativeCompactionV2    *bool   `json:"native_compaction_v2"`
+	UpstreamModelMismatch *bool   `json:"upstream_model_mismatch"`
+	BillingMode           *string `json:"billing_mode"`
+	StartTime             *string `json:"start_time"`
+	EndTime               *string `json:"end_time"`
+	StartDate             string  `json:"start_date"`
+	EndDate               string  `json:"end_date"`
+	UserID                *int64  `json:"user_id"`
+	APIKeyID              *int64  `json:"api_key_id"`
+	AccountID             *int64  `json:"account_id"`
+	GroupID               *int64  `json:"group_id"`
+	Model                 *string `json:"model"`
+	RequestType           *string `json:"request_type"`
+	Stream                *bool   `json:"stream"`
+	BillingType           *int8   `json:"billing_type"`
+	Timezone              string  `json:"timezone"`
 }
 
 // List handles listing all usage records with filters
 // GET /api/v1/admin/usage
 func (h *UsageHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
-	exactTotal := false
+	exactTotal := true
 	if exactTotalRaw := strings.TrimSpace(c.Query("exact_total")); exactTotalRaw != "" {
 		parsed, err := strconv.ParseBool(exactTotalRaw)
 		if err != nil {
@@ -159,27 +165,16 @@ func (h *UsageHandler) List(c *gin.Context) {
 		upstreamModelMismatch = &value
 	}
 
-	// Parse date range
-	var startTime, endTime *time.Time
-	userTZ := c.Query("timezone") // Get user's timezone from request
-	if startDateStr := c.Query("start_date"); startDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
-			return
-		}
-		startTime = &t
+	queryRange, err := usagequery.ParseRange(c.Request.URL.Query(), nil, nil)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
 	}
-
-	if endDateStr := c.Query("end_date"); endDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
-			return
-		}
-		// Use half-open range [start, end), move to next calendar day start (DST-safe).
-		t = t.AddDate(0, 0, 1)
-		endTime = &t
+	startTime, endTime := queryRange.Start, queryRange.End
+	deferred, err := usagequery.DeferredCount(c.Request.URL.Query())
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
 	}
 
 	params := pagination.PaginationParams{
@@ -205,6 +200,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		StartTime:             startTime,
 		EndTime:               endTime,
 		ExactTotal:            exactTotal,
+		DeferredTotal:         deferred,
 	}
 
 	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)
@@ -217,7 +213,12 @@ func (h *UsageHandler) List(c *gin.Context) {
 	for i := range records {
 		out = append(out, *dto.UsageLogFromServiceAdmin(&records[i]))
 	}
-	response.Paginated(c, out, result.Total, page, pageSize)
+	// The legacy explicit exact_total=false mode retains its lower-bound pagination contract.
+	if !exactTotal && !deferred {
+		response.Success(c, gin.H{"items": out, "total": result.Total, "page": page, "page_size": pageSize, "pages": result.Pages, "has_more": result.Total > int64(page*pageSize), "total_exact": false, "query": queryRange.Metadata()})
+		return
+	}
+	response.UsagePaginated(c, out, result.Total, page, pageSize, deferred, queryRange.Metadata())
 }
 
 // Stats handles getting usage statistics with filters
@@ -315,40 +316,28 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	now := timezone.NowInUserLocation(userTZ)
 	var startTime, endTime time.Time
 
-	startDateStr := c.Query("start_date")
-	endDateStr := c.Query("end_date")
-
-	if startDateStr != "" && endDateStr != "" {
-		var err error
-		startTime, err = timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
-			return
-		}
-		endTime, err = timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
-			return
-		}
-		// 与 SQL 条件 created_at < end 对齐，使用次日 00:00 作为上边界（DST-safe）。
-		endTime = endTime.AddDate(0, 0, 1)
-	} else {
-		period := c.DefaultQuery("period", "today")
-		switch period {
-		case "today":
-			startTime = timezone.StartOfDayInUserLocation(now, userTZ)
-		case "week":
-			startTime = now.AddDate(0, 0, -7)
-		case "month":
-			startTime = now.AddDate(0, -1, 0)
-		default:
-			startTime = timezone.StartOfDayInUserLocation(now, userTZ)
-		}
-		endTime = now
+	period := c.DefaultQuery("period", "today")
+	switch period {
+	case "today":
+		startTime = timezone.StartOfDayInUserLocation(now, userTZ)
+	case "week":
+		startTime = now.AddDate(0, 0, -7)
+	case "month":
+		startTime = now.AddDate(0, -1, 0)
+	default:
+		startTime = timezone.StartOfDayInUserLocation(now, userTZ)
 	}
+	endTime = now
+	queryRange, err := usagequery.ParseRange(c.Request.URL.Query(), &startTime, &endTime)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	startTime, endTime = *queryRange.Start, *queryRange.End
 
 	// Build filters and call GetStatsWithFilters
 	filters := usagestats.UsageLogFilters{
+		RequestID:             strings.TrimSpace(c.Query("request_id")),
 		UserID:                userID,
 		APIKeyID:              apiKeyID,
 		AccountID:             accountID,
@@ -366,26 +355,23 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 
 	var stats *usagestats.UsageStats
-	// nocache: 绕过缓存直接回源,刷新者本人拿最新;不回写缓存(管理台"我刷新我自己拿最新"语义,非全局失效)。
-	if parseBoolQueryWithDefault(c.Query("nocache"), false) {
-		s, err := h.usageService.GetStatsWithFilters(c.Request.Context(), filters)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		stats = s
-		c.Header("X-Usage-Stats-Cache", "bypass")
-	} else {
-		s, hit, err := h.getStatsCached(c.Request.Context(), filters)
+	{
+		s, hit, err := h.getStatsCached(queryContext(c), filters)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
 		}
 		stats = s
 		c.Header("X-Usage-Stats-Cache", cacheStatusValue(hit))
+		if usagequery.OptionsFrom(queryContext(c)).ForceRefresh {
+			c.Header("X-Usage-Stats-Cache", "bypass")
+		}
 	}
 
-	response.Success(c, stats)
+	response.Success(c, struct {
+		*usagestats.UsageStats
+		Query usagequery.Metadata `json:"query"`
+	}{stats, queryRange.Metadata()})
 }
 
 // SearchUsers handles searching users by email keyword
@@ -510,24 +496,21 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	req.StartDate = strings.TrimSpace(req.StartDate)
-	req.EndDate = strings.TrimSpace(req.EndDate)
-	if req.StartDate == "" || req.EndDate == "" {
-		response.BadRequest(c, "start_date and end_date are required")
-		return
-	}
-
-	startTime, err := timezone.ParseInUserLocation("2006-01-02", req.StartDate, req.Timezone)
+	startTime, endTime, endExclusive, err := parseUsageCleanupRange(req)
 	if err != nil {
-		response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+		response.BadRequest(c, err.Error())
 		return
 	}
-	endTime, err := timezone.ParseInUserLocation("2006-01-02", req.EndDate, req.Timezone)
-	if err != nil {
-		response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
-		return
+	if req.BillingMode != nil {
+		mode := strings.TrimSpace(*req.BillingMode)
+		switch service.BillingMode(mode) {
+		case "", service.BillingModeToken, service.BillingModePerRequest, service.BillingModeImage, service.BillingModeVideo:
+			req.BillingMode = &mode
+		default:
+			response.BadRequest(c, "Invalid billing_mode")
+			return
+		}
 	}
-	endTime = endTime.Add(24*time.Hour - time.Nanosecond)
 
 	var requestType *int16
 	stream := req.Stream
@@ -543,16 +526,23 @@ func (h *UsageHandler) CreateCleanupTask(c *gin.Context) {
 	}
 
 	filters := service.UsageCleanupFilters{
-		StartTime:   startTime,
-		EndTime:     endTime,
-		UserID:      req.UserID,
-		APIKeyID:    req.APIKeyID,
-		AccountID:   req.AccountID,
-		GroupID:     req.GroupID,
-		Model:       req.Model,
-		RequestType: requestType,
-		Stream:      stream,
-		BillingType: req.BillingType,
+		EndExclusive:          endExclusive,
+		NativeCompactionV2:    req.NativeCompactionV2,
+		UpstreamModelMismatch: req.UpstreamModelMismatch,
+		BillingMode:           req.BillingMode,
+		StartTime:             startTime,
+		EndTime:               endTime,
+		UserID:                req.UserID,
+		APIKeyID:              req.APIKeyID,
+		AccountID:             req.AccountID,
+		GroupID:               req.GroupID,
+		Model:                 req.Model,
+		RequestType:           requestType,
+		Stream:                stream,
+		BillingType:           req.BillingType,
+	}
+	if endExclusive {
+		filters.ModelFilterSource = usagestats.ModelSourceRequested
 	}
 
 	var userID any

@@ -395,7 +395,11 @@ func buildUsageCleanupWhere(filters service.UsageCleanupFilters) (string, []any)
 		idx++
 	}
 	if !filters.EndTime.IsZero() {
-		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", idx))
+		operator := "<="
+		if filters.EndExclusive {
+			operator = "<"
+		}
+		conditions = append(conditions, fmt.Sprintf("created_at %s $%d", operator, idx))
 		args = append(args, filters.EndTime)
 		idx++
 	}
@@ -422,8 +426,7 @@ func buildUsageCleanupWhere(filters service.UsageCleanupFilters) (string, []any)
 	if filters.Model != nil {
 		model := strings.TrimSpace(*filters.Model)
 		if model != "" {
-			conditions = append(conditions, fmt.Sprintf("model = $%d", idx))
-			args = append(args, model)
+			conditions, args = appendUsageLogModelWhereCondition(conditions, args, model, filters.ModelFilterSource)
 			idx++
 		}
 	}
@@ -440,6 +443,13 @@ func buildUsageCleanupWhere(filters service.UsageCleanupFilters) (string, []any)
 	if filters.BillingType != nil {
 		conditions = append(conditions, fmt.Sprintf("billing_type = $%d", idx))
 		args = append(args, *filters.BillingType)
+	}
+	conditions, args = appendNativeCompactionV2WhereCondition(conditions, args, filters.NativeCompactionV2, "")
+	if filters.UpstreamModelMismatch != nil {
+		conditions = append(conditions, upstreamModelMismatchCondition("upstream_model_mismatch", *filters.UpstreamModelMismatch))
+	}
+	if filters.BillingMode != nil {
+		conditions, args = appendUsageLogBillingModeWhereCondition(conditions, args, *filters.BillingMode)
 	}
 	return strings.Join(conditions, " AND "), args
 }

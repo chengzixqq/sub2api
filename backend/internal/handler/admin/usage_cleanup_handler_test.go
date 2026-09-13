@@ -311,6 +311,27 @@ func TestUsageHandlerCreateCleanupTaskWithLegacyStream(t *testing.T) {
 	require.True(t, *created.Filters.Stream)
 }
 
+func TestUsageHandlerCreateCleanupTaskExactMinute(t *testing.T) {
+	repo := &cleanupRepoStub{}
+	cfg := &config.Config{UsageCleanup: config.UsageCleanupConfig{Enabled: true, MaxRangeDays: 31}}
+	router := setupCleanupRouter(service.NewUsageCleanupService(repo, nil, nil, cfg), 99)
+	body := `{"start_time":"2026-09-08T20:59:00+08:00","end_time":"2026-09-08T21:00:00+08:00","timezone":"Asia/Shanghai","native_compaction_v2":true,"billing_mode":"image","upstream_model_mismatch":false,"model":"requested-model"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/usage/cleanup-tasks", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Len(t, repo.created, 1)
+	filters := repo.created[0].Filters
+	require.True(t, filters.EndExclusive)
+	require.Equal(t, time.Minute, filters.EndTime.Sub(filters.StartTime))
+	require.Equal(t, "requested", filters.ModelFilterSource)
+	require.NotNil(t, filters.NativeCompactionV2)
+	require.True(t, *filters.NativeCompactionV2)
+	require.Equal(t, "image", *filters.BillingMode)
+	require.False(t, *filters.UpstreamModelMismatch)
+}
+
 func TestUsageHandlerCreateCleanupTaskSuccess(t *testing.T) {
 	repo := &cleanupRepoStub{}
 	cfg := &config.Config{UsageCleanup: config.UsageCleanupConfig{Enabled: true, MaxRangeDays: 31}}
