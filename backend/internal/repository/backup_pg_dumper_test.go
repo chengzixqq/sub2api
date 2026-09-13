@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"testing"
@@ -12,6 +13,28 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+const pgDumperHelperEnv = "GO_WANT_PG_DUMPER_HELPER"
+
+func TestPgDumperHelperProcess(t *testing.T) {
+	if os.Getenv(pgDumperHelperEnv) != "1" {
+		return
+	}
+	_, _ = io.WriteString(os.Stdout, os.Getenv("PG_DUMPER_HELPER_OUTPUT"))
+	if os.Getenv("PG_DUMPER_HELPER_FAIL") == "1" {
+		os.Exit(7)
+	}
+	os.Exit(0)
+}
+
+func pgDumperHelperCommand(ctx context.Context, output string, fail bool) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestPgDumperHelperProcess", "--")
+	cmd.Env = append(os.Environ(), pgDumperHelperEnv+"=1", "PG_DUMPER_HELPER_OUTPUT="+output)
+	if fail {
+		cmd.Env = append(cmd.Env, "PG_DUMPER_HELPER_FAIL=1")
+	}
+	return cmd
+}
 
 func newTestPgDumper(t *testing.T, commandContext func(context.Context, string, ...string) *exec.Cmd) (*PgDumper, sqlmock.Sqlmock) {
 	t.Helper()
@@ -52,7 +75,7 @@ func TestPgDumperHoldsMigrationLockThroughReaderClose(t *testing.T) {
 		require.Equal(t, "pg_dump", name)
 		require.Contains(t, args, "--clean")
 		require.NoError(t, mock.ExpectationsWereMet(), "migration lock must be acquired before pg_dump is created")
-		return exec.CommandContext(ctx, "sh", "-c", "printf backup-data")
+		return pgDumperHelperCommand(ctx, "backup-data", false)
 	})
 	mock = createdMock
 	expectBackupMigrationLock(mock)
@@ -73,7 +96,7 @@ func TestPgDumperHoldsMigrationLockThroughReaderClose(t *testing.T) {
 
 func TestPgDumperReleasesMigrationLockWhenStdoutPipeSetupFails(t *testing.T) {
 	dumper, mock := newTestPgDumper(t, func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, "sh", "-c", "true")
+		cmd := pgDumperHelperCommand(ctx, "", false)
 		cmd.Stdout = io.Discard
 		return cmd
 	})
@@ -101,7 +124,7 @@ func TestPgDumperReleasesMigrationLockWhenProcessStartFails(t *testing.T) {
 
 func TestPgDumperReleasesMigrationLockWhenProcessFails(t *testing.T) {
 	dumper, mock := newTestPgDumper(t, func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "sh", "-c", "printf partial-backup; exit 7")
+		return pgDumperHelperCommand(ctx, "partial-backup", true)
 	})
 	expectBackupMigrationLock(mock)
 
@@ -117,7 +140,7 @@ func TestPgDumperReleasesMigrationLockWhenProcessFails(t *testing.T) {
 
 func TestPgDumperReportsUnlockFailureAndDiscardsConnection(t *testing.T) {
 	dumper, mock := newTestPgDumper(t, func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "sh", "-c", "printf backup-data")
+		return pgDumperHelperCommand(ctx, "backup-data", false)
 	})
 	expectBackupMigrationLock(mock)
 
@@ -136,7 +159,7 @@ func TestPgDumperDoesNotStartProcessWhenMigrationLockFails(t *testing.T) {
 	commandCreated := false
 	dumper, mock := newTestPgDumper(t, func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 		commandCreated = true
-		return exec.CommandContext(ctx, "sh", "-c", "true")
+		return pgDumperHelperCommand(ctx, "", false)
 	})
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT pg_try_advisory_lock($1)")).
 		WithArgs(migrationsAdvisoryLockID).
