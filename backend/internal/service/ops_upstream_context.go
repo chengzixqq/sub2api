@@ -432,6 +432,13 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
+	// Match operational rules against the original upstream text. Redaction is
+	// a persistence/output boundary and must not change skip-monitoring policy.
+	classificationEvent := ev
+	classificationEvent.Message = strings.TrimSpace(classificationEvent.Message)
+	classificationEvent.Detail = strings.TrimSpace(classificationEvent.Detail)
+	checkSkipMonitoringForUpstreamEvent(c, &classificationEvent)
+	ev.SkipMonitoring = classificationEvent.SkipMonitoring
 	if redact, _ := c.Get(redactUpstreamURLContextKey); redact == true {
 		ev.UpstreamURL = redactUpstreamURL(ev.UpstreamURL)
 		ev.UpstreamResponseBody = redactUpstreamURLs(ev.UpstreamResponseBody)
@@ -459,8 +466,6 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	evCopy := ev
 	existing = append(existing, &evCopy)
 	c.Set(OpsUpstreamErrorsKey, existing)
-
-	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
 }
 
 // opsUpstreamProxyAttribution derives both attribution fields from one

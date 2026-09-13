@@ -1635,8 +1635,8 @@ func (s *GatewayService) initDebugGatewayBodyFile(path string) {
 	slog.Info("gateway debug logging enabled", "path", path)
 }
 
-// debugLogGatewaySnapshot 将网关请求的完整快照（headers + body）写入独立的调试日志文件，
-// 用于对比客户端原始请求和上游转发请求。
+// debugLogGatewaySnapshot 将网关请求快照（headers + 脱敏 body）写入独立的调试日志文件，
+// 用于对比客户端原始请求和上游转发请求。字段结构会保留，但凭据值不会落盘。
 //
 // 启用方式（环境变量）：
 //
@@ -1675,17 +1675,17 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 		}
 	}
 
-	// 3. body（完整输出，格式化 JSON 便于 diff）
+	// 3. body（递归清除 token/key 等凭据值后格式化，字段仍可用于 diff）
 	fmt.Fprint(&buf, "--- body ---\n")
 	if len(body) == 0 {
 		fmt.Fprint(&buf, "  (empty)\n")
 	} else {
+		debugBody := []byte(RedactAuditBody(body, "application/json"))
 		var pretty bytes.Buffer
-		if json.Indent(&pretty, body, "  ", "  ") == nil {
+		if json.Indent(&pretty, debugBody, "  ", "  ") == nil {
 			fmt.Fprintf(&buf, "  %s\n", pretty.Bytes())
 		} else {
-			// JSON 格式化失败时原样输出
-			fmt.Fprintf(&buf, "  %s\n", body)
+			fmt.Fprintf(&buf, "  %s\n", debugBody)
 		}
 	}
 

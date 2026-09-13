@@ -303,6 +303,35 @@ func TestApplyErrorPassthroughRule_NoSkipMonitoringDoesNotSetContextKey(t *testi
 	assert.False(t, exists, "OpsSkipPassthroughKey should NOT be set when skip_monitoring=false")
 }
 
+func TestAppendOpsUpstreamError_RedactionDoesNotChangeSkipMonitoringMatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Set(redactUpstreamURLContextKey, true)
+
+	rule := newNonFailoverPassthroughRule(http.StatusBadRequest, "private-upstream.example", http.StatusBadRequest, "upstream error")
+	rule.SkipMonitoring = true
+	ruleSvc := &ErrorPassthroughService{}
+	ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{rule})
+	BindErrorPassthroughService(c, ruleSvc)
+
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           PlatformAnthropic,
+		UpstreamStatusCode: http.StatusBadRequest,
+		Detail:             `request failed at https://private-upstream.example/v1/messages?key=secret`,
+	})
+
+	require.True(t, currentOpsFailureSkipMonitoring(c), "classification must use the original upstream detail")
+	stored, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := stored.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.NotContains(t, events[0].Detail, "private-upstream.example")
+	require.NotContains(t, events[0].Detail, "key=secret")
+	require.Contains(t, events[0].Detail, "https://***.***/v1/messages")
+}
+
 // ---- ResponseCommittedKey: service 层写完错误响应后标记，handler 层检查跳过兜底写入 ----
 
 func TestHandleErrorResponse_SetsResponseCommitted(t *testing.T) {
