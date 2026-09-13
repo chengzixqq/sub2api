@@ -18,6 +18,8 @@
     </div>
     <div class="overflow-auto">
       <DataTable
+        :column-order-key="columnOrderKey"
+        :column-order-columns="columnOrderColumns"
         :columns="columns"
         :data="data"
         :loading="loading"
@@ -587,6 +589,8 @@ import type { AdminUsageLog } from '@/types'
 import type { Column } from '@/components/common/types'
 
 interface Props {
+  columnOrderKey?: string
+  columnOrderColumns?: Column[]
   data: AdminUsageLog[]
   loading?: boolean
   columns: Column[]

@@ -6,10 +6,12 @@
 import { apiClient } from '../client'
 import type { AdminUsageLog, UsageQueryParams, PaginatedResponse, UsageRequestType } from '@/types'
 import type { EndpointStat } from '@/types'
+import type { UsagePage, UsageQueryMetadata } from '@/utils/usageQuery'
 
 // ==================== Types ====================
 
 export interface AdminUsageStatsResponse {
+  query?: UsageQueryMetadata
   total_requests: number
   total_input_tokens: number
   total_output_tokens: number
@@ -39,6 +41,10 @@ export interface SimpleApiKey {
 }
 
 export interface UsageCleanupFilters {
+  end_exclusive?: boolean
+  native_compaction_v2?: boolean | null
+  upstream_model_mismatch?: boolean
+  billing_mode?: string | null
   start_time: string
   end_time: string
   user_id?: number
@@ -67,8 +73,13 @@ export interface UsageCleanupTask {
 }
 
 export interface CreateUsageCleanupTaskRequest {
-  start_date: string
-  end_date: string
+  start_time?: string
+  end_time?: string
+  start_date?: string
+  end_date?: string
+  native_compaction_v2?: boolean | null
+  upstream_model_mismatch?: boolean
+  billing_mode?: string | null
   user_id?: number
   api_key_id?: number
   account_id?: number
@@ -100,6 +111,8 @@ export interface AdminUsageQueryParams extends UsageQueryParams {
  * @param params - Query parameters for filtering and pagination
  * @returns Paginated list of usage logs
  */
+export function list(params: AdminUsageQueryParams & { count_mode: 'deferred' }, options?: { signal?: AbortSignal }): Promise<UsagePage<AdminUsageLog>>
+export function list(params: AdminUsageQueryParams, options?: { signal?: AbortSignal }): Promise<PaginatedResponse<AdminUsageLog>>
 export async function list(
   params: AdminUsageQueryParams,
   options?: { signal?: AbortSignal }
@@ -117,6 +130,11 @@ export async function list(
  * @returns Usage statistics
  */
 export async function getStats(params: {
+  start_time?: string
+  end_time?: string
+  force_refresh?: boolean
+  billing_mode?: string | null
+  billing_type?: number | null
   user_id?: number
   api_key_id?: number
   account_id?: number
@@ -131,9 +149,10 @@ export async function getStats(params: {
   end_date?: string
   timezone?: string
   nocache?: number
-}): Promise<AdminUsageStatsResponse> {
+}, options?: { signal?: AbortSignal }): Promise<AdminUsageStatsResponse> {
   const { data } = await apiClient.get<AdminUsageStatsResponse>('/admin/usage/stats', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }

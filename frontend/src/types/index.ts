@@ -1810,6 +1810,10 @@ export interface AdminUsageLog extends UsageLog {
 }
 
 export interface UsageCleanupFilters {
+  end_exclusive?: boolean
+  native_compaction_v2?: boolean | null
+  upstream_model_mismatch?: boolean
+  billing_mode?: string | null
   start_time: string
   end_time: string
   user_id?: number
@@ -2160,6 +2164,8 @@ export interface UserErrorRequestDetail extends UserErrorRequest {
 }
 
 export interface UserErrorListParams {
+  start_time?: string
+  end_time?: string
   page?: number
   page_size?: number
   start_date?: string
@@ -2175,6 +2181,10 @@ export interface UserErrorListParams {
 }
 
 export interface UsageQueryParams {
+  start_time?: string
+  end_time?: string
+  force_refresh?: boolean
+  count_mode?: 'deferred' | 'exact'
   page?: number
   page_size?: number
   api_key_id?: number

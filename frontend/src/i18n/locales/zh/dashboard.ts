@@ -78,6 +78,8 @@ export default {
       speedTest: '测速',
     },
     allGroups: '全部分组',
+    allPlatforms: '全部',
+    platformFilter: '筛选分组平台',
     allStatus: '全部状态',
     columnSettings: '列设置',
     columnAlwaysVisible: '该列固定显示，不可隐藏',
@@ -302,6 +304,19 @@ export default {
 
   // Usage
   usage: {
+    rankingSort: '排行指标',
+    rankingTop: '前 {count} 名',
+    queryFailed: '此分区加载失败。',
+    queryRefreshing: '刷新中...',
+    tokenTrend: {
+      input: '输入',
+      output: '输出',
+      cacheCreation: '缓存写入',
+      cacheRead: '缓存读取',
+      cacheHitRate: '缓存命中率',
+      actualCost: '实际扣费',
+      standardCost: '标准费用',
+    },
     title: '使用记录',
     description: '查看和分析您的 API 使用历史',
     costDetails: '费用明细',
@@ -972,6 +987,8 @@ export default {
 
   // Pagination
   pagination: {
+    currentPage: '第 {page} 页',
+    totalPending: '正在计算精确总数...',
     showing: '显示',
     to: '至',
     of: '共',

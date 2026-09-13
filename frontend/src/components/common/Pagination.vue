@@ -12,11 +12,11 @@
         {{ t('pagination.previous') }}
       </button>
       <span class="text-sm text-gray-700 dark:text-gray-300">
-        {{ t('pagination.pageOf', { page, total: totalPages }) }}
+        {{ total == null ? t('pagination.currentPage', { page }) : t('pagination.pageOf', { page, total: totalPages }) }}
       </span>
       <button
         @click="goToPage(page + 1)"
-        :disabled="page === totalPages"
+        :disabled="!canNext"
         class="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-200 dark:hover:bg-dark-600"
       >
         {{ t('pagination.next') }}
@@ -31,9 +31,12 @@
           <span class="font-medium">{{ fromItem }}</span>
           {{ t('pagination.to') }}
           <span class="font-medium">{{ toItem }}</span>
-          {{ t('pagination.of') }}
-          <span class="font-medium">{{ total }}</span>
-          {{ t('pagination.results') }}
+          <template v-if="total != null">
+            {{ t('pagination.of') }}
+            <span class="font-medium">{{ total }}</span>
+            {{ t('pagination.results') }}
+          </template>
+          <span v-else class="ml-2 text-gray-400">{{ t('pagination.totalPending') }}</span>
         </p>
 
         <!-- Page size selector -->
@@ -50,7 +53,7 @@
           </div>
         </div>
 
-        <div v-if="showJump" class="flex items-center space-x-2">
+        <div v-if="showJump && total != null" class="flex items-center space-x-2">
           <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('pagination.jumpTo') }}</span>
           <input
             v-model="jumpPage"
@@ -106,7 +109,7 @@
         <!-- Next button -->
         <button
           @click="goToPage(page + 1)"
-          :disabled="page === totalPages"
+          :disabled="!canNext"
           class="relative inline-flex items-center rounded-r-md border border-gray-300 bg-white px-2 py-2 text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-600 dark:bg-dark-700 dark:text-gray-400 dark:hover:bg-dark-600"
           :aria-label="t('pagination.next')"
         >
@@ -128,7 +131,9 @@ import { setPersistedPageSize } from '@/composables/usePersistedPageSize'
 const { t } = useI18n()
 
 interface Props {
-  total: number
+  total: number | null
+  hasMore?: boolean
+  itemCount?: number
   page: number
   pageSize: number
   pageSizeOptions?: number[]
@@ -149,15 +154,17 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<Emits>()
 
-const totalPages = computed(() => Math.ceil(props.total / props.pageSize))
+const totalPages = computed(() => props.total == null ? props.page : Math.ceil(props.total / props.pageSize))
+const canNext = computed(() => props.hasMore === true || (props.total != null && props.page < totalPages.value))
 
 const fromItem = computed(() => {
-  if (props.total === 0) return 0
+  if (props.total === 0 || (props.total == null && props.itemCount === 0)) return 0
   return (props.page - 1) * props.pageSize + 1
 })
 
 const toItem = computed(() => {
   const to = props.page * props.pageSize
+  if (props.total == null) return (props.page - 1) * props.pageSize + (props.itemCount ?? props.pageSize)
   return to > props.total ? props.total : to
 })
 
@@ -178,6 +185,7 @@ const pageSizeSelectOptions = computed(() => {
 const jumpPage = ref('')
 
 const visiblePages = computed(() => {
+  if (props.total == null) return [props.page]
   const pages: (number | string)[] = []
   const maxVisible = 7
   const total = totalPages.value
@@ -217,7 +225,8 @@ const visiblePages = computed(() => {
 })
 
 const goToPage = (newPage: number) => {
-  if (newPage >= 1 && newPage <= totalPages.value && newPage !== props.page) {
+  const maxPage = Math.max(totalPages.value, props.page + (props.hasMore ? 1 : 0))
+  if (newPage >= 1 && newPage <= maxPage && newPage !== props.page) {
     emit('update:page', newPage)
   }
 }

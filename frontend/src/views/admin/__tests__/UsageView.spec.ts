@@ -42,13 +42,6 @@ const messages: Record<string, string> = {
 	'common.no': 'No',
 }
 
-const formatLocalDate = (date: Date): string => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     usage: {
@@ -294,6 +287,68 @@ describe('admin UsageView native compaction filter', () => {
     vi.useRealTimers()
   })
 
+  it('keeps delayed model/statistics responses from overwriting a new minute query', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    let resolveOld!: (value: any) => void
+    let resolveModel!: (value: any) => void
+    getStats.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    getModelStats.mockImplementationOnce(() => new Promise((resolve) => { resolveModel = resolve }))
+    ;(wrapper.vm as any).filters.billing_mode = 'image'
+    ;(wrapper.vm as any).filters.model = 'old-model'
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-01T08:01', endDate: '2026-09-08T08:01', preset: null })
+    const oldSignal = getStats.mock.calls.at(-1)![1].signal as AbortSignal
+    expect((wrapper.vm as any).usageStats).toBeNull()
+    expect((wrapper.vm as any).requestedModelStats).toEqual([])
+    ;(wrapper.vm as any).filters.model = 'current-model'
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-08T08:01', endDate: '2026-09-08T08:02', preset: null })
+    await flushPromises()
+    resolveOld({ total_requests: 999 })
+    resolveModel({ models: [{ model: 'old-model' }] })
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect((wrapper.vm as any).usageStats.total_requests).toBe(0)
+    expect((wrapper.vm as any).requestedModelStats).toEqual([])
+    const query = list.mock.calls.at(-1)![0]
+    expect(query.count_mode).toBe('deferred')
+    const shared = { start_time: query.start_time, end_time: query.end_time, timezone: query.timezone, model: 'current-model', billing_mode: 'image' }
+    expect(getStats.mock.calls.at(-1)![0]).toMatchObject(shared)
+    expect(getModelStats.mock.calls.at(-1)![0]).toMatchObject(shared)
+    expect(getSnapshotV2.mock.calls.at(-1)![0]).toMatchObject(shared)
+    expect((wrapper.vm as any).breakdownFilters).toMatchObject(shared)
+    wrapper.unmount()
+  })
+
+  it('rejects an incomplete range without canceling or replacing the active query', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    const before = { start: vm.startDate, end: vm.endDate, query: vm.normalizedFilters }
+    const signal = getStats.mock.calls.at(-1)![1].signal as AbortSignal
+    list.mockClear()
+    vm.onDateRangeChange({ startDate: '2026-09-08T20:00', endDate: '', preset: null })
+    expect(vm.startDate).toBe(before.start)
+    expect(vm.endDate).toBe(before.end)
+    expect(vm.normalizedFilters).toBe(before.query)
+    expect(signal.aborted).toBe(false)
+    expect(list).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears a failed model-source state when returning to an already loaded source', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    getModelStats.mockRejectedValueOnce(new Error('upstream model stats timeout'))
+    ;(wrapper.vm as any).modelDistributionSource = 'upstream'
+    await flushPromises()
+    expect((wrapper.vm as any).modelError).toBe(true)
+    ;(wrapper.vm as any).modelDistributionSource = 'requested'
+    await flushPromises()
+    expect((wrapper.vm as any).modelError).toBe(false)
+    expect((wrapper.vm as any).modelStatsLoading).toBe(false)
+    wrapper.unmount()
+  })
+
   it('propagates the filter to list/stats/model/snapshot requests and clears it on reset', async () => {
     const wrapper = mountRouteFilteredUsageView()
     vi.advanceTimersByTime(120)
@@ -313,9 +368,9 @@ describe('admin UsageView native compaction filter', () => {
       expect.objectContaining({ native_compaction_v2: true }),
       expect.anything()
     )
-    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
-    expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
-    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), expect.anything())
+    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), expect.anything())
 
     list.mockClear()
     getStats.mockClear()
@@ -326,14 +381,14 @@ describe('admin UsageView native compaction filter', () => {
     await flushPromises()
 
     expect((wrapper.vm as any).filters.native_compaction_v2).toBeNull()
-    expect((wrapper.vm as any).breakdownFilters).not.toHaveProperty('native_compaction_v2')
+    expect((wrapper.vm as any).breakdownFilters.native_compaction_v2).toBeNull()
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({ native_compaction_v2: null }),
       expect.anything()
     )
-    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
-    expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
-    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), expect.anything())
+    expect(getModelStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), expect.anything())
+    expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), expect.anything())
   })
 })
 
@@ -432,12 +487,13 @@ describe('admin UsageView distribution metric toggles', () => {
 
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
     const now = new Date()
+    now.setSeconds(0, 0)
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
     expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
-      start_date: formatLocalDate(yesterday),
-      end_date: formatLocalDate(now),
+      start_time: yesterday.toISOString(),
+      end_time: now.toISOString(),
       granularity: 'hour'
-    }))
+    }), expect.anything())
 
     const modelChart = wrapper.find('[data-test="model-chart"]')
     const groupChart = wrapper.find('[data-test="group-chart"]')
@@ -677,7 +733,7 @@ describe('admin UsageView errors tab filter forwarding', () => {
       model: 'gpt-5.3-codex',
       account_id: 7,
       group_id: 3,
-    }))
+    }), expect.anything())
   })
 })
 
@@ -779,6 +835,8 @@ describe('admin UsageView model audit export', () => {
 		vi.advanceTimersByTime(120)
 		await flushPromises()
 		;(wrapper.vm as any).filters.native_compaction_v2 = true
+		;(wrapper.vm as any).applyFilters()
+		await flushPromises()
 
 		await (wrapper.vm as any).exportToExcel()
 		await flushPromises()

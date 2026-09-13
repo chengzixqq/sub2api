@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from './client'
+import type { UsagePage } from '@/utils/usageQuery'
 import type {
   UsageLog,
   UsageQueryParams,
@@ -56,6 +57,9 @@ export interface UserDashboardStats {
 }
 
 export interface TrendParams {
+  start_time?: string
+  end_time?: string
+  force_refresh?: boolean
   start_date?: string
   end_date?: string
   granularity?: 'day' | 'hour'
@@ -150,6 +154,8 @@ export async function list(
  * @param params - Query parameters for filtering and pagination
  * @returns Paginated list of usage logs
  */
+export function query(params: UsageQueryParams & { count_mode: 'deferred' }, config?: { signal?: AbortSignal }): Promise<UsagePage<UsageLog>>
+export function query(params: UsageQueryParams, config?: { signal?: AbortSignal }): Promise<PaginatedResponse<UsageLog>>
 export async function query(
   params: UsageQueryParams & { sort_by?: string; sort_order?: 'asc' | 'desc' },
   config: { signal?: AbortSignal } = {}
@@ -169,7 +175,8 @@ export async function query(
  */
 export async function getStats(
   paramsOrPeriod: (UsageQueryParams & { period?: string; timezone?: string }) | string = 'today',
-  apiKeyId?: number
+  apiKeyId?: number,
+  options?: { signal?: AbortSignal }
 ): Promise<UsageStatsResponse> {
   const params: Record<string, unknown> = typeof paramsOrPeriod === 'string'
     ? { period: paramsOrPeriod }
@@ -180,7 +187,8 @@ export async function getStats(
   }
 
   const { data } = await apiClient.get<UsageStatsResponse>('/usage/stats', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }
@@ -278,6 +286,9 @@ export async function getDashboardTrend(params?: TrendParams): Promise<TrendResp
  * @returns Model usage statistics for current user
  */
 export async function getDashboardModels(params?: {
+  start_time?: string
+  end_time?: string
+  force_refresh?: boolean
   start_date?: string
   end_date?: string
   api_key_id?: number
@@ -290,8 +301,8 @@ export async function getDashboardModels(params?: {
   billing_type?: number | null
   billing_mode?: string | null
   timezone?: string
-}): Promise<ModelStatsResponse> {
-  const { data } = await apiClient.get<ModelStatsResponse>('/usage/dashboard/models', { params })
+}, options?: { signal?: AbortSignal }): Promise<ModelStatsResponse> {
+  const { data } = await apiClient.get<ModelStatsResponse>('/usage/dashboard/models', { params, signal: options?.signal })
   return data
 }
 
@@ -313,11 +324,12 @@ export async function getMyApiKeyDailyUsage(
 }
 
 export async function getDashboardSnapshotV2(
-  params?: UsageDashboardSnapshotV2Params
+  params?: UsageDashboardSnapshotV2Params,
+  options?: { signal?: AbortSignal }
 ): Promise<UsageDashboardSnapshotV2Response> {
   const { data } = await apiClient.get<UsageDashboardSnapshotV2Response>(
     '/usage/dashboard/snapshot-v2',
-    { params }
+    { params, signal: options?.signal }
   )
   return data
 }
@@ -369,10 +381,12 @@ export async function getDashboardApiKeysUsage(
 }
 
 export async function listMyErrorRequests(
-  params: UserErrorListParams
+  params: UserErrorListParams,
+  options?: { signal?: AbortSignal }
 ): Promise<PaginatedResponse<UserErrorRequest>> {
   const { data } = await apiClient.get<PaginatedResponse<UserErrorRequest>>('/usage/errors', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }

@@ -113,6 +113,26 @@ describe('DateRangePicker', () => {
     expect(wrapper.emitted('change')?.[1]).toEqual([{ startDate: '', endDate: '', preset: null }])
     wrapper.unmount()
   })
+  it('requires both datetime bounds only for required-range consumers', async () => {
+    const wrapper = mount(DateRangePicker, { props: { startDate: '2026-08-11T18:00', endDate: '2026-08-11T19:00', includeTime: true, requiredRange: true } })
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('input')[0].setValue('')
+    expect(wrapper.get('.date-picker-apply').attributes('disabled')).toBeDefined()
+    await wrapper.get('.date-picker-apply').trigger('click')
+    expect(wrapper.emitted('change')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it('displays offset-bearing instants locally without changing their original offset', async () => {
+    const startDate = '2026-11-01T01:10:00-04:00'
+    const endDate = '2026-11-01T01:10:00-05:00'
+    const wrapper = mount(DateRangePicker, { props: { startDate, endDate, includeTime: true, requiredRange: true } })
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    expect((wrapper.findAll('input')[0].element as HTMLInputElement).value).not.toBe('')
+    expect(wrapper.get('.date-picker-apply').attributes('disabled')).toBeUndefined()
+    await wrapper.get('.date-picker-apply').trigger('click')
+    expect(wrapper.emitted('change')?.[0]).toEqual([{ startDate, endDate, preset: null }])
+    wrapper.unmount()
+  })
 
   it.each([
     ['Today', '2026-08-11T00:00', '2026-08-12T00:00'],

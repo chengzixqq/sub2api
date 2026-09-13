@@ -78,6 +78,8 @@ export default {
       speedTest: 'Speed Test',
     },
     allGroups: 'All Groups',
+    allPlatforms: 'All',
+    platformFilter: 'Filter group platform',
     allStatus: 'All Status',
     columnSettings: 'Column Settings',
     columnAlwaysVisible: 'This column is always visible',
@@ -297,6 +299,19 @@ export default {
 
   // Usage
   usage: {
+    rankingSort: 'Ranking metric',
+    rankingTop: 'Top {count}',
+    queryFailed: 'This section failed to load.',
+    queryRefreshing: 'Refreshing...',
+    tokenTrend: {
+      input: 'Input',
+      output: 'Output',
+      cacheCreation: 'Cache Creation',
+      cacheRead: 'Cache Read',
+      cacheHitRate: 'Cache Hit Rate',
+      actualCost: 'Actual',
+      standardCost: 'Standard',
+    },
     title: 'Usage Records',
     description: 'View and analyze your API usage history',
     costDetails: 'Cost Breakdown',
@@ -968,6 +983,8 @@ export default {
 
   // Pagination
   pagination: {
+    currentPage: 'Page {page}',
+    totalPending: 'Calculating exact total...',
     showing: 'Showing',
     to: 'to',
     of: 'of',

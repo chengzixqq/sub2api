@@ -1,7 +1,10 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <UsageStatsCards :stats="usageStats" />
+      <div class="min-h-28">
+        <UsageRegionState :loading="endpointStatsLoading" :error="statsError" :refreshing="!!usageStats" @retry="loadStats(true)" />
+        <UsageStatsCards v-if="usageStats" :stats="usageStats" />
+      </div>
       <!-- Charts Section -->
       <div class="space-y-4">
         <div class="card p-4">
@@ -11,19 +14,25 @@
               <DateRangePicker
                 v-model:start-date="startDate"
                 v-model:end-date="endDate"
+                include-time
+                required-range
                 @change="onDateRangeChange"
               />
             </div>
             <div class="ml-auto flex items-center gap-2">
               <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.dashboard.granularity') }}:</span>
               <div class="w-28">
-                <Select v-model="granularity" :options="granularityOptions" @change="loadChartData" />
+                <Select v-model="granularity" :options="granularityOptions" @change="changeGranularity" />
               </div>
             </div>
           </div>
         </div>
+        <UsageRegionState :loading="modelStatsLoading" :error="modelError" :refreshing="loadedModelSources[modelDistributionSource]" @retry="loadModelStats(modelDistributionSource, true)" />
+        <UsageRegionState :loading="chartsLoading" :error="chartsError" :refreshing="trendData.length > 0" @retry="loadChartData(true)" />
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <ModelDistributionChart
+            :refresh-key="chartRefreshKey"
+            v-if="!modelError"
             v-model:source="modelDistributionSource"
             v-model:metric="modelDistributionMetric"
             :model-stats="requestedModelStats"
@@ -37,6 +46,8 @@
             :filters="breakdownFilters"
           />
           <GroupDistributionChart
+            :refresh-key="chartRefreshKey"
+            v-if="!chartsError"
             v-model:metric="groupDistributionMetric"
             :group-stats="groupStats"
             :loading="chartsLoading"
@@ -48,6 +59,8 @@
         </div>
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <EndpointDistributionChart
+            :refresh-key="chartRefreshKey"
+            v-if="!statsError"
             v-model:source="endpointDistributionSource"
             v-model:metric="endpointDistributionMetric"
             :endpoint-stats="inboundEndpointStats"
@@ -61,7 +74,7 @@
             :end-date="endDate"
             :filters="breakdownFilters"
           />
-          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+          <TokenUsageTrend v-if="!chartsError" :trend-data="trendData" :loading="chartsLoading" />
         </div>
       </div>
       <!-- 明细区：tab 栏 + 筛选 + 内容收进同一张卡片，消除割裂感 -->
@@ -123,7 +136,10 @@
         </UsageFilters>
 
         <div v-show="activeTab === 'usage'" class="overflow-hidden rounded-b-2xl">
+          <UsageRegionState :error="logsError" @retry="loadLogs" />
           <UsageTable
+            column-order-key="admin.usage"
+            :column-order-columns="allColumns"
             flat
             :data="usageLogs"
             :loading="loading"
@@ -135,9 +151,10 @@
             @userClick="handleUserClick"
             @ipGeoBatchFailed="handleIpGeoBatchFailed"
           />
-          <Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
+          <Pagination v-if="usageLogs.length > 0 || pagination.page > 1" :page="pagination.page" :total="pagination.total" :has-more="pagination.has_more" :item-count="usageLogs.length" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" />
         </div>
         <div v-show="activeTab === 'errors'" class="overflow-hidden rounded-b-2xl">
+          <UsageRegionState :error="errorsError" @retry="loadAdminErrors" />
           <OpsErrorLogTable
             flat
             :rows="errRows" :total="errTotal" :loading="errLoading"
@@ -191,7 +208,9 @@ import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admin'; import { adminUsageAPI } from '@/api/admin/usage'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
-import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import UsageRegionState from '@/components/common/UsageRegionState.vue'
+import { createUsageRequests, last24Hours, localMinute, reconcileUsageTotal, snapshotUsageQuery, usageGranularity } from '@/utils/usageQuery'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'; import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'; import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'; import UsageExportProgress from '@/components/admin/usage/UsageExportProgress.vue'
@@ -230,26 +249,20 @@ const upstreamEndpointStats = ref<EndpointStat[]>([])
 const endpointPathStats = ref<EndpointStat[]>([])
 const endpointStatsLoading = ref(false)
 let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
-let chartReqSeq = 0
-let statsReqSeq = 0
-let modelStatsReqSeq = 0
+const requests = createUsageRequests()
+const statsError = ref(false)
+const logsError = ref(false)
+const chartsError = ref(false)
+const modelError = ref(false)
+const chartRefreshKey = ref(0)
+const errorsError = ref(false)
 const exportProgress = reactive({ show: false, progress: 0, current: 0, total: 0, estimatedTime: '' })
 const cleanupDialogVisible = ref(false)
 // Balance history modal state
 const showBalanceHistoryModal = ref(false)
 const balanceHistoryUser = ref<AdminUser | null>(null)
 
-const breakdownFilters = computed(() => {
-  const f: Record<string, any> = {}
-  if (filters.value.user_id) f.user_id = filters.value.user_id
-  if (filters.value.api_key_id) f.api_key_id = filters.value.api_key_id
-  if (filters.value.account_id) f.account_id = filters.value.account_id
-  if (filters.value.group_id) f.group_id = filters.value.group_id
-  if (filters.value.request_type != null) f.request_type = filters.value.request_type
-  if (filters.value.native_compaction_v2 != null) f.native_compaction_v2 = filters.value.native_compaction_v2
-  if (filters.value.billing_type != null) f.billing_type = filters.value.billing_type
-  return f
-})
+const breakdownFilters = computed(() => ({ ...normalizedFilters.value }))
 
 const modelNameOptions = computed(() =>
   Array.from(new Set(requestedModelStats.value.map((m) => m.model).filter(Boolean))).sort()
@@ -275,31 +288,13 @@ const handleRankingSelectUser = (userId: number, email: string) => {
 }
 
 const granularityOptions = computed(() => [{ value: 'day', label: t('admin.dashboard.day') }, { value: 'hour', label: t('admin.dashboard.hour') }])
-// Use local timezone to avoid UTC timezone issues
-const formatLD = (d: Date) => {
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-const getLast24HoursRangeDates = (): { start: string; end: string } => {
-  const end = new Date()
-  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
-  return {
-    start: formatLD(start),
-    end: formatLD(end)
-  }
-}
-const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
-  const startTime = new Date(`${start}T00:00:00`).getTime()
-  const endTime = new Date(`${end}T00:00:00`).getTime()
-  const daysDiff = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24))
-  return daysDiff <= 1 ? 'hour' : 'day'
-}
+const getLast24HoursRangeDates = last24Hours
+const getGranularityForRange = usageGranularity
 const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start); const endDate = ref(defaultRange.end)
 const filters = ref<AdminUsageQueryParams>({ user_id: undefined, model: undefined, group_id: undefined, request_type: undefined, native_compaction_v2: null, billing_type: null, start_date: startDate.value, end_date: endDate.value })
-const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
+const normalizedFilters = ref<Readonly<AdminUsageQueryParams>>(snapshotUsageQuery(filters.value, startDate.value, endDate.value))
+const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: null as number | null, has_more: false })
 const sortState = reactive({
   sort_by: 'created_at',
   sort_order: 'desc' as 'asc' | 'desc'
@@ -318,15 +313,23 @@ const getNumericQueryValue = (value: string | null | Array<string | null> | unde
 }
 
 const applyRouteQueryFilters = () => {
+  const exactStart = getSingleQueryValue(route.query.start_time)
+  const exactEnd = getSingleQueryValue(route.query.end_time)
   const queryStartDate = getSingleQueryValue(route.query.start_date)
   const queryEndDate = getSingleQueryValue(route.query.end_date)
   const queryUserId = getNumericQueryValue(route.query.user_id)
 
-  if (queryStartDate) {
-    startDate.value = queryStartDate
-  }
-  if (queryEndDate) {
-    endDate.value = queryEndDate
+  if (exactStart && exactEnd && Number.isFinite(Date.parse(exactStart)) && Number.isFinite(Date.parse(exactEnd)) && Date.parse(exactStart) < Date.parse(exactEnd)) {
+    startDate.value = new Date(exactStart).toISOString()
+    endDate.value = new Date(exactEnd).toISOString()
+  } else if (queryStartDate && queryEndDate) {
+    const start = new Date(`${queryStartDate}T00:00:00`)
+    const end = new Date(`${queryEndDate}T00:00:00`)
+    end.setDate(end.getDate() + 1)
+    if (Number.isFinite(start.getTime()) && start < end) {
+      startDate.value = localMinute(start)
+      endDate.value = localMinute(end)
+    }
   }
 
   filters.value = {
@@ -359,6 +362,12 @@ const loadRouteUserFilterLabel = async () => {
 }
 
 const onDateRangeChange = (range: { startDate: string; endDate: string; preset: string | null }) => {
+  try {
+    snapshotUsageQuery(filters.value, range.startDate, range.endDate)
+  } catch {
+    appStore.showError(t('admin.usage.cleanup.missingRange'))
+    return
+  }
   startDate.value = range.startDate
   endDate.value = range.endDate
   filters.value = {
@@ -375,14 +384,11 @@ const buildUsageListParams = (
   pageSize: number,
   exactTotal: boolean
 ): AdminUsageQueryParams => {
-  const requestType = filters.value.request_type
-  const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
   return {
     page,
     page_size: pageSize,
     exact_total: exactTotal,
-    ...filters.value,
-    stream: legacyStream === null ? undefined : legacyStream,
+    ...normalizedFilters.value,
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
   }
@@ -390,38 +396,52 @@ const buildUsageListParams = (
 
 const loadLogs = async () => {
   abortController?.abort(); const c = new AbortController(); abortController = c; loading.value = true
+  logsError.value = false
+  usageLogs.value = []
   try {
     const res = await adminAPI.usage.list(
-      buildUsageListParams(pagination.page, pagination.page_size, false),
+      { ...buildUsageListParams(pagination.page, pagination.page_size, false), count_mode: 'deferred' },
       { signal: c.signal }
     )
-    if(!c.signal.aborted) { usageLogs.value = res.items; pagination.total = res.total }
-  } catch (error: any) { if(error?.name !== 'AbortError') console.error('Failed to load usage logs:', error) } finally { if(abortController === c) loading.value = false }
+    if (!c.signal.aborted) {
+      usageLogs.value = res.items
+      pagination.has_more = res.has_more ?? (res.total != null && pagination.page * pagination.page_size < res.total)
+      pagination.total = reconcileUsageTotal(usageStats.value?.total_requests ?? (res.total_exact === false ? null : res.total), pagination.page, pagination.page_size, res.items.length, pagination.has_more)
+    }
+  } catch (error) {
+    if (!c.signal.aborted && abortController === c) {
+      logsError.value = true
+      console.error('Failed to load usage logs:', error)
+    }
+  } finally { if(abortController === c) loading.value = false }
 }
 const loadStats = async (force = false) => {
-  const seq = ++statsReqSeq
+  const request = requests.start('stats')
   endpointStatsLoading.value = true
+  statsError.value = false
   try {
-    const requestType = filters.value.request_type
-    const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
     const s = await adminAPI.usage.getStats({
-      ...filters.value,
-      stream: legacyStream === null ? undefined : legacyStream,
+      ...normalizedFilters.value,
+      force_refresh: force,
       ...(force ? { nocache: 1 } : {}),
-    })
-    if (seq !== statsReqSeq) return
+    }, { signal: request.signal })
+    if (!request.current()) return
     usageStats.value = s
+    pagination.total = loading.value ? s.total_requests : reconcileUsageTotal(s.total_requests, pagination.page, pagination.page_size, usageLogs.value.length, pagination.has_more)
     inboundEndpointStats.value = s.endpoints || []
     upstreamEndpointStats.value = s.upstream_endpoints || []
     endpointPathStats.value = s.endpoint_paths || []
   } catch (error) {
-    if (seq !== statsReqSeq) return
+    if (!request.current()) return
+    statsError.value = true
+    usageStats.value = null
+    pagination.total = null
     console.error('Failed to load usage stats:', error)
     inboundEndpointStats.value = []
     upstreamEndpointStats.value = []
     endpointPathStats.value = []
   } finally {
-    if (seq === statsReqSeq) endpointStatsLoading.value = false
+    if (request.current()) endpointStatsLoading.value = false
   }
 }
 
@@ -434,32 +454,24 @@ const invalidateModelStatsCache = () => {
 
 const loadModelStats = async (source: ModelDistributionSource, force = false) => {
   if (!force && loadedModelSources[source]) {
+    requests.start('models')
+    modelError.value = false
+    modelStatsLoading.value = false
     return
   }
 
-  const seq = ++modelStatsReqSeq
+  const request = requests.start('models')
   modelStatsLoading.value = true
+  modelError.value = false
   try {
-    const requestType = filters.value.request_type
-    const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
     const baseParams = {
-      start_date: filters.value.start_date || startDate.value,
-      end_date: filters.value.end_date || endDate.value,
-      user_id: filters.value.user_id,
-      model: filters.value.model,
-      api_key_id: filters.value.api_key_id,
-      account_id: filters.value.account_id,
-      group_id: filters.value.group_id,
-      request_type: requestType,
-      stream: legacyStream === null ? undefined : legacyStream,
-      native_compaction_v2: filters.value.native_compaction_v2,
-      billing_type: filters.value.billing_type,
-	  upstream_model_mismatch: filters.value.upstream_model_mismatch,
+      ...normalizedFilters.value,
+      force_refresh: force,
     }
 
-    const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source })
+    const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source }, { signal: request.signal })
 
-    if (seq !== modelStatsReqSeq) return
+    if (!request.current()) return
 
     const models = response.models || []
     if (source === 'requested') {
@@ -471,7 +483,8 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
     }
     loadedModelSources[source] = true
   } catch (error) {
-    if (seq !== modelStatsReqSeq) return
+    if (!request.current()) return
+    modelError.value = true
     console.error('Failed to load model stats:', error)
     if (source === 'requested') {
       requestedModelStats.value = []
@@ -482,47 +495,65 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
     }
     loadedModelSources[source] = false
   } finally {
-    if (seq === modelStatsReqSeq) modelStatsLoading.value = false
+    if (request.current()) modelStatsLoading.value = false
   }
 }
 
-const loadChartData = async () => {
-  const seq = ++chartReqSeq
+const loadChartData = async (force = false) => {
+  const request = requests.start('charts')
   chartsLoading.value = true
+  chartsError.value = false
   try {
-    const requestType = filters.value.request_type
-    const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
     const snapshot = await adminAPI.dashboard.getSnapshotV2({
-      start_date: filters.value.start_date || startDate.value,
-      end_date: filters.value.end_date || endDate.value,
+      ...normalizedFilters.value,
       granularity: granularity.value,
-      user_id: filters.value.user_id,
-      model: filters.value.model,
-      api_key_id: filters.value.api_key_id,
-      account_id: filters.value.account_id,
-      group_id: filters.value.group_id,
-      request_type: requestType,
-      stream: legacyStream === null ? undefined : legacyStream,
-      native_compaction_v2: filters.value.native_compaction_v2,
-      billing_type: filters.value.billing_type,
-	  upstream_model_mismatch: filters.value.upstream_model_mismatch,
+      force_refresh: force,
       include_stats: false,
       include_trend: true,
       include_model_stats: false,
       include_group_stats: true,
       include_users_trend: false
-    })
-    if (seq !== chartReqSeq) return
+    }, { signal: request.signal })
+    if (!request.current()) return
     trendData.value = snapshot.trend || []
     groupStats.value = snapshot.groups || []
-  } catch (error) { console.error('Failed to load chart data:', error) } finally { if (seq === chartReqSeq) chartsLoading.value = false }
+  } catch (error) {
+    if (!request.current()) return
+    chartsError.value = true
+    trendData.value = []
+    groupStats.value = []
+    console.error('Failed to load chart data:', error)
+  } finally { if (request.current()) chartsLoading.value = false }
 }
 const applyFilters = () => {
+  let query: Readonly<AdminUsageQueryParams>
+  try {
+    query = snapshotUsageQuery(filters.value, startDate.value, endDate.value)
+  } catch {
+    appStore.showError(t('admin.usage.cleanup.missingRange'))
+    return
+  }
+  requests.cancelAll()
+  normalizedFilters.value = query
+  usageStats.value = null
+  pagination.total = null
+  pagination.has_more = false
+  trendData.value = []
+  groupStats.value = []
+  requestedModelStats.value = []
+  upstreamModelStats.value = []
+  mappingModelStats.value = []
+  inboundEndpointStats.value = []
+  upstreamEndpointStats.value = []
+  endpointPathStats.value = []
+  errRows.value = []
+  errTotal.value = 0
+  errorsError.value = false
   pagination.page = 1
   invalidateModelStatsCache()
   loadLogs()
   loadStats()
-  loadModelStats(modelDistributionSource.value, true)
+  loadModelStats(modelDistributionSource.value)
   loadChartData()
   errPage.value = 1
   if (activeTab.value === 'errors') {
@@ -532,13 +563,19 @@ const applyFilters = () => {
   }
 }
 const refreshData = () => {
+  chartRefreshKey.value += 1
   invalidateModelStatsCache()
   loadLogs()
   loadStats(true)
   loadModelStats(modelDistributionSource.value, true)
-  loadChartData()
+  loadChartData(true)
   if (activeTab.value === 'errors') loadAdminErrors()
-  if (rankingMounted.value) rankingRef.value?.reload()
+  if (rankingMounted.value) rankingRef.value?.reload(true)
+}
+const changeGranularity = () => {
+  trendData.value = []
+  groupStats.value = []
+  void loadChartData()
 }
 const resetFilters = () => {
   const range = getLast24HoursRangeDates()
@@ -574,9 +611,14 @@ const getRequestTypeLabel = (log: AdminUsageLog): string => {
 
 const exportToExcel = async () => {
   if (exporting.value) return; exporting.value = true; exportProgress.show = true
+  exportProgress.current = 0
+  exportProgress.total = 0
+  exportProgress.progress = 0
   const c = new AbortController(); exportAbortController = c
+  const exportQuery = Object.freeze(buildUsageListParams(1, 100, true))
+  const rangeName = `${startDate.value}_to_${endDate.value}`
   try {
-    let p = 1; let total = pagination.total; let exportedCount = 0
+    let p = 1; let total = pagination.total ?? 0; let exportedCount = 0
     const XLSX = await import('xlsx')
     const headers = [
       t('usage.time'), t('admin.usage.user'), t('usage.apiKeyFilter'),
@@ -594,7 +636,7 @@ const exportToExcel = async () => {
     const ws = XLSX.utils.aoa_to_sheet([headers])
     while (true) {
       const res = await adminUsageAPI.list(
-        buildUsageListParams(p, 100, true),
+        { ...exportQuery, page: p, count_mode: 'exact' },
         { signal: c.signal }
       )
       if (c.signal.aborted) break; if (p === 1) { total = res.total; exportProgress.total = total }
@@ -621,10 +663,14 @@ const exportToExcel = async () => {
     if(!c.signal.aborted) {
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, 'Usage')
-      saveAs(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `usage_${filters.value.start_date}_to_${filters.value.end_date}.xlsx`)
+      saveAs(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `usage_${rangeName}.xlsx`)
       appStore.showSuccess(t('usage.exportSuccess'))
     }
-  } catch (error) { console.error('Failed to export:', error); appStore.showError('Export Failed') }
+  } catch (error) {
+    if (c.signal.aborted) return
+    console.error('Failed to export:', error)
+    appStore.showError(t('usage.exportFailed'))
+  }
   finally { if(exportAbortController === c) { exportAbortController = null; exporting.value = false; exportProgress.show = false } }
 }
 
@@ -811,19 +857,17 @@ const errSortOrder = ref<'asc' | 'desc'>('desc')
 const showErrorModal = ref(false)
 const selectedErrorId = ref<number | null>(null)
 
-// 注意：'YYYY-MM-DDT00:00:00' 无时区后缀，按本地时区解析后再转 UTC——与页面其它日期处理语义一致，刻意如此，勿改成 'T00:00:00Z'
-const toRFC3339 = (d: string | undefined, endOfDay = false): string | undefined =>
-  d ? new Date(d + (endOfDay ? 'T23:59:59.999' : 'T00:00:00')).toISOString() : undefined
-
 const loadAdminErrors = async () => {
+  const request = requests.start('errors')
   errLoading.value = true
+  errorsError.value = false
+  errRows.value = []
   try {
     const resp = await listErrorLogs({
       page: errPage.value,
       page_size: errPageSize.value,
       view: 'all',
-      start_time: toRFC3339(filters.value.start_date),
-      end_time: toRFC3339(filters.value.end_date, true),
+      ...normalizedFilters.value,
       user_id: filters.value.user_id ?? undefined,
       api_key_id: filters.value.api_key_id ?? undefined,
       account_id: filters.value.account_id ?? undefined,
@@ -834,14 +878,17 @@ const loadAdminErrors = async () => {
       status_codes: filters.value.status_code != null ? String(filters.value.status_code) : undefined,
       sort_by: errSortBy.value,
       sort_order: errSortOrder.value,
-    })
+    }, { signal: request.signal })
+    if (!request.current()) return
     errRows.value = resp.items
     errTotal.value = resp.total
   } catch (error) {
+    if (!request.current()) return
+    errorsError.value = true
     console.error('Failed to load admin errors:', error)
     appStore.showError(t('usage.errors.failedToLoad'))
   } finally {
-    errLoading.value = false
+    if (request.current()) errLoading.value = false
   }
 }
 
@@ -867,17 +914,12 @@ const handleColumnClickOutside = (event: MouseEvent) => {
 onMounted(() => {
   applyRouteQueryFilters()
   void loadRouteUserFilterLabel()
-  loadLogs()
-  loadStats()
-  loadModelStats(modelDistributionSource.value, true)
-  window.setTimeout(() => {
-    void loadChartData()
-  }, 120)
+  applyFilters()
   loadSavedColumns()
   loadSavedErrColumns()
   document.addEventListener('click', handleColumnClickOutside)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => { requests.cancelAll(); abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)

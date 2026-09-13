@@ -219,10 +219,135 @@ describe('user UsageView', () => {
       include_trend: true,
       include_model_stats: false,
       include_group_stats: true,
-    }))
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(list).toHaveBeenCalledTimes(1)
     expect(list).toHaveBeenCalledWith(1, 100)
     expect(getAvailable).toHaveBeenCalled()
+  })
+
+  it('clears old-range totals immediately and never restores a late response', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect((wrapper.vm as any).usageStats.total_requests).toBe(1)
+
+    let resolveOld!: (value: any) => void
+    let rejectLatest!: (reason: Error) => void
+    getStats.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    getStats.mockImplementationOnce(() => new Promise((_, reject) => { rejectLatest = reject }))
+
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-01T12:34', endDate: '2026-09-08T12:34', preset: null })
+    expect((wrapper.vm as any).usageStats).toBeNull()
+    expect((wrapper.vm as any).pagination.total).toBeNull()
+    const oldSignal = getStats.mock.calls.at(-1)![2].signal as AbortSignal
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-08T12:34', endDate: '2026-09-09T12:34', preset: null })
+    expect(oldSignal.aborted).toBe(true)
+    resolveOld({ total_requests: 777, total_actual_cost: 999 })
+    rejectLatest(new Error('statistics timeout'))
+    await flushPromises()
+    expect((wrapper.vm as any).usageStats).toBeNull()
+    expect((wrapper.vm as any).statsError).toBe(true)
+    expect((wrapper.vm as any).usageLogs).toHaveLength(1)
+    expect(wrapper.text()).toContain('usage.queryFailed')
+    wrapper.unmount()
+  })
+
+  it('rejects incomplete ranges before changing the query or canceling its requests', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    const vm = wrapper.vm as any
+    const original = { start: vm.startDate, end: vm.endDate, query: vm.normalizedFilters }
+    const signal = getStats.mock.calls.at(-1)![2].signal as AbortSignal
+    query.mockClear()
+    vm.onDateRangeChange({ startDate: '', endDate: '2026-09-08T21:00', preset: null })
+    expect(vm.startDate).toBe(original.start)
+    expect(vm.endDate).toBe(original.end)
+    expect(vm.normalizedFilters).toBe(original.query)
+    expect(signal.aborted).toBe(false)
+    expect(query).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('demotes a stale cached count when the current page proves more rows exist', async () => {
+    getStats.mockResolvedValue({ total_requests: 20 })
+    query.mockResolvedValue({ items: Array.from({ length: 20 }, (_, index) => ({ ...usageLog, id: index + 1 })), total: null, pages: null, has_more: true, total_exact: false })
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect((wrapper.vm as any).pagination).toMatchObject({ total: null, has_more: true })
+    ;(wrapper.vm as any).handlePageChange(2)
+    await flushPromises()
+    expect(query.mock.calls.at(-1)![0].page).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('shows deferred page rows before the exact count and shares the full minute query', async () => {
+    let resolveStats!: (value: any) => void
+    getStats.mockImplementation(() => new Promise((resolve) => { resolveStats = resolve }))
+    query.mockResolvedValue({ items: [usageLog], total: null, pages: null, has_more: true, total_exact: false })
+    const wrapper = mountUsageView()
+    await flushPromises()
+    expect((wrapper.vm as any).usageLogs).toHaveLength(1)
+    expect((wrapper.vm as any).loading).toBe(false)
+    expect((wrapper.vm as any).pagination).toMatchObject({ total: null, has_more: true })
+
+    ;(wrapper.vm as any).filters.model = 'gpt-5.4'
+    ;(wrapper.vm as any).filters.billing_mode = 'token'
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-08T12:34', endDate: '2026-09-08T12:35', preset: null })
+    await flushPromises()
+    const logQuery = query.mock.calls.at(-1)![0]
+    const expected = { model: 'gpt-5.4', billing_mode: 'token', start_time: logQuery.start_time, end_time: logQuery.end_time, timezone: logQuery.timezone }
+    expect(new Date(logQuery.end_time).getTime() - new Date(logQuery.start_time).getTime()).toBe(60_000)
+    expect(getStats.mock.calls.at(-1)![0]).toMatchObject(expected)
+    expect(getDashboardModels.mock.calls.at(-1)![0]).toMatchObject(expected)
+    expect(getDashboardSnapshotV2.mock.calls.at(-1)![0]).toMatchObject(expected)
+    resolveStats({ total_requests: 47, total_actual_cost: 2 })
+    await flushPromises()
+    expect((wrapper.vm as any).pagination.total).toBe(47)
+    wrapper.unmount()
+  })
+
+  it('aborts pending errors on a new range and on leaving the page', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    let resolveOld!: (value: any) => void
+    listMyErrorRequests.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    ;(wrapper.vm as any).switchToErrors()
+    const oldSignal = listMyErrorRequests.mock.calls.at(-1)![1].signal as AbortSignal
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-09-01T12:34', endDate: '2026-09-08T12:34', preset: null })
+    resolveOld({ items: [{ id: 999 }], total: 1 })
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect((wrapper.vm as any).errorRows).toEqual([])
+    const signals = [getStats.mock.calls.at(-1)![2].signal, getDashboardSnapshotV2.mock.calls.at(-1)![1].signal, listMyErrorRequests.mock.calls.at(-1)![1].signal]
+    wrapper.unmount()
+    expect(signals.every((signal: AbortSignal) => signal.aborted)).toBe(true)
+  })
+
+  it('keeps same-query totals only while refreshing, then clears them after failure', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    let rejectRefresh!: (error: Error) => void
+    getStats.mockImplementationOnce(() => new Promise((_, reject) => { rejectRefresh = reject }))
+    ;(wrapper.vm as any).refreshData()
+    expect((wrapper.vm as any).usageStats.total_requests).toBe(1)
+    expect((wrapper.vm as any).endpointStatsLoading).toBe(true)
+    rejectRefresh(new Error('refresh timeout'))
+    await flushPromises()
+    expect((wrapper.vm as any).usageStats).toBeNull()
+    expect((wrapper.vm as any).pagination.total).toBeNull()
+    expect((wrapper.vm as any).statsError).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('refreshes every statistics region with the same force flag', async () => {
+    const wrapper = mountUsageView()
+    await flushPromises()
+    ;(wrapper.vm as any).refreshData()
+    await flushPromises()
+    expect(getStats.mock.calls.at(-1)![0].force_refresh).toBe(true)
+    expect(getDashboardModels.mock.calls.at(-1)![0].force_refresh).toBe(true)
+    expect(getDashboardSnapshotV2.mock.calls.at(-1)![0].force_refresh).toBe(true)
+    wrapper.unmount()
   })
 
   it('includes API keys after the first page in both record filters and queries by the selected key', async () => {
@@ -270,7 +395,8 @@ describe('user UsageView', () => {
     await flushPromises()
 
     expect(listMyErrorRequests).toHaveBeenCalledWith(
-      expect.objectContaining({ api_key_id: laterKey.id, page: 1 })
+      expect.objectContaining({ api_key_id: laterKey.id, page: 1 }),
+      expect.anything()
     )
     expect(list).toHaveBeenCalledTimes(2)
     wrapper.unmount()
@@ -334,9 +460,9 @@ describe('user UsageView', () => {
       expect.objectContaining({ native_compaction_v2: true }),
       expect.anything()
     )
-    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
-    expect(getDashboardModels).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
-    expect(getDashboardSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }))
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), undefined, expect.anything())
+    expect(getDashboardModels).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), expect.anything())
+    expect(getDashboardSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: true }), expect.anything())
 
     query.mockClear()
     getStats.mockClear()
@@ -351,15 +477,17 @@ describe('user UsageView', () => {
       expect.objectContaining({ native_compaction_v2: null }),
       expect.anything()
     )
-    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
-    expect(getDashboardModels).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
-    expect(getDashboardSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }))
+    expect(getStats).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), undefined, expect.anything())
+    expect(getDashboardModels).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), expect.anything())
+    expect(getDashboardSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({ native_compaction_v2: null }), expect.anything())
   })
 
   it('exports csv with current filters and without admin-only fields', async () => {
     const wrapper = mountUsageView()
     await flushPromises()
     ;(wrapper.vm as any).filters.native_compaction_v2 = true
+    ;(wrapper.vm as any).applyFilters()
+    await flushPromises()
 
     let exportedBlob: Blob | null = null
     let csvContent = ''
@@ -385,7 +513,7 @@ describe('user UsageView', () => {
       sort_by: 'created_at',
       sort_order: 'desc',
       native_compaction_v2: true,
-    }))
+    }), expect.anything())
     expect(clickSpy).toHaveBeenCalled()
     expect(showSuccess).toHaveBeenCalled()
     expect(csvContent.startsWith('\uFEFF')).toBe(true)

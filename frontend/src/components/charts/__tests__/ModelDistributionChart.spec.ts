@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 import ModelDistributionChart from '../ModelDistributionChart.vue'
+const { getUserBreakdown } = vi.hoisted(() => ({ getUserBreakdown: vi.fn() }))
+vi.mock('@/api/admin/dashboard', () => ({ getUserBreakdown }))
 
 const messages: Record<string, string> = {
   'admin.dashboard.modelDistribution': 'Model Distribution',
@@ -72,6 +74,18 @@ describe('ModelDistributionChart', () => {
       actual_cost: 1.4,
     },
   ]
+
+  it('preserves the page requested-model filter when drilling into an upstream model', async () => {
+    getUserBreakdown.mockResolvedValue({ users: [] })
+    const wrapper = mount(ModelDistributionChart, {
+      props: { modelStats, upstreamModelStats: modelStats, source: 'upstream', filters: { model: 'requested-a', start_time: '2026-09-08T12:59:00Z', end_time: '2026-09-08T13:00:00Z', billing_mode: 'image' } },
+      global: { stubs: { LoadingSpinner: true } },
+    })
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+    expect(getUserBreakdown).toHaveBeenCalledWith(expect.objectContaining({ model: 'model-a', model_source: 'upstream', requested_model: 'requested-a', billing_mode: 'image', start_date: undefined, end_date: undefined }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    wrapper.unmount()
+  })
 
   it('uses total_tokens and token ordering by default', () => {
     const wrapper = mount(ModelDistributionChart, {

@@ -99,6 +99,7 @@ interface Props {
   startDate: string
   endDate: string
   includeTime?: boolean
+  requiredRange?: boolean
   clearable?: boolean
   placeholder?: string
   startLabel?: string
@@ -120,8 +121,8 @@ const isOpen = ref(false)
 const containerRef = ref<HTMLElement | null>(null)
 const triggerRef = ref<HTMLButtonElement | null>(null)
 const popupStyle = ref<Record<string, string>>({})
-const localStartDate = ref(props.startDate)
-const localEndDate = ref(props.endDate)
+const localStartDate = ref(localInputValue(props.startDate))
+const localEndDate = ref(localInputValue(props.endDate))
 const activePreset = ref<string | null>(props.includeTime ? null : 'last24Hours')
 
 const today = computed(() => {
@@ -145,25 +146,36 @@ const maximumDate = computed(() => props.includeTime ? `${tomorrow.value}T23:59`
 
 const validRange = computed(() => {
   if (!props.includeTime) return true
-  const start = localStartDate.value ? new Date(localStartDate.value).getTime() : null
-  const end = localEndDate.value ? new Date(localEndDate.value).getTime() : null
+  if (props.requiredRange && (!localStartDate.value || !localEndDate.value)) return false
+  const start = localStartDate.value ? new Date(resolvedInputValue(localStartDate.value, props.startDate)).getTime() : null
+  const end = localEndDate.value ? new Date(resolvedInputValue(localEndDate.value, props.endDate)).getTime() : null
   return (start === null || Number.isFinite(start)) &&
     (end === null || Number.isFinite(end)) &&
     (start === null || end === null || start < end)
 })
 
 // Helper function to format date to YYYY-MM-DD using local timezone
-const formatDateToString = (date: Date): string => {
+function formatDateToString(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
 
-const formatDateTimeToString = (date: Date): string => {
+function formatDateTimeToString(date: Date): string {
   const hour = String(date.getHours()).padStart(2, '0')
   const minute = String(date.getMinutes()).padStart(2, '0')
   return `${formatDateToString(date)}T${hour}:${minute}`
+}
+
+function localInputValue(value: string): string {
+  if (!props.includeTime || !/(Z|[+-]\d{2}:\d{2})$/.test(value)) return value
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? formatDateTimeToString(date) : value
+}
+
+function resolvedInputValue(value: string, original: string): string {
+  return props.includeTime && value === localInputValue(original) ? original : value
 }
 
 const presets: DatePreset[] = [
@@ -350,8 +362,8 @@ const updatePopupPosition = () => {
 }
 
 const resetDraft = () => {
-  localStartDate.value = props.startDate
-  localEndDate.value = props.endDate
+  localStartDate.value = localInputValue(props.startDate)
+  localEndDate.value = localInputValue(props.endDate)
   onDateChange()
 }
 
@@ -363,11 +375,18 @@ const clearRange = () => {
 
 const apply = () => {
   if (!validRange.value) return
-  emit('update:startDate', localStartDate.value)
-  emit('update:endDate', localEndDate.value)
+  let start = resolvedInputValue(localStartDate.value, props.startDate)
+  let end = resolvedInputValue(localEndDate.value, props.endDate)
+  if (props.includeTime && props.requiredRange && activePreset.value === 'last24Hours') {
+    const endTime = Math.floor(Date.now() / 60_000) * 60_000
+    start = new Date(endTime - 86_400_000).toISOString()
+    end = new Date(endTime).toISOString()
+  }
+  emit('update:startDate', start)
+  emit('update:endDate', end)
   emit('change', {
-    startDate: localStartDate.value,
-    endDate: localEndDate.value,
+    startDate: start,
+    endDate: end,
     preset: activePreset.value
   })
   isOpen.value = false
@@ -392,7 +411,7 @@ const handleEscape = (event: KeyboardEvent) => {
 watch(
   () => props.startDate,
   (val) => {
-    localStartDate.value = val
+    localStartDate.value = localInputValue(val)
     onDateChange()
   }
 )
@@ -400,7 +419,7 @@ watch(
 watch(
   () => props.endDate,
   (val) => {
-    localEndDate.value = val
+    localEndDate.value = localInputValue(val)
     onDateChange()
   }
 )
