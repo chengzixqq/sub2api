@@ -134,9 +134,10 @@ func TestAdminServiceSimpleModeValidatesRequestedGroupIDsDirectly(t *testing.T) 
 	groups[1002] = &Group{ID: 1002, Platform: PlatformComposite}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: &groupRepoStubForAdmin{getByIDByID: groups}}
 
-	require.Error(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 1002}))
-	require.ErrorIs(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 2000}), ErrGroupNotFound)
-	require.NoError(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 1001}))
+	ctx := WithScope(context.Background(), AdminScope())
+	require.Error(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 1002}))
+	require.ErrorIs(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 2000}), ErrGroupNotFound)
+	require.NoError(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 1001}))
 }
 
 func TestAdminServiceSimpleModeRejectsDirectCompositeGroupAccess(t *testing.T) {
@@ -270,7 +271,7 @@ func TestAdminServiceSimpleModeNormalizesAllUnsupportedUpdateFieldsDirectly(t *t
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: repo}
 
-	updated, err := svc.UpdateGroup(context.Background(), 1, input)
+	updated, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, input)
 	require.NoError(t, err)
 	require.Equal(t, UpdateGroupInput{Name: "renamed", Description: &description}, *input)
 	require.Equal(t, "renamed", updated.Name)
@@ -288,7 +289,7 @@ func TestAdminServiceSimpleModeListUsesRepositoryFilteredTotal(t *testing.T) {
 		listWithFiltersResult: &pagination.PaginationResult{Total: 11, Page: 2, PageSize: 1},
 	}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: repo}
-	groups, total, err := svc.ListGroups(context.Background(), 2, 1, "", "", "", nil, "id", "asc")
+	groups, total, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 2, 1, "", "", "", nil, "id", "asc")
 	require.NoError(t, err)
 	require.Len(t, groups, 1)
 	require.EqualValues(t, 11, total)

@@ -272,7 +272,7 @@ func TestDuplicateAccountPreservesUngroupedState(t *testing.T) {
 }
 
 func TestDuplicateAccountSimpleModeRejectsCompositeGroupBinding(t *testing.T) {
-	ctx := context.Background()
+	ctx := WithScope(context.Background(), AdminScope())
 	repo := newDuplicateAccountRepoStub()
 	groupRepo := &groupRepoStubForAdmin{getByIDByID: map[int64]*Group{
 		9: {ID: 9, Platform: PlatformComposite},
