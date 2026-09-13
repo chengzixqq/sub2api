@@ -113,6 +113,15 @@ func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyIn
 }
 
 func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error) {
+	if input == nil {
+		return nil, infraerrors.BadRequest("PROXY_INPUT_INVALID", "proxy update input is required")
+	}
+	// Validate request-owned values before repository access. This keeps malformed
+	// JSON timestamps deterministic and avoids dereferencing an unavailable repo
+	// for an input error that can be rejected locally.
+	if !isJSONTimeInRange(input.ExpiresAt) {
+		return nil, infraerrors.BadRequest("PROXY_EXPIRY_INVALID", "proxy expiry year must be between 0 and 9999")
+	}
 	if err := s.requireProxyAccess(ctx, id); err != nil {
 		return nil, err
 	}
@@ -122,9 +131,6 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 		if err := s.requireProxyAccess(ctx, *input.BackupProxyID); err != nil {
 			return nil, err
 		}
-	}
-	if !isJSONTimeInRange(input.ExpiresAt) {
-		return nil, infraerrors.BadRequest("PROXY_EXPIRY_INVALID", "proxy expiry year must be between 0 and 9999")
 	}
 	// 校验：backup_proxy_id 不能是自身
 	if input.BackupProxyID != nil && *input.BackupProxyID == id {
