@@ -1,10 +1,16 @@
 .PHONY: build generate test test-unit test-integration test-e2e
 
+ifeq ($(OS),Windows_NT)
+VERSION ?= $(strip $(file <cmd/server/VERSION))
+CGO_ENV := set "CGO_ENABLED=0" &&
+else
 VERSION ?= $(shell ./scripts/resolve-version.sh)
+CGO_ENV := CGO_ENABLED=0
+endif
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
 build:
-	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
+	$(CGO_ENV) go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
 
 generate:
 	go generate ./ent
