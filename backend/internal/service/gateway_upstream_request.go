@@ -105,6 +105,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	//   5) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
 	policyFilterSet := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
 	effectiveDropSet := mergeDropSets(policyFilterSet)
+	effectiveDropSet = preserveNativeAnthropicFallbackBetas(account, claudePolicy.FallbackPolicy, effectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, effectiveDropSet,
 	)
@@ -116,7 +117,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, !mimicClaudeCode); changed {
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, isNativeAnthropicAPIKeyAccount(account)); changed {
 		body = sanitized
 	}
 
@@ -637,6 +638,7 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 	// on native Anthropic paths. Provider-specific builders still apply their
 	// protocol allowlists (Vertex/Bedrock) after this policy check.
 	customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
+	nativeAnthropicAPIKey := isNativeAnthropicAPIKeyAccount(account)
 	if customization.BetaPolicyMode == ClaudeBetaClientPassthrough {
 		return betaPolicyResult{}
 	}
@@ -652,6 +654,13 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 			continue
 		}
 		effectiveAction, effectiveErrMsg := resolveRuleAction(rule, model)
+		// Fallback is owned by the configured upstream for native API-key
+		// forwarding. Do not let a generic beta policy rule remove the token that
+		// enables that upstream behavior unless strict mode was explicitly chosen.
+		if nativeAnthropicAPIKey && customization.FallbackPolicy != ClaudeFallbackStrict &&
+			isAnthropicFallbackBetaToken(rule.BetaToken) && effectiveAction == BetaPolicyActionFilter {
+			continue
+		}
 		switch effectiveAction {
 		case BetaPolicyActionBlock:
 			if result.blockErr == nil && betaHeader != "" && containsBetaToken(betaHeader, rule.BetaToken) {
@@ -678,10 +687,13 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 				known[token] = struct{}{}
 			}
 		}
-		native := account != nil && account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey
+		native := nativeAnthropicAPIKey
 		for _, token := range strings.Split(betaHeader, ",") {
 			token = strings.TrimSpace(token)
 			if token == "" {
+				continue
+			}
+			if native && customization.FallbackPolicy != ClaudeFallbackStrict && isAnthropicFallbackBetaToken(token) {
 				continue
 			}
 			if _, ok := known[token]; ok {
@@ -717,8 +729,60 @@ func mergeDropSets(policySet map[string]struct{}, extra ...string) map[string]st
 	return m
 }
 
+// preserveNativeAnthropicFallbackBetas removes fallback beta names from a
+// dynamic drop set for native API-key forwarding. Fallback remains owned by
+// the configured upstream even if a generic policy later classifies the token
+// as filterable. Strict mode intentionally keeps the filtering behavior.
+func preserveNativeAnthropicFallbackBetas(account *Account, fallbackPolicy string, dropSet map[string]struct{}) map[string]struct{} {
+	if !isNativeAnthropicAPIKeyAccount(account) ||
+		fallbackPolicy == ClaudeFallbackStrict || len(dropSet) == 0 {
+		return dropSet
+	}
+	var preserved map[string]struct{}
+	for token := range dropSet {
+		if !isAnthropicFallbackBetaToken(token) {
+			continue
+		}
+		if preserved == nil {
+			preserved = make(map[string]struct{}, len(dropSet))
+			for key := range dropSet {
+				preserved[key] = struct{}{}
+			}
+		}
+		delete(preserved, token)
+	}
+	if preserved == nil {
+		return dropSet
+	}
+	return preserved
+}
+
+func isNativeAnthropicAPIKeyAccount(account *Account) bool {
+	return account != nil && account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey
+}
+
 // betaPolicyFilterSetKey is the gin.Context key for caching the policy filter set within a request.
 const betaPolicyFilterSetKey = "betaPolicyFilterSet"
+
+type betaPolicyFilterCache struct {
+	accountID int64
+	model     string
+	filterSet map[string]struct{}
+}
+
+func setBetaPolicyFilterSet(c *gin.Context, account *Account, model string, filterSet map[string]struct{}) {
+	if c == nil {
+		return
+	}
+	var accountID int64
+	if account != nil {
+		accountID = account.ID
+	}
+	if filterSet == nil {
+		filterSet = map[string]struct{}{}
+	}
+	c.Set(betaPolicyFilterSetKey, betaPolicyFilterCache{accountID: accountID, model: model, filterSet: filterSet})
+}
 
 // getBetaPolicyFilterSet returns the beta policy filter set, using the gin context cache if available.
 // In the /v1/messages path, Forward() evaluates the policy first and caches the result;
@@ -727,12 +791,22 @@ const betaPolicyFilterSetKey = "betaPolicyFilterSet"
 func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Context, account *Account, model string) map[string]struct{} {
 	if c != nil {
 		if v, ok := c.Get(betaPolicyFilterSetKey); ok {
-			if fs, ok := v.(map[string]struct{}); ok {
-				return fs
+			if cached, ok := v.(betaPolicyFilterCache); ok {
+				var accountID int64
+				if account != nil {
+					accountID = account.ID
+				}
+				if cached.accountID == accountID && cached.model == model {
+					return cached.filterSet
+				}
 			}
 		}
 	}
-	return s.evaluateBetaPolicy(ctx, "", account, model).filterSet
+	betaHeader := ""
+	if c != nil {
+		betaHeader = c.GetHeader("anthropic-beta")
+	}
+	return s.evaluateBetaPolicy(ctx, betaHeader, account, model).filterSet
 }
 
 // betaPolicyScopeMatches checks whether a rule's scope matches the current account type.
@@ -801,6 +875,15 @@ func containsBetaToken(header, token string) bool {
 		}
 	}
 	return false
+}
+
+func isAnthropicFallbackBetaToken(token string) bool {
+	switch strings.TrimSpace(token) {
+	case claude.BetaServerSideFallback, claude.BetaFallbackCredit, claude.BetaFallbackCreditLegacy:
+		return true
+	default:
+		return false
+	}
 }
 
 func filterBetaTokens(tokens []string, filterSet map[string]struct{}) []string {

@@ -110,6 +110,9 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 	if !ShouldRectifyThinkingSignatureError(mappedModel) {
 		return false
 	}
+	if s == nil || s.settingService == nil || account == nil {
+		return false
+	}
 	if s.settingService != nil {
 		customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
 		if !customization.ThinkingSignatureRetryEnabled {
@@ -135,6 +138,9 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 // isSignatureErrorPattern 仅做模式匹配，不检查开关。
 // 用于已进入重试流程后的二阶段检测（此时开关已在首次调用时验证过）。
 func (s *GatewayService) isSignatureErrorPattern(ctx context.Context, account *Account, respBody []byte) bool {
+	if s == nil || s.settingService == nil || account == nil {
+		return false
+	}
 	if s.isThinkingBlockSignatureError(respBody) {
 		return true
 	}
@@ -379,8 +385,9 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 
 	// 调试日志：打印上游错误响应
+	logBody := redactUpstreamResponseBodyForClient(c, body)
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -444,7 +451,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 
@@ -482,7 +489,11 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	switch resp.StatusCode {
 	case 400:
-		c.Data(http.StatusBadRequest, "application/json", body)
+		// API-key URL redaction applies to the client-visible raw upstream error
+		// too. Keep the original body for classification/ops, and only redact the
+		// copy written downstream.
+		clientBody := redactUpstreamResponseBodyForClient(c, body)
+		c.Data(http.StatusBadRequest, "application/json", clientBody)
 		summary := upstreamMsg
 		if summary == "" {
 			summary = truncateForLog(body, 512)
@@ -604,13 +615,14 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	})
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		logBody := redactUpstreamResponseBodyForClient(c, respBody)
 		logger.LegacyPrintf("service.gateway",
 			"Upstream error %d retries_exhausted (account=%d platform=%s type=%s): %s",
 			resp.StatusCode,
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 

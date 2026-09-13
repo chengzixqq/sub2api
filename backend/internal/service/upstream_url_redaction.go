@@ -38,3 +38,22 @@ func sanitizeUpstreamErrorMessageForContext(c *gin.Context, message string) stri
 	}
 	return message
 }
+
+// SanitizeUpstreamErrorMessageForContext exposes the request-scoped URL
+// redaction helper to handler packages that build client-facing failover errors.
+func SanitizeUpstreamErrorMessageForContext(c *gin.Context, message string) string {
+	return sanitizeUpstreamErrorMessageForContext(c, message)
+}
+
+// redactUpstreamResponseBodyForClient returns a copy suitable for a downstream
+// error response. Internal classification and accounting must continue using
+// the original body; only the client-visible representation is redacted.
+func redactUpstreamResponseBodyForClient(c *gin.Context, body []byte) []byte {
+	if c == nil {
+		return body
+	}
+	if redact, _ := c.Get(redactUpstreamURLContextKey); redact == true {
+		return []byte(redactUpstreamURLs(string(body)))
+	}
+	return body
+}

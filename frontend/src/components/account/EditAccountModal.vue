@@ -40,6 +40,7 @@
               <option value="strict">{{ t('admin.customization.options.strict') }}</option>
               <option value="fable_native_passthrough">{{ t('admin.customization.options.fable_native_passthrough') }}</option>
             </select>
+            <span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.customization.fields.fallback_policy.hint') }}</span>
           </label>
           <label>
             <span class="input-label">{{ t('admin.customization.fields.beta_policy_mode.label') }}</span>
@@ -49,6 +50,17 @@
               <option value="official_strict">{{ t('admin.customization.options.official_strict') }}</option>
               <option value="client_passthrough">{{ t('admin.customization.options.client_passthrough') }}</option>
             </select>
+            <span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.customization.fields.beta_policy_mode.hint') }}</span>
+          </label>
+          <label>
+            <span class="input-label">{{ t('admin.customization.fields.unknown_beta_action.label') }}</span>
+            <select v-model="claudeOverrides.unknown_beta_action" class="input mt-1 w-full">
+              <option :value="null">{{ t('admin.customization.inherit') }}</option>
+              <option value="pass_on_native_only">{{ t('admin.customization.options.pass_on_native_only') }}</option>
+              <option value="filter">{{ t('admin.customization.options.filter') }}</option>
+              <option value="pass">{{ t('admin.customization.options.pass') }}</option>
+            </select>
+            <span class="mt-0.5 block text-xs text-gray-500">{{ t('admin.customization.fields.unknown_beta_action.hint') }}</span>
           </label>
         </div>
         <div class="grid gap-3 sm:grid-cols-2">
@@ -3811,6 +3823,7 @@ const claudeBooleanOverrideKeys = [
 const claudeOverrides = reactive<Record<string, boolean | string | null>>({
   fallback_policy: null,
   beta_policy_mode: null,
+  unknown_beta_action: null,
   thinking_prefilter_enabled: null,
   thinking_signature_retry_enabled: null,
   thinking_tool_downgrade_retry_enabled: null,

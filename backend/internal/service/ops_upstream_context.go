@@ -344,6 +344,10 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 	if c == nil {
 		return
 	}
+	if redact, _ := c.Get(redactUpstreamURLContextKey); redact == true {
+		upstreamMessage = redactUpstreamURLs(upstreamMessage)
+		upstreamDetail = redactUpstreamURLs(upstreamDetail)
+	}
 	if upstreamStatusCode > 0 {
 		c.Set(OpsUpstreamStatusCodeKey, upstreamStatusCode)
 	}

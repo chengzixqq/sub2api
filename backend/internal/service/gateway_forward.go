@@ -156,7 +156,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if filterSet == nil {
 			filterSet = map[string]struct{}{}
 		}
-		c.Set(betaPolicyFilterSetKey, filterSet)
+		setBetaPolicyFilterSet(c, account, parsed.Model, filterSet)
 	}
 
 	body := parsed.Body.Bytes()

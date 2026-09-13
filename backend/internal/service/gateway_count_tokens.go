@@ -222,13 +222,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 		// 记录上游错误摘要便于排障（不回显请求内容）
 		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+			logBody := redactUpstreamResponseBodyForClient(c, respBody)
 			logger.LegacyPrintf("service.gateway",
 				"count_tokens upstream error %d (account=%d platform=%s type=%s): %s",
 				resp.StatusCode,
 				account.ID,
 				account.Platform,
 				account.Type,
-				truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+				truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 			)
 		}
 
@@ -514,6 +515,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
 	// 顺序约束同 buildUpstreamRequest。
 	ctEffectiveDropSet := mergeDropSets(s.getBetaPolicyFilterSet(ctx, c, account, modelID))
+	ctEffectiveDropSet = preserveNativeAnthropicFallbackBetas(account, claudePolicy.FallbackPolicy, ctEffectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalCountTokensAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, ctEffectiveDropSet,
 	)
@@ -524,7 +526,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, !mimicClaudeCode); changed {
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, finalBetaHeader, claudePolicy.FallbackPolicy, isNativeAnthropicAPIKeyAccount(account)); changed {
 		body = sanitized
 	}
 

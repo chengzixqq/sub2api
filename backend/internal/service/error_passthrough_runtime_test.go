@@ -63,6 +63,28 @@ func TestGatewayHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	assert.Equal(t, "Upstream request failed", errField["message"])
 }
 
+func TestGatewayHandleErrorResponse_RedactsURLInRaw400ClientBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Set(redactUpstreamURLContextKey, true)
+
+	svc := &GatewayService{}
+	respBody := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"see https://secret.example/v1?api_key=hidden"}}`)
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header:     http.Header{},
+	}
+	account := &Account{ID: 111, Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, account)
+	require.Error(t, err)
+	assert.Contains(t, rec.Body.String(), "https://***.***/v1")
+	assert.NotContains(t, rec.Body.String(), "secret.example")
+	assert.NotContains(t, rec.Body.String(), "api_key=hidden")
+}
+
 func TestOpenAIHandleErrorResponse_NoRuleKeepsDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

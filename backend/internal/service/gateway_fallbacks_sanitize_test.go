@@ -29,10 +29,8 @@ import (
 //
 // fallbacks 是 beta Messages API 的 server-side refusal fallback 字段；本仓
 // 不写入该字段，全部来自客户端（Claude Code / SDK / OpenCode 等）透传。
-// OAuth mimic 用 FullClaudeCodeMimicryBetas 覆盖客户端 beta（不含 fallback
-// beta），因此必须在出口按最终 beta header 条件 strip，与 context_management
-// 的对称约束同构。策略是"剥字段，不注入 beta"：fallback 会换模型、改计费，
-// 不允许当默认打开。
+// OAuth mimic / strict 路径继续按最终 beta header 条件 strip；原生 API-key
+// 路径则由上游负责 Fallback 决策，必须保留客户端字段和相关 beta。
 //
 // 本文件覆盖：
 //   1) sanitizeAnthropicBodyForBetaTokens 对 fallbacks / fallback_credit_token

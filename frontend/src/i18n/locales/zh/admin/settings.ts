@@ -1379,12 +1379,12 @@ export default {
       title: 'Claude 魔改兼容设置',
       description: '按全局策略控制 Claude 的 Fallback、Thinking、Beta 和敏感信息处理；账号级覆盖优先于全局设置。',
       accountTitle: '账号级 Claude 覆盖',
-      accountHint: '留空表示继承全局设置；账号级配置优先于全局设置。',
+      accountHint: '留空表示继承全局设置；账号级配置优先于全局设置。Fallback 仍由上游账号决定。',
       inherit: '沿用全局',
       presets: { magic: '魔改兼容', official: '官方兼容', custom: '自定义' },
       options: { native_passthrough: '原生/自动透传', strict: '严格官方', fable_native_passthrough: 'Fable 透传', capability_aware: '按出口能力适配', official_strict: '官方严格', client_passthrough: '客户端透传', pass_on_native_only: '仅原生出口透传', filter: '过滤未知 Beta', pass: '全部透传' },
       fields: {
-        fallback_policy: { label: 'Fallback 策略', hint: '推荐原生/自动透传；仅原生出口保留客户端 Fallback 字段。' }, beta_policy_mode: { label: 'Beta 适配策略', hint: '推荐按出口能力适配，保持请求体与 Beta 头一致。' }, unknown_beta_action: { label: '未知 Beta 处理', hint: '推荐仅原生出口透传，避免非兼容上游返回 400。' }, thinking_prefilter_enabled: { label: 'Thinking 前置整流', hint: '魔改兼容推荐关闭，保留客户端签名和历史上下文。' }, thinking_signature_retry_enabled: { label: '签名错误后重试', hint: '推荐开启，仅在上游明确返回签名错误时重试。' }, thinking_tool_downgrade_retry_enabled: { label: '工具签名降级重试', hint: '推荐开启，用于工具签名兼容失败后的第二阶段重试。' }, fingerprint_unification: { label: '指纹统一化', hint: '开启后统一同一 OAuth 账号的 X-Stainless 请求头。' }, metadata_passthrough: { label: 'Metadata 透传', hint: '推荐开启，关闭后系统可能注入兼容 metadata。' }, url_redaction_enabled: { label: 'API Key URL 脱敏', hint: '推荐开启，仅影响下游错误、日志和诊断信息，不改变实际出站 URL。' }
+        fallback_policy: { label: 'Fallback 策略', hint: '推荐原生/自动透传；Fallback 由已配置的上游决定，网关不自行切换模型。' }, beta_policy_mode: { label: 'Beta 适配策略', hint: '推荐按出口能力适配，保持请求体与 Beta 头一致。' }, unknown_beta_action: { label: '未知 Beta 处理', hint: '推荐仅原生出口透传，避免非兼容上游返回 400。' }, thinking_prefilter_enabled: { label: 'Thinking 前置整流', hint: '魔改兼容推荐关闭，保留客户端签名和历史上下文。' }, thinking_signature_retry_enabled: { label: '签名错误后重试', hint: '推荐开启，仅在上游明确返回签名错误时重试。' }, thinking_tool_downgrade_retry_enabled: { label: '工具签名降级重试', hint: '推荐开启，用于工具签名兼容失败后的第二阶段重试。' }, fingerprint_unification: { label: '指纹统一化', hint: '开启后统一同一 OAuth 账号的 X-Stainless 请求头。' }, metadata_passthrough: { label: 'Metadata 透传', hint: '推荐开启，关闭后系统可能注入兼容 metadata。' }, url_redaction_enabled: { label: 'API Key URL 脱敏', hint: '推荐开启，仅影响下游错误、日志和诊断信息，不改变实际出站 URL。' }
       }
     }
 }
