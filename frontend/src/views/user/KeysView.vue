@@ -82,6 +82,8 @@
 
       <template #table>
         <DataTable
+          column-order-key="user.keys"
+          :column-order-columns="allColumns"
           :columns="columns"
           :data="apiKeys"
           :loading="loading"
@@ -479,7 +481,7 @@
 
         <div>
           <label class="input-label">{{ t('keys.groupLabel') }}</label>
-          <Select
+          <GroupSelect
             v-model="formData.group_id"
             :options="groupOptions"
             :placeholder="t('keys.selectGroup')"
@@ -517,7 +519,7 @@
                 :selected="selected"
               />
             </template>
-          </Select>
+          </GroupSelect>
         </div>
 
         <!-- Custom Key Section (only for create) -->
@@ -1086,6 +1088,8 @@
             />
           </div>
         </div>
+        <GroupPlatformFilter v-model="groupPlatformFilter" :options="groupOptions" />
+
         <!-- Group list -->
         <div class="max-h-80 overflow-y-auto p-1.5">
           <button
@@ -1139,6 +1143,8 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
 import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
+import GroupSelect from '@/components/common/GroupSelect.vue'
+import GroupPlatformFilter from '@/components/common/GroupPlatformFilter.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import DataTable from '@/components/common/DataTable.vue'
@@ -1440,12 +1446,13 @@ const groupOptions = computed(() =>
 
 // Group dropdown search
 const groupSearchQuery = ref('')
+const groupPlatformFilter = ref('')
 const filteredGroupOptions = computed(() => {
   const query = groupSearchQuery.value.trim().toLowerCase()
-  if (!query) return groupOptions.value
   return groupOptions.value.filter((opt) => {
-    return opt.label.toLowerCase().includes(query) ||
-      (opt.description && opt.description.toLowerCase().includes(query))
+    return (!groupPlatformFilter.value || opt.platform === groupPlatformFilter.value) &&
+      (!query || opt.label.toLowerCase().includes(query) ||
+        (opt.description && opt.description.toLowerCase().includes(query)))
   })
 })
 
@@ -1649,6 +1656,7 @@ const openGroupSelector = (key: ApiKey) => {
     }
     groupSelectorKeyId.value = key.id
     groupSearchQuery.value = ''
+    groupPlatformFilter.value = ''
   }
 }
 

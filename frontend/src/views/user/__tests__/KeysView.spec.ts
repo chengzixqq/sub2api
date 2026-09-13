@@ -175,6 +175,7 @@ const DataTableStub = {
           <slot name="cell-id" :value="row.id" :row="row" />
         </div>
         <slot name="cell-name" :value="row.name" :row="row" />
+        <slot name="cell-group" :row="row" />
         <div data-test="current-concurrency">
           <slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" />
         </div>
@@ -315,6 +316,34 @@ describe('user KeysView column settings', () => {
     expect(visibleColumnKeys(wrapper)).not.toContain('last_used_at')
     expect(visibleColumnKeys(wrapper)).not.toContain('last_used_ip')
     expect(visibleColumnKeys(wrapper)).not.toContain('id')
+  })
+
+  it('filters inline group choices by platform and keyword and resets without changing the key', async () => {
+    getAvailableGroups.mockResolvedValue([
+      { id: 11, name: 'Alpha Claude', description: '', platform: 'anthropic' },
+      { id: 12, name: 'Alpha OpenAI', description: '', platform: 'openai' },
+      { id: 13, name: 'Beta OpenAI', description: '', platform: 'openai' },
+      { id: 14, name: 'Kimi', description: '', platform: 'kimi' },
+    ])
+    const wrapper = await mountView()
+    try {
+      await wrapper.get('button[title="keys.clickToChangeGroup"]').trigger('click')
+      const options = () => wrapper.findAll('group-option-item-stub').map(option => option.attributes('name'))
+      expect(options()).toHaveLength(4)
+      expect(wrapper.find('[data-platform="gemini"]').exists()).toBe(false)
+      await wrapper.get('[data-platform="openai"]').trigger('click')
+      expect(options()).toEqual(['Alpha OpenAI', 'Beta OpenAI'])
+      await wrapper.get('input[placeholder="keys.searchGroup"]').setValue('Alpha')
+      expect(options()).toEqual(['Alpha OpenAI'])
+      expect(wrapper.find('[data-platform="kimi"]').exists()).toBe(true)
+      expect(showSuccess).not.toHaveBeenCalled()
+      await wrapper.get('button[title="keys.clickToChangeGroup"]').trigger('click')
+      await wrapper.get('button[title="keys.clickToChangeGroup"]').trigger('click')
+      expect(options()).toHaveLength(4)
+      expect(wrapper.get('[data-platform=""]').attributes('aria-pressed')).toBe('true')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('shows a hidden column when toggled and persists the preference', async () => {
