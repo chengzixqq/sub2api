@@ -12,12 +12,14 @@
       type="button"
       :data-platform="platform.value"
       :aria-pressed="modelValue === platform.value"
-      class="shrink-0 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+      class="inline-flex min-h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
       :class="modelValue === platform.value
         ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
         : 'text-gray-600 hover:bg-gray-100 dark:text-dark-300 dark:hover:bg-dark-700'"
       @click.stop="$emit('update:modelValue', platform.value)"
     >
+      <PlatformIcon v-if="platform.value" :platform="platform.value" size="md" :class="platformTextClass(platform.value)" aria-hidden="true" />
+      <Icon v-else name="grid" size="sm" aria-hidden="true" />
       {{ platform.label }}
     </button>
   </div>
@@ -27,6 +29,9 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
+import { platformTextClass } from '@/utils/platformColors'
+import PlatformIcon from './PlatformIcon.vue'
+import Icon from '@/components/icons/Icon.vue'
 
 const props = defineProps<{
   modelValue: string
@@ -37,7 +42,7 @@ const { t } = useI18n()
 const platforms = computed(() => {
   const available = new Set(props.options.map(option => option.platform))
   return [
-    { value: '', label: t('keys.allPlatforms') },
+    { value: '' as const, label: t('keys.allPlatforms') },
     ...GROUP_PLATFORM_OPTIONS.filter(platform => available.has(platform.value)),
   ]
 })

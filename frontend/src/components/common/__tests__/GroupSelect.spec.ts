@@ -35,6 +35,9 @@ describe('GroupSelect platform filtering', () => {
     expect(labels()).toHaveLength(4)
     expect(portal().querySelector('[data-platform="gemini"]')).toBeNull()
     expect(portal().querySelector('[data-platform="kimi"]')).not.toBeNull()
+    for (const platform of ['', 'anthropic', 'openai', 'kimi']) {
+      expect(portal().querySelector(`[data-platform="${platform}"] svg`)).not.toBeNull()
+    }
     portal().querySelector<HTMLButtonElement>('[data-platform="openai"]')!.click()
     await nextTick()
     expect(labels()).toEqual(['Alpha OpenAI', 'Beta OpenAI'])
