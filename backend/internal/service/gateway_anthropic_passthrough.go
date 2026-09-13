@@ -532,6 +532,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 	lastDataAt := time.Now()
 	inErrorEvent := false
+	var pendingStreamError *sseStreamErrorEventError
 	resetKeepaliveTimer := func() {
 		if keepaliveTimer == nil {
 			return
@@ -553,6 +554,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				if !clientDisconnected {
 					// 兜底补刷，确保最后一个未以空行结尾的事件也能及时送达客户端。
 					flusher.Flush()
+				}
+				if pendingStreamError != nil {
+					MarkResponseCommitted(c)
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, pendingStreamError
 				}
 				if !sawTerminalEvent {
 					if clientDisconnected && streamInterval > 0 {
@@ -585,14 +590,15 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
-				if gjson.Get(trimmed, "type").String() == "error" {
+				if inErrorEvent || gjson.Get(trimmed, "type").String() == "error" {
 					inErrorEvent = true
+					pendingStreamError = &sseStreamErrorEventError{RawData: trimmed}
 				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
 				}
-				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
+				if pendingStreamError == nil && firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 					c.Set(GatewayUpstreamDeliveredKey, true)
@@ -603,6 +609,9 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				if strings.HasPrefix(trimmed, "event:") {
 					eventName := strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
 					inErrorEvent = strings.EqualFold(eventName, "error")
+					if inErrorEvent {
+						pendingStreamError = &sseStreamErrorEventError{}
+					}
 					if anthropicStreamEventIsTerminal(eventName, "") {
 						sawTerminalEvent = true
 					}
@@ -631,6 +640,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				} else {
 					inPartialEvent = true
 				}
+			}
+			if line == "" && pendingStreamError != nil {
+				MarkResponseCommitted(c)
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, pendingStreamError
 			}
 
 		case <-intervalCh:

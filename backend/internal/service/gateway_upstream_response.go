@@ -120,14 +120,16 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 		}
 	}
 	if account.Type == AccountTypeAPIKey {
-		// API Key 账号：独立开关，一次读取配置
+		// Built-in signature errors are governed by the resolved customization
+		// policy above. The legacy rectifier switch only gates its optional custom
+		// patterns, otherwise the new global/account setting could be enabled in
+		// the UI while retries remained silently disabled.
+		if s.isThinkingBlockSignatureError(respBody) {
+			return true
+		}
 		settings, err := s.settingService.GetRectifierSettings(ctx)
 		if err != nil || !settings.Enabled || !settings.APIKeySignatureEnabled {
 			return false
-		}
-		// 先检查内置模式（同 OAuth），再检查自定义关键词
-		if s.isThinkingBlockSignatureError(respBody) {
-			return true
 		}
 		return matchSignaturePatterns(respBody, settings.APIKeySignaturePatterns)
 	}

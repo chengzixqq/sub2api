@@ -2111,6 +2111,9 @@ func gatewayForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForw
 	if c.Writer.Size() == writerSizeBeforeForward {
 		return false
 	}
+	if service.IsResponseCommitted(c) {
+		return true
+	}
 
 	contentType := strings.ToLower(strings.TrimSpace(c.Writer.Header().Get("Content-Type")))
 	if contentType == "" {

@@ -208,9 +208,6 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamErrorRedactsUpstreamURL
 		`event: error`,
 		`data: {"type":"error","error":{"type":"invalid_request_error","message":"request failed at https://private-upstream.example/v1/messages?key=secret"}}`,
 		``,
-		`event: message_stop`,
-		`data: {"type":"message_stop"}`,
-		``,
 	}, "\n")
 	upstream := &anthropicHTTPUpstreamRecorder{
 		resp: &http.Response{
@@ -227,8 +224,13 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamErrorRedactsUpstreamURL
 	}
 
 	result, err := svc.Forward(context.Background(), c, newAnthropicAPIKeyAccountForTest(), parsed)
-	require.NoError(t, err)
-	require.NotNil(t, result)
+	require.Error(t, err)
+	var streamErr *sseStreamErrorEventError
+	require.ErrorAs(t, err, &streamErr)
+	require.Nil(t, result)
+	require.True(t, IsResponseCommitted(c), "the upstream error event is the complete downstream failure")
+	require.False(t, c.GetBool(GatewayUpstreamDeliveredKey), "an error-only event must not be billed as delivered content")
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
 	require.NotContains(t, rec.Body.String(), "private-upstream.example")
 	require.NotContains(t, rec.Body.String(), "key=secret")
 	require.Contains(t, rec.Body.String(), "https://***.***/v1/messages")

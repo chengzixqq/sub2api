@@ -125,6 +125,20 @@ func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 		require.False(t, reported)
 	})
 
+	t.Run("upstream sse error marked complete needs no fallback", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
+		c.Header("Content-Type", "text/event-stream")
+		before := c.Writer.Size()
+		_, _ = c.Writer.WriteString("event: error\ndata: {\"type\":\"error\"}\n\n")
+		service.MarkResponseCommitted(c)
+
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, errors.New("have error in stream"))
+
+		require.True(t, reported)
+	})
+
 	t.Run("no write still needs fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
