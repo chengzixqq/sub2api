@@ -647,6 +647,8 @@ export default {
           direction: '变更方向',
           startTime: '开始时间',
           endTime: '结束时间',
+          timeRange: '时间范围',
+          allTime: '全部时间',
           allKinds: '全部资源',
           allOperations: '全部操作',
           allDirections: '全部方向',

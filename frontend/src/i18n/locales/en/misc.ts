@@ -623,6 +623,8 @@ export default {
           direction: 'Direction',
           startTime: 'Start time',
           endTime: 'End time',
+          timeRange: 'Time range',
+          allTime: 'All time',
           allKinds: 'All resources',
           allOperations: 'All operations',
           allDirections: 'All directions',

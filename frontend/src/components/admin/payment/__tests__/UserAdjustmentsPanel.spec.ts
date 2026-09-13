@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ref } from 'vue'
 
 const { list, exportCSV, showError, showSuccess } = vi.hoisted(() => ({
   list: vi.fn(),
@@ -20,10 +21,12 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('vue-i18n', async (importOriginal) => ({
   ...(await importOriginal<typeof import('vue-i18n')>()),
-  useI18n: () => ({ t: (key: string) => key })
+  useI18n: () => ({ t: (key: string) => key, locale: ref('en') })
 }))
 
 import UserAdjustmentsPanel from '../UserAdjustmentsPanel.vue'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import Pagination from '@/components/common/Pagination.vue'
 
 const apiResponse = {
   items: [
@@ -109,6 +112,7 @@ describe('UserAdjustmentsPanel', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
     document.body.innerHTML = ''
   })
 
@@ -117,6 +121,11 @@ describe('UserAdjustmentsPanel', () => {
     await flushPromises()
 
     expect(list).toHaveBeenCalledWith({ page: 1, page_size: 20 })
+    expect(wrapper.find('.date-picker-trigger').text()).toContain('payment.admin.adjustments.filters.allTime')
+    expect(wrapper.find('input[type="datetime-local"]').exists()).toBe(false)
+    const tableContainer = wrapper.get('[data-testid="adjustments-table-container"]')
+    expect(tableContainer.classes()).toEqual(expect.arrayContaining(['card', 'overflow-hidden']))
+    expect(tableContainer.findComponent(Pagination).exists()).toBe(true)
     expect(wrapper.text()).toContain('alice@example.com')
     expect(wrapper.text()).toContain('admin@example.com')
     expect(wrapper.text()).toContain('+$12.50')
@@ -157,10 +166,11 @@ describe('UserAdjustmentsPanel', () => {
     list.mockClear()
 
     await wrapper.get('input[type="text"]').setValue('alice@example.com')
+    await wrapper.get('.date-picker-trigger').trigger('click')
     const timeInputs = wrapper.findAll<HTMLInputElement>('input[type="datetime-local"]')
     await timeInputs[0].setValue('2026-08-11T17:00')
     await timeInputs[1].setValue('2026-08-11T18:30')
-    await findButton(wrapper, 'common.search').trigger('click')
+    await wrapper.get('.date-picker-apply').trigger('click')
     await flushPromises()
 
     const expectedFilters = {
@@ -185,13 +195,89 @@ describe('UserAdjustmentsPanel', () => {
     await flushPromises()
     list.mockClear()
 
-    const timeInputs = wrapper.findAll<HTMLInputElement>('input[type="datetime-local"]')
-    await timeInputs[0].setValue('2026-08-11T19:00')
-    await timeInputs[1].setValue('2026-08-11T18:00')
+    const picker = wrapper.getComponent(DateRangePicker)
+    picker.vm.$emit('update:startDate', '2026-08-11T19:00')
+    picker.vm.$emit('update:endDate', '2026-08-11T18:00')
     await findButton(wrapper, 'common.search').trigger('click')
 
     expect(list).not.toHaveBeenCalled()
     expect(showError).toHaveBeenCalledWith('payment.admin.adjustments.errors.invalidTimeRange')
+    await findButton(wrapper, 'payment.admin.adjustments.exportCsv').trigger('click')
+    expect(exportCSV).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('applies full-day presets with exclusive end times and clears back to all history', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-11T17:25:00'))
+    const wrapper = mount(UserAdjustmentsPanel)
+    await flushPromises()
+    list.mockClear()
+
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await findButton(wrapper, 'dates.today').trigger('click')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expect(list).toHaveBeenLastCalledWith({
+      page: 1,
+      page_size: 20,
+      start_time: new Date('2026-08-11T00:00').toISOString(),
+      end_time: new Date('2026-08-12T00:00').toISOString()
+    })
+
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.get('.date-picker-clear').trigger('click')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expect(list).toHaveBeenLastCalledWith({ page: 1, page_size: 20 })
+    expect(wrapper.get('.date-picker-trigger').text()).toContain('payment.admin.adjustments.filters.allTime')
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('preserves one-sided minute filters through pagination and resets to all history', async () => {
+    const wrapper = mount(UserAdjustmentsPanel)
+    await flushPromises()
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('input[type="datetime-local"]')[1].setValue('2026-08-11T18:37')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+
+    const endTime = new Date('2026-08-11T18:37').toISOString()
+    expect(list).toHaveBeenLastCalledWith({ page: 1, page_size: 20, end_time: endTime })
+    wrapper.getComponent(Pagination).vm.$emit('update:page', 2)
+    await flushPromises()
+    expect(list).toHaveBeenLastCalledWith({ page: 2, page_size: 20, end_time: endTime })
+
+    wrapper.getComponent(Pagination).vm.$emit('update:pageSize', 50)
+    await flushPromises()
+    expect(list).toHaveBeenLastCalledWith({ page: 1, page_size: 50, end_time: endTime })
+    await findButton(wrapper, 'common.reset').trigger('click')
+    await flushPromises()
+    expect(list).toHaveBeenLastCalledWith({ page: 1, page_size: 20 })
+    expect(wrapper.get('.date-picker-trigger').text()).toContain('payment.admin.adjustments.filters.allTime')
+    wrapper.unmount()
+  })
+
+  it('keeps decimal strings exact and ignores older responses after changing the date range', async () => {
+    let resolveOldRequest: (value: typeof apiResponse) => void = () => undefined
+    list.mockImplementationOnce(() => new Promise<typeof apiResponse>((resolve) => { resolveOldRequest = resolve }))
+    const exactAmount = '9007199254740993.12345678'
+    list.mockResolvedValueOnce({
+      ...apiResponse,
+      items: [{ ...apiResponse.items[0], delta: exactAmount }]
+    })
+    const wrapper = mount(UserAdjustmentsPanel)
+    await wrapper.get('.date-picker-trigger').trigger('click')
+    await wrapper.findAll('input[type="datetime-local"]')[0].setValue('2026-08-11T17:00')
+    await wrapper.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain(`+$${exactAmount}`)
+
+    resolveOldRequest(apiResponse)
+    await flushPromises()
+    expect(wrapper.text()).toContain(`+$${exactAmount}`)
+    expect(wrapper.find('[data-row-id="100"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

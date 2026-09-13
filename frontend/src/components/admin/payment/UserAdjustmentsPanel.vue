@@ -1,9 +1,9 @@
 <template>
   <div class="space-y-4">
     <div class="card p-4">
-      <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-7">
-        <div class="sm:col-span-2 xl:col-span-2">
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.keyword') }}</label>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+        <div class="min-w-0 sm:col-span-2">
+          <label for="adjustments-keyword" class="input-label">{{ t('payment.admin.adjustments.filters.keyword') }}</label>
           <div class="relative">
             <Icon
               name="search"
@@ -11,6 +11,7 @@
               class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
             />
             <input
+              id="adjustments-keyword"
               v-model.trim="filters.keyword"
               type="text"
               class="input pl-10"
@@ -21,8 +22,9 @@
         </div>
 
         <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.operator') }}</label>
+          <label for="adjustments-operator" class="input-label">{{ t('payment.admin.adjustments.filters.operator') }}</label>
           <input
+            id="adjustments-operator"
             v-model.trim="filters.operator"
             type="text"
             class="input"
@@ -32,55 +34,66 @@
         </div>
 
         <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.kind') }}</label>
-          <Select v-model="filters.kind" :options="kindOptions" />
+          <label for="adjustments-kind" class="input-label">{{ t('payment.admin.adjustments.filters.kind') }}</label>
+          <Select id="adjustments-kind" v-model="filters.kind" :options="kindOptions" :aria-label="t('payment.admin.adjustments.filters.kind')" />
         </div>
 
         <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.operation') }}</label>
-          <Select v-model="filters.operation" :options="operationOptions" />
+          <label for="adjustments-operation" class="input-label">{{ t('payment.admin.adjustments.filters.operation') }}</label>
+          <Select id="adjustments-operation" v-model="filters.operation" :options="operationOptions" :aria-label="t('payment.admin.adjustments.filters.operation')" />
         </div>
 
         <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.direction') }}</label>
-          <Select v-model="filters.direction" :options="directionOptions" />
+          <label for="adjustments-direction" class="input-label">{{ t('payment.admin.adjustments.filters.direction') }}</label>
+          <Select id="adjustments-direction" v-model="filters.direction" :options="directionOptions" :aria-label="t('payment.admin.adjustments.filters.direction')" />
         </div>
 
-        <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.startTime') }}</label>
-          <input v-model="filters.startTime" type="datetime-local" class="input" @keyup.enter="search" />
-        </div>
-
-        <div>
-          <label class="input-label">{{ t('payment.admin.adjustments.filters.endTime') }}</label>
-          <input v-model="filters.endTime" type="datetime-local" class="input" @keyup.enter="search" />
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2 sm:col-span-2 lg:col-span-3 2xl:col-span-7 2xl:justify-end">
-          <button type="button" class="btn btn-primary flex-1 sm:flex-none" :disabled="loading" @click="search">
-            {{ t('common.search') }}
-          </button>
-          <button type="button" class="btn btn-secondary flex-1 sm:flex-none" :disabled="loading" @click="resetFilters">
-            {{ t('common.reset') }}
-          </button>
-          <button
-            type="button"
-            class="btn btn-secondary"
-            :disabled="loading"
-            :title="t('common.refresh')"
-            @click="loadAdjustments"
-          >
-            <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
-          </button>
-          <button
-            type="button"
-            class="btn btn-secondary flex-1 sm:flex-none"
-            :disabled="exporting"
-            @click="exportAdjustments"
-          >
-            <Icon name="download" size="sm" />
-            {{ exporting ? t('payment.admin.adjustments.exporting') : t('payment.admin.adjustments.exportCsv') }}
-          </button>
+        <div class="flex min-w-0 flex-col gap-3 border-t border-gray-100 pt-4 dark:border-dark-700 sm:col-span-2 lg:col-span-3 xl:flex-row xl:items-center xl:justify-between 2xl:col-span-6">
+          <div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <span class="shrink-0 text-sm font-medium text-gray-700 dark:text-gray-300">
+              {{ t('payment.admin.adjustments.filters.timeRange') }}
+            </span>
+            <DateRangePicker
+              v-model:start-date="filters.startTime"
+              v-model:end-date="filters.endTime"
+              include-time
+              clearable
+              :placeholder="t('payment.admin.adjustments.filters.allTime')"
+              :start-label="t('payment.admin.adjustments.filters.startTime')"
+              :end-label="t('payment.admin.adjustments.filters.endTime')"
+              class="adjustments-date-picker min-w-0"
+              @change="search"
+            />
+          </div>
+          <div class="flex shrink-0 flex-wrap items-center gap-2">
+            <button type="button" class="btn btn-primary flex-1 whitespace-nowrap sm:flex-none" :disabled="loading" @click="search">
+              <Icon name="search" size="sm" />
+              {{ t('common.search') }}
+            </button>
+            <button type="button" class="btn btn-secondary flex-1 whitespace-nowrap sm:flex-none" :disabled="loading" @click="resetFilters">
+              <Icon name="x" size="sm" />
+              {{ t('common.reset') }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="loading"
+              :title="t('common.refresh')"
+              :aria-label="t('common.refresh')"
+              @click="loadAdjustments"
+            >
+              <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary flex-1 whitespace-nowrap sm:flex-none"
+              :disabled="exporting"
+              @click="exportAdjustments"
+            >
+              <Icon name="download" size="sm" />
+              {{ exporting ? t('payment.admin.adjustments.exporting') : t('payment.admin.adjustments.exportCsv') }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -102,88 +115,90 @@
       </div>
     </div>
 
-    <DataTable :columns="columns" :data="adjustments" :loading="loading" row-key="id">
-      <template #cell-created_at="{ value }">
-        <span class="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
-          {{ formatDateTime(value) }}
-        </span>
-      </template>
+    <div class="card overflow-hidden" data-testid="adjustments-table-container">
+      <DataTable :columns="columns" :data="adjustments" :loading="loading" row-key="id">
+        <template #cell-created_at="{ value }">
+          <span class="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+            {{ formatDateTime(value) }}
+          </span>
+        </template>
 
-      <template #cell-target="{ row }">
-        <div class="min-w-0 max-w-[220px]">
-          <div class="truncate font-medium text-gray-900 dark:text-white" :title="userPrimary(row)">
-            {{ userPrimary(row) }}
+        <template #cell-target="{ row }">
+          <div class="min-w-0 max-w-[220px]">
+            <div class="truncate font-medium text-gray-900 dark:text-white" :title="userPrimary(row)">
+              {{ userPrimary(row) }}
+            </div>
+            <div class="mt-0.5 truncate text-xs text-gray-400" :title="userSecondary(row)">
+              {{ userSecondary(row) }}
+            </div>
           </div>
-          <div class="mt-0.5 truncate text-xs text-gray-400" :title="userSecondary(row)">
-            {{ userSecondary(row) }}
+        </template>
+
+        <template #cell-kind="{ row }">
+          <div class="flex flex-col items-start gap-1 md:items-start">
+            <span :class="kindBadgeClass(row.kind)">{{ kindLabel(row.kind) }}</span>
+            <span class="text-xs text-gray-500 dark:text-gray-400">{{ operationLabel(row.operation) }}</span>
           </div>
-        </div>
-      </template>
+        </template>
 
-      <template #cell-kind="{ row }">
-        <div class="flex flex-col items-start gap-1 md:items-start">
-          <span :class="kindBadgeClass(row.kind)">{{ kindLabel(row.kind) }}</span>
-          <span class="text-xs text-gray-500 dark:text-gray-400">{{ operationLabel(row.operation) }}</span>
-        </div>
-      </template>
-
-      <template #cell-change="{ row }">
-        <div class="whitespace-nowrap">
-          <div class="font-mono font-semibold" :class="deltaToneClass(row.delta)">
-            {{ formatSignedValue(row.kind, row.delta) }}
+        <template #cell-change="{ row }">
+          <div class="whitespace-nowrap">
+            <div class="font-mono font-semibold" :class="deltaToneClass(row.delta)">
+              {{ formatSignedValue(row.kind, row.delta) }}
+            </div>
+            <div class="mt-0.5 font-mono text-xs text-gray-400">
+              {{ formatValue(row.kind, row.before_value) }} &rarr; {{ formatValue(row.kind, row.after_value) }}
+            </div>
           </div>
-          <div class="mt-0.5 font-mono text-xs text-gray-400">
-            {{ formatValue(row.kind, row.before_value) }} &rarr; {{ formatValue(row.kind, row.after_value) }}
+        </template>
+
+        <template #cell-operator="{ row }">
+          <div class="min-w-0 max-w-[200px]">
+            <div class="truncate text-sm text-gray-800 dark:text-gray-200" :title="operatorPrimary(row)">
+              {{ operatorPrimary(row) }}
+            </div>
+            <div v-if="operatorSecondary(row)" class="mt-0.5 truncate text-xs text-gray-400" :title="operatorSecondary(row)">
+              {{ operatorSecondary(row) }}
+            </div>
           </div>
-        </div>
-      </template>
+        </template>
 
-      <template #cell-operator="{ row }">
-        <div class="min-w-0 max-w-[200px]">
-          <div class="truncate text-sm text-gray-800 dark:text-gray-200" :title="operatorPrimary(row)">
-            {{ operatorPrimary(row) }}
+        <template #cell-notes="{ row }">
+          <span class="block max-w-[240px] truncate text-sm text-gray-600 dark:text-gray-300" :title="row.notes || ''">
+            {{ row.notes || t('payment.admin.adjustments.noNotes') }}
+          </span>
+        </template>
+
+        <template #cell-actions="{ row }">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 font-medium text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+            @click="openDetail(row)"
+          >
+            <Icon name="eye" size="sm" />
+            {{ t('common.view') }}
+          </button>
+        </template>
+
+        <template #empty>
+          <div class="flex flex-col items-center py-8">
+            <Icon name="inbox" size="xl" class="mb-3 h-12 w-12 text-gray-300 dark:text-dark-600" />
+            <p class="text-sm font-medium text-gray-500 dark:text-gray-400">
+              {{ t('payment.admin.adjustments.empty') }}
+            </p>
           </div>
-          <div v-if="operatorSecondary(row)" class="mt-0.5 truncate text-xs text-gray-400" :title="operatorSecondary(row)">
-            {{ operatorSecondary(row) }}
-          </div>
-        </div>
-      </template>
+        </template>
+      </DataTable>
 
-      <template #cell-notes="{ row }">
-        <span class="block max-w-[240px] truncate text-sm text-gray-600 dark:text-gray-300" :title="row.notes || ''">
-          {{ row.notes || t('payment.admin.adjustments.noNotes') }}
-        </span>
-      </template>
-
-      <template #cell-actions="{ row }">
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 font-medium text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
-          @click="openDetail(row)"
-        >
-          <Icon name="eye" size="sm" />
-          {{ t('common.view') }}
-        </button>
-      </template>
-
-      <template #empty>
-        <div class="flex flex-col items-center py-8">
-          <Icon name="inbox" size="xl" class="mb-3 h-12 w-12 text-gray-300 dark:text-dark-600" />
-          <p class="text-sm font-medium text-gray-500 dark:text-gray-400">
-            {{ t('payment.admin.adjustments.empty') }}
-          </p>
-        </div>
-      </template>
-    </DataTable>
-
-    <Pagination
-      v-if="pagination.total > 0"
-      :page="pagination.page"
-      :total="pagination.total"
-      :page-size="pagination.pageSize"
-      @update:page="handlePageChange"
-      @update:pageSize="handlePageSizeChange"
-    />
+      <Pagination
+        v-if="pagination.total > 0"
+        :page="pagination.page"
+        :total="pagination.total"
+        :page-size="pagination.pageSize"
+        @update:page="handlePageChange"
+        @update:pageSize="handlePageSizeChange"
+      />
+    </div>
 
     <BaseDialog
       :show="selectedAdjustment !== null"
@@ -283,6 +298,7 @@ import type { Column } from '@/components/common/types'
 import { useAppStore } from '@/stores/app'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -627,6 +643,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.adjustments-date-picker :deep(.date-picker-trigger) {
+  @apply w-full min-w-0;
+}
+
+.adjustments-date-picker :deep(.date-picker-value) {
+  @apply min-w-0 whitespace-normal text-left;
+}
+
+.adjustments-date-picker :deep(.date-picker-icon),
+.adjustments-date-picker :deep(.date-picker-chevron) {
+  @apply shrink-0;
+}
+
 .detail-label {
   @apply text-xs font-medium text-gray-500 dark:text-gray-400;
 }
