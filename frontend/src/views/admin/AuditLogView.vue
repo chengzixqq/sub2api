@@ -84,7 +84,7 @@
 
       <!-- Table -->
       <template #table>
-        <DataTable :columns="columns" :data="logs" :loading="loading" row-key="id">
+        <DataTable column-order-key="admin.audit-log" :columns="columns" :data="logs" :loading="loading" row-key="id">
           <template #cell-created_at="{ value }">
             <span class="whitespace-nowrap text-gray-600 dark:text-gray-300">{{ formatTime(value) }}</span>
           </template>

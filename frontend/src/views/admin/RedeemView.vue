@@ -57,6 +57,7 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.redeem-codes"
           :columns="columns"
           :data="codes"
           :loading="loading"

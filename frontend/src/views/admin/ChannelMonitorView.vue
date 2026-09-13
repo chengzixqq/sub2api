@@ -64,7 +64,7 @@
       </template>
 
       <template #table>
-        <DataTable :columns="columns" :data="monitors" :loading="loading">
+        <DataTable column-order-key="admin.channel-monitors" :columns="columns" :data="monitors" :loading="loading">
           <template #cell-name="{ row, value }">
             <div class="flex items-center gap-1.5">
               <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>

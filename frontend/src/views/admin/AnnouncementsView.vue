@@ -40,6 +40,7 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.announcements"
           :columns="columns"
           :data="announcements"
           :loading="loading"

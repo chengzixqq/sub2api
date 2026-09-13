@@ -40,6 +40,7 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.promo-codes"
           :columns="columns"
           :data="codes"
           :loading="loading"

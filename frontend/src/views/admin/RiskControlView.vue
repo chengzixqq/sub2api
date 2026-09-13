@@ -273,55 +273,33 @@
             </div>
           </div>
 
-          <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-700">
-              <thead class="bg-gray-50 dark:bg-dark-800">
-                <tr>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.time') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.group') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.user') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.apiKey') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.endpoint') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.result') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.actionMeta') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.latency') }}</th>
-                  <th class="px-5 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.input') }}</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-gray-100 bg-white dark:divide-dark-800 dark:bg-dark-800">
-                <tr v-if="logsLoading">
-                  <td colspan="10" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</td>
-                </tr>
-                <tr v-else-if="logs.length === 0">
-                  <td colspan="10" class="px-5 py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.emptyLogs') }}</td>
-                </tr>
-                <template v-else>
-                  <tr v-for="row in logs" :key="row.id" class="hover:bg-gray-50 dark:hover:bg-dark-700/60">
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ formatDateTime(row.created_at) }}</td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ row.group_name || '-' }}</td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+          <div>
+            <DataTable column-order-key="admin.risk-control-logs" :columns="logColumns" :data="logs" :loading="logsLoading" row-key="id">
+              <template #empty>{{ t('admin.riskControl.emptyLogs') }}</template>
+              <template #cell-created_at="{ value }">{{ formatDateTime(value) }}</template>
+              <template #cell-group_name="{ value }">{{ value || '-' }}</template>
+              <template #cell-user_email="{ row }">
                       <div>{{ row.user_email || '-' }}</div>
                       <div v-if="row.user_id" class="text-xs text-gray-400">UID {{ row.user_id }}</div>
-                    </td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">{{ row.api_key_name || '-' }}</td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              </template>
+              <template #cell-api_key_name="{ value }">{{ value || '-' }}</template>
+              <template #cell-endpoint="{ row }">
                       <div>{{ row.endpoint || '-' }}</div>
                       <div class="text-xs text-gray-400">{{ row.provider || '-' }} / {{ row.model || '-' }}</div>
-                    </td>
-                    <td class="whitespace-nowrap px-5 py-4">
+              </template>
+              <template #cell-result="{ row }">
                       <span class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
                         {{ resultLabel(row) }}
                       </span>
-                    </td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              </template>
+              <template #cell-highest="{ row }">
                       <div>{{ row.highest_category || '-' }}</div>
                       <div class="text-xs text-gray-400">{{ percent(row.highest_score) }}</div>
                       <div v-if="row.matched_keyword" class="mt-0.5 text-xs font-medium text-red-600 dark:text-red-300" :title="t('admin.riskControl.matchedKeyword') + ': ' + row.matched_keyword">
                         {{ t('admin.riskControl.matchedKeyword') }}: {{ row.matched_keyword }}
                       </div>
-                    </td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              </template>
+              <template #cell-action_meta="{ row }">
                       <div>{{ violationCountText(row) }}</div>
                       <div class="text-xs text-gray-400">
                         {{ row.email_sent ? t('admin.riskControl.emailSent') : t('admin.riskControl.emailNotSent') }}
@@ -337,14 +315,14 @@
                         <Icon name="checkCircle" size="xs" :class="unbanningUserID === row.user_id ? 'animate-spin' : ''" />
                         {{ unbanningUserID === row.user_id ? t('common.processing') : t('admin.riskControl.unbanUser') }}
                       </button>
-                    </td>
-                    <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              </template>
+              <template #cell-latency="{ row }">
                       <div>{{ latencyText(row.upstream_latency_ms) }}</div>
                       <div v-if="row.queue_delay_ms !== null && row.queue_delay_ms !== undefined" class="text-xs text-gray-400">
                         {{ t('admin.riskControl.queueDelay', { ms: row.queue_delay_ms }) }}
                       </div>
-                    </td>
-                    <td class="w-[320px] max-w-sm px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
+              </template>
+              <template #cell-input="{ row }">
                       <button
                         type="button"
                         class="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
@@ -354,11 +332,8 @@
                         <span class="min-w-0 flex-1 truncate">{{ inputSummaryText(row) }}</span>
                         <Icon name="eye" size="xs" class="flex-shrink-0 text-gray-300 transition-colors group-hover:text-primary-500 dark:text-gray-500" />
                       </button>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
+              </template>
+            </DataTable>
           </div>
 
           <Pagination
@@ -1127,6 +1102,7 @@ import Icon from '@/components/icons/Icon.vue'
 import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Pagination from '@/components/common/Pagination.vue'
+import DataTable from '@/components/common/DataTable.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import { adminAPI } from '@/api/admin'
@@ -1196,6 +1172,18 @@ const riskThresholdDefaults: Record<string, number> = {
 const riskThresholdCategories = Object.keys(riskThresholdDefaults)
 
 const { t } = useI18n()
+const logColumns = computed(() => [
+  { key: 'created_at', label: t('admin.riskControl.table.time') },
+  { key: 'group_name', label: t('admin.riskControl.table.group') },
+  { key: 'user_email', label: t('admin.riskControl.table.user') },
+  { key: 'api_key_name', label: t('admin.riskControl.table.apiKey') },
+  { key: 'endpoint', label: t('admin.riskControl.table.endpoint') },
+  { key: 'result', label: t('admin.riskControl.table.result') },
+  { key: 'highest', label: t('admin.riskControl.table.highest') },
+  { key: 'action_meta', label: t('admin.riskControl.table.actionMeta') },
+  { key: 'latency', label: t('admin.riskControl.table.latency') },
+  { key: 'input', label: t('admin.riskControl.table.input'), class: 'w-[320px] max-w-sm' }
+])
 const appStore = useAppStore()
 const defaultBlockMessage = () => t('admin.riskControl.defaultBlockMessage')
 

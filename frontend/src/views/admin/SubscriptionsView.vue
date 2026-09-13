@@ -170,6 +170,8 @@
       <!-- Subscriptions Table -->
       <template #table>
         <DataTable
+          column-order-key="admin.subscriptions"
+          :column-order-columns="allColumns"
           :columns="columns"
           :data="subscriptions"
           :loading="loading"

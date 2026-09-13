@@ -193,6 +193,8 @@
         />
         <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
+          column-order-key="admin.accounts"
+          :column-order-columns="allColumns"
           ref="dataTableRef"
           :columns="cols"
           :data="accounts"

@@ -264,6 +264,8 @@
       <!-- Users Table -->
       <template #table>
         <DataTable
+          column-order-key="admin.users"
+          :column-order-columns="allColumns"
           :columns="columns"
           :data="sortedUsers"
           :loading="loading"

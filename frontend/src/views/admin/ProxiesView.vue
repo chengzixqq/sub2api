@@ -90,6 +90,7 @@
       <template #table>
         <div ref="proxyTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
         <DataTable
+          column-order-key="admin.proxies"
           :columns="columns"
           :data="proxies"
           :loading="loading"

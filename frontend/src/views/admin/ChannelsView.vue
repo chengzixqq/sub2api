@@ -49,6 +49,7 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.channels"
           :columns="columns"
           :data="channels"
           :loading="loading"

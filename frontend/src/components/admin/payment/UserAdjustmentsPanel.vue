@@ -116,7 +116,7 @@
     </div>
 
     <div class="card overflow-hidden" data-testid="adjustments-table-container">
-      <DataTable :columns="columns" :data="adjustments" :loading="loading" row-key="id">
+      <DataTable column-order-key="admin.manual-adjustments" :columns="columns" :data="adjustments" :loading="loading" row-key="id">
         <template #cell-created_at="{ value }">
           <span class="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
             {{ formatDateTime(value) }}

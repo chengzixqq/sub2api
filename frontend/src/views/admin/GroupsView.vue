@@ -119,6 +119,8 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.groups"
+          :column-order-columns="allColumns"
           :columns="columns"
           :data="groups"
           :loading="loading"

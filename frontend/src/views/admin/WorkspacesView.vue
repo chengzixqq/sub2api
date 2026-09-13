@@ -28,7 +28,7 @@
       </template>
 
       <template #table>
-        <DataTable :columns="columns" :data="workspaces" :loading="loading" row-key="id">
+        <DataTable column-order-key="admin.workspaces" :columns="columns" :data="workspaces" :loading="loading" row-key="id">
           <template #cell-name="{ row }">
             <div class="min-w-0">
               <div class="truncate font-medium text-gray-900 dark:text-white">{{ row.name }}</div>
