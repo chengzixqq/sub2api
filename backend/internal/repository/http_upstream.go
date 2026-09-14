@@ -222,6 +222,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
 	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
 	finishTiming(resp, err)
@@ -294,6 +295,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
 	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
 	finishTiming(resp, err)

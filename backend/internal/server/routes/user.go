@@ -148,6 +148,7 @@ func RegisterUserRoutes(
 		monitorV2.Use(channelMonitorModeV2Guard(settingService))
 		{
 			monitorV2.GET("/dimensions", h.ChannelMonitorV2.Dimensions)
+			monitorV2.GET("/overview", h.ChannelMonitorV2.ObservationOverview)
 			monitorV2.GET("/snapshot", h.ChannelMonitorV2.Snapshot)
 			monitorV2.GET("/models", h.ChannelMonitorV2.Models)
 			monitorV2.GET("/matrix", h.ChannelMonitorV2.Matrix)

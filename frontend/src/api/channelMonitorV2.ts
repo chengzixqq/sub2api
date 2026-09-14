@@ -269,3 +269,84 @@ export async function updateConfig(config: MonitorConfig) {
   const { data } = await apiClient.put<MonitorConfig>('/admin/channel-monitor-v2/config', config)
   return data
 }
+
+export interface ObservationMetrics {
+  success_requests?: number
+  channel_errors?: number
+  client_errors?: number
+  cancelled_requests?: number
+  unknown_requests?: number
+  request_count?: number
+  success_rate: number | null
+  reliability_rate: number | null
+  sample_state: 'no_samples' | 'insufficient' | 'sufficient'
+  cache_rate: number | null
+  ttft: LatencyMetric
+  duration: LatencyMetric
+  rpm?: number
+  tpm?: number
+  retry_recovered_requests?: number
+  attempt_count?: number
+  phase_avg_ms?: Record<string, number>
+  error_categories?: Record<string, number>
+}
+export interface ObservationHealth { reliability: HealthState; latency: HealthState }
+export interface ObservationBucket { bucket_start: string; metrics: ObservationMetrics; health: ObservationHealth }
+export interface ObservationModel { model: string; metrics: ObservationMetrics; health: ObservationHealth; buckets: ObservationBucket[] }
+export interface ObservationChannel {
+  platform: string
+  group_id: number
+  group_name: string
+  rate_multiplier?: number
+  metrics: ObservationMetrics
+  health: ObservationHealth
+  buckets: ObservationBucket[]
+  models: ObservationModel[]
+}
+export interface ObservationOverview {
+  contract_version: 2
+  source: 'terminal_v1'
+  mode: 'shadow' | 'live'
+  coverage: MonitorCoverage & {
+    state: 'complete' | 'partial' | 'stale' | 'unavailable'
+    source_started_at?: string
+    detail_retention_hours: number
+    unsupported_protocols: string[]
+  }
+  dimensions: MonitorDimensions
+  items: ObservationChannel[]
+}
+export interface ObservationConfig {
+  enabled: boolean
+  mode: 'shadow' | 'live'
+  detail_retention_hours: number
+  refresh_interval_seconds: number
+  minimum_sample: number
+  healthy_reliability: number
+  warning_reliability: number
+  warning_ttft_ms: number
+  critical_ttft_ms: number
+  overrides: Array<{
+    platform?: string
+    group_id?: number
+    model?: string
+    warning_ttft_ms: number
+    critical_ttft_ms: number
+  }>
+}
+export async function getObservationOverview(filter: MonitorFilter, admin = false, signal?: AbortSignal, options: { endTime: string; refresh?: boolean; audience?: 'admin' | 'user' } = { endTime: new Date().toISOString() }) {
+  const { data } = await apiClient.get<ObservationOverview>(`${base(admin)}/overview`, requestConfig(filter, signal, {
+    end_time: options.endTime,
+    refresh: options.refresh || undefined,
+    audience: admin && options.audience === 'user' ? 'user' : undefined,
+  }))
+  return data
+}
+export async function getObservationConfig(signal?: AbortSignal) {
+  const { data } = await apiClient.get<ObservationConfig>('/admin/channel-monitor-v2/observation-config', { signal })
+  return data
+}
+export async function updateObservationConfig(config: ObservationConfig) {
+  const { data } = await apiClient.put<ObservationConfig>('/admin/channel-monitor-v2/observation-config', config)
+  return data
+}

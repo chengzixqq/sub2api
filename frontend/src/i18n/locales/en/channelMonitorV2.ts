@@ -1,6 +1,12 @@
 /** Channel Monitor V2 (user + admin passive monitor UI) */
 export default {
   channelMonitorV2: {
+    observation: {
+      loading: 'Loading channel observations', group: 'Group', reliability: 'Reliability', firstOutput: 'First output', cache: 'Cache hit rate', history: 'History', models: '{count} models', multiplier: 'User rate {value}x', priceUnavailable: 'Rate unavailable', slow: 'Slow response',
+      coverage: { complete: 'Complete data', partial: 'Partial coverage', stale: 'Data delayed', unavailable: 'Unavailable' },
+      layout: { cards: 'Cards', matrix: 'Matrix' },
+      states: { healthy: 'Healthy', warning: 'Reliability down', critical: 'Critical', unknown: 'Unknown', sufficient: 'Sufficient samples', insufficient: 'Insufficient samples', no_samples: 'No samples', partial: 'Partial coverage', stale: 'Data delayed', missing: 'Missing data' },
+    },
     title: 'Channel Monitor',
     updating: 'Updating data',
     updatedTo: 'Updated to {time}',

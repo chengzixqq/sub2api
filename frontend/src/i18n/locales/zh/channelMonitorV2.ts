@@ -1,6 +1,12 @@
 /** Channel Monitor V2 (user + admin passive monitor UI) */
 export default {
   channelMonitorV2: {
+    observation: {
+      loading: '正在加载渠道观测', group: '分组', reliability: '可靠率', firstOutput: '首字延迟', cache: '缓存命中率', history: '历史状态', models: '{count} 个模型', multiplier: '用户倍率 {value}x', priceUnavailable: '倍率不可用', slow: '响应偏慢',
+      coverage: { complete: '数据完整', partial: '部分覆盖', stale: '数据延迟', unavailable: '暂不可用' },
+      layout: { cards: '卡片视图', matrix: '矩阵视图' },
+      states: { healthy: '正常', warning: '可靠性下降', critical: '异常', unknown: '未知', sufficient: '样本充足', insufficient: '样本不足', no_samples: '暂无样本', partial: '部分覆盖', stale: '数据延迟', missing: '数据缺失' },
+    },
     title: '渠道监控',
     updating: '正在更新数据',
     updatedTo: '更新至 {time}',

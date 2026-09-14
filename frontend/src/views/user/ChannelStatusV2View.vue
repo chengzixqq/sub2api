@@ -248,8 +248,9 @@
       </section>
 
       <div class="relative min-h-[320px]">
+        <ObservationCards v-if="observationMode" :overview="observation" :layout="observationLayout" @toggle-layout="observationLayout = observationLayout === 'cards' ? 'matrix' : 'cards'" />
         <MonitorTrendChart
-          v-if="trendView === 'line'"
+          v-else-if="trendView === 'line'"
           :trend="snapshot?.trend || []"
           :coverage="snapshot?.coverage || null"
           :loading="loading && !snapshot"
@@ -470,6 +471,9 @@ import MetricCell from '@/features/channel-monitor-v2/MetricCell.vue'
 import MonitorRankBadge from '@/features/channel-monitor-v2/MonitorRankBadge.vue'
 import MonitorTrendChart from '@/features/channel-monitor-v2/MonitorTrendChart.vue'
 import RelayPulseMatrix from '@/features/channel-monitor-v2/RelayPulseMatrix.vue'
+import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue'
+import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
+import type { ObservationLayout } from '@/features/channel-monitor-v2/observationViewModel'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -555,6 +559,9 @@ const activeTab = ref<Tab>(parseTab(route.query.tab, showUserRanking.value))
 const matrixGroupBy = ref<MonitorMatrixGroupBy>(parseMatrixGroupBy(route.query.group_by))
 const healthMode = ref<HealthMode>(parseHealthMode(route.query.health_mode))
 const trendView = ref<TrendView>(parseTrendView(route.query.trend_view))
+const observationMode = ref(true)
+const observationLayout = ref<ObservationLayout>(isAdmin.value ? 'matrix' : 'cards')
+const { data: observation, load: loadObservation } = useObservationOverview(filter, isAdmin, ref(false))
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
 const matrix = ref<MonitorMatrixResponse | null>(null)
@@ -902,6 +909,7 @@ watch(
   filter,
   () => {
     syncQuery()
+    if (observationMode.value) { void loadObservation(); return }
     const rangeChanged = filter.value.range !== lastRange
     lastRange = filter.value.range
     if (rangeChanged) void reload(true)
@@ -911,12 +919,14 @@ watch(
 )
 watch(matrixGroupBy, () => {
   syncQuery()
+  if (observationMode.value) return
   void reloadMetricsOnly(true)
 })
 watch(healthMode, syncQuery)
 watch(trendView, syncQuery)
 watch(activeTab, () => {
   syncQuery()
+  if (observationMode.value) return
   void loadTab()
 })
 watch(showUserRanking, (allowed) => {
@@ -924,7 +934,7 @@ watch(showUserRanking, (allowed) => {
     activeTab.value = 'models'
   }
 })
-onMounted(() => void reload(false))
+onMounted(() => { if (observationMode.value) void loadObservation(); else void reload(false) })
 onBeforeUnmount(() => {
   controller?.abort()
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer)
