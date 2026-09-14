@@ -351,6 +351,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return true
 	}
+	defer service.MeasureGatewayTiming(ctx, service.GatewayTimingRetryWait)()
 	select {
 	case <-ctx.Done():
 		return false

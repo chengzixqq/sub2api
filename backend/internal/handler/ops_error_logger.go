@@ -2122,6 +2122,10 @@ func isKnownOpsErrorType(t string) bool {
 }
 
 func normalizeOpsErrorType(errType string, code string) string {
+	// Preserve Anthropic's wire error while reusing the existing request taxonomy.
+	if errType == "request_too_large" {
+		return "invalid_request_error"
+	}
 	if errType != "" && isKnownOpsErrorType(errType) {
 		return errType
 	}

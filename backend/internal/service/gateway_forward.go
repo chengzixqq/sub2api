@@ -34,6 +34,10 @@ const (
 )
 
 func (s *GatewayService) shouldRetryUpstreamError(account *Account, statusCode int) bool {
+	// Retrying an unchanged oversized request cannot restore account health.
+	if statusCode == http.StatusRequestEntityTooLarge {
+		return false
+	}
 	// OAuth/Setup Token 账号：仅 403 重试
 	if account.IsOAuth() {
 		return statusCode == 403
@@ -69,6 +73,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
 	}
+	defer MeasureGatewayTiming(ctx, GatewayTimingRetryWait)()
 	timer := time.NewTimer(d)
 	defer func() {
 		if !timer.Stop() {
@@ -89,6 +94,12 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 // Forward 转发请求到Claude API
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (result *ForwardResult, err error) {
+	defer MeasureGatewayTiming(ctx, GatewayTimingForward)()
+	defer func() {
+		if result != nil && result.FirstTokenMs != nil {
+			SetOpsLatencyMs(c, OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
+		}
+	}()
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")

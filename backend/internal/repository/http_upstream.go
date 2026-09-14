@@ -208,7 +208,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用
+	var timingContext context.Context
+	if req != nil {
+		timingContext = req.Context()
+	}
+	finishAcquire := service.MeasureGatewayTiming(timingContext, service.GatewayTimingClientAcquire)
 	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
+	finishAcquire()
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +222,9 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
+	finishTiming(resp, err)
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
 		// 请求失败，立即减少计数
@@ -272,7 +280,13 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
+	var timingContext context.Context
+	if req != nil {
+		timingContext = req.Context()
+	}
+	finishAcquire := service.MeasureGatewayTiming(timingContext, service.GatewayTimingClientAcquire)
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
+	finishAcquire()
 	if err != nil {
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
@@ -280,7 +294,9 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
+	finishTiming(resp, err)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())

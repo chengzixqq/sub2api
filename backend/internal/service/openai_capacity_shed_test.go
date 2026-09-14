@@ -46,8 +46,7 @@ func TestTempUnscheduleRetryableErrorSkipsRequestScopedTransient(t *testing.T) {
 		require.Zero(t, repo.tempUnschedCalls)
 	})
 
-	// 对照组：同样的 502 在未标记请求级瞬时故障时仍按原有语义临时摘号，
-	// 确认上面的断言来自新增守卫而非其他前置条件。
+	// A classified empty response still retains its existing cooldown.
 	t.Run("未标记时保持原有临时摘号语义", func(t *testing.T) {
 		repo := &capacityShedAccountRepoStub{}
 		svc := &GatewayService{accountRepo: repo}
@@ -55,6 +54,7 @@ func TestTempUnscheduleRetryableErrorSkipsRequestScopedTransient(t *testing.T) {
 		svc.TempUnscheduleRetryableError(context.Background(), 1, &UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
 			RetryableOnSameAccount: true,
+			Reason:                 GatewayFailureReasonEmptyResponse,
 		})
 
 		require.Equal(t, 1, repo.tempUnschedCalls)

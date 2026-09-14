@@ -491,6 +491,7 @@ returnResponse:
 			StatusCode:             http.StatusBadGateway,
 			ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 			RetryableOnSameAccount: true,
+			Reason:                 GatewayFailureReasonEmptyResponse,
 		}
 	}
 
@@ -941,6 +942,7 @@ returnResponse:
 			StatusCode:             http.StatusBadGateway,
 			ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 			RetryableOnSameAccount: true,
+			Reason:                 GatewayFailureReasonEmptyResponse,
 		}
 	}
 
@@ -1141,6 +1143,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 						RetryableOnSameAccount: true,
+						Reason:                 GatewayFailureReasonEmptyResponse,
 					}
 				}
 				return &antigravityStreamResult{usage: convertUsage(agUsage), firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil

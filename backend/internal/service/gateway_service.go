@@ -681,6 +681,11 @@ const (
 
 type GatewayFailureReason string
 
+const (
+	GatewayFailureReasonEmptyResponse   GatewayFailureReason = "empty_response"
+	GatewayFailureReasonStreamReadError GatewayFailureReason = "stream_read_error"
+)
+
 // UpstreamFailoverError indicates an upstream or credential error that may
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
@@ -755,7 +760,13 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	case http.StatusBadRequest:
 		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
 	case http.StatusBadGateway:
-		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+		// HTTP 502 alone does not establish an empty or interrupted stream.
+		switch failoverErr.Reason {
+		case GatewayFailureReasonEmptyResponse:
+			tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+		case GatewayFailureReasonStreamReadError:
+			tempUnscheduleStreamReadFailure(ctx, s.accountRepo, accountID, "[handler]")
+		}
 	}
 }
 

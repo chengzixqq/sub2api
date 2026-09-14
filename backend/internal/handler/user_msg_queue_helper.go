@@ -48,6 +48,7 @@ func (h *UserMsgQueueHelper) AcquireWithWait(
 	timeout time.Duration,
 	reqLog *zap.Logger,
 ) (releaseFunc func(), err error) {
+	defer service.MeasureGatewayTiming(c.Request.Context(), service.GatewayTimingMessageQueue)()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
@@ -182,6 +183,7 @@ func (h *UserMsgQueueHelper) ThrottleWithPing(
 	timeout time.Duration,
 	reqLog *zap.Logger,
 ) error {
+	defer service.MeasureGatewayTiming(c.Request.Context(), service.GatewayTimingMessageQueue)()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 
