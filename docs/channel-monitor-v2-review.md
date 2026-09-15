@@ -70,7 +70,8 @@ The `main` branch was not modified.
   `linapi-sub2api-blue-v024-05c6085e5` on `127.0.0.1:18106`.
 - Caddy was validated and reloaded with all four LinAPI reverse-proxy entries
   pointing to 18106. The saved pre-switch configuration is kept beside the
-  release archive on the server.
+  release archive on the server. `Caddyfile.rollback-18102` is a validated
+  direct rollback configuration.
 - The previous 18105/18104 temporary candidates and their images were removed
   after validation. 18102 and 18101 remain running and healthy as rollback
   points; neither is in the active Caddy configuration.
