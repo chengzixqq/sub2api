@@ -8,6 +8,7 @@
         :aria-describedby="tooltip?.slotStart === slot.start ? tooltipId : undefined"
         :aria-label="tooltipLabel(slot.start, slot.bucket)" :title="tooltipLabel(slot.start, slot.bucket)"
         @mouseenter="showTooltip($event, slot)" @focus="showTooltip($event, slot)"
+        @mousemove="moveTooltip($event, slot)"
         @mouseleave="clearTooltip" @blur="clearTooltip"
         @click="$emit('select', slot)"
       />
@@ -16,7 +17,7 @@
       v-if="tooltip"
       :id="tooltipId"
       role="tooltip"
-      class="pointer-events-none fixed z-[100] max-w-80 -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg"
+      class="pointer-events-none fixed z-[100] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg"
       :class="tooltip.above ? '-translate-y-full' : ''"
       :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
     >
@@ -28,7 +29,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, ref, useId } from 'vue'
+import { computed, getCurrentInstance, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
@@ -37,7 +38,8 @@ const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage:
 defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
-const tooltipId = `observation-timeline-tooltip-${useId()}`
+let fallbackTimelineId = 0
+const tooltipId = `observation-timeline-tooltip-${getCurrentInstance()?.uid ?? ++fallbackTimelineId}`
 const tooltip = ref<{ text: string; slotStart: string; left: number; top: number; above: boolean } | null>(null)
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
 function time(value: string) {
@@ -71,7 +73,7 @@ function tooltipLabel(start: string, bucket: ObservationBucket | null) {
   const base = label(start, bucket)
   if (!bucket) return base
   const m = bucket.metrics
-  const details = `${base} · ${t('channelMonitorV2.metrics.ttftValue', { value: formatMonitorMs(m.ttft?.p50_ms) })} · ${t('channelMonitorV2.metrics.cacheRateValue', { value: percent(m.cache_rate) })}`
+  const details = `${base} · ${t('channelMonitorV2.metrics.ttftValue', { value: formatMonitorMs(m.ttft?.p50_ms) })} · ${t('channelMonitorV2.metrics.durationValue', { value: formatMonitorMs(m.duration?.p50_ms) })} · ${t('channelMonitorV2.metrics.cacheRateValue', { value: percent(m.cache_rate) })}`
   if (!props.admin) return details
   return `${details} · ${t('channelMonitorV2.observation.requests')} ${m.request_count ?? 0} · ${t('channelMonitorV2.observation.errors')} ${m.channel_errors ?? 0} · ${t('channelMonitorV2.observation.attempts')} ${m.attempt_count ?? 0}`
 }
@@ -79,10 +81,13 @@ function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; buck
   const target = event.currentTarget as HTMLElement | null
   if (!target) return
   const rect = target.getBoundingClientRect()
-  const above = rect.top > 96
-  const halfWidth = 144
+  const above = rect.top > 96 || rect.bottom + 96 > window.innerHeight
+  const halfWidth = Math.min(160, Math.max(12, (window.innerWidth - 24) / 2))
   const center = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2))
   tooltip.value = { text: tooltipLabel(slot.start, slot.bucket), slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
+}
+function moveTooltip(event: MouseEvent, slot: { start: string; bucket: ObservationBucket | null }) {
+  if (tooltip.value?.slotStart === slot.start) showTooltip(event, slot)
 }
 function clearTooltip() {
   tooltip.value = null

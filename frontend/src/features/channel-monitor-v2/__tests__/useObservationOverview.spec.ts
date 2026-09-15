@@ -54,6 +54,21 @@ describe('observation request lifetime', () => {
 		scope.stop()
 	})
 
+	it('cancels an in-flight request when the view switches to legacy diagnostics', async () => {
+		const pending = new Promise<ObservationOverview>(() => undefined)
+		api.getObservationOverview.mockReturnValueOnce(pending)
+		const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })
+		const scope = effectScope()
+		const state = scope.run(() => useObservationOverview(filter, ref(true), ref(false)))!
+		void state.load()
+		await flushPromises()
+		expect(state.loading.value).toBe(true)
+		state.cancel()
+		expect(state.loading.value).toBe(false)
+		expect(api.getObservationOverview.mock.lastCall?.[2].aborted).toBe(true)
+		scope.stop()
+	})
+
 	it('drops old responses, clears different ranges and sends an immutable query', async () => {
     const pending: Array<(value: ObservationOverview) => void> = []
     api.getObservationOverview.mockImplementation(() => new Promise(resolve => pending.push(resolve)))

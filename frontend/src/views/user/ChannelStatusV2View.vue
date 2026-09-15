@@ -24,7 +24,7 @@
                 <LoadingSpinner size="sm" />
                 {{ t('channelMonitorV2.updating') }}
               </span>
-              <span v-else-if="activeCoverage?.data_through">
+              <span v-else-if="activeCoverage?.data_through && isValidCoverageTime(activeCoverage.data_through)">
                 {{ t('channelMonitorV2.updatedTo', { time: formatTime(activeCoverage.data_through) }) }}
               </span>
               <span v-else class="text-gray-400">{{ t('common.loading') }}</span>
@@ -43,15 +43,27 @@
               </span>
             </div>
           </div>
-          <button
-            class="btn btn-secondary btn-icon flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400 dark:hover:bg-dark-600"
-            type="button"
-            :title="t('common.refresh')"
-            :disabled="loading || observationLoading"
-            @click="observationMode ? refreshObservation() : reload(false)"
-          >
-            <Icon name="refresh" size="sm" :class="loading || observationLoading ? 'animate-spin' : ''" />
-          </button>
+          <div class="flex shrink-0 items-center gap-2">
+            <button
+              v-if="isObservationAdmin"
+              type="button"
+              class="btn btn-secondary inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs"
+              :aria-pressed="observationMode"
+              @click="toggleObservationMode"
+            >
+              <Icon :name="observationMode ? 'chart' : 'grid'" size="sm" />
+              {{ t(observationMode ? 'channelMonitorV2.observation.switchToLegacy' : 'channelMonitorV2.observation.switchToCards') }}
+            </button>
+            <button
+              class="btn btn-secondary btn-icon flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400 dark:hover:bg-dark-600"
+              type="button"
+              :title="t('common.refresh')"
+              :disabled="observationMode ? observationLoading : loading"
+              @click="observationMode ? refreshObservation() : reload(false)"
+            >
+              <Icon name="refresh" size="sm" :class="(observationMode ? observationLoading : loading) ? 'animate-spin' : ''" />
+            </button>
+          </div>
         </header>
 
         <!-- First-upgrade silent backfill: show until 30d product window is covered -->
@@ -366,7 +378,7 @@
                 <Icon name="chevronDown" size="sm" :class="['text-gray-400 transition-transform', expandedErrors.has(row.category) ? 'rotate-180' : '']" />
               </button>
               <div v-if="expandedErrors.has(row.category)" class="mt-3 space-y-2 border-t border-gray-100 pt-3 dark:border-dark-700">
-                <template v-if="isAdmin && (row.details || []).length">
+                <template v-if="isObservationAdmin && (row.details || []).length">
                   <div
                     v-for="(detail, index) in row.details || []"
                     :key="`${row.category}:${index}:${detail.message}`"
@@ -517,14 +529,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const { t, te, locale } = useI18n()
-const isAdmin = computed(() => authStore.isAdmin)
 // The backend's admin observation endpoint is owner-only. Vendors remain on
 // the permission-scoped user projection even though they can enter /admin.
 const isObservationAdmin = computed(() => authStore.user?.role === 'admin')
 /** Admins always see RPM/TPM; users honor the hide-throughput system setting. */
-const showThroughput = computed(() => isAdmin.value || !isChannelMonitorThroughputHidden())
+const showThroughput = computed(() => isObservationAdmin.value || !isChannelMonitorThroughputHidden())
 /** Admins always see ranking; users honor the hide-user-ranking system setting. */
-const showUserRanking = computed(() => isAdmin.value || !isChannelMonitorUserRankingHidden())
+const showUserRanking = computed(() => isObservationAdmin.value || !isChannelMonitorUserRankingHidden())
 
 const ranges = computed(() => [
   { value: '90m' as MonitorRange, label: t('channelMonitorV2.ranges.90m') },
@@ -565,16 +576,19 @@ const activeTab = ref<Tab>(parseTab(route.query.tab, showUserRanking.value))
 const matrixGroupBy = ref<MonitorMatrixGroupBy>(parseMatrixGroupBy(route.query.group_by))
 const healthMode = ref<HealthMode>(parseHealthMode(route.query.health_mode))
 const trendView = ref<TrendView>(parseTrendView(route.query.trend_view))
-const observationMode = ref(true)
+// Ordinary users get the privacy-preserving observation cards.  An owner
+// opening /monitor gets the complete, original V2 diagnostic matrix first and
+// can switch to the cards when comparing the downstream projection.
+const observationMode = ref(!isObservationAdmin.value)
 const observationPreference = computed(() => observationPreferenceKey(
   authStore.user?.id,
   authStore.user?.role || 'user',
   authStore.workspace?.id,
 ))
-const observationLayout = ref<ObservationLayout>(isObservationAdmin.value ? 'matrix' : 'cards')
+const observationLayout = ref<ObservationLayout>('cards')
 const observationUserPreview = ref(false)
-const { data: observation, loading: observationLoading, error: observationError, load: loadObservation } = useObservationOverview(filter, isObservationAdmin, observationUserPreview)
-const activeCoverage = computed(() => observation.value?.coverage || snapshot.value?.coverage || null)
+const { data: observation, loading: observationLoading, error: observationError, load: loadObservation, cancel: cancelObservation } = useObservationOverview(filter, isObservationAdmin, observationUserPreview)
+const activeCoverage = computed(() => (observationMode.value ? observation.value?.coverage : snapshot.value?.coverage) || null)
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
 const matrix = ref<MonitorMatrixResponse | null>(null)
@@ -590,9 +604,24 @@ let sequence = 0
 let autoRefreshTimer: number | null = null
 let observationRefreshTimer: number | null = null
 let observationPreferenceReady = false
+let mounted = false
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) {
+    window.clearInterval(autoRefreshTimer)
+    autoRefreshTimer = null
+  }
+}
+
+function stopObservationRefresh() {
+  if (observationRefreshTimer) {
+    window.clearInterval(observationRefreshTimer)
+    observationRefreshTimer = null
+  }
+}
 
 function restoreObservationLayout(key: string) {
-  const fallback: ObservationLayout = isObservationAdmin.value ? 'matrix' : 'cards'
+  const fallback: ObservationLayout = 'cards'
   try {
     const value = localStorage.getItem(`${key}:layout`)
     observationLayout.value = value === 'cards' || value === 'matrix' ? value : fallback
@@ -754,15 +783,15 @@ async function loadDimensions(signal?: AbortSignal, id = sequence) {
     groupIds: [],
     models: [],
   }
-  const next = await api.getDimensions(rangeOnly, isAdmin.value, signal)
+  const next = await api.getDimensions(rangeOnly, isObservationAdmin.value, signal)
   if (id !== sequence) return
   dimensions.value = next
 }
 
 async function loadMetrics(signal?: AbortSignal, id = sequence) {
   const [nextSnapshot, nextMatrix] = await Promise.all([
-    api.getSnapshot(filter.value, isAdmin.value, signal),
-    api.getMatrix(filter.value, matrixGroupBy.value, isAdmin.value, signal),
+    api.getSnapshot(filter.value, isObservationAdmin.value, signal),
+    api.getMatrix(filter.value, matrixGroupBy.value, isObservationAdmin.value, signal),
   ])
   if (id !== sequence) return
   snapshot.value = nextSnapshot
@@ -785,7 +814,9 @@ async function reload(silent = true) {
       loadMetrics(request.signal, id),
     ])
   } catch (error) {
-    if ((error as { name?: string }).name !== 'CanceledError') {
+    const name = (error as { name?: string }).name
+    if (name !== 'CanceledError' && name !== 'AbortError') {
+      if (id === sequence) clearLegacySnapshot()
       appStore.showError(extractApiErrorMessage(error, t('channelMonitorV2.loadFailed')))
     }
   } finally {
@@ -802,14 +833,48 @@ async function refreshObservation() {
   scheduleObservationRefresh()
 }
 
-function scheduleObservationRefresh() {
-  if (observationRefreshTimer) {
-    window.clearInterval(observationRefreshTimer)
-    observationRefreshTimer = null
+function toggleObservationMode() {
+  if (!isObservationAdmin.value) return
+  observationMode.value = !observationMode.value
+}
+
+function clearLegacySnapshot() {
+  snapshot.value = null
+  matrix.value = null
+  modelRows.value = []
+  errorRows.value = []
+  userRows.value = []
+  dimensions.value = { platforms: [], groups: [], models: [] }
+}
+
+function cancelLegacyRequests() {
+  controller?.abort()
+  controller = null
+  sequence++
+  loading.value = false
+  tabLoading.value = false
+  refreshing.value = false
+}
+
+watch(observationMode, (enabled, previous) => {
+  if (enabled === previous) return
+  cancelLegacyRequests()
+  if (enabled) {
+    stopAutoRefresh()
+    clearLegacySnapshot()
+    void refreshObservation()
+  } else {
+    stopObservationRefresh()
+    cancelObservation()
+    void reload(false)
   }
-  if (!observationMode.value) return
+})
+
+function scheduleObservationRefresh() {
+  stopObservationRefresh()
+  if (!observationMode.value || !mounted) return
   observationRefreshTimer = window.setInterval(() => {
-    if (document.visibilityState === 'visible' && !observationLoading.value) {
+    if (mounted && document.visibilityState === 'visible' && !observationLoading.value) {
       // Advance the half-open query boundary on every poll; otherwise the
       // composable would keep serving the first snapshot forever.
       void loadObservation(true, true)
@@ -828,7 +893,9 @@ async function reloadMetricsOnly(silent = true) {
   try {
     await loadMetrics(request.signal, id)
   } catch (error) {
-    if ((error as { name?: string }).name !== 'CanceledError') {
+    const name = (error as { name?: string }).name
+    if (name !== 'CanceledError' && name !== 'AbortError') {
+      if (id === sequence) clearLegacySnapshot()
       appStore.showError(extractApiErrorMessage(error, t('channelMonitorV2.loadFailed')))
     }
   } finally {
@@ -843,11 +910,11 @@ async function loadTab(signal?: AbortSignal, id = sequence) {
   tabLoading.value = true
   try {
     if (activeTab.value === 'models') {
-      modelRows.value = (await api.getModels(filter.value, isAdmin.value, signal)).items || []
+      modelRows.value = (await api.getModels(filter.value, isObservationAdmin.value, signal)).items || []
     } else if (activeTab.value === 'errors') {
-      errorRows.value = (await api.getErrors(filter.value, isAdmin.value, signal)).items || []
+      errorRows.value = (await api.getErrors(filter.value, isObservationAdmin.value, signal)).items || []
     } else if (showUserRanking.value) {
-      userRows.value = (await api.getUsers(filter.value, isAdmin.value, signal)).items || []
+      userRows.value = (await api.getUsers(filter.value, isObservationAdmin.value, signal)).items || []
     } else {
       userRows.value = []
     }
@@ -872,16 +939,14 @@ function clearDimensions() {
   }
 }
 function scheduleAutoRefresh() {
-  if (autoRefreshTimer) {
-    window.clearInterval(autoRefreshTimer)
-    autoRefreshTimer = null
-  }
+  stopAutoRefresh()
+  if (!mounted || observationMode.value) return
   // Poll faster while first-upgrade bootstrap is filling 90m→30d so the progress bar moves.
   const seconds = bootstrapActive.value
     ? 10
     : snapshot.value?.config?.refresh_interval_seconds || 300
   autoRefreshTimer = window.setInterval(() => {
-    if (!loading.value && !refreshing.value) {
+    if (mounted && !loading.value && !refreshing.value) {
       void reload(true)
     }
   }, Math.max(bootstrapActive.value ? 10 : 60, seconds) * 1000)
@@ -937,6 +1002,13 @@ function formatTime(value: string) {
     minute: '2-digit',
   }).format(new Date(value))
 }
+function isValidCoverageTime(value: string | undefined) {
+  if (!value) return false
+  const timestamp = Date.parse(value)
+  // Go's zero time can be serialized by an empty observation repository. It is
+  // a missing watermark, not a real date to show to an operator.
+  return Number.isFinite(timestamp) && timestamp > 0
+}
 function statusDot(health?: MonitorHealth | HealthState) {
   if (!health || typeof health === 'string') {
     return `status-dot health-${health || 'unknown'}`
@@ -981,7 +1053,7 @@ watch(
   { deep: true }
 )
 watch(observation, () => {
-  if (observation.value) {
+  if (observationMode.value && observation.value) {
     // The observation endpoint is the source of dimensions while cards are
     // active. Keeping the legacy dimensions ref empty made all filter menus
     // appear blank even though the overview contained authorized groups.
@@ -993,12 +1065,18 @@ watch(observationError, (failed) => {
   if (failed) dimensions.value = { platforms: [], groups: [], models: [] }
 })
 watch(isObservationAdmin, (isAdminNow, wasAdmin) => {
-  if (isAdminNow === wasAdmin || !observationMode.value) return
-  // Auth refresh can resolve the role after the view has mounted. Reload the
-  // same immutable query so an administrator never remains on a user-redacted
-  // response acquired during that short bootstrap window.
-  dimensions.value = { platforms: [], groups: [], models: [] }
-  void loadObservation(true, true)
+  if (isAdminNow === wasAdmin) return
+  if (isAdminNow) {
+    // Auth refresh can resolve the role after the view has mounted. Owners
+    // should land on the complete original V2 diagnostics, even if the first
+    // anonymous render briefly started the user card projection.
+    cancelObservation()
+    observationMode.value = false
+  } else {
+    // Vendors and regular users must never retain the owner projection after a
+    // role/workspace refresh.
+    observationMode.value = true
+  }
 })
 watch(matrixGroupBy, () => {
   syncQuery()
@@ -1017,11 +1095,21 @@ watch(showUserRanking, (allowed) => {
     activeTab.value = 'models'
   }
 })
-onMounted(() => { if (observationMode.value) { void loadObservation().then(scheduleObservationRefresh) } else void reload(false) })
+onMounted(() => {
+  mounted = true
+  if (observationMode.value) {
+    void loadObservation().then(() => {
+      if (mounted && observationMode.value) scheduleObservationRefresh()
+    })
+  } else {
+    void reload(false)
+  }
+})
 onBeforeUnmount(() => {
   controller?.abort()
-  if (autoRefreshTimer) window.clearInterval(autoRefreshTimer)
-  if (observationRefreshTimer) window.clearInterval(observationRefreshTimer)
+  mounted = false
+  stopAutoRefresh()
+  stopObservationRefresh()
 })
 </script>
 

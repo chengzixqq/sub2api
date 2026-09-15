@@ -10,6 +10,13 @@ export function useObservationOverview(filter: Ref<MonitorFilter>, admin: Ref<bo
   let appliedKey = ''
   let endTime = ''
 
+  function cancel() {
+    sequence++
+    controller?.abort()
+    controller = null
+    loading.value = false
+  }
+
   async function load(refresh = false, advance = false) {
     const id = ++sequence
     controller?.abort()
@@ -40,6 +47,6 @@ export function useObservationOverview(filter: Ref<MonitorFilter>, admin: Ref<bo
       if (id === sequence) loading.value = false
     }
   }
-  onScopeDispose(() => { sequence++; controller?.abort() })
-  return { data, loading, error, load }
+  onScopeDispose(cancel)
+  return { data, loading, error, load, cancel }
 }

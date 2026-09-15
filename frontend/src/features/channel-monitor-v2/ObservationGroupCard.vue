@@ -12,10 +12,13 @@
     </div>
     <ObservationStatus class="mt-3 min-h-6" :metrics="item.metrics" :health="item.health" :coverage="coverage" />
     <ObservationMetrics class="my-5" :metrics="item.metrics" :health="item.health" :unavailable="coverage.state === 'unavailable'" />
-    <dl v-if="admin" class="mb-4 grid grid-cols-3 gap-2 border-y border-gray-100 py-3 text-xs dark:border-dark-700">
+    <dl v-if="admin" class="mb-4 grid grid-cols-2 gap-x-3 gap-y-2 border-y border-gray-100 py-3 text-xs sm:grid-cols-3 dark:border-dark-700">
       <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.requests') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ item.metrics.request_count ?? 0 }}</dd></div>
       <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.errors') }}</dt><dd class="mt-1 font-semibold tabular-nums text-red-600 dark:text-red-400">{{ item.metrics.channel_errors ?? 0 }}</dd></div>
       <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.attempts') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ item.metrics.attempt_count ?? 0 }}</dd></div>
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.rpm') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ formatRate(item.metrics.rpm) }}</dd></div>
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.tpm') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ formatRate(item.metrics.tpm) }}</dd></div>
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.retries') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ item.metrics.retry_recovered_requests ?? 0 }}</dd></div>
     </dl>
     <div v-if="expanded" class="mb-4 border-t border-gray-100 pt-3 dark:border-dark-700">
       <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">{{ t('channelMonitorV2.observation.modelDetails') }}</p>
@@ -43,7 +46,7 @@ import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import { platformBadgeClass } from '@/utils/platformColors'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
-import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
+import { formatMonitorMs, formatMonitorPercent, formatMonitorThroughput } from './monitorFormat'
 import type { ObservationBucket, ObservationChannel, ObservationOverview } from '@/api/channelMonitorV2'
 import ObservationMetrics from './ObservationMetrics.vue'
 import ObservationTimeline from './ObservationTimeline.vue'
@@ -54,6 +57,7 @@ const { t } = useI18n()
 const platform = computed(() => GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.value)
 const expanded = ref(false)
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
+const formatRate = (value: number | null | undefined) => value == null ? '-' : formatMonitorThroughput(value)
 function toggleExpanded() {
   expanded.value = !expanded.value
 }
