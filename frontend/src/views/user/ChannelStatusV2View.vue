@@ -951,7 +951,7 @@ function scheduleAutoRefresh() {
     ? 10
     : snapshot.value?.config?.refresh_interval_seconds || 300
   autoRefreshTimer = window.setInterval(() => {
-    if (mounted && !loading.value && !refreshing.value) {
+    if (mounted && document.visibilityState === 'visible' && !loading.value && !refreshing.value) {
       void reload(true)
     }
   }, Math.max(bootstrapActive.value ? 10 : 60, seconds) * 1000)

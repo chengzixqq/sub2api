@@ -465,9 +465,31 @@ function formatAxisTime(value: string) {
 }
 
 function formatBucketRange(value: string) {
-  const start = new Date(value)
-  const end = new Date(start.getTime() + props.coverage.bucket_seconds * 1000)
-  return `${formatAxisTime(start.toISOString())} - ${new Intl.DateTimeFormat(locale.value || undefined, { hour: '2-digit', minute: '2-digit' }).format(end)}`
+  const rawStart = new Date(value)
+  if (!Number.isFinite(rawStart.getTime())) return '-'
+  const stepMs = Math.max(1, Number(props.coverage.bucket_seconds) * 1000)
+  const requestedStartMs = new Date(props.coverage.requested_start).getTime()
+  const requestedEndMs = new Date(props.coverage.requested_end || props.coverage.data_through).getTime()
+  const startMs = Number.isFinite(requestedStartMs)
+    ? Math.max(rawStart.getTime(), requestedStartMs)
+    : rawStart.getTime()
+  const calculatedEndMs = rawStart.getTime() + stepMs
+  const endMs = Number.isFinite(requestedEndMs)
+    ? Math.min(calculatedEndMs, requestedEndMs)
+    : calculatedEndMs
+  if (!(endMs > startMs)) return formatAxisTime(rawStart.toISOString())
+  const clipped = startMs !== rawStart.getTime() || endMs !== calculatedEndMs
+  if (clipped) {
+    const precise = new Intl.DateTimeFormat(locale.value || undefined, {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    })
+    return `${precise.format(new Date(startMs))} - ${precise.format(new Date(endMs))}`
+  }
+  return `${formatAxisTime(rawStart.toISOString())} - ${new Intl.DateTimeFormat(locale.value || undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(endMs))}`
 }
 </script>
 
