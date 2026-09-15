@@ -1,6 +1,6 @@
 # Channel Monitor V2 review
 
-Review commit: `ce37f8d87` on `codex/channel-monitor-v2-cards`.
+Review commit: `955530c09` on `codex/channel-monitor-v2-cards`.
 The `main` branch was not modified.
 
 ## Fixes verified in this review
@@ -27,6 +27,7 @@ The `main` branch was not modified.
 ## Evidence
 
 - `go test ./...` — pass.
+- Observation migration contract tests — pass.
 - `go test -race ./internal/handler ./internal/service ./internal/repository -run 'ChannelMonitor|Observation' -count=1` — pass.
 - Frontend full Vitest — 290 files, 2103 tests passed.
 - `pnpm run typecheck` and `pnpm run lint:check` — pass.
