@@ -5,6 +5,7 @@
         v-for="slot in slots" :key="slot.start" type="button"
         class="h-6 min-w-[5px] flex-1 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
         :class="bucketClass(slot.bucket)"
+        :aria-describedby="tooltip?.slotStart === slot.start ? tooltipId : undefined"
         :aria-label="tooltipLabel(slot.start, slot.bucket)" :title="tooltipLabel(slot.start, slot.bucket)"
         @mouseenter="showTooltip($event, slot)" @focus="showTooltip($event, slot)"
         @mouseleave="clearTooltip" @blur="clearTooltip"
@@ -13,6 +14,7 @@
     </div>
     <div
       v-if="tooltip"
+      :id="tooltipId"
       role="tooltip"
       class="pointer-events-none fixed z-[100] max-w-80 -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg"
       :class="tooltip.above ? '-translate-y-full' : ''"
@@ -26,7 +28,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
@@ -35,11 +37,22 @@ const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage:
 defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
-const tooltip = ref<{ text: string; left: number; top: number; above: boolean } | null>(null)
+const tooltipId = `observation-timeline-tooltip-${useId()}`
+const tooltip = ref<{ text: string; slotStart: string; left: number; top: number; above: boolean } | null>(null)
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
 function time(value: string) {
   const date = new Date(value)
   return Number.isFinite(date.getTime()) ? date.toLocaleString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
+}
+function period(start: string) {
+  const startMs = Date.parse(start)
+  const seconds = Number(props.coverage.bucket_seconds)
+  if (!Number.isFinite(startMs) || !Number.isFinite(seconds) || seconds <= 0) return time(start)
+  const requestedEndMs = Date.parse(props.coverage.requested_end || props.coverage.data_through)
+  const calculatedEndMs = startMs + seconds * 1000
+  const endMs = Number.isFinite(requestedEndMs) ? Math.min(calculatedEndMs, requestedEndMs) : calculatedEndMs
+  if (!(endMs > startMs)) return time(start)
+  return `${time(start)} – ${time(new Date(endMs).toISOString())}`
 }
 function bucketClass(bucket: ObservationBucket | null) {
   if (!bucket || props.coverage.state === 'unavailable') return 'border border-dashed border-gray-300 bg-transparent dark:border-dark-500'
@@ -52,13 +65,15 @@ function bucketClass(bucket: ObservationBucket | null) {
 }
 function label(start: string, bucket: ObservationBucket | null) {
   const status = bucket ? bucket.metrics.sample_state === 'sufficient' ? bucket.health.reliability : bucket.metrics.sample_state : 'missing'
-  return `${time(start)} · ${t(`channelMonitorV2.observation.states.${status}`)}${bucket ? ` · ${percent(bucket.metrics.reliability_rate)}` : ''}`
+  return `${period(start)} · ${t(`channelMonitorV2.observation.states.${status}`)}${bucket ? ` · ${t('channelMonitorV2.observation.reliability')} ${percent(bucket.metrics.reliability_rate)}` : ''}`
 }
 function tooltipLabel(start: string, bucket: ObservationBucket | null) {
   const base = label(start, bucket)
-  if (!props.admin || !bucket) return base
+  if (!bucket) return base
   const m = bucket.metrics
-  return `${base} · ${t('channelMonitorV2.observation.requests')} ${m.request_count ?? 0} · ${t('channelMonitorV2.observation.errors')} ${m.channel_errors ?? 0} · ${t('channelMonitorV2.observation.attempts')} ${m.attempt_count ?? 0} · ${t('channelMonitorV2.observation.firstOutput')} ${formatMonitorMs(m.ttft.p50_ms)} · ${t('channelMonitorV2.observation.cache')} ${percent(m.cache_rate)}`
+  const details = `${base} · ${t('channelMonitorV2.metrics.ttftValue', { value: formatMonitorMs(m.ttft?.p50_ms) })} · ${t('channelMonitorV2.metrics.cacheRateValue', { value: percent(m.cache_rate) })}`
+  if (!props.admin) return details
+  return `${details} · ${t('channelMonitorV2.observation.requests')} ${m.request_count ?? 0} · ${t('channelMonitorV2.observation.errors')} ${m.channel_errors ?? 0} · ${t('channelMonitorV2.observation.attempts')} ${m.attempt_count ?? 0}`
 }
 function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; bucket: ObservationBucket | null }) {
   const target = event.currentTarget as HTMLElement | null
@@ -67,7 +82,7 @@ function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; buck
   const above = rect.top > 96
   const halfWidth = 144
   const center = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2))
-  tooltip.value = { text: tooltipLabel(slot.start, slot.bucket), left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
+  tooltip.value = { text: tooltipLabel(slot.start, slot.bucket), slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
 }
 function clearTooltip() {
   tooltip.value = null
