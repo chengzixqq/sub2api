@@ -11,8 +11,8 @@
           @focus="hovered = slot.start" @blur="hovered = null"
           @click="$emit('select', slot)"
         />
-        <div v-if="hovered === slot.start" role="tooltip" class="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 w-max max-w-64 -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg">
-          {{ label(slot.start, slot.bucket) }}
+        <div v-if="hovered === slot.start" role="tooltip" class="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 w-max max-w-72 -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg">
+          {{ label(slot.start, slot.bucket) }}<template v-if="admin && slot.bucket"> · {{ t('channelMonitorV2.observation.requests') }} {{ slot.bucket.metrics.request_count ?? 0 }} · {{ t('channelMonitorV2.observation.errors') }} {{ slot.bucket.metrics.channel_errors ?? 0 }} · {{ t('channelMonitorV2.observation.firstOutput') }} {{ formatMonitorMs(slot.bucket.metrics.ttft.p50_ms) }}</template>
         </div>
       </span>
     </div>
@@ -26,8 +26,8 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
-import { formatMonitorPercent } from './monitorFormat'
-const props = defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage'] }>()
+import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
+const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage']; admin?: boolean }>(), { admin: false })
 defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
