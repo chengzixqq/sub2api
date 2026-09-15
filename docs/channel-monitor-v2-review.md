@@ -32,8 +32,9 @@ The `main` branch was not modified.
 - `pnpm run typecheck` and `pnpm run lint:check` — pass.
 - `make build` — pass; Vite emitted only existing chunk-size/dynamic-import warnings.
 - Playwright synthetic preview — authenticated fixture rendered the platform
-  section, group card, metrics, model expansion and refresh state without
-  uncaught page errors. No upstream request was sent.
+  section, group card, metrics, model expansion and refresh state. The preview
+  used mocked API responses only; setup fallback requests produced expected
+  fixture console errors, and no upstream request was sent.
 
 ## Remaining limits before production rollout
 
