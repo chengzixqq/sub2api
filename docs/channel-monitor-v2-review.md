@@ -71,9 +71,9 @@ The `main` branch was not modified.
 - Caddy was validated and reloaded with all four LinAPI reverse-proxy entries
   pointing to 18106. The saved pre-switch configuration is kept beside the
   release archive on the server.
-- The previous 18105 candidate is stopped and its image is retained; 18102
-  and 18101 remain running and healthy as rollback points. Neither is in the
-  active Caddy configuration.
+- The previous 18105/18104 temporary candidates and their images were removed
+  after validation. 18102 and 18101 remain running and healthy as rollback
+  points; neither is in the active Caddy configuration.
 - Post-switch checks: candidate health `200`, public health `200`, public root
   `200`, candidate restart count `0`, OOM `false`, and no fatal/panic lines in
   the observed logs.
