@@ -921,6 +921,11 @@ async function loadTab(signal?: AbortSignal, id = sequence) {
   } catch (error) {
     const e = error as { name?: string; code?: string }
     if (e?.name === 'AbortError' || e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return
+    if (id === sequence) {
+      if (activeTab.value === 'models') modelRows.value = []
+      else if (activeTab.value === 'errors') errorRows.value = []
+      else userRows.value = []
+    }
     appStore.showError(extractApiErrorMessage(error, t('channelMonitorV2.detailLoadFailed')))
   } finally {
     if (id === sequence) tabLoading.value = false

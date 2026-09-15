@@ -126,4 +126,27 @@ describe('ObservationTimeline', () => {
     await block.trigger('blur')
     expect(wrapper.find('[role="tooltip"]').exists()).toBe(false)
   })
+
+  it('clips a partially overlapping first bucket to the requested interval', async () => {
+    const wrapper = mount(ObservationTimeline, {
+      props: {
+        coverage: {
+          state: 'complete',
+          requested_start: '2026-09-15T17:00:30Z',
+          requested_end: '2026-09-15T17:02:00Z',
+          data_through: '2026-09-15T17:02:00Z',
+          bucket_seconds: 60,
+        } as never,
+        buckets: [],
+      },
+    })
+
+    const block = wrapper.find('button')
+    await block.trigger('mouseenter')
+    const tooltip = wrapper.find('[role="tooltip"]')
+    const expectedStart = new Date('2026-09-15T17:00:30Z').toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const expectedEnd = new Date('2026-09-15T17:01:00Z').toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    expect(tooltip.text()).toContain(expectedStart)
+    expect(tooltip.text()).toContain(expectedEnd)
+  })
 })

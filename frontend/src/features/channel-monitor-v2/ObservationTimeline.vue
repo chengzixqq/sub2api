@@ -21,7 +21,7 @@
       :class="tooltip.above ? '-translate-y-full' : ''"
       :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
     >
-      {{ tooltip.text }}
+      {{ tooltipText }}
     </div>
     <div class="mt-1 flex justify-between gap-2 text-[10px] tabular-nums text-gray-400">
       <span>{{ time(coverage.requested_start) }}</span><span>{{ time(coverage.requested_end || coverage.data_through) }}</span>
@@ -29,7 +29,7 @@
   </div>
 </template>
 <script setup lang="ts">
-import { computed, getCurrentInstance, ref } from 'vue'
+import { computed, getCurrentInstance, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
@@ -40,21 +40,32 @@ const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
 let fallbackTimelineId = 0
 const tooltipId = `observation-timeline-tooltip-${getCurrentInstance()?.uid ?? ++fallbackTimelineId}`
-const tooltip = ref<{ text: string; slotStart: string; left: number; top: number; above: boolean } | null>(null)
+const tooltip = ref<{ slotStart: string; left: number; top: number; above: boolean } | null>(null)
+const tooltipText = computed(() => {
+  if (!tooltip.value) return ''
+  const slot = slots.value.find((candidate) => candidate.start === tooltip.value?.slotStart)
+  return slot ? tooltipLabel(slot.start, slot.bucket) : ''
+})
+watch(slots, (next) => {
+  if (tooltip.value && !next.some((slot) => slot.start === tooltip.value?.slotStart)) clearTooltip()
+})
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
-function time(value: string) {
+function time(value: string, precise = false) {
   const date = new Date(value)
-  return Number.isFinite(date.getTime()) ? date.toLocaleString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'
+  return Number.isFinite(date.getTime()) ? date.toLocaleString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(precise ? { second: '2-digit' } : {}) }) : '-'
 }
 function period(start: string) {
   const startMs = Date.parse(start)
   const seconds = Number(props.coverage.bucket_seconds)
   if (!Number.isFinite(startMs) || !Number.isFinite(seconds) || seconds <= 0) return time(start)
+  const requestedStartMs = Date.parse(props.coverage.requested_start)
   const requestedEndMs = Date.parse(props.coverage.requested_end || props.coverage.data_through)
+  const effectiveStartMs = Number.isFinite(requestedStartMs) ? Math.max(startMs, requestedStartMs) : startMs
   const calculatedEndMs = startMs + seconds * 1000
   const endMs = Number.isFinite(requestedEndMs) ? Math.min(calculatedEndMs, requestedEndMs) : calculatedEndMs
-  if (!(endMs > startMs)) return time(start)
-  return `${time(start)} – ${time(new Date(endMs).toISOString())}`
+  if (!(endMs > effectiveStartMs)) return time(start)
+  const clipped = effectiveStartMs !== startMs || endMs !== calculatedEndMs
+  return `${time(new Date(effectiveStartMs).toISOString(), clipped)} – ${time(new Date(endMs).toISOString(), clipped)}`
 }
 function bucketClass(bucket: ObservationBucket | null) {
   if (!bucket || props.coverage.state === 'unavailable') return 'border border-dashed border-gray-300 bg-transparent dark:border-dark-500'
@@ -84,7 +95,7 @@ function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; buck
   const above = rect.top > 96 || rect.bottom + 96 > window.innerHeight
   const halfWidth = Math.min(160, Math.max(12, (window.innerWidth - 24) / 2))
   const center = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2))
-  tooltip.value = { text: tooltipLabel(slot.start, slot.bucket), slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
+  tooltip.value = { slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
 }
 function moveTooltip(event: MouseEvent, slot: { start: string; bucket: ObservationBucket | null }) {
   if (tooltip.value?.slotStart === slot.start) showTooltip(event, slot)
