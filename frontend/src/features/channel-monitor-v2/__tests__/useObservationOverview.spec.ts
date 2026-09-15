@@ -9,6 +9,20 @@ vi.mock('@/api/channelMonitorV2', () => api)
 const snapshot = (range: string) => ({ source: 'terminal_v1', contract_version: 2, coverage: { requested_start: range }, items: [] }) as unknown as ObservationOverview
 
 describe('observation request lifetime', () => {
+	it('reloads with the administrator projection when the role becomes available', async () => {
+		api.getObservationOverview.mockResolvedValue(snapshot('admin'))
+		const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })
+		const admin = ref(false)
+		const scope = effectScope()
+		const state = scope.run(() => useObservationOverview(filter, admin, ref(false)))!
+		await state.load()
+		expect(api.getObservationOverview.mock.calls.at(-1)![1]).toBe(false)
+		admin.value = true
+		await state.load()
+		expect(api.getObservationOverview.mock.calls.at(-1)![1]).toBe(true)
+		scope.stop()
+	})
+
 	it('advances the snapshot boundary for refreshes', async () => {
 		vi.useFakeTimers()
 		vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))

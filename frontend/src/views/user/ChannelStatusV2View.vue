@@ -250,7 +250,7 @@
       </section>
 
       <div class="relative min-h-[320px]">
-        <ObservationCards v-if="observationMode" :overview="observation" :layout="observationLayout" :loading="observationLoading" :error="observationError" @retry="refreshObservation" @toggle-layout="observationLayout = observationLayout === 'cards' ? 'matrix' : 'cards'" />
+        <ObservationCards v-if="observationMode" :overview="observation" :layout="observationLayout" :admin="isObservationAdmin" :loading="observationLoading" :error="observationError" @retry="refreshObservation" @toggle-layout="observationLayout = observationLayout === 'cards' ? 'matrix' : 'cards'" />
         <MonitorTrendChart
           v-else-if="trendView === 'line'"
           :trend="snapshot?.trend || []"
@@ -518,6 +518,9 @@ const authStore = useAuthStore()
 const appStore = useAppStore()
 const { t, te, locale } = useI18n()
 const isAdmin = computed(() => authStore.isAdmin)
+// The backend's admin observation endpoint is owner-only. Vendors remain on
+// the permission-scoped user projection even though they can enter /admin.
+const isObservationAdmin = computed(() => authStore.user?.role === 'admin')
 /** Admins always see RPM/TPM; users honor the hide-throughput system setting. */
 const showThroughput = computed(() => isAdmin.value || !isChannelMonitorThroughputHidden())
 /** Admins always see ranking; users honor the hide-user-ranking system setting. */
@@ -568,8 +571,9 @@ const observationPreference = computed(() => observationPreferenceKey(
   authStore.user?.role || 'user',
   authStore.workspace?.id,
 ))
-const observationLayout = ref<ObservationLayout>(isAdmin.value ? 'matrix' : 'cards')
-const { data: observation, loading: observationLoading, error: observationError, load: loadObservation } = useObservationOverview(filter, isAdmin, ref(false))
+const observationLayout = ref<ObservationLayout>(isObservationAdmin.value ? 'matrix' : 'cards')
+const observationUserPreview = ref(false)
+const { data: observation, loading: observationLoading, error: observationError, load: loadObservation } = useObservationOverview(filter, isObservationAdmin, observationUserPreview)
 const activeCoverage = computed(() => observation.value?.coverage || snapshot.value?.coverage || null)
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
@@ -588,7 +592,7 @@ let observationRefreshTimer: number | null = null
 let observationPreferenceReady = false
 
 function restoreObservationLayout(key: string) {
-  const fallback: ObservationLayout = isAdmin.value ? 'matrix' : 'cards'
+  const fallback: ObservationLayout = isObservationAdmin.value ? 'matrix' : 'cards'
   try {
     const value = localStorage.getItem(`${key}:layout`)
     observationLayout.value = value === 'cards' || value === 'matrix' ? value : fallback
@@ -987,6 +991,14 @@ watch(observation, () => {
 })
 watch(observationError, (failed) => {
   if (failed) dimensions.value = { platforms: [], groups: [], models: [] }
+})
+watch(isObservationAdmin, (isAdminNow, wasAdmin) => {
+  if (isAdminNow === wasAdmin || !observationMode.value) return
+  // Auth refresh can resolve the role after the view has mounted. Reload the
+  // same immutable query so an administrator never remains on a user-redacted
+  // response acquired during that short bootstrap window.
+  dimensions.value = { platforms: [], groups: [], models: [] }
+  void loadObservation(true, true)
 })
 watch(matrixGroupBy, () => {
   syncQuery()

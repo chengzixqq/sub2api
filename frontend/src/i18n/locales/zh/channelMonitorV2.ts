@@ -2,7 +2,7 @@
 export default {
   channelMonitorV2: {
     observation: {
-      loading: '正在加载渠道观测', loadFailed: '渠道观测加载失败', empty: '当前筛选范围暂无观测数据', modelDetails: '模型明细', noModels: '暂无模型数据', group: '分组', reliability: '可靠率', firstOutput: '首字延迟', cache: '缓存命中率', history: '历史状态', models: '{count} 个模型', multiplier: '用户倍率 {value}x', priceUnavailable: '倍率不可用', slow: '响应偏慢',
+      loading: '正在加载渠道观测', loadFailed: '渠道观测加载失败', empty: '当前筛选范围暂无观测数据', modelDetails: '模型明细', noModels: '暂无模型数据', requests: '请求数', errors: '渠道错误', attempts: '上游尝试', group: '分组', reliability: '可靠率', firstOutput: '首字延迟', cache: '缓存命中率', history: '历史状态', models: '{count} 个模型', multiplier: '用户倍率 {value}x', priceUnavailable: '倍率不可用', slow: '响应偏慢',
       coverage: { complete: '数据完整', partial: '部分覆盖', stale: '数据延迟', unavailable: '暂不可用' },
       layout: { cards: '卡片视图', matrix: '矩阵视图' },
       states: { healthy: '正常', warning: '可靠性下降', critical: '异常', unknown: '未知', sufficient: '样本充足', insufficient: '样本不足', no_samples: '暂无样本', partial: '部分覆盖', stale: '数据延迟', unavailable: '暂不可用', missing: '数据缺失' },
