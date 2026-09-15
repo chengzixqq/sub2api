@@ -32,7 +32,7 @@
         <span>{{ t('channelMonitorV2.observation.history') }}</span>
         <button type="button" class="inline-flex items-center gap-1 text-primary-600 dark:text-primary-400" :aria-expanded="expanded" @click="toggleExpanded">{{ t('channelMonitorV2.observation.models', { count: item.models.length }) }}<Icon name="chevronRight" size="xs" :class="expanded ? 'rotate-90' : ''" /></button>
       </div>
-      <ObservationTimeline :buckets="item.buckets" :coverage="coverage" :admin="admin" @select="$emit('bucket', item, $event)" />
+      <ObservationTimeline :buckets="item.buckets" :coverage="coverage" @select="$emit('bucket', item, $event)" />
     </div>
   </article>
 </template>
