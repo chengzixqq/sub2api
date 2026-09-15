@@ -17,19 +17,19 @@
               <span class="relative flex h-2 w-2 shrink-0">
                 <span
                   class="relative inline-flex h-2 w-2 rounded-full"
-                  :class="loading || refreshing ? 'bg-gray-400' : 'bg-green-500'"
+                  :class="loading || refreshing || observationLoading ? 'bg-gray-400' : 'bg-green-500'"
                 ></span>
               </span>
-              <span v-if="refreshing" class="inline-flex items-center gap-1 text-primary-600 dark:text-primary-300">
+              <span v-if="refreshing || observationLoading" class="inline-flex items-center gap-1 text-primary-600 dark:text-primary-300">
                 <LoadingSpinner size="sm" />
                 {{ t('channelMonitorV2.updating') }}
               </span>
-              <span v-else-if="snapshot?.coverage.data_through">
-                {{ t('channelMonitorV2.updatedTo', { time: formatTime(snapshot.coverage.data_through) }) }}
+              <span v-else-if="activeCoverage?.data_through">
+                {{ t('channelMonitorV2.updatedTo', { time: formatTime(activeCoverage.data_through) }) }}
               </span>
               <span v-else class="text-gray-400">{{ t('common.loading') }}</span>
               <span
-                v-if="snapshot && !snapshot.coverage.coverage_complete && !bootstrapActive"
+                v-if="activeCoverage && !activeCoverage.coverage_complete && !bootstrapActive"
                 class="badge badge-warning"
               >
                 {{ t('channelMonitorV2.partialCoverage') }}
@@ -144,6 +144,7 @@
           <span class="mx-0.5 hidden h-5 w-px shrink-0 bg-gray-200 dark:bg-dark-700 md:block" aria-hidden="true"></span>
 
           <Select
+            v-if="!observationMode"
             v-model="matrixGroupBy"
             :options="matrixGroupOptions"
             :placeholder="t('channelMonitorV2.groupBy.label')"
@@ -151,6 +152,7 @@
           />
 
           <div
+            v-if="!observationMode"
             class="tabs inline-flex shrink-0"
             role="group"
             :aria-label="t('channelMonitorV2.trendView.label')"
@@ -174,7 +176,7 @@
           </div>
 
           <div
-            v-if="trendView === 'pulse'"
+            v-if="!observationMode && trendView === 'pulse'"
             class="tabs inline-flex shrink-0"
             role="group"
             :aria-label="t('channelMonitorV2.healthMode.label')"
@@ -195,7 +197,7 @@
 
       <!-- Overview KPI: success · TTFT · tokens/s(optional) · cache · (+ RPM when throughput visible) -->
       <section
-        v-if="snapshot"
+        v-if="!observationMode && snapshot"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3"
         :class="showThroughput ? 'xl:grid-cols-5' : 'xl:grid-cols-4'"
         :aria-label="t('channelMonitorV2.summaryAria')"
@@ -235,7 +237,7 @@
         />
       </section>
       <section
-        v-else-if="loading"
+        v-else-if="!observationMode && loading"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3"
         :class="showThroughput ? 'xl:grid-cols-5' : 'xl:grid-cols-4'"
         aria-hidden="true"
@@ -270,7 +272,7 @@
         </div>
       </div>
 
-      <section class="card flex min-h-0 flex-col overflow-hidden !rounded-3xl !border-0 shadow-sm ring-1 ring-gray-900/5 dark:!bg-dark-800 dark:ring-dark-700">
+      <section v-if="!observationMode" class="card flex min-h-0 flex-col overflow-hidden !rounded-3xl !border-0 shadow-sm ring-1 ring-gray-900/5 dark:!bg-dark-800 dark:ring-dark-700">
         <div class="border-b border-gray-100 px-5 pt-4 dark:border-dark-700 sm:px-6">
           <nav class="tabs w-full max-w-md sm:w-auto" role="tablist" :aria-label="t('channelMonitorV2.tabs.aria')">
             <button
@@ -568,6 +570,7 @@ const observationPreference = computed(() => observationPreferenceKey(
 ))
 const observationLayout = ref<ObservationLayout>(isAdmin.value ? 'matrix' : 'cards')
 const { data: observation, loading: observationLoading, error: observationError, load: loadObservation } = useObservationOverview(filter, isAdmin, ref(false))
+const activeCoverage = computed(() => observation.value?.coverage || snapshot.value?.coverage || null)
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
 const matrix = ref<MonitorMatrixResponse | null>(null)
@@ -682,9 +685,9 @@ const activeRowsEmpty = computed(() =>
       : userRows.value.length === 0
 )
 /** First-upgrade backfill toward 90m/24h/7d/30d; banner hides when backend omits bootstrap. */
-const bootstrapActive = computed(() => Boolean(snapshot.value?.coverage?.bootstrap?.active))
+const bootstrapActive = computed(() => Boolean(activeCoverage.value?.bootstrap?.active))
 const bootstrapPercent = computed(() => {
-  const raw = snapshot.value?.coverage?.bootstrap?.progress_percent
+  const raw = activeCoverage.value?.bootstrap?.progress_percent
   if (typeof raw !== 'number' || Number.isNaN(raw)) return 0
   return Math.min(100, Math.max(0, Math.round(raw)))
 })
