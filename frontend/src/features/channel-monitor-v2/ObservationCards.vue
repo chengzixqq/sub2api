@@ -1,6 +1,11 @@
 <template>
   <section class="space-y-8">
-    <div v-if="!overview" class="card flex min-h-48 items-center justify-center !rounded-lg p-8 text-sm text-gray-500">{{ t('channelMonitorV2.observation.loading') }}</div>
+    <div v-if="!overview" class="card flex min-h-48 flex-col items-center justify-center gap-3 !rounded-lg p-8 text-sm text-gray-500">
+      <span>{{ error ? t('channelMonitorV2.observation.loadFailed') : t('channelMonitorV2.observation.loading') }}</span>
+      <button v-if="error" type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="$emit('retry')">
+        {{ t('common.retry') }}
+      </button>
+    </div>
     <template v-else>
       <div class="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
         <span>{{ t(`channelMonitorV2.observation.coverage.${overview.coverage.state}`) }}</span>
@@ -11,6 +16,9 @@
         <div v-if="layout === 'cards'" class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"><ObservationGroupCard v-for="item in section.items" :key="item.group_id" :item="item" :coverage="overview.coverage" @detail="$emit('detail', $event)" /></div>
         <div v-else class="overflow-x-auto rounded-lg border border-gray-200 dark:border-dark-700"><table class="min-w-full text-left text-sm"><thead class="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-dark-800"><tr><th class="px-4 py-3">{{ t('channelMonitorV2.observation.group') }}</th><th class="px-4 py-3">{{ t('channelMonitorV2.observation.reliability') }}</th><th class="px-4 py-3">{{ t('channelMonitorV2.observation.firstOutput') }}</th><th class="px-4 py-3">{{ t('channelMonitorV2.observation.cache') }}</th></tr></thead><tbody><tr v-for="item in section.items" :key="item.group_id" class="border-t border-gray-100 dark:border-dark-700"><td class="px-4 py-3 font-medium">{{ item.group_name }}</td><td class="px-4 py-3">{{ percent(item.metrics.reliability_rate) }}</td><td class="px-4 py-3">{{ formatMonitorMs(item.metrics.ttft.p50_ms) }}</td><td class="px-4 py-3">{{ percent(item.metrics.cache_rate) }}</td></tr></tbody></table></div>
       </section>
+      <div v-if="sections.length === 0" class="card py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+        {{ t('channelMonitorV2.observation.empty') }}
+      </div>
     </template>
   </section>
 </template>
@@ -26,8 +34,8 @@ import type { ObservationLayout } from './observationViewModel'
 import { observationSections } from './observationViewModel'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
 import ObservationGroupCard from './ObservationGroupCard.vue'
-const props = defineProps<{ overview: ObservationOverview | null; layout: ObservationLayout }>()
-defineEmits<{ toggleLayout: []; detail: [item: ObservationChannel] }>()
+const props = withDefaults(defineProps<{ overview: ObservationOverview | null; layout: ObservationLayout; loading?: boolean; error?: boolean }>(), { loading: false, error: false })
+defineEmits<{ toggleLayout: []; detail: [item: ObservationChannel]; retry: [] }>()
 const { t } = useI18n()
 const sections = computed(() => observationSections(props.overview?.items || []))
 const label = (platform: string) => GROUP_PLATFORM_OPTIONS.find(p => p.value === platform)?.label || platform

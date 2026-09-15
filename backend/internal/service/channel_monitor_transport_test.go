@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -55,4 +56,15 @@ func TestChannelMonitorTransport_SkipsAuthAndBoundsRetries(t *testing.T) {
 	require.Len(t, got, ChannelMonitorObservationMaxAttempts)
 	require.Equal(t, "channel_error", got[0].Outcome)
 	require.Equal(t, "upstream_auth", got[0].ErrorCategory)
+}
+
+func TestChannelMonitorTransportRecognizesCustomGenerationBasePath(t *testing.T) {
+	for _, path := range []string{"/proxy/messages", "/gateway/chat/completions", "/custom/responses", "/projects/p:generateContent"} {
+		u, err := url.Parse("https://fixture.invalid" + path)
+		require.NoError(t, err)
+		require.True(t, channelMonitorBusinessURL(u), path)
+	}
+	u, err := url.Parse("https://fixture.invalid/oauth/token")
+	require.NoError(t, err)
+	require.False(t, channelMonitorBusinessURL(u))
 }

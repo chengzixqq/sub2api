@@ -47,10 +47,10 @@
             class="btn btn-secondary btn-icon flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400 dark:hover:bg-dark-600"
             type="button"
             :title="t('common.refresh')"
-            :disabled="loading"
-            @click="reload(false)"
+            :disabled="loading || observationLoading"
+            @click="observationMode ? refreshObservation() : reload(false)"
           >
-            <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
+            <Icon name="refresh" size="sm" :class="loading || observationLoading ? 'animate-spin' : ''" />
           </button>
         </header>
 
@@ -248,7 +248,7 @@
       </section>
 
       <div class="relative min-h-[320px]">
-        <ObservationCards v-if="observationMode" :overview="observation" :layout="observationLayout" @toggle-layout="observationLayout = observationLayout === 'cards' ? 'matrix' : 'cards'" />
+        <ObservationCards v-if="observationMode" :overview="observation" :layout="observationLayout" :loading="observationLoading" :error="observationError" @retry="refreshObservation" @toggle-layout="observationLayout = observationLayout === 'cards' ? 'matrix' : 'cards'" />
         <MonitorTrendChart
           v-else-if="trendView === 'line'"
           :trend="snapshot?.trend || []"
@@ -473,6 +473,7 @@ import MonitorTrendChart from '@/features/channel-monitor-v2/MonitorTrendChart.v
 import RelayPulseMatrix from '@/features/channel-monitor-v2/RelayPulseMatrix.vue'
 import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue'
 import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
+import { observationPreferenceKey } from '@/features/channel-monitor-v2/observationViewModel'
 import type { ObservationLayout } from '@/features/channel-monitor-v2/observationViewModel'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
@@ -560,8 +561,13 @@ const matrixGroupBy = ref<MonitorMatrixGroupBy>(parseMatrixGroupBy(route.query.g
 const healthMode = ref<HealthMode>(parseHealthMode(route.query.health_mode))
 const trendView = ref<TrendView>(parseTrendView(route.query.trend_view))
 const observationMode = ref(true)
+const observationPreference = computed(() => observationPreferenceKey(
+  authStore.user?.id,
+  authStore.user?.role || 'user',
+  authStore.workspace?.id,
+))
 const observationLayout = ref<ObservationLayout>(isAdmin.value ? 'matrix' : 'cards')
-const { data: observation, load: loadObservation } = useObservationOverview(filter, isAdmin, ref(false))
+const { data: observation, loading: observationLoading, error: observationError, load: loadObservation } = useObservationOverview(filter, isAdmin, ref(false))
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
 const matrix = ref<MonitorMatrixResponse | null>(null)
@@ -575,6 +581,29 @@ const expandedErrors = ref(new Set<string>())
 let controller: AbortController | null = null
 let sequence = 0
 let autoRefreshTimer: number | null = null
+let observationRefreshTimer: number | null = null
+let observationPreferenceReady = false
+
+function restoreObservationLayout(key: string) {
+  const fallback: ObservationLayout = isAdmin.value ? 'matrix' : 'cards'
+  try {
+    const value = localStorage.getItem(`${key}:layout`)
+    observationLayout.value = value === 'cards' || value === 'matrix' ? value : fallback
+  } catch {
+    observationLayout.value = fallback
+  }
+  observationPreferenceReady = !key.includes(':anonymous:')
+}
+
+watch(observationPreference, restoreObservationLayout, { immediate: true })
+watch(observationLayout, (value) => {
+  if (!observationPreferenceReady) return
+  try {
+    localStorage.setItem(`${observationPreference.value}:layout`, value)
+  } catch {
+    // Local preferences are optional; keep the current session choice.
+  }
+})
 
 const hasDimensionFilter = computed(
   () => filter.value.platforms.length + filter.value.groupIds.length + filter.value.models.length > 0
@@ -761,6 +790,26 @@ async function reload(silent = true) {
   }
 }
 
+async function refreshObservation() {
+  await loadObservation(true, true)
+  scheduleObservationRefresh()
+}
+
+function scheduleObservationRefresh() {
+  if (observationRefreshTimer) {
+    window.clearInterval(observationRefreshTimer)
+    observationRefreshTimer = null
+  }
+  if (!observationMode.value) return
+  observationRefreshTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible' && !observationLoading.value) {
+      // Advance the half-open query boundary on every poll; otherwise the
+      // composable would keep serving the first snapshot forever.
+      void loadObservation(true, true)
+    }
+  }, 60_000)
+}
+
 /** When only range changes, still refresh dimensions; dimension filters only re-load metrics. */
 async function reloadMetricsOnly(silent = true) {
   controller?.abort()
@@ -909,7 +958,14 @@ watch(
   filter,
   () => {
     syncQuery()
-    if (observationMode.value) { void loadObservation(); return }
+    if (observationMode.value) {
+      // Dimensions belong to the same immutable query as the cards. Remove
+      // them immediately on a filter change so stale options cannot be
+      // mistaken for the new range while the request is in flight.
+      dimensions.value = { platforms: [], groups: [], models: [] }
+      void loadObservation()
+      return
+    }
     const rangeChanged = filter.value.range !== lastRange
     lastRange = filter.value.range
     if (rangeChanged) void reload(true)
@@ -917,6 +973,18 @@ watch(
   },
   { deep: true }
 )
+watch(observation, () => {
+  if (observation.value) {
+    // The observation endpoint is the source of dimensions while cards are
+    // active. Keeping the legacy dimensions ref empty made all filter menus
+    // appear blank even though the overview contained authorized groups.
+    dimensions.value = observation.value.dimensions
+  }
+  if (observationMode.value) scheduleObservationRefresh()
+})
+watch(observationError, (failed) => {
+  if (failed) dimensions.value = { platforms: [], groups: [], models: [] }
+})
 watch(matrixGroupBy, () => {
   syncQuery()
   if (observationMode.value) return
@@ -934,10 +1002,11 @@ watch(showUserRanking, (allowed) => {
     activeTab.value = 'models'
   }
 })
-onMounted(() => { if (observationMode.value) void loadObservation(); else void reload(false) })
+onMounted(() => { if (observationMode.value) { void loadObservation().then(scheduleObservationRefresh) } else void reload(false) })
 onBeforeUnmount(() => {
   controller?.abort()
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer)
+  if (observationRefreshTimer) window.clearInterval(observationRefreshTimer)
 })
 </script>
 

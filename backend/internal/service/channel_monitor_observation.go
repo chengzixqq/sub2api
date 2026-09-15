@@ -213,7 +213,19 @@ func observationOutcome(s string) bool {
 	return false
 }
 func observationPhases(m map[string]int64) map[string]int64 {
-	allowed := map[string]bool{"queue": true, "user_queue": true, "account_queue": true, "selection": true, "dns": true, "connect": true, "tls": true, "upstream": true, "upstream_first_byte": true, "downstream_write": true, "total": true, "user_slot": true, "account_slot": true, "transport": true}
+	allowed := map[string]bool{
+		"queue": true, "user_queue": true, "account_queue": true, "selection": true,
+		"dns": true, "connect": true, "tls": true, "upstream": true,
+		"upstream_first_byte": true, "downstream_write": true, "total": true,
+		"user_slot": true, "account_slot": true, "transport": true,
+		// Names emitted by GatewayRequestTiming. Keeping them explicit avoids
+		// persisting arbitrary context keys while making phase diagnostics useful.
+		"user_admission": true, "user_wait": true, "account_select": true,
+		"account_wait": true, "message_queue": true, "retry_wait": true,
+		"forward": true, "http_client_acquire": true,
+		"http_connection_acquire": true, "upstream_headers": true,
+		"upstream_body": true,
+	}
 	out := map[string]int64{}
 	for k, v := range m {
 		if allowed[k] && v >= 0 && v <= 86400000 {

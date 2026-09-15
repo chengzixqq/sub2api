@@ -15,6 +15,7 @@ func TestObservationMetrics_SeparatesReliabilityFromSuccess(t *testing.T) {
 	require.Equal(t, "healthy", h.Reliability)
 	require.Equal(t, "sufficient", m.SampleState)
 	require.EqualValues(t, 135, m.RequestCount)
+	require.InDelta(t, 130.0/60.0, m.RPM, 1e-9)
 }
 
 func TestObservationMetrics_RedactionDoesNotDestroySampleState(t *testing.T) {

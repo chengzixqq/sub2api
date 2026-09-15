@@ -33,14 +33,23 @@ func (p *channelMonitorParser) result(status int) channelMonitorParseResult {
 	outcome := "unknown"
 	category := ""
 	if status >= 400 {
-		outcome = "channel_error"
-		category = "upstream_http"
+		// A gateway-generated 4xx without an observed upstream attempt is a
+		// client error; upstream 5xx remains a channel failure. The capture
+		// layer keeps the raw upstream status in attempt facts for diagnostics.
+		if status < 500 {
+			outcome = "client_error"
+			category = "client_http"
+		} else {
+			outcome = "channel_error"
+			category = "upstream_http"
+		}
 	} else if p.failed {
 		outcome = "channel_error"
 		category = "stream_error"
 	} else if p.output && (p.complete || !p.stream) {
 		outcome = "success"
 	} else if p.stream {
+		outcome = "channel_error"
 		category = "empty_stream"
 	}
 	return channelMonitorParseResult{Model: p.model, Outcome: outcome, ErrorCategory: category, OutputSeen: p.output,
@@ -114,8 +123,17 @@ func (p *channelMonitorParser) finish() {
 		if !p.stream && len(p.buffer) > 0 {
 			p.parse(p.buffer)
 		}
-		if p.stream && (len(bytes.TrimSpace(p.buffer)) > 0 || len(p.event) > 0) {
-			p.malformed = true
+		if p.stream {
+			// Servers commonly close an SSE response immediately after the final
+			// data line, without sending the optional blank line. Parse that event
+			// before classifying any residual bytes as malformed.
+			if len(p.event) > 0 {
+				p.parse(bytes.TrimSuffix(p.event, []byte{'\n'}))
+				p.event = nil
+			}
+			if len(bytes.TrimSpace(p.buffer)) > 0 {
+				p.malformed = true
+			}
 		}
 	}
 	if len(p.choices) > 0 {

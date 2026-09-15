@@ -9,7 +9,38 @@ vi.mock('@/api/channelMonitorV2', () => api)
 const snapshot = (range: string) => ({ source: 'terminal_v1', contract_version: 2, coverage: { requested_start: range }, items: [] }) as unknown as ObservationOverview
 
 describe('observation request lifetime', () => {
-  it('drops old responses, clears different ranges and sends an immutable query', async () => {
+	it('advances the snapshot boundary for refreshes', async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(new Date('2026-09-15T06:00:00.000Z'))
+		api.getObservationOverview.mockResolvedValue(snapshot('initial'))
+		const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })
+		const scope = effectScope()
+		const state = scope.run(() => useObservationOverview(filter, ref(false), ref(false)))!
+		await state.load()
+		const firstEnd = api.getObservationOverview.mock.calls.at(-1)![3].endTime
+		vi.setSystemTime(new Date('2026-09-15T06:01:00.000Z'))
+		await state.load(true)
+		const refreshedEnd = api.getObservationOverview.mock.calls.at(-1)![3].endTime
+		expect(refreshedEnd).not.toBe(firstEnd)
+		expect(refreshedEnd).toBe('2026-09-15T06:01:00.000Z')
+		scope.stop()
+		vi.useRealTimers()
+	})
+
+	it('clears a previously displayed snapshot when a refresh fails', async () => {
+		api.getObservationOverview.mockResolvedValueOnce(snapshot('initial'))
+		const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })
+		const scope = effectScope()
+		const state = scope.run(() => useObservationOverview(filter, ref(false), ref(false)))!
+		await state.load()
+		api.getObservationOverview.mockRejectedValueOnce(new Error('offline'))
+		await state.load(true, true)
+		expect(state.data.value).toBeNull()
+		expect(state.error.value).toBe(true)
+		scope.stop()
+	})
+
+	it('drops old responses, clears different ranges and sends an immutable query', async () => {
     const pending: Array<(value: ObservationOverview) => void> = []
     api.getObservationOverview.mockImplementation(() => new Promise(resolve => pending.push(resolve)))
     const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })

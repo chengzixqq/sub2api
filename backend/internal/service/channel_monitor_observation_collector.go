@@ -202,6 +202,20 @@ func (c *ChannelMonitorCollector) run() {
 			addGap(lastHeartbeat, now, "queue_loss", dropped)
 			c.session.DroppedEvents += dropped
 		}
+		c.session.HeartbeatAt = now
+		c.session.InFlight = c.inFlight.Load()
+		if ending {
+			// Stop is the end of this collector session. Requests still in flight
+			// cannot safely submit after the queue is closed, so record an explicit
+			// coverage gap and close the session instead of leaving a stale open
+			// session forever after a process restart.
+			if c.session.InFlight > 0 {
+				addGap(now, now.Add(time.Nanosecond), "shutdown_loss", c.session.InFlight)
+				c.session.DroppedEvents += c.session.InFlight
+				c.session.InFlight = 0
+			}
+			c.session.EndedAt = &now
+		}
 		if len(pendingGaps) > 0 {
 			ctx, cancel := context.WithTimeout(context.Background(), c.options.WriteTimeout)
 			err := c.repo.RecordGaps(ctx, c.session.ID, pendingGaps)
@@ -209,11 +223,6 @@ func (c *ChannelMonitorCollector) run() {
 			if err == nil {
 				pendingGaps = nil
 			}
-		}
-		c.session.HeartbeatAt = now
-		c.session.InFlight = c.inFlight.Load()
-		if ending && len(pendingGaps) == 0 && c.session.InFlight == 0 {
-			c.session.EndedAt = &now
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), c.options.WriteTimeout)
 		err := c.repo.Heartbeat(ctx, c.session)

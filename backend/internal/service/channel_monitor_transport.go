@@ -131,6 +131,13 @@ func channelMonitorBusinessURL(u *url.URL) bool {
 	if host == "" || host == "localhost" || host == "127.0.0.1" {
 		return false
 	}
-	p := strings.ToLower(u.Path)
-	return strings.HasPrefix(p, "/v1/") || strings.HasPrefix(p, "/v1beta/") || strings.HasPrefix(p, "/anthropic/")
+	p := strings.ToLower(strings.TrimRight(u.Path, "/"))
+	// Match canonical generation endpoints even when an upstream uses a
+	// custom base path (for example /proxy/messages). Keep this allowlist
+	// narrow so OAuth, quota and health calls are never recorded as attempts.
+	return strings.HasSuffix(p, "/messages") ||
+		strings.HasSuffix(p, "/chat/completions") ||
+		strings.HasSuffix(p, "/responses") ||
+		strings.HasSuffix(p, ":generatecontent") ||
+		strings.HasSuffix(p, ":streamgeneratecontent")
 }

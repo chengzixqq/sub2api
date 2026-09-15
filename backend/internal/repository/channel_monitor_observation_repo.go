@@ -373,7 +373,8 @@ func (r *channelMonitorObservationRepository) Query(ctx context.Context, filter 
 	if endFull.Before(startFull) {
 		endFull = startFull
 	}
-	args := []any{tier, startFull, endFull}
+	intervals, aggregateEnd := observationRawIntervals(filter, startFull, endFull, sourceBucket, now)
+	args := []any{tier, startFull, aggregateEnd}
 	where := observationWhere(filter, &args)
 	rows, err := tx.QueryContext(ctx, `SELECT bucket_start,platform,group_id,model,facts FROM channel_monitor_observation_aggregates WHERE bucket_seconds=$1 AND bucket_start>=$2 AND bucket_start<$3`+where, args...)
 	if err != nil {
@@ -403,21 +404,6 @@ func (r *channelMonitorObservationRepository) Query(ctx context.Context, filter 
 		return nil, err
 	}
 	// Only boundary fragments read detail; sealed middle buckets never rebuild from expired events.
-	intervals := [][2]time.Time{}
-	if filter.Start.Before(startFull) {
-		end := startFull
-		if end.After(filter.End) {
-			end = filter.End
-		}
-		intervals = append(intervals, [2]time.Time{filter.Start, end})
-	}
-	if endFull.Before(filter.End) && !endFull.Before(startFull) {
-		begin := endFull
-		if begin.Before(filter.Start) {
-			begin = filter.Start
-		}
-		intervals = append(intervals, [2]time.Time{begin, filter.End})
-	}
 	for _, interval := range intervals {
 		if !interval[1].After(interval[0]) {
 			continue
@@ -455,6 +441,66 @@ func (r *channelMonitorObservationRepository) Query(ctx context.Context, filter 
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+// observationRawIntervals returns the non-aggregate fragments for a query and
+// the exclusive aggregate upper bound. The source bucket containing `now` is
+// still mutable: late events can arrive after the rollup worker has run. Read
+// that bucket from terminal details so a fresh request cannot be omitted or
+// counted twice. Historical boundary fragments retain the half-open semantics.
+func observationRawIntervals(filter service.ChannelMonitorV2Filter, startFull, endFull time.Time, sourceBucket time.Duration, now time.Time) ([][2]time.Time, time.Time) {
+	startFull = startFull.UTC()
+	endFull = endFull.UTC()
+	filter.Start = filter.Start.UTC()
+	filter.End = filter.End.UTC()
+	sealedBefore := now.UTC().Truncate(sourceBucket)
+	aggregateEnd := endFull
+	if sealedBefore.Before(aggregateEnd) {
+		aggregateEnd = sealedBefore
+	}
+	intervals := make([][2]time.Time, 0, 3)
+	appendInterval := func(start, end time.Time) {
+		if !end.After(start) {
+			return
+		}
+		intervals = append(intervals, [2]time.Time{start, end})
+	}
+	if filter.Start.Before(startFull) {
+		end := startFull
+		if end.After(filter.End) {
+			end = filter.End
+		}
+		appendInterval(filter.Start, end)
+	}
+	if endFull.Before(filter.End) {
+		begin := endFull
+		if begin.Before(filter.Start) {
+			begin = filter.Start
+		}
+		appendInterval(begin, filter.End)
+	}
+	// Include the active source bucket (and any future tail represented by the
+	// UI's aligned end) exactly once. If the whole range is historical this is
+	// naturally outside the requested interval.
+	if sealedBefore.Before(filter.End) {
+		begin := sealedBefore
+		if begin.Before(filter.Start) {
+			begin = filter.Start
+		}
+		appendInterval(begin, filter.End)
+	}
+	sort.Slice(intervals, func(i, j int) bool { return intervals[i][0].Before(intervals[j][0]) })
+	merged := intervals[:0]
+	for _, interval := range intervals {
+		if len(merged) == 0 || interval[0].After(merged[len(merged)-1][1]) {
+			merged = append(merged, interval)
+			continue
+		}
+		if interval[1].After(merged[len(merged)-1][1]) {
+			merged[len(merged)-1][1] = interval[1]
+		}
+	}
+	return merged, aggregateEnd
 }
 
 func observationQueryTier(f service.ChannelMonitorV2Filter, now time.Time) int64 {

@@ -18,7 +18,10 @@ export function useObservationOverview(filter: Ref<MonitorFilter>, admin: Ref<bo
     const frozen = { range: filter.value.range, platforms: [...filter.value.platforms], groupIds: [...filter.value.groupIds], models: [...filter.value.models] }
     const key = JSON.stringify([frozen, admin.value, userPreview.value])
     if (key !== appliedKey) data.value = null
-    if (key !== appliedKey || advance || !endTime) endTime = new Date().toISOString()
+    // A refresh represents a new snapshot boundary. Keep the boundary stable
+    // only while the same request is being retried without refresh; otherwise
+    // polling would repeatedly ask the server for the original (stale) end.
+    if (key !== appliedKey || advance || refresh || !endTime) endTime = new Date().toISOString()
     appliedKey = key
     loading.value = true
     error.value = false
@@ -29,6 +32,9 @@ export function useObservationOverview(filter: Ref<MonitorFilter>, admin: Ref<bo
       data.value = result
     } catch {
       if (current.signal.aborted || id !== sequence) return
+      // A failed refresh must not leave the previous range looking current.
+      // The caller can retry and the UI will render the explicit error state.
+      data.value = null
       error.value = true
     } finally {
       if (id === sequence) loading.value = false

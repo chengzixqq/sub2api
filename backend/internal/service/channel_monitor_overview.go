@@ -124,7 +124,10 @@ func observationMetrics(f ChannelMonitorObservationFact, cfg ChannelMonitorObser
 	}
 	if admin {
 		if window > 0 {
-			m.RPM = float64(m.RequestCount) / window.Minutes()
+			// Throughput is completed traffic. Unknown/in-flight observations are
+			// deliberately excluded so an open request cannot inflate RPM.
+			completed := f.SuccessRequests + f.ChannelErrors + f.ClientErrors + f.CancelledRequests
+			m.RPM = float64(completed) / window.Minutes()
 			m.TPM = float64(f.InputTokens+f.OutputTokens+f.CacheReadTokens+f.CacheCreationTokens) / window.Minutes()
 		}
 		m.PhaseAvgMs = map[string]float64{}
