@@ -1,7 +1,6 @@
 # Channel Monitor V2 review
 
-Review state: `codex/channel-monitor-v2-cards` (the release commit is recorded in
-git history alongside this document).
+Review commit: `05c6085e5` on `codex/channel-monitor-v2-cards`.
 The `main` branch was not modified.
 
 ## Fixes verified in this review
@@ -56,10 +55,30 @@ The `main` branch was not modified.
 - WebSocket and asynchronous task protocols remain explicitly marked as
   unsupported coverage and need protocol-specific terminal adapters before they
   can contribute to reliability.
-- The candidate image is prepared separately from this source review; the
-  active production route remains on the prior container until the release
-  switch is verified. The ignored `output/`, deployment evidence and
-  reconciliation files remain outside the commit.
+- The production switch was verified after the candidate passed health and
+  root-path checks; the previous containers remain available for rollback.
+  The ignored `output/`, deployment evidence and reconciliation files remain
+  outside the commit.
 - The historical release archive under ignored `output/channel-monitor-v2-release`
   predates this review and must not be used as the release snapshot. Generate a
   new archive and rollback check from the final commit if packaging is needed.
+
+## Production rollout (2026-09-15)
+
+- The final image is `sub2api:custom-v0.2.4-05c6085e5`; the container is
+  `linapi-sub2api-blue-v024-05c6085e5` on `127.0.0.1:18106`.
+- Caddy was validated and reloaded with all four LinAPI reverse-proxy entries
+  pointing to 18106. The saved pre-switch configuration is kept beside the
+  release archive on the server.
+- The previous 18105 candidate, 18102 active image, and 18101 rollback image
+  remain running and healthy; none is in the active Caddy configuration.
+- Post-switch checks: candidate health `200`, public health `200`, public root
+  `200`, candidate restart count `0`, OOM `false`, and no fatal/panic lines in
+  the observed logs.
+- The public settings endpoint still reports channel monitoring enabled with
+  `channel_monitor_mode=v2`. No database migration was introduced by this UI
+  patch.
+- Elevated 502s remain concentrated in the pre-existing `/v1/chat/completions`
+  traffic pattern; the same path was already failing before the switch. This
+  is recorded as an upstream/request-quality signal, not attributed to the
+  monitor UI change.
