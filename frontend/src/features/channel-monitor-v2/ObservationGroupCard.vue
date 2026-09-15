@@ -12,6 +12,11 @@
     </div>
     <ObservationStatus class="mt-3 min-h-6" :metrics="item.metrics" :health="item.health" :coverage="coverage" />
     <ObservationMetrics class="my-5" :metrics="item.metrics" :health="item.health" :unavailable="coverage.state === 'unavailable'" />
+    <dl v-if="admin" class="mb-4 grid grid-cols-3 gap-2 border-y border-gray-100 py-3 text-xs dark:border-dark-700">
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.requests') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ item.metrics.request_count ?? 0 }}</dd></div>
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.errors') }}</dt><dd class="mt-1 font-semibold tabular-nums text-red-600 dark:text-red-400">{{ item.metrics.channel_errors ?? 0 }}</dd></div>
+      <div><dt class="text-gray-400">{{ t('channelMonitorV2.observation.attempts') }}</dt><dd class="mt-1 font-semibold tabular-nums text-gray-700 dark:text-gray-200">{{ item.metrics.attempt_count ?? 0 }}</dd></div>
+    </dl>
     <div v-if="expanded" class="mb-4 border-t border-gray-100 pt-3 dark:border-dark-700">
       <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">{{ t('channelMonitorV2.observation.modelDetails') }}</p>
       <div v-if="item.models.length" class="space-y-2">
@@ -43,7 +48,7 @@ import type { ObservationBucket, ObservationChannel, ObservationOverview } from 
 import ObservationMetrics from './ObservationMetrics.vue'
 import ObservationTimeline from './ObservationTimeline.vue'
 import ObservationStatus from './ObservationStatus.vue'
-const props = defineProps<{ item: ObservationChannel; coverage: ObservationOverview['coverage'] }>()
+const props = withDefaults(defineProps<{ item: ObservationChannel; coverage: ObservationOverview['coverage']; admin?: boolean }>(), { admin: false })
 defineEmits<{ detail: [item: ObservationChannel]; bucket: [item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t } = useI18n()
 const platform = computed(() => GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.value)

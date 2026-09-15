@@ -47,7 +47,10 @@
         </div>
       </header>
 
-      <MonitorSettingsPanel v-if="adminMonitorTab === 'v2'" />
+      <template v-if="adminMonitorTab === 'v2'">
+        <AdminObservationOverview />
+        <MonitorSettingsPanel />
+      </template>
 
       <TablePageLayout v-else>
       <template #filters>
@@ -199,6 +202,7 @@ import MonitorActionsCell from '@/components/admin/monitor/MonitorActionsCell.vu
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import MonitorSettingsPanel from '@/features/channel-monitor-v2/MonitorSettingsPanel.vue'
+import AdminObservationOverview from '@/features/channel-monitor-v2/AdminObservationOverview.vue'
 import { isChannelMonitorV1Mode } from '@/utils/featureFlags'
 
 const { t } = useI18n()
