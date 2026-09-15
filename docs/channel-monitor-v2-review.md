@@ -35,9 +35,10 @@ The `main` branch was not modified.
 
 ## Evidence
 
-- Frontend focused monitor tests: 4 files, 13 tests passed.
-- Frontend full Vitest: 292 files, 2111 tests passed.
+- Frontend focused monitor tests: 5 files, 15 tests passed.
+- Frontend full Vitest: 292 files, 2112 tests passed.
 - `go test ./...` — pass.
+- `go test -tags embed ./internal/web ./cmd/server` — pass (embedded SVG fixture).
 - Observation migration contract tests — pass.
 - `go test -race ./internal/handler ./internal/service ./internal/repository -run 'ChannelMonitor|Observation' -count=1` — pass.
 - `pnpm run typecheck` and `pnpm run lint:check` — pass.
@@ -47,7 +48,7 @@ The `main` branch was not modified.
   used mocked API responses only; setup fallback requests produced expected
   fixture console errors, and no upstream request was sent.
 
-## Remaining limits before production rollout
+## Remaining limits
 
 - PostgreSQL migration, retention cleanup, replay/idempotency and capacity
   behavior still need an isolated PostgreSQL integration run; this workstation
@@ -60,8 +61,8 @@ The `main` branch was not modified.
   The ignored `output/`, deployment evidence and reconciliation files remain
   outside the commit.
 - The historical release archive under ignored `output/channel-monitor-v2-release`
-  predates this review and must not be used as the release snapshot. Generate a
-  new archive and rollback check from the final commit if packaging is needed.
+  predates this review and was not used for the production switch. The final
+  release archive is kept outside git with the deployment evidence.
 
 ## Production rollout (2026-09-15)
 
