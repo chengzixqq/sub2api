@@ -190,6 +190,52 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_StreamErrorRedactsUpstreamURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-fable-5","stream":true,"max_tokens":200000,"messages":[{"role":"user","content":"hello"}]}`)
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef(body),
+		Model:  "claude-fable-5",
+		Stream: true,
+	}
+
+	upstreamSSE := strings.Join([]string{
+		`event: error`,
+		`data: {"type":"error","error":{"type":"invalid_request_error","message":"request failed at https://private-upstream.example/v1/messages?key=secret"}}`,
+		``,
+	}, "\n")
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(upstreamSSE)),
+		},
+	}
+
+	svc := &GatewayService{
+		cfg:              &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+
+	result, err := svc.Forward(context.Background(), c, newAnthropicAPIKeyAccountForTest(), parsed)
+	require.Error(t, err)
+	var streamErr *sseStreamErrorEventError
+	require.ErrorAs(t, err, &streamErr)
+	require.Nil(t, result)
+	require.True(t, IsResponseCommitted(c), "the upstream error event is the complete downstream failure")
+	require.False(t, c.GetBool(GatewayUpstreamDeliveredKey), "an error-only event must not be billed as delivered content")
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: error"))
+	require.NotContains(t, rec.Body.String(), "private-upstream.example")
+	require.NotContains(t, rec.Body.String(), "key=secret")
+	require.Contains(t, rec.Body.String(), "https://***.***/v1/messages")
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1188,6 +1234,31 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_NonStreamingSuc
 	require.Equal(t, 5, result.Usage.CacheCreationInputTokens)
 	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
 	require.Equal(t, upstreamJSON, rec.Body.String())
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_PreservesUpstreamFallbackResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-fable-5","max_tokens":200000,"fallbacks":"default","messages":[]}`)
+	upstreamJSON := `{"id":"msg_fallback","type":"message","model":"claude-opus-5","content":[{"type":"fallback","from":{"model":"claude-fable-5"},"to":{"model":"claude-opus-5"},"trigger":{"category":"bio"}},{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5,"iterations":[{"type":"fallback_message","model":"claude-opus-5"}]}}`
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-fallback"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamJSON)),
+	}}
+	svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: &RateLimitService{}}
+	account := newAnthropicAPIKeyAccountForTest()
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "claude-fable-5", "claude-fable-5", false, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "claude-opus-5", result.UpstreamResponseModel)
+	require.JSONEq(t, upstreamJSON, rec.Body.String())
+	require.Equal(t, "fallback", gjson.Get(rec.Body.String(), "content.0.type").String())
+	require.Equal(t, "claude-opus-5", gjson.Get(rec.Body.String(), "usage.iterations.0.model").String())
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_InvalidTokenType(t *testing.T) {

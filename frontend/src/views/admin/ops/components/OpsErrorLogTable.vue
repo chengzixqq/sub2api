@@ -4,6 +4,8 @@
       <IpGeoBatchToolbar :ips="rows.map((r) => r.client_ip)" @failed="emit('ipGeoBatchFailed')" />
 
       <DataTable
+        :column-order-key="flat ? 'admin.usage.errors' : undefined"
+        :column-order-columns="allColumns"
         :columns="columns"
         :data="rows"
         :loading="loading"
@@ -215,11 +217,18 @@ const allColumns = computed<Column[]>(() => [
 ])
 
 // 传入 visibleColumnKeys 时按其过滤(列设置);未传则全量(Ops 弹窗等使用方)
-const columns = computed<Column[]>(() =>
-  props.visibleColumnKeys
+const columns = computed<Column[]>(() => {
+  const visibleColumns = props.visibleColumnKeys
     ? allColumns.value.filter((c) => props.visibleColumnKeys!.includes(c.key))
     : allColumns.value
-)
+  if (!props.summaryFirst) return visibleColumns
+
+  return [
+    ...visibleColumns.filter((c) => c.key === 'created_at'),
+    ...visibleColumns.filter((c) => c.key === 'message'),
+    ...visibleColumns.filter((c) => c.key !== 'created_at' && c.key !== 'message'),
+  ]
+})
 
 function isUpstreamRow(log: OpsErrorLog): boolean {
   const phase = String(log.phase || '').toLowerCase()
@@ -288,6 +297,8 @@ interface Props {
   userClickable?: boolean
   /** 列设置:仅显示这些 key 的列;不传则全量 */
   visibleColumnKeys?: string[]
+  /** 运维弹窗优先展示时间和响应内容 */
+  summaryFirst?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
 }

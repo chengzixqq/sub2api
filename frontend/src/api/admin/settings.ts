@@ -11,6 +11,52 @@ import type {
   NotifyEmailEntry,
 } from "@/types";
 
+export interface ClaudeCustomizationSettings {
+  preset: "official" | "magic" | "custom";
+  fallback_policy: "strict" | "native_passthrough" | "fable_native_passthrough";
+  thinking_prefilter_enabled: boolean;
+  thinking_signature_retry_enabled: boolean;
+  thinking_tool_downgrade_retry_enabled: boolean;
+  beta_policy_mode: "official_strict" | "capability_aware" | "client_passthrough";
+  unknown_beta_action: "filter" | "pass_on_native_only" | "pass";
+  fingerprint_unification: boolean;
+  metadata_passthrough: boolean;
+  url_redaction_enabled: boolean;
+}
+
+export interface ClaudeCustomizationResponse {
+  global: ClaudeCustomizationSettings;
+  defaults?: ClaudeCustomizationSettings;
+  overrides?: Record<string, unknown>;
+  effective?: ClaudeCustomizationSettings;
+  precedence?: string[];
+}
+
+export async function getClaudeCustomization(): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.get<ClaudeCustomizationResponse>("/admin/settings/customization");
+  return data;
+}
+
+export async function updateClaudeCustomization(
+  settings: ClaudeCustomizationSettings,
+): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.put<ClaudeCustomizationResponse>(
+    "/admin/settings/customization",
+    settings,
+  );
+  return data;
+}
+
+export async function applyClaudeCustomizationPreset(
+  preset: ClaudeCustomizationSettings["preset"],
+): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.post<ClaudeCustomizationResponse>(
+    "/admin/settings/customization/apply-preset",
+    { preset },
+  );
+  return data;
+}
+
 export interface DefaultSubscriptionSetting {
   group_id: number;
   validity_days: number;
@@ -54,7 +100,17 @@ export function normalizeProbeCoalescingInteger(
 }
 
 // ── 平台限额类型 ──────────────────────────────────────────────────
-export type PlatformType = "anthropic" | "openai" | "gemini" | "antigravity" | "grok"
+export type PlatformType =
+  | "anthropic"
+  | "openai"
+  | "gemini"
+  | "antigravity"
+  | "grok"
+  | "kimi"
+  | "zhipu"
+  | "deepseek"
+  | "minimax"
+  | "opencode_go"
 export type QuotaWindowType = "daily" | "weekly" | "monthly"
 
 /** 单平台三档限额；null = 不限制，undefined = 未填（等价 null） */
@@ -67,7 +123,18 @@ export interface PlatformQuotaLimits {
 /** 全平台默认限额 map（key = PlatformType） */
 export type DefaultPlatformQuotasMap = Partial<Record<PlatformType, PlatformQuotaLimits>>
 
-const PLATFORMS: PlatformType[] = ["anthropic", "openai", "gemini", "antigravity", "grok"]
+export const PLATFORM_QUOTA_PLATFORMS: readonly PlatformType[] = [
+  "anthropic",
+  "openai",
+  "gemini",
+  "antigravity",
+  "grok",
+  "kimi",
+  "zhipu",
+  "deepseek",
+  "minimax",
+  "opencode_go",
+]
 
 export type SchedulingThresholdPlatformType =
   | "openai"
@@ -75,17 +142,21 @@ export type SchedulingThresholdPlatformType =
   | "grok"
   | "kimi"
   | "zhipu"
+  | "minimax"
+  | "opencode_go"
 
 export type AccountSchedulingThresholdsMap = Record<SchedulingThresholdPlatformType, number>
 
 // 与后端 AllowedSchedulingThresholdPlatforms 保持一致（deepseek 为余额型，
-// 走余额检测而非用量阈值）。
+// 走余额检测而非用量阈值；minimax Coding/Token Plan 与 OpenCode GO 有滚动窗口）。
 export const SCHEDULING_THRESHOLD_PLATFORMS: SchedulingThresholdPlatformType[] = [
   "openai",
   "anthropic",
   "grok",
   "kimi",
   "zhipu",
+  "minimax",
+  "opencode_go",
 ]
 
 export function normalizeAccountSchedulingThresholdsMap(
@@ -107,10 +178,10 @@ export function sanitizeAccountSchedulingThresholdsMap(
   return normalizeAccountSchedulingThresholdsMap(input)
 }
 
-/** 归一化为全 4 平台 × 3 窗口（缺失填 null），供模板非空绑定 */
+/** 归一化为全平台 × 3 窗口（缺失填 null），供模板非空绑定 */
 export function normalizePlatformQuotasMap(input?: DefaultPlatformQuotasMap | null): DefaultPlatformQuotasMap {
   const result: DefaultPlatformQuotasMap = {}
-  for (const p of PLATFORMS) {
+  for (const p of PLATFORM_QUOTA_PLATFORMS) {
     const src = input?.[p]
     result[p] = {
       daily:   typeof src?.daily === "number" ? src.daily : null,
@@ -121,11 +192,11 @@ export function normalizePlatformQuotasMap(input?: DefaultPlatformQuotasMap | nu
   return result
 }
 
-/** 提交前清洗：非有限数/负数/空字符串 → null（保留 0 = 显式禁用），返回全 4 平台嵌套 map */
+/** 提交前清洗：非有限数/负数/空字符串 → null（保留 0 = 显式禁用），返回全平台嵌套 map */
 export function sanitizePlatformQuotasMap(input?: DefaultPlatformQuotasMap | null): DefaultPlatformQuotasMap {
   const clean = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null)
   const result: DefaultPlatformQuotasMap = {}
-  for (const p of PLATFORMS) {
+  for (const p of PLATFORM_QUOTA_PLATFORMS) {
     const src = input?.[p]
     result[p] = { daily: clean(src?.daily), weekly: clean(src?.weekly), monthly: clean(src?.monthly) }
   }
@@ -761,9 +832,13 @@ export interface SystemSettings {
   probe_coalescing_window_seconds?: number;
   probe_coalescing_leader_timeout_seconds?: number;
   probe_coalescing_attempt_budget?: number;
+  channel_monitor_hide_user_ranking?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled: boolean;
+
+  // Subscription feature switch (user sidebar "My Subscriptions" entry)
+  subscription_enabled: boolean;
 
   // Model Plaza feature switches + description
   model_plaza_enabled: boolean;
@@ -1069,9 +1144,13 @@ export interface UpdateSettingsRequest {
   probe_coalescing_window_seconds?: number;
   probe_coalescing_leader_timeout_seconds?: number;
   probe_coalescing_attempt_budget?: number;
+  channel_monitor_hide_user_ranking?: boolean;
 
   // Available Channels feature switch
   available_channels_enabled?: boolean;
+
+  // Subscription feature switch
+  subscription_enabled?: boolean;
 
   // Model Plaza feature switches + description
   model_plaza_enabled?: boolean;
@@ -1478,7 +1557,7 @@ export async function updateRectifierSettings(
  * Matches backend dto.OpenAIFastPolicyRule.
  */
 export interface OpenAIFastPolicyRule {
-  service_tier: "all" | "priority" | "flex" | "ultrafast";
+  service_tier: "all" | "priority" | "flex" | "ultrafast" | "missing";
   action: "pass" | "filter" | "block" | "force_priority";
   scope: "all" | "oauth" | "apikey" | "bedrock";
   user_ids?: number[];
@@ -1632,6 +1711,9 @@ export const settingsAPI = {
   updateWebSearchEmulationConfig,
   testWebSearchEmulation,
   resetWebSearchUsage,
+  getClaudeCustomization,
+  updateClaudeCustomization,
+  applyClaudeCustomizationPreset,
 };
 
 export default settingsAPI;

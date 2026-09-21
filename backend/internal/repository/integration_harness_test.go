@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -48,6 +49,9 @@ func TestMain(m *testing.M) {
 	if err := timezone.Init("UTC"); err != nil {
 		log.Printf("failed to init timezone: %v", err)
 		os.Exit(1)
+	}
+	if dsn := strings.TrimSpace(os.Getenv("SUB2API_TEST_POSTGRES_DSN")); dsn != "" {
+		os.Exit(runLocalDatabaseTests(ctx, m, dsn))
 	}
 
 	if !dockerIsAvailable(ctx) {
@@ -132,6 +136,31 @@ func TestMain(m *testing.M) {
 	_ = integrationDB.Close()
 
 	os.Exit(code)
+}
+
+// Explicit local mode exercises PostgreSQL tests without Docker. It accepts
+// only a loopback test database; Redis tests still require the container harness.
+func runLocalDatabaseTests(ctx context.Context, m *testing.M, dsn string) int {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme != "postgres" ||
+		(u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") ||
+		!strings.HasPrefix(strings.TrimPrefix(u.Path, "/"), "sub2api_") || !strings.HasSuffix(u.Path, "_test") {
+		log.Print("SUB2API_TEST_POSTGRES_DSN must name a loopback sub2api_*_test database")
+		return 1
+	}
+	integrationDB, err = openSQLWithRetry(ctx, dsn, 30*time.Second)
+	if err != nil {
+		log.Print(err)
+		return 1
+	}
+	defer integrationDB.Close()
+	if err := ApplyMigrations(ctx, integrationDB); err != nil {
+		log.Printf("local test migrations: %v", err)
+		return 1
+	}
+	integrationEntClient = dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, integrationDB)))
+	defer integrationEntClient.Close()
+	return m.Run()
 }
 
 func dockerIsAvailable(ctx context.Context) bool {
@@ -247,6 +276,7 @@ func testEntSQLTx(t *testing.T) (*dbent.Client, *sql.Tx) {
 
 func testRedis(t *testing.T) *redisclient.Client {
 	t.Helper()
+	require.NotNil(t, integrationRedis, "Redis tests require the Docker harness; unset SUB2API_TEST_POSTGRES_DSN")
 
 	prefix := fmt.Sprintf(
 		"it:%s:%d:%d:",

@@ -6,6 +6,19 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
+// RequireStationOwnerScope protects management operations that fan out across
+// users/resources and therefore cannot be safely narrowed to one workspace.
+// The HTTP middleware always installs AdminScope for station owners and a
+// restricted scope for vendors; a missing scope is treated as a deny rather
+// than silently inheriting the legacy unrestricted behavior.
+func RequireStationOwnerScope(ctx context.Context) error {
+	scope, ok := ScopeFromContext(ctx)
+	if !ok || scope.IsVendor() {
+		return domain.ErrWorkspacePermissionDenied
+	}
+	return nil
+}
+
 // scopeContextKey 是作用域在 context 中的私有键类型，避免与其他包的键冲突。
 type scopeContextKey struct{}
 

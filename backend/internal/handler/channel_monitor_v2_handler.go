@@ -16,14 +16,26 @@ import (
 type ChannelMonitorV2Handler struct {
 	service       *service.ChannelMonitorV2Service
 	apiKeyService channelMonitorV2GroupAuthorizer
+	overview      *service.ChannelMonitorOverviewService
+	collector     *service.ChannelMonitorCollector
 }
 
 type channelMonitorV2GroupAuthorizer interface {
 	GetAvailableGroups(ctx context.Context, userID int64) ([]service.Group, error)
 }
 
-func NewChannelMonitorV2Handler(svc *service.ChannelMonitorV2Service, apiKeyService *service.APIKeyService) *ChannelMonitorV2Handler {
-	return &ChannelMonitorV2Handler{service: svc, apiKeyService: apiKeyService}
+func NewChannelMonitorV2Handler(
+	svc *service.ChannelMonitorV2Service,
+	apiKeyService *service.APIKeyService,
+	overview *service.ChannelMonitorOverviewService,
+	collector *service.ChannelMonitorCollector,
+) *ChannelMonitorV2Handler {
+	return &ChannelMonitorV2Handler{
+		service:       svc,
+		apiKeyService: apiKeyService,
+		overview:      overview,
+		collector:     collector,
+	}
 }
 
 // channelMonitorV2IsAdmin is true when the request already passed admin auth

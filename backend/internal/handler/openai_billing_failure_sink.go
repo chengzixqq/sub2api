@@ -44,6 +44,22 @@ func cloneOpenAIFailureImageSizeBreakdown(in map[string]int) map[string]int {
 	return out
 }
 
+// openAIFailureUsageFromDecision keeps the shared failure decision lossless
+// when it crosses the Claude-shaped guard boundary.  In particular,
+// ImageCacheReadTokens is a subset of CacheReadInputTokens and must survive
+// this conversion so the OpenAI image-cache price is applied exactly once.
+func openAIFailureUsageFromDecision(d service.FailureBillingDecision) service.OpenAIUsage {
+	return service.OpenAIUsage{
+		InputTokens:              d.Usage.InputTokens,
+		ImageInputTokens:         d.Usage.ImageInputTokens,
+		ImageCacheReadTokens:     d.Usage.ImageCacheReadTokens,
+		OutputTokens:             d.Usage.OutputTokens,
+		CacheReadInputTokens:     d.Usage.CacheReadInputTokens,
+		CacheCreationInputTokens: d.Usage.CacheCreationInputTokens,
+		ImageOutputTokens:        d.Usage.ImageOutputTokens,
+	}
+}
+
 // openAIFailureSink 把失败计费决策落成 OpenAI 家族的 OpenAIRecordUsageInput，
 // 复用与成功路径完全相同的 RecordUsage 计费管线，不新增第二套费用计算。
 // 它是 claudeFailureSink 的同构体，四点差异：
@@ -94,14 +110,7 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 			ImageOutputSizes:   append([]string(nil), d.ImageOutputSizes...),
 			ImageSizeSource:    d.ImageSizeSource,
 			ImageSizeBreakdown: cloneOpenAIFailureImageSizeBreakdown(d.ImageSizeBreakdown),
-			Usage: service.OpenAIUsage{
-				InputTokens:              d.Usage.InputTokens,
-				ImageInputTokens:         d.Usage.ImageInputTokens,
-				OutputTokens:             d.Usage.OutputTokens,
-				CacheReadInputTokens:     d.Usage.CacheReadInputTokens,
-				CacheCreationInputTokens: d.Usage.CacheCreationInputTokens,
-				ImageOutputTokens:        d.Usage.ImageOutputTokens,
-			},
+			Usage:              openAIFailureUsageFromDecision(d),
 		}
 		// Flush() 与本闭包本体都同步跑在请求 goroutine 内（由 defer 触发，
 		// 尚未进入下面的 worker 池闭包），此时访问 c 仍然安全。

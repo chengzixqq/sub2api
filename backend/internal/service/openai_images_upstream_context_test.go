@@ -50,6 +50,8 @@ func newOpenAIImagesAPIKeyAccount() *Account {
 	}
 }
 
+const openAIImagesTestPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
 func openAIImagesJSONResponse() *http.Response {
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -58,7 +60,7 @@ func openAIImagesJSONResponse() *http.Response {
 			"X-Request-Id": []string{"req_img_ctx"},
 		},
 		Body: io.NopCloser(strings.NewReader(
-			`{"created":1710000000,"data":[{"b64_json":"aGVsbG8="}],"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`,
+			`{"created":1710000000,"data":[{"b64_json":"` + openAIImagesTestPNGBase64 + `"}],"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}}`,
 		)),
 	}
 }

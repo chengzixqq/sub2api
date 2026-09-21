@@ -225,8 +225,9 @@ func TestGatewayServiceRecordUsage_GeminiFlashThinkingTierUsesCatalogPrice(t *te
 			require.NotNil(t, usageRepo.lastLog)
 			require.Equal(t, model, usageRepo.lastLog.Model)
 			require.InDelta(t, 0.02007585, usageRepo.lastLog.TotalCost, 1e-12)
-			require.InDelta(t, 0.0030113775, usageRepo.lastLog.ActualCost, 1e-12)
-			require.InDelta(t, 0.0030113775, userRepo.lastAmount, 1e-12)
+			expectedActual := QuantizeUsageBillingAmount(0.0030113775)
+			require.Equal(t, expectedActual, usageRepo.lastLog.ActualCost)
+			require.Equal(t, expectedActual, userRepo.lastAmount)
 		})
 	}
 }
@@ -466,7 +467,7 @@ func TestGatewayServiceRecordUsage_DeepSeekAccountStatsUsesRequestPricingAtAndUp
 		name        string
 		offPeakCost float64
 	}{
-		{"deepseek-v4-flash", 1000*2.2e-7 + 500*6.6e-7 + 1000*7e-9},
+		{"deepseek-v4-flash", 1000*1.5e-7 + 500*6e-7 + 1000*3e-9},
 		{"deepseek-v4-pro", 1000*6.6e-7 + 500*1.98e-6 + 1000*2.2e-8},
 	} {
 		for _, slot := range []struct {

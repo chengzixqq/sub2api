@@ -123,6 +123,7 @@ func NewGatewayHandler(
 // Messages handles Claude API compatible messages endpoint
 // POST /v1/messages
 func (h *GatewayHandler) Messages(c *gin.Context) {
+	defer beginGatewayRequestTiming(c)()
 	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -576,7 +577,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					zap.String("account_platform", account.Platform),
 					zap.Bool("fallback_error_response_written", wroteFallback),
 					zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
-					zap.Error(err),
+					zap.String("error", service.SanitizeUpstreamErrorMessageForContext(c, err.Error())),
 				}
 				if account.Proxy != nil {
 					forwardFailedFields = append(forwardFailedFields,
@@ -1153,7 +1154,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					zap.String("account_platform", account.Platform),
 					zap.Bool("fallback_error_response_written", wroteFallback),
 					zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
-					zap.Error(err),
+					zap.String("error", service.SanitizeUpstreamErrorMessageForContext(c, err.Error())),
 				}
 				if account.Proxy != nil {
 					forwardFailedFields = append(forwardFailedFields,
@@ -1208,8 +1209,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 }
 
-// Models handles listing available models
-// GET /v1/models
+// Models lists visible models, or retrieves the exact list entry for a model path parameter.
+// GET /v1/models and /v1/models/:model (also exposed through root aliases)
 // Returns models based on account configurations (model_mapping whitelist)
 // Falls back to default models if no whitelist is configured
 func (h *GatewayHandler) Models(c *gin.Context) {
@@ -1265,18 +1266,12 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Fallback to default models
 	if platform == service.PlatformOpenAI {
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   openai.DefaultModels,
-		})
+		writeModelsListResponse(c, openai.DefaultModels)
 		return
 	}
 
 	if platform == service.PlatformGemini {
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   geminicli.DefaultModels,
-		})
+		writeModelsListResponse(c, geminicli.DefaultModels)
 		return
 	}
 	if platform == service.PlatformGrok {
@@ -1284,10 +1279,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   claude.DefaultModels,
-	})
+	writeModelsListResponse(c, claude.DefaultModels)
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1370,12 +1362,12 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
 	schedulablePlatforms := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
-	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
+	for _, platform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo} {
 		platformModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 		if len(platformModels) == 0 {
 			// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
 			// default 分支是 Claude 列表），composite 下只暴露账号映射键。
-			if _, ok := schedulablePlatforms[platform]; ok && !service.IsCNProvider(platform) {
+			if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) {
 				platformModels = defaultModelIDsForPlatform(platform)
 			}
 		}
@@ -1412,10 +1404,7 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 			CreatedAt:   "2024-01-01T00:00:00Z",
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   models,
-	})
+	writeModelsListResponse(c, models)
 }
 
 func writeAllowlistedModelsList(c *gin.Context, platform string, modelIDs []string) {
@@ -1474,10 +1463,7 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 		models = append(models, item)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   models,
-	})
+	writeModelsListResponse(c, models)
 }
 
 func grokModelSupportsConfigurableReasoning(modelID string) bool {
@@ -1510,10 +1496,7 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 			DisplayName: modelID,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   models,
-	})
+	writeModelsListResponse(c, models)
 }
 
 // modelListingSource 汇总模型列表过滤的候选来源：账号映射键（availableModels）
@@ -1532,7 +1515,9 @@ func modelListingSource(platform string, availableModels, fallbackModels []strin
 func defaultCodexModelIDsForPlatform(platform string) []string {
 	switch platform {
 	case service.PlatformDeepseek:
-		return []string{"deepseek-v4-pro", "deepseek-v4-flash"}
+		return []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"}
+	case service.PlatformMiniMax:
+		return []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"}
 	default:
 		return defaultModelIDsForPlatform(platform)
 	}
@@ -1559,10 +1544,12 @@ func defaultModelIDsForPlatform(platform string) []string {
 		return claude.DefaultModelIDs()
 	case service.PlatformGrok:
 		return xai.DefaultModelIDs()
+	case service.PlatformOpenCodeGo:
+		return service.DefaultOpenCodeGoModelIDs()
 	case service.PlatformComposite:
 		ids := make([]string, 0)
 		seen := make(map[string]struct{})
-		for _, concretePlatform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek} {
+		for _, concretePlatform := range []string{service.PlatformAnthropic, service.PlatformGemini, service.PlatformOpenAI, service.PlatformAntigravity, service.PlatformGrok, service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax, service.PlatformOpenCodeGo} {
 			for _, id := range defaultModelIDsForPlatform(concretePlatform) {
 				if _, ok := seen[id]; ok {
 					continue
@@ -1985,7 +1972,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 			}
 
 			// 确定响应消息
-			msg := service.ExtractUpstreamErrorMessage(responseBody)
+			msg := service.SanitizeUpstreamErrorMessageForContext(c, service.ExtractUpstreamErrorMessage(responseBody))
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
@@ -2000,7 +1987,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 	}
 
 	// 记录原始上游状态码，以便 ops 错误日志捕获真实的上游错误
-	upstreamMsg := service.ExtractUpstreamErrorMessage(responseBody)
+	upstreamMsg := service.SanitizeUpstreamErrorMessageForContext(c, service.ExtractUpstreamErrorMessage(responseBody))
 	service.SetOpsUpstreamError(c, statusCode, upstreamMsg, "")
 
 	// 使用默认的错误映射
@@ -2038,6 +2025,7 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 }
 
 func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
+	message = service.SanitizeUpstreamErrorMessageForContext(c, message)
 	if streamStarted {
 		// 响应状态码已固化为 200（ping/部分数据已 flush），错误只能就地以 SSE 帧回传。
 		// 标记本次流内错误，供 ops_error_logger 补记——否则该中间件按 status>=400 采集，
@@ -2107,6 +2095,9 @@ func gatewayForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForw
 	}
 	if c.Writer.Size() == writerSizeBeforeForward {
 		return false
+	}
+	if service.IsResponseCommitted(c) {
+		return true
 	}
 
 	contentType := strings.ToLower(strings.TrimSpace(c.Writer.Header().Get("Content-Type")))
@@ -2283,7 +2274,8 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 
 	// 转发请求（不记录使用量）
 	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {
-		reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID),
+			zap.String("error", service.SanitizeUpstreamErrorMessageForContext(c, err.Error())))
 		// 错误响应已在 ForwardCountTokens 中处理
 		// 上游未服务该会话，立即释放选号时注册的会话槽（客户端可能已断开，用独立 ctx）
 		h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionHash)

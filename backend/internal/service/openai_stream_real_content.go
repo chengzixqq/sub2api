@@ -139,6 +139,10 @@ func openAIChatStreamDeltaDeliversRealContent(delta gjson.Result) bool {
 // response.completed / image_generation.completed / data[] 等全部图片承载形状，两处口径必须一致，
 // 否则会出现「标记说已投递、计费说 ImageCount=0」的自相矛盾。
 func openAIImagesStreamDataDeliversRealContent(data []byte) bool {
+	return openAIImagesStreamDataDeliversRealContentWithValidation(data, false)
+}
+
+func openAIImagesStreamDataDeliversRealContentWithValidation(data []byte, requireValidImageData bool) bool {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "[DONE]" || !gjson.Valid(trimmed) {
 		return false
@@ -163,6 +167,7 @@ func openAIImagesStreamDataDeliversRealContent(data []byte) bool {
 		return true
 	}
 	counter := newOpenAIImageOutputCounter()
+	counter.requireValidImageData = requireValidImageData
 	counter.AddSSEData(data)
 	return counter.Count() > 0
 }

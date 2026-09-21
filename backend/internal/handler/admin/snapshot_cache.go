@@ -1,125 +1,51 @@
 package admin
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"context"
 	"strings"
-	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 )
 
-type snapshotCacheEntry struct {
-	ETag      string
-	Payload   any
-	ExpiresAt time.Time
-}
+type snapshotCacheEntry = usagequery.CacheEntry
 
 type snapshotCache struct {
-	mu    sync.RWMutex
+	cache *usagequery.Cache
 	ttl   time.Duration
-	items map[string]snapshotCacheEntry
-	sf    singleflight.Group
-}
-
-type snapshotCacheLoadResult struct {
-	Entry snapshotCacheEntry
-	Hit   bool
 }
 
 func newSnapshotCache(ttl time.Duration) *snapshotCache {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &snapshotCache{
-		ttl:   ttl,
-		items: make(map[string]snapshotCacheEntry),
-	}
+	return &snapshotCache{cache: usagequery.NewCache(ttl), ttl: ttl}
 }
 
 func (c *snapshotCache) Get(key string) (snapshotCacheEntry, bool) {
-	if c == nil || key == "" {
+	if c == nil {
 		return snapshotCacheEntry{}, false
 	}
-	now := time.Now()
-
-	c.mu.RLock()
-	entry, ok := c.items[key]
-	c.mu.RUnlock()
-	if !ok {
-		return snapshotCacheEntry{}, false
-	}
-	if now.After(entry.ExpiresAt) {
-		c.mu.Lock()
-		delete(c.items, key)
-		c.mu.Unlock()
-		return snapshotCacheEntry{}, false
-	}
-	return entry, true
+	return c.cache.Get(key)
 }
-
 func (c *snapshotCache) Set(key string, payload any) snapshotCacheEntry {
 	if c == nil {
 		return snapshotCacheEntry{}
 	}
-	entry := snapshotCacheEntry{
-		ETag:      buildETagFromAny(payload),
-		Payload:   payload,
-		ExpiresAt: time.Now().Add(c.ttl),
-	}
-	if key == "" {
-		return entry
-	}
-	c.mu.Lock()
-	c.items[key] = entry
-	c.mu.Unlock()
-	return entry
+	return c.cache.Set(key, payload)
 }
-
 func (c *snapshotCache) GetOrLoad(key string, load func() (any, error)) (snapshotCacheEntry, bool, error) {
 	if load == nil {
 		return snapshotCacheEntry{}, false, nil
 	}
-	if entry, ok := c.Get(key); ok {
-		return entry, true, nil
-	}
-	if c == nil || key == "" {
-		payload, err := load()
-		if err != nil {
-			return snapshotCacheEntry{}, false, err
-		}
-		return c.Set(key, payload), false, nil
-	}
-
-	value, err, _ := c.sf.Do(key, func() (any, error) {
-		if entry, ok := c.Get(key); ok {
-			return snapshotCacheLoadResult{Entry: entry, Hit: true}, nil
-		}
-		payload, err := load()
-		if err != nil {
-			return nil, err
-		}
-		return snapshotCacheLoadResult{Entry: c.Set(key, payload), Hit: false}, nil
-	})
-	if err != nil {
-		return snapshotCacheEntry{}, false, err
-	}
-	result, ok := value.(snapshotCacheLoadResult)
-	if !ok {
-		return snapshotCacheEntry{}, false, nil
-	}
-	return result.Entry, result.Hit, nil
+	return c.GetOrLoadContext(context.Background(), key, func(context.Context) (any, error) { return load() })
 }
-
-func buildETagFromAny(payload any) string {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return ""
+func (c *snapshotCache) GetOrLoadContext(ctx context.Context, key string, load func(context.Context) (any, error)) (snapshotCacheEntry, bool, error) {
+	var cache *usagequery.Cache
+	if c != nil {
+		cache = c.cache
 	}
-	sum := sha256.Sum256(raw)
-	return "\"" + hex.EncodeToString(sum[:]) + "\""
+	return cache.GetOrLoad(ctx, key, usagequery.OptionsFrom(ctx).ForceRefresh, load)
 }
 
 func parseBoolQueryWithDefault(raw string, def bool) bool {

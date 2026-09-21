@@ -17,6 +17,7 @@
 
       <template #table>
         <DataTable
+          column-order-key="admin.affiliate-records"
           :columns="columns"
           :data="records"
           :loading="loading"

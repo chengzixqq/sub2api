@@ -104,8 +104,8 @@ function makeMonitor(overrides: Partial<ChannelMonitor> = {}): ChannelMonitor {
 
 const monitor = makeMonitor()
 
-function mountView() {
-  return mount(ChannelMonitorView, {
+async function mountView() {
+  const wrapper = mount(ChannelMonitorView, {
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
@@ -121,9 +121,13 @@ function mountView() {
         MonitorTemplateManagerDialog: true,
         MonitorRunResultDialog: true,
         MonitorPrimaryModelCell: true,
+        ObservationSettingsPanel: true,
+        MonitorProbeSettings: true,
       },
     },
   })
+  await wrapper.findAll('[role="tab"]')[1].trigger('click')
+  return wrapper
 }
 
 describe('ChannelMonitorView duplicate action', () => {
@@ -141,7 +145,7 @@ describe('ChannelMonitorView duplicate action', () => {
   })
 
   it('duplicates the selected monitor, reports success, and refreshes the list', async () => {
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     wrapper.findComponent(MonitorActionsCell).vm.$emit('duplicate', monitor)
@@ -164,7 +168,7 @@ describe('ChannelMonitorView duplicate action', () => {
         pages: 1,
       })
       .mockRejectedValueOnce(new Error('refresh failed'))
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     wrapper.findComponent(MonitorActionsCell).vm.$emit('duplicate', monitor)
@@ -179,7 +183,7 @@ describe('ChannelMonitorView duplicate action', () => {
   it('ignores repeated clicks while a duplicate request is in flight', async () => {
     let resolveDuplicate!: (value: ChannelMonitor) => void
     duplicateMonitor.mockImplementationOnce(() => new Promise(resolve => { resolveDuplicate = resolve }))
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     const actions = wrapper.findComponent(MonitorActionsCell)
@@ -198,7 +202,7 @@ describe('ChannelMonitorView duplicate action', () => {
 
   it('shows the API error when duplication fails', async () => {
     duplicateMonitor.mockRejectedValueOnce(new Error('duplicate failed'))
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     wrapper.findComponent(MonitorActionsCell).vm.$emit('duplicate', monitor)
@@ -217,7 +221,7 @@ describe('ChannelMonitorView duplicate action', () => {
       page_size: 20,
       pages: 1,
     })
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     wrapper.findComponent(MonitorActionsCell).vm.$emit('duplicate', unavailable)

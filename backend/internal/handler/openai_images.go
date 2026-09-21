@@ -276,6 +276,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			return h.gatewayService.ForwardImages(requestCtx, c, account, body, parsed, channelMapping.MappedModel)
 		}()
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
+		observeMonitorImageResult(c, result, err)
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
 		if upstreamLatencyMs > 0 && forwardDurationMs > upstreamLatencyMs {

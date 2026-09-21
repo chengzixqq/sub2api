@@ -1,92 +1,72 @@
 <template>
   <!-- 用量页"用户排行"tab 内容：无卡片外观，依赖父级统一卡片；筛选/时间范围复用页面级筛选栏 -->
   <div>
+    <UsageRegionState :error="error" @retry="load(true)" />
     <!-- Toolbar -->
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-dark-700/50 sm:px-6">
       <p class="text-xs text-gray-400 dark:text-gray-500">{{ t('admin.usage.tokenRanking.subtitle') }}</p>
       <div class="flex items-center gap-3">
+        <div class="w-36 md:hidden">
+          <Select v-model="sortBy" :options="sortOptions" :aria-label="t('usage.rankingSort')" @change="load()" />
+        </div>
         <span v-if="!loading && items.length > 0" class="text-xs text-gray-400 dark:text-gray-500">
           {{ t('admin.usage.tokenRanking.userCount', { count: items.length }) }}
         </span>
         <div class="w-28">
-          <Select v-model="limit" :options="limitOptions" @change="load" />
+          <Select v-model="limit" :options="limitOptions" @change="load()" />
         </div>
       </div>
     </div>
 
     <!-- Table -->
-    <div class="overflow-x-auto">
-      <table class="w-full min-w-max divide-y divide-gray-200 dark:divide-dark-700">
-        <thead class="bg-gray-50 dark:bg-dark-800">
-          <tr>
-            <th class="w-16 px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400 sm:px-6">#</th>
-            <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400">
-              {{ t('admin.usage.tokenRanking.columns.user') }}
-            </th>
-            <th
-              v-for="col in sortableColumns"
-              :key="col.key"
-              class="cursor-pointer select-none whitespace-nowrap px-4 py-3 text-right text-xs font-medium uppercase tracking-wider transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
-              :class="sortBy === col.key ? 'text-primary-600 dark:text-primary-400' : 'text-gray-500 dark:text-dark-400'"
-              @click="setSort(col.key)"
-            >
-              {{ t(col.label) }}
-              <span v-if="sortBy === col.key" aria-hidden="true">↓</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-200 bg-white dark:divide-dark-700 dark:bg-dark-900">
-          <tr v-if="loading">
-            <td :colspan="sortableColumns.length + 2" class="py-12 text-center">
-              <LoadingSpinner />
-            </td>
-          </tr>
-          <tr v-else-if="items.length === 0">
-            <td :colspan="sortableColumns.length + 2" class="py-12 text-center text-sm text-gray-400">
-              {{ t('admin.dashboard.noDataAvailable') }}
-            </td>
-          </tr>
-          <tr
-            v-for="(item, index) in items"
-            v-else
-            :key="item.user_id"
-            class="cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-dark-700/40"
-            :title="t('admin.usage.tokenRanking.rowHint')"
-            @click="$emit('select-user', item.user_id, item.email)"
-          >
-            <td class="px-4 py-3 sm:px-6">
-              <span
-                v-if="index < 3"
-                class="inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold"
-                :class="RANK_BADGE_CLASSES[index]"
-              >{{ index + 1 }}</span>
-              <span v-else class="inline-block w-6 text-center text-sm tabular-nums text-gray-400">{{ index + 1 }}</span>
-            </td>
-            <td class="max-w-[260px] truncate px-4 py-3 text-sm font-medium text-gray-700 dark:text-gray-200" :title="item.email">
-              {{ item.email || `User #${item.user_id}` }}
-              <span class="ml-1 font-normal text-gray-400 dark:text-gray-500">#{{ item.user_id }}</span>
-            </td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ item.requests.toLocaleString() }}</td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.input_tokens) }}</td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.output_tokens) }}</td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-500 dark:text-gray-400">{{ fmtTokens(item.cache_tokens) }}</td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-gray-900 dark:text-gray-100">{{ fmtTokens(item.total_tokens) }}</td>
-            <td class="whitespace-nowrap px-4 py-3 text-right text-sm font-medium tabular-nums text-green-600 dark:text-green-400">${{ fmtCost(item.actual_cost) }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      column-order-key="admin.usage.ranking"
+      :columns="columns"
+      :data="rankedItems"
+      :loading="loading"
+      row-key="user_id"
+      clickable-rows
+      @row-click="$emit('select-user', $event.user_id, $event.email)"
+    >
+      <template v-for="col in sortableColumns" :key="col.key" #[`header-${col.key}`]>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1 text-xs font-medium"
+          :class="sortBy === col.key ? 'text-primary-600 dark:text-primary-400' : 'text-gray-500 dark:text-dark-400'"
+          @click.stop="setSort(col.key)"
+        >
+          {{ t(col.label) }}
+          <Icon v-if="sortBy === col.key" name="arrowDown" size="sm" />
+        </button>
+      </template>
+      <template #cell-rank="{ value }">
+        <span v-if="value <= 3" class="inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold" :class="RANK_BADGE_CLASSES[value - 1]">{{ value }}</span>
+        <span v-else class="inline-block w-6 text-center text-sm tabular-nums text-gray-400">{{ value }}</span>
+      </template>
+      <template #cell-email="{ row }">
+        <span class="block max-w-[260px] truncate font-medium" :title="row.email">
+          {{ row.email || `#${row.user_id}` }}
+          <span class="ml-1 font-normal text-gray-400">#{{ row.user_id }}</span>
+        </span>
+      </template>
+      <template #cell-actual_cost="{ value }"><span class="font-medium text-green-600 dark:text-green-400">${{ fmtCost(value) }}</span></template>
+      <template #empty>{{ t('admin.dashboard.noDataAvailable') }}</template>
+    </DataTable>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getUserBreakdown, type UserBreakdownParams } from '@/api/admin/dashboard'
 import { formatCompactNumber, formatCostFixed } from '@/utils/format'
 import type { UserBreakdownItem } from '@/types'
 import Select from '@/components/common/Select.vue'
-import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+import DataTable from '@/components/common/DataTable.vue'
+import type { Column } from '@/components/common/types'
+import Icon from '@/components/icons/Icon.vue'
+import UsageRegionState from '@/components/common/UsageRegionState.vue'
+import { createUsageRequests } from '@/utils/usageQuery'
 
 const props = defineProps<{
   startDate: string
@@ -109,12 +89,8 @@ const sortableColumns: { key: SortKey; label: string }[] = [
   { key: 'actual_cost', label: 'admin.usage.tokenRanking.columns.cost' },
 ]
 
-const limitOptions = [
-  { value: 20, label: 'Top 20' },
-  { value: 50, label: 'Top 50' },
-  { value: 100, label: 'Top 100' },
-  { value: 200, label: 'Top 200' },
-]
+const limitOptions = computed(() => [20, 50, 100, 200].map(value => ({ value, label: t('usage.rankingTop', { count: value }) })))
+const sortOptions = computed(() => sortableColumns.map(column => ({ value: column.key, label: t(column.label) })))
 
 // 前三名金/银/铜徽章
 const RANK_BADGE_CLASSES = [
@@ -127,10 +103,22 @@ const items = ref<UserBreakdownItem[]>([])
 const loading = ref(false)
 const sortBy = ref<SortKey>('total_tokens')
 const limit = ref(50)
-let reqSeq = 0
+const requests = createUsageRequests()
+const error = ref(false)
 
 const fmtTokens = (v: number) => formatCompactNumber(v)
 const fmtCost = (v: number) => formatCostFixed(v, 4)
+const rankedItems = computed(() => items.value.map((item, index) => ({ ...item, rank: index + 1 })))
+const columns = computed<Column[]>(() => [
+  { key: 'rank', label: '#' },
+  { key: 'email', label: t('admin.usage.tokenRanking.columns.user') },
+  ...sortableColumns.map(column => ({
+    key: column.key,
+    label: t(column.label),
+    class: 'text-right tabular-nums',
+    formatter: column.key === 'requests' ? (value: number) => value.toLocaleString() : fmtTokens,
+  })),
+])
 
 const setSort = (key: SortKey) => {
   if (sortBy.value === key) return
@@ -138,26 +126,30 @@ const setSort = (key: SortKey) => {
   load()
 }
 
-const load = async () => {
-  const seq = ++reqSeq
+const load = async (force = false) => {
+  const request = requests.start('ranking')
   loading.value = true
+  error.value = false
+  items.value = []
   try {
     const params: UserBreakdownParams = {
       ...props.filters,
-      start_date: props.startDate,
-      end_date: props.endDate,
+      start_date: props.filters.start_time ? undefined : props.startDate,
+      end_date: props.filters.end_time ? undefined : props.endDate,
       sort_by: sortBy.value,
       limit: limit.value,
+      force_refresh: force,
     }
     if (props.model) params.model = props.model
-    const res = await getUserBreakdown(params)
-    if (seq !== reqSeq) return
+    const res = await getUserBreakdown(params, { signal: request.signal })
+    if (!request.current()) return
     items.value = res.users || []
   } catch {
-    if (seq !== reqSeq) return
+    if (!request.current()) return
+    error.value = true
     items.value = []
   } finally {
-    if (seq === reqSeq) loading.value = false
+    if (request.current()) loading.value = false
   }
 }
 
@@ -165,8 +157,9 @@ const load = async () => {
 watch(
   () => [props.startDate, props.endDate, props.model, JSON.stringify(props.filters)],
   () => load(),
-  { immediate: true }
+  { immediate: true, flush: 'sync' }
 )
+onUnmounted(() => requests.cancelAll())
 
 defineExpose({ reload: load })
 </script>

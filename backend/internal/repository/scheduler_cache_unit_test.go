@@ -110,7 +110,7 @@ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testi
 
 	wantFull, err := json.Marshal(validOne)
 	require.NoError(t, err)
-	wantMeta, err := json.Marshal(buildSchedulerMetadataAccount(validOne))
+	wantMeta, err := json.Marshal(schedulerMetadataPayload{Account: buildSchedulerMetadataAccount(validOne), Version: schedulerMetadataVersion})
 	require.NoError(t, err)
 	fullBefore, err := cache.rdb.Get(ctx, schedulerAccountKey("701")).Bytes()
 	require.NoError(t, err)
@@ -290,7 +290,7 @@ func TestMarshalSchedulerCacheAccountKeepsEncodingJSONWireFormat(t *testing.T) {
 			require.NoError(t, err)
 			wantFull, err := json.Marshal(tc.account)
 			require.NoError(t, err)
-			wantMeta, err := json.Marshal(buildSchedulerMetadataAccount(tc.account))
+			wantMeta, err := json.Marshal(schedulerMetadataPayload{Account: buildSchedulerMetadataAccount(tc.account), Version: schedulerMetadataVersion})
 			require.NoError(t, err)
 			require.Equal(t, wantFull, full)
 			require.Equal(t, wantMeta, meta)

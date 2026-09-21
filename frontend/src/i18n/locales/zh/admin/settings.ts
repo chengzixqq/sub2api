@@ -34,6 +34,9 @@ export default {
           showQuota: '向用户展示渠道用量/余额',
           showQuotaHint:
             '开启后，配额模式的渠道监控会在用户端渠道状态页展示关联账号的用量滚动窗口/余额。默认关闭；管理员始终可见。',
+          hideUserRanking: '对用户隐藏用户排行',
+          hideUserRankingHint:
+            '开启后，用户端渠道监控 V2 不再显示「用户排行」页，用户 API 也不返回排行数据。管理员仍可查看。',
         },
         availableChannels: {
           title: '可用渠道',
@@ -41,6 +44,21 @@ export default {
           configureLink: '前往 渠道管理 > 渠道定价 配置模型价格',
           enabled: '启用可用渠道',
           enabledHint: '关闭后用户端侧边栏入口隐藏，接口返回空数组。',
+        },
+        siteBillingMode: {
+          title: '站点类型',
+          description: '决定用户端提供哪些购买方式。默认「充值 & 订阅」。',
+          label: '购买方式',
+          options: {
+            rechargeAndSubscription: '充值 & 订阅',
+            rechargeOnly: '仅充值',
+            subscriptionOnly: '仅订阅',
+          },
+          hints: {
+            rechargeAndSubscription: '用户端同时提供余额充值与订阅套餐。',
+            rechargeOnly: '用户端隐藏「我的订阅」、购买页订阅套餐、顶栏订阅进度与用量页「计费类型」筛选，直接访问「我的订阅」会跳回仪表盘；管理端侧边栏同时隐藏「订阅管理」入口（页面仍可通过地址访问）。已有订阅的计费与兑换码发放的订阅不受影响。',
+            subscriptionOnly: '用户端购买页只保留订阅套餐，侧边栏入口显示为「订阅」，余额充值下单会被拒绝；兑换码、返利等余额入账不受影响。',
+          },
         },
         modelPlaza: {
           title: '模型广场',
@@ -101,8 +119,8 @@ export default {
               code: '邀请码',
               rate: '专属比例',
               actions: '操作',
-            },
-          },
+      },
+    },
           modal: {
             addTitle: '添加专属用户',
             editTitle: '编辑专属配置',
@@ -399,7 +417,7 @@ export default {
         subscriptionGroup: '订阅分组',
         subscriptionValidityDays: '有效期（天）',
         defaultPlatformQuotas: '默认平台限额（注册时分配）',
-        defaultPlatformQuotasHint: '新用户注册时自动写入平台限额记录；已有用户不受影响。留空 = 该平台该窗口不限制。',
+        defaultPlatformQuotasHint: '新用户注册时自动获得这里配置的限额；已有用户不受影响。留空 = 该平台该窗口不限制。',
         platformQuotaNotice: '月限额为 30 天滚动窗口，非自然月',
       },
       platformQuota: {
@@ -676,6 +694,7 @@ export default {
         namePlaceholder: '如：帮助中心',
         url: '页面 URL',
         urlPlaceholder: 'https://example.com/page',
+        hideOpenButton: '隐藏“新窗口打开”按钮',
         iconSvg: 'SVG 图标',
         iconSvgPlaceholder: '<svg>...</svg>',
         iconPreview: '图标预览',
@@ -757,7 +776,7 @@ export default {
         validationFieldRequired: '{field} 不能为空',
         validationEasyPayCustomMethodRequired: '每个易支付自定义方式都必须填写支付方式和上游 type',
         validationEasyPayCustomMethodTypeInvalid: '易支付自定义支付方式只能包含小写字母、数字、下划线和短横线',
-        validationEasyPayCustomMethodUpstreamTypeInvalid: '易支付上游 type 只能包含小写字母、数字、下划线和短横线',
+        validationEasyPayCustomMethodUpstreamTypeInvalid: '易支付上游 type 只能包含小写字母、数字、点号、下划线和短横线',
         validationEasyPayCustomMethodReserved: '易支付自定义支付方式不能使用内置的 alipay 或 wxpay',
         validationEasyPayCustomMethodPrefixReserved: '易支付自定义支付方式不能以 alipay 或 wxpay 开头',
         validationEasyPayCustomMethodDuplicate: '易支付自定义支付方式不能重复',
@@ -1082,7 +1101,7 @@ export default {
       },
       openaiFastPolicy: {
         title: 'OpenAI Fast/Flex 策略',
-        description: '基于请求体 service_tier 字段拦截/过滤/透传 OpenAI fast(priority)、ultrafast 与 flex 请求；仅作用于 OpenAI 网关。',
+        description: '基于请求体 service_tier 字段拦截/过滤/透传 OpenAI fast(priority)、ultrafast 与 flex 请求；仅作用于 OpenAI 网关。“全部 tier 值”仅包含显式传入的 tier。',
         empty: '尚未配置任何规则。点击下方按钮新增。',
         ruleHeader: '规则 #{index}',
         removeRule: '删除规则',
@@ -1090,6 +1109,7 @@ export default {
         saveHint: '保存时随系统设置一起提交（点击页面底部「保存」按钮）。',
         serviceTier: 'service_tier 匹配',
         tierAll: '全部 tier 值',
+        tierMissing: '省略 tier',
         tierPriority: 'priority（fast）',
         tierUltrafast: 'ultrafast',
         tierFlex: 'flex',
@@ -1371,5 +1391,29 @@ export default {
       loadFailed: '加载模板失败',
       saveFailed: '保存模板失败',
       deleteFailed: '删除模板失败'
+    },
+    customization: {
+      title: 'Claude 魔改兼容设置',
+      presetLabel: '配置预设',
+      headerDescription: '全局策略与账号级覆盖',
+      loadFailed: '设置加载失败，请重试。',
+      sections: { compatibility: '请求兼容', thinking: 'Thinking 与签名', privacy: '身份与隐私' },
+      description: '按全局策略控制 Claude 的 Fallback、Thinking、Beta 和敏感信息处理；账号级覆盖优先于全局设置。',
+      accountTitle: '账号级 Claude 覆盖',
+      accountHint: '留空表示继承全局设置；账号级配置优先于全局设置。Fallback 仍由上游账号决定。',
+      inherit: '沿用全局',
+      presets: { magic: '魔改兼容', official: '官方兼容', custom: '自定义' },
+      options: { native_passthrough: '原生/自动透传', strict: '严格官方', fable_native_passthrough: 'Fable 透传', capability_aware: '按出口能力适配', official_strict: '官方严格', client_passthrough: '客户端透传', pass_on_native_only: '仅原生出口透传', filter: '过滤未知 Beta', pass: '全部透传' },
+      fields: {
+        fallback_policy: { label: 'Fallback 策略', hint: '推荐原生/自动透传；Fallback 由已配置的上游决定，网关不自行切换模型。' },
+        beta_policy_mode: { label: 'Beta 适配策略', hint: '推荐按出口能力适配，保持请求体与 Beta 头一致。' },
+        unknown_beta_action: { label: '未知 Beta 处理', hint: '推荐仅原生出口透传，避免非兼容上游返回 400。' },
+        thinking_prefilter_enabled: { label: 'Thinking 前置整流', hint: '魔改兼容推荐关闭，保留客户端签名和历史上下文。' },
+        thinking_signature_retry_enabled: { label: '签名错误后重试', hint: '忠实透传推荐关闭；兼容修复时按需开启，匹配签名或 Thinking 结构等 400 错误后改写并重试。' },
+        thinking_tool_downgrade_retry_enabled: { label: '工具签名降级重试', hint: '忠实透传推荐关闭；仅非自动透传路径生效，需开启签名重试，第一阶段仍遇到工具错误时降级工具结构。' },
+        fingerprint_unification: { label: '指纹统一化', hint: '开启后统一同一 OAuth 账号的 X-Stainless 请求头。' },
+        metadata_passthrough: { label: 'Metadata 透传', hint: '推荐开启，关闭后系统可能注入兼容 metadata。' },
+        url_redaction_enabled: { label: 'API Key URL 脱敏', hint: '推荐开启，仅影响下游错误、日志和诊断信息，不改变实际出站 URL。' }
+      }
     }
 }

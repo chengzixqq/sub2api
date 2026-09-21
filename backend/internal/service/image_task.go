@@ -32,16 +32,18 @@ var (
 // ImageTaskRecord is the private Redis representation of an asynchronous image
 // request. Ownership fields are intentionally omitted from the public view.
 type ImageTaskRecord struct {
-	ID          string          `json:"id"`
-	UserID      int64           `json:"user_id"`
-	APIKeyID    int64           `json:"api_key_id"`
-	Status      string          `json:"status"`
-	HTTPStatus  int             `json:"http_status,omitempty"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       json.RawMessage `json:"error,omitempty"`
-	CreatedAt   int64           `json:"created_at"`
-	CompletedAt *int64          `json:"completed_at,omitempty"`
-	ExpiresAt   int64           `json:"expires_at"`
+	ID                   string                     `json:"id"`
+	UserID               int64                      `json:"user_id"`
+	APIKeyID             int64                      `json:"api_key_id"`
+	Status               string                     `json:"status"`
+	HTTPStatus           int                        `json:"http_status,omitempty"`
+	Result               json.RawMessage            `json:"result,omitempty"`
+	Error                json.RawMessage            `json:"error,omitempty"`
+	CreatedAt            int64                      `json:"created_at"`
+	CompletedAt          *int64                     `json:"completed_at,omitempty"`
+	ExpiresAt            int64                      `json:"expires_at"`
+	Observation          *ImageTaskObservationScope `json:"observation,omitempty"`
+	ObservationStartedAt time.Time                  `json:"observation_started_at,omitempty"`
 }
 
 // ImageTask is the API-safe task representation returned to callers.
@@ -60,8 +62,9 @@ type ImageTask struct {
 }
 
 type ImageTaskOwner struct {
-	UserID   int64
-	APIKeyID int64
+	UserID      int64
+	APIKeyID    int64
+	Observation *ImageTaskObservationScope
 }
 
 type ImageTaskStore interface {
@@ -82,6 +85,7 @@ type ImageTaskService struct {
 	resolve          ImageStorageResolver
 	ttl              time.Duration
 	executionTimeout time.Duration
+	observation      imageTaskObservationState
 }
 
 func NewImageTaskService(store ImageTaskStore) *ImageTaskService {
@@ -163,6 +167,11 @@ func (s *ImageTaskService) Create(ctx context.Context, owner ImageTaskOwner) (*I
 		CreatedAt: now.Unix(),
 		ExpiresAt: now.Add(s.ttl).Unix(),
 	}
+	if owner.Observation != nil {
+		scope := *owner.Observation
+		task.Observation = &scope
+		task.ObservationStartedAt = now
+	}
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
 		return nil, ErrImageTaskUnavailable.WithCause(err)
 	}
@@ -214,12 +223,17 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	if s == nil || s.store == nil {
 		return ErrImageTaskUnavailable
 	}
+	unlock := s.lockTerminal(id)
+	defer unlock()
 	task, err := s.store.Get(ctx, id)
 	if err != nil {
 		if errors.Is(err, ErrImageTaskNotFound) {
 			return ErrImageTaskNotFound
 		}
 		return ErrImageTaskUnavailable.WithCause(err)
+	}
+	if task.Status != ImageTaskStatusProcessing {
+		return nil
 	}
 	now := time.Now().UTC()
 	completedAt := now.Unix()
@@ -232,6 +246,7 @@ func (s *ImageTaskService) finish(ctx context.Context, id, status string, status
 	if err := s.store.Save(ctx, task, s.ttl); err != nil {
 		return ErrImageTaskUnavailable.WithCause(err)
 	}
+	s.observeTerminal(ctx, task, now)
 	return nil
 }
 

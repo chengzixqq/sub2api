@@ -571,6 +571,29 @@ func TestBuildUsageCleanupWhereRequestTypeLegacyFallback(t *testing.T) {
 	require.Equal(t, []any{start, end, requestType}, args)
 }
 
+func TestBuildUsageCleanupWhereExclusiveMinuteAndFilters(t *testing.T) {
+	start := time.Date(2026, 9, 8, 12, 59, 0, 0, time.UTC)
+	end := start.Add(time.Minute)
+	compaction, mismatch, mode, model := true, false, "image", "requested-model"
+	where, args := buildUsageCleanupWhere(service.UsageCleanupFilters{
+		StartTime: start, EndTime: end, EndExclusive: true, NativeCompactionV2: &compaction,
+		BillingMode: &mode, UpstreamModelMismatch: &mismatch, Model: &model, ModelFilterSource: "requested",
+	})
+	require.Contains(t, where, "created_at >= $1 AND created_at < $2")
+	require.NotContains(t, where, "created_at <=")
+	require.Contains(t, where, "requested_model")
+	require.Contains(t, where, "native_compaction_v2")
+	require.Contains(t, where, "upstream_model_mismatch")
+	require.Contains(t, where, "image_count")
+	require.Equal(t, []any{start, end, model, compaction, mode}, args)
+	data, err := json.Marshal(service.UsageCleanupFilters{StartTime: start, EndTime: end, EndExclusive: true})
+	require.NoError(t, err)
+	var restored service.UsageCleanupFilters
+	require.NoError(t, json.Unmarshal(data, &restored))
+	require.True(t, restored.EndExclusive)
+	require.NoError(t, json.Unmarshal([]byte(`{"start_time":"2026-09-08T12:59:00Z","end_time":"2026-09-08T13:00:00Z"}`), &service.UsageCleanupFilters{}))
+}
+
 func TestBuildUsageCleanupWhereModelEmpty(t *testing.T) {
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)

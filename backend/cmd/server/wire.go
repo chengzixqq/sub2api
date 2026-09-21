@@ -121,6 +121,8 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
+	channelMonitorCollector *service.ChannelMonitorCollector,
+	channelMonitorProbe *service.ChannelMonitorProbeService,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
@@ -140,6 +142,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"ChannelMonitorProbe", func() error {
+				if channelMonitorProbe != nil {
+					channelMonitorProbe.Stop()
+				}
+				return nil
+			}},
 			{"PluginManager", func() error {
 				if pluginManager != nil {
 					pluginManager.Stop()
@@ -353,6 +361,12 @@ func provideCleanup(
 			{"ChannelMonitorV2Aggregator", func() error {
 				if channelMonitorV2Aggregator != nil {
 					channelMonitorV2Aggregator.Stop()
+				}
+				return nil
+			}},
+			{"ChannelMonitorCollector", func() error {
+				if channelMonitorCollector != nil {
+					return channelMonitorCollector.Stop(ctx)
 				}
 				return nil
 			}},

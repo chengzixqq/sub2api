@@ -134,9 +134,10 @@ func TestAdminServiceSimpleModeValidatesRequestedGroupIDsDirectly(t *testing.T) 
 	groups[1002] = &Group{ID: 1002, Platform: PlatformComposite}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: &groupRepoStubForAdmin{getByIDByID: groups}}
 
-	require.Error(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 1002}))
-	require.ErrorIs(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 2000}), ErrGroupNotFound)
-	require.NoError(t, svc.ValidateAccountGroupBindings(context.Background(), []int64{1, 1001}))
+	ctx := WithScope(context.Background(), AdminScope())
+	require.Error(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 1002}))
+	require.ErrorIs(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 2000}), ErrGroupNotFound)
+	require.NoError(t, svc.ValidateAccountGroupBindings(ctx, []int64{1, 1001}))
 }
 
 func TestAdminServiceSimpleModeRejectsDirectCompositeGroupAccess(t *testing.T) {
@@ -270,7 +271,7 @@ func TestAdminServiceSimpleModeNormalizesAllUnsupportedUpdateFieldsDirectly(t *t
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: repo}
 
-	updated, err := svc.UpdateGroup(context.Background(), 1, input)
+	updated, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, input)
 	require.NoError(t, err)
 	require.Equal(t, UpdateGroupInput{Name: "renamed", Description: &description}, *input)
 	require.Equal(t, "renamed", updated.Name)
@@ -288,7 +289,7 @@ func TestAdminServiceSimpleModeListUsesRepositoryFilteredTotal(t *testing.T) {
 		listWithFiltersResult: &pagination.PaginationResult{Total: 11, Page: 2, PageSize: 1},
 	}
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}, groupRepo: repo}
-	groups, total, err := svc.ListGroups(context.Background(), 2, 1, "", "", "", nil, "id", "asc")
+	groups, total, err := svc.ListGroups(WithScope(context.Background(), AdminScope()), 2, 1, "", "", "", nil, "id", "asc")
 	require.NoError(t, err)
 	require.Len(t, groups, 1)
 	require.EqualValues(t, 11, total)
@@ -1152,6 +1153,67 @@ func TestAdminService_UpdateGroup_ClearsReasoningPolicyForUnsupportedPlatform(t 
 	require.Empty(t, repo.updated.MaxReasoningEffort)
 	require.Equal(t, ReasoningEffortOverLimitDowngrade, repo.updated.MaxReasoningEffortOverLimit)
 	require.Empty(t, repo.updated.ReasoningEffortMappings)
+}
+
+func TestAdminService_CreateGroup_InvalidPeakRateReturnsBadRequest(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:             "subscription-group",
+		RateMultiplier:   1,
+		Platform:         PlatformOpenAI,
+		SubscriptionType: SubscriptionTypeSubscription,
+		PeakRateEnabled:  true,
+		PeakStart:        "20:00",
+		PeakEnd:          "08:30",
+	})
+
+	require.ErrorContains(t, err, "peak_end")
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "INVALID_PEAK_RATE_CONFIG", infraerrors.Reason(err))
+	require.Nil(t, repo.created)
+}
+
+func TestAdminService_UpdateGroup_PeakRateValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   UpdateGroupInput
+		wantErr bool
+	}{
+		{"cross-day window", UpdateGroupInput{PeakStart: ptrString("20:00"), PeakEnd: ptrString("08:30")}, true},
+		{"partial update invalidates window", UpdateGroupInput{PeakEnd: ptrString("08:30")}, true},
+		{"partial update keeps valid window", UpdateGroupInput{PeakEnd: ptrString("19:00")}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{getByID: &Group{
+				ID:                 1,
+				Name:               "subscription-group",
+				Platform:           PlatformOpenAI,
+				Status:             StatusActive,
+				SubscriptionType:   SubscriptionTypeSubscription,
+				PeakRateEnabled:    true,
+				PeakStart:          "14:00",
+				PeakEnd:            "18:00",
+				PeakRateMultiplier: 3,
+			}}
+			svc := &adminServiceImpl{groupRepo: repo}
+
+			_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &tt.input)
+
+			if tt.wantErr {
+				require.ErrorContains(t, err, "peak_end")
+				require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+				require.Equal(t, "INVALID_PEAK_RATE_CONFIG", infraerrors.Reason(err))
+				require.Nil(t, repo.updated)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, repo.updated)
+				require.Equal(t, "19:00", repo.updated.PeakEnd)
+			}
+		})
+	}
 }
 
 func TestAdminService_UpdateGroup_ClearsPeakRateWhenChangingToStandard(t *testing.T) {

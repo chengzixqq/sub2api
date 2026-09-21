@@ -1,10 +1,15 @@
 .PHONY: build generate test test-unit test-integration test-e2e
 
-VERSION ?= $(shell ./scripts/resolve-version.sh)
+EXACT_VERSION_TAG := $(firstword \
+	$(shell git -C .. tag --points-at HEAD --list "v[0-9]*" --sort=-version:refname) \
+	$(shell git -C .. tag --points-at HEAD --list "[0-9]*" --sort=-version:refname))
+VERSION ?= $(if $(EXACT_VERSION_TAG),$(patsubst v%,%,$(EXACT_VERSION_TAG)),$(strip $(file <cmd/server/VERSION)))
+CGO_ENABLED ?= 0
+export CGO_ENABLED
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
 build:
-	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
+	go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
 
 generate:
 	go generate ./ent

@@ -1116,6 +1116,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				SetOpsUpstreamModel(c, actualModel)
 				responseCreateAtCopy := responseCreateAt
 				acceptedTurnStartedAt.Store(&responseCreateAtCopy)
+				if hooks != nil && hooks.ObserveTurnStart != nil {
+					hooks.ObserveTurnStart(int(completedTurns.Load())+1, responseCreateAt, requestModelForThisFrame)
+				}
 				acceptedTurn = true
 			}
 			return out, blocked, policyErr
@@ -1135,10 +1138,16 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		},
 	}
 	upstreamFirstMessageSent := false
+	if hooks != nil && hooks.ObserveTurnStart != nil {
+		hooks.ObserveTurnStart(1, time.Now(), requestModel)
+	}
 	firstWriteCtx, cancelFirstWrite := context.WithTimeout(ctx, s.openAIWSWriteTimeout())
 	firstWriteErr := relayUpstreamFrameConn.WriteFrame(firstWriteCtx, coderws.MessageText, firstClientMessage)
 	cancelFirstWrite()
 	if firstWriteErr != nil {
+		if hooks != nil && hooks.ObserveMonitorAttempt != nil {
+			hooks.ObserveMonitorAttempt(1, nil, firstWriteErr)
+		}
 		return wrapOpenAIWSIngressTurnError(
 			"write_upstream",
 			fmt.Errorf("write first upstream websocket request: %w", firstWriteErr),
@@ -1241,6 +1250,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					turnResult.Usage.OutputTokens,
 					turnResult.Usage.CacheReadInputTokens,
 				)
+				if hooks != nil && hooks.ObserveMonitorAttempt != nil {
+					hooks.ObserveMonitorAttempt(turnNo, turnResult, nil)
+				}
 				if hooks != nil && hooks.AfterTurn != nil {
 					hooks.AfterTurn(turnNo, turnResult, nil)
 				}
@@ -1328,6 +1340,21 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			},
 		},
 	})
+	if hooks != nil && hooks.ObserveMonitorAttempt != nil && relayResult.IncompleteTurn != nil {
+		turn := relayResult.IncompleteTurn
+		observed := &OpenAIForwardResult{Model: turn.RequestModel, UpstreamResponseModel: turn.ResponseModel,
+			Usage: OpenAIUsage{InputTokens: turn.Usage.InputTokens, OutputTokens: turn.Usage.OutputTokens,
+				CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens, CacheReadInputTokens: turn.Usage.CacheReadInputTokens,
+				ImageOutputTokens: turn.Usage.ImageOutputTokens}, FirstTokenMs: turn.FirstTokenMs, Stream: true, OpenAIWSMode: true}
+		var observedErr error
+		if relayExit != nil {
+			observedErr = relayExit.Err
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			observedErr = cause
+		}
+		hooks.ObserveMonitorAttempt(int(completedTurns.Load())+1, observed, observedErr)
+	}
 	if cause := context.Cause(ctx); cause != nil {
 		if isOpenAIWSSessionPreempted(ctx) {
 			return errOpenAIWSSessionPreempted

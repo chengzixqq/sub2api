@@ -195,6 +195,67 @@ func TestRunCheckForModel_OpenAI_DefaultChatRequest(t *testing.T) {
 	}
 }
 
+func TestRunCheckForModel_OpenCodeGo_DefaultChatRequest(t *testing.T) {
+	h := &openAICaptureHandler{}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenCodeGo, endpoint, "opencode-key", "gpt-5.3-codex", nil)
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("OpenCode Go request should pass challenge, got status=%s message=%q", res.Status, res.Message)
+	}
+	if h.lastPath != providerOpenAIPath {
+		t.Fatalf("expected OpenCode Go Chat Completions path %q, got %q", providerOpenAIPath, h.lastPath)
+	}
+	if h.lastBody["model"] != "gpt-5.3-codex" {
+		t.Errorf("OpenCode Go body should contain model, got %v", h.lastBody["model"])
+	}
+	if h.lastHeaders.Get("Authorization") != "Bearer opencode-key" {
+		t.Errorf("expected OpenCode Go bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	}
+}
+
+func TestRunCheckForModel_OpenCodeGo_ResponsesRequest(t *testing.T) {
+	h := &openAICaptureHandler{}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenCodeGo, endpoint, "opencode-key", "gpt-5.3-codex", &CheckOptions{APIMode: MonitorAPIModeResponses})
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("OpenCode Go Responses request should pass challenge, got status=%s message=%q", res.Status, res.Message)
+	}
+	if h.lastPath != providerOpenAIResponsesPath {
+		t.Fatalf("expected OpenCode Go Responses path %q, got %q", providerOpenAIResponsesPath, h.lastPath)
+	}
+	if _, ok := h.lastBody["instructions"]; !ok {
+		t.Error("OpenCode Go Responses body should contain instructions")
+	}
+	if _, ok := h.lastBody["input"]; !ok {
+		t.Error("OpenCode Go Responses body should contain input")
+	}
+}
+
+func TestOpenCodeGoResponseBodyMergeProtectsRoutingFields(t *testing.T) {
+	body, err := buildRequestBody(
+		providerOpenAIResponsesAdapter,
+		MonitorProviderOpenCodeGo,
+		MonitorAPIModeResponses,
+		"gpt-5.3-codex",
+		"Q: 1 + 2 = ?\nA:",
+		&CheckOptions{BodyOverrideMode: MonitorBodyOverrideModeMerge, BodyOverride: map[string]any{
+			"model": "attacker-model", "instructions": "", "input": "", "stream": true,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("merge body should succeed: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode merged body: %v", err)
+	}
+	if decoded["model"] != "gpt-5.3-codex" || decoded["stream"] != false {
+		t.Fatalf("routing fields must remain protected: %#v", decoded)
+	}
+}
+
 func TestGrokMonitorConfiguration(t *testing.T) {
 	if err := validateProvider(MonitorProviderGrok); err != nil {
 		t.Fatalf("grok provider should be supported: %v", err)

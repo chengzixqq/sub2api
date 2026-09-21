@@ -3,11 +3,17 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestChannelMonitorV2Aggregator_UnifiedFallbackDoesNotDependOnLegacyMode(t *testing.T) {
+	s := NewChannelMonitorV2Aggregator(nil, nil, channelMonitorRuntimeStub{rt: ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV1}})
+	require.True(t, s.passiveAggregationAllowed(context.Background()))
+}
 
 func TestChannelMonitorV2MaxChunkForDepth(t *testing.T) {
 	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)

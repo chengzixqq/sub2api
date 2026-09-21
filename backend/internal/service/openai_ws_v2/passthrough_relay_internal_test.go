@@ -14,6 +14,25 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestEnrichResult_IncompleteTurnNeverIncludesPriorUsage(t *testing.T) {
+	started := time.Now().Add(-time.Second)
+	first := 12
+	state := &relayState{usage: Usage{InputTokens: 100, OutputTokens: 200}, turnUsage: Usage{InputTokens: 3, OutputTokens: 4}, turnOpen: true,
+		requestModel: "gpt-test", activeTurn: &relayTurnTiming{startAt: started, firstTokenMs: &first, firstResponseModel: "upstream-test"}}
+	result := RelayResult{}
+	enrichResult(&result, state, time.Minute)
+	require.Equal(t, 200, result.Usage.OutputTokens)
+	require.NotNil(t, result.IncompleteTurn)
+	require.Equal(t, 4, result.IncompleteTurn.Usage.OutputTokens)
+	require.Equal(t, 3, result.IncompleteTurn.Usage.InputTokens)
+	require.Equal(t, started, result.IncompleteTurn.StartedAt)
+	require.Equal(t, 12, *result.IncompleteTurn.FirstTokenMs)
+	state.turnOpen = false
+	idle := RelayResult{}
+	enrichResult(&idle, state, time.Minute)
+	require.Nil(t, idle.IncompleteTurn)
+}
+
 func TestRunEntry_DelegatesRelay(t *testing.T) {
 	t.Parallel()
 

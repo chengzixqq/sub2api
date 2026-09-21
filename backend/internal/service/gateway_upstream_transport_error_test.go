@@ -159,6 +159,30 @@ func TestHandleUpstreamTransportError_PersistentEvictsAccount(t *testing.T) {
 	}
 }
 
+func TestHandleUpstreamTransportError_RedactsURLFromPersistentReasonAndOps(t *testing.T) {
+	repo := &transportTempUnschedRepoStub{}
+	s := &GatewayService{accountRepo: repo}
+	c := newTransportErrorTestGin(t)
+	c.Set(redactUpstreamURLContextKey, true)
+	account := &Account{ID: 149, Name: "acc", Platform: PlatformAnthropic, Type: AccountTypeAPIKey}
+
+	_ = s.handleUpstreamTransportError(context.Background(), c, account,
+		errors.New(`Post "https://private-upstream.example/v1/messages?key=secret": dial tcp: connection refused`),
+		OpsUpstreamErrorEvent{UpstreamURL: "https://private-upstream.example/v1/messages?key=secret"})
+
+	if strings.Contains(repo.lastReason, "private-upstream.example") || strings.Contains(repo.lastReason, "key=secret") {
+		t.Fatalf("persistent reason leaked upstream URL: %q", repo.lastReason)
+	}
+	if !strings.Contains(repo.lastReason, "https://***.***/v1/messages") {
+		t.Fatalf("persistent reason missing redacted URL: %q", repo.lastReason)
+	}
+	events, _ := c.Get(OpsUpstreamErrorsKey)
+	event := events.([]*OpsUpstreamErrorEvent)[0]
+	if strings.Contains(event.Message, "private-upstream.example") || strings.Contains(event.UpstreamURL, "private-upstream.example") {
+		t.Fatalf("ops event leaked upstream URL: %+v", event)
+	}
+}
+
 // TestHandleUpstreamTransportError_ClientCanceledNoFailover pins that a
 // canceled client neither fails over nor evicts: the upstream never had a
 // chance to exhibit a fault.

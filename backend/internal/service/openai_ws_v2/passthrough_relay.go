@@ -35,6 +35,8 @@ type Usage struct {
 }
 
 type RelayResult struct {
+	// IncompleteTurn is a per-turn snapshot, never the session-cumulative Usage.
+	IncompleteTurn        *RelayTurnResult
 	RequestModel          string
 	ResponseModel         string
 	ResponseModelConflict bool
@@ -1302,6 +1304,20 @@ func enrichResult(result *RelayResult, state *relayState, duration time.Duration
 	result.RequestID = state.lastResponseID
 	result.TerminalEventType = state.terminalEventType
 	result.FirstTokenMs = state.firstTokenMs
+	state.requestModelMu.RLock()
+	turnOpen := state.turnOpen
+	state.requestModelMu.RUnlock()
+	if turnOpen {
+		turn := &RelayTurnResult{RequestModel: result.RequestModel, Usage: state.turnUsage, RequestID: openAIWSRelayActiveTurnID(state)}
+		if timing := state.activeTurn; timing != nil {
+			turn.StartedAt = timing.startAt
+			turn.FirstTokenMs = openAIWSRelayCloneIntPtr(timing.firstTokenMs)
+			turn.ResponseModel = timing.firstResponseModel
+		} else if pending := state.pendingTurnStart.Load(); pending != nil {
+			turn.StartedAt = *pending
+		}
+		result.IncompleteTurn = turn
+	}
 }
 
 // beginResponseCreate registers the billing turn before the write starts. An

@@ -94,8 +94,8 @@ function makeMonitor(overrides: Partial<ChannelMonitor> = {}): ChannelMonitor {
   }
 }
 
-function mountView() {
-  return mount(ChannelMonitorView, {
+async function mountView() {
+  const wrapper = mount(ChannelMonitorView, {
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
@@ -111,9 +111,13 @@ function mountView() {
         MonitorTemplateManagerDialog: true,
         MonitorRunResultDialog: true,
         MonitorPrimaryModelCell: true,
+        ObservationSettingsPanel: true,
+        MonitorProbeSettings: true,
       },
     },
   })
+  await wrapper.findAll('[role="tab"]')[1].trigger('click')
+  return wrapper
 }
 
 describe('ChannelMonitorView check-mode badge', () => {
@@ -134,7 +138,7 @@ describe('ChannelMonitorView check-mode badge', () => {
       page_size: 20,
       pages: 1,
     })
-    const wrapper = mountView()
+    const wrapper = await mountView()
     await flushPromises()
 
     const cell = wrapper.get('.provider-cell')

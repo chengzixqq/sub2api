@@ -112,6 +112,7 @@ import {
   DEFAULT_GROK_MODEL,
   PROVIDER_GROK,
   PROVIDER_OPENAI,
+  PROVIDER_OPENCODE_GO,
 } from '@/constants/channelMonitor'
 
 const props = defineProps<{
@@ -301,17 +302,23 @@ const bodyModeHint = computed(() => {
 })
 
 const bodyPlaceholder = computed(() => {
-  if (props.provider === PROVIDER_OPENAI && props.apiMode === API_MODE_RESPONSES) {
+  if (supportsAPIMode(props.provider) && props.apiMode === API_MODE_RESPONSES) {
     if (props.bodyOverrideMode === 'merge') {
       return '{\n  "max_output_tokens": 20\n}'
     }
-    return '{\n  "model": "gpt-4o-mini",\n  "instructions": "You are a health check endpoint. Reply briefly.",\n  "input": "Reply with exactly: ok",\n  "max_output_tokens": 20,\n  "stream": false\n}'
+    return `{
+  "model": "${placeholderModel(props.provider, API_MODE_RESPONSES)}",
+  "instructions": "You are a health check endpoint. Reply briefly.",
+  "input": "Reply with exactly: ok",
+  "max_output_tokens": 20,
+  "stream": false
+}`
   }
-  if (props.provider === PROVIDER_OPENAI || props.provider === PROVIDER_GROK) {
+  if (supportsAPIMode(props.provider) || props.provider === PROVIDER_GROK) {
     if (props.bodyOverrideMode === 'merge') {
       return '{\n  "max_tokens": 20\n}'
     }
-    const model = props.provider === PROVIDER_GROK ? DEFAULT_GROK_MODEL : 'gpt-4o-mini'
+    const model = placeholderModel(props.provider)
     return `{\n  "model": "${model}",\n  "messages": [{"role":"user","content":"Reply with exactly: ok"}],\n  "max_tokens": 20,\n  "stream": false\n}`
   }
   if (props.bodyOverrideMode === 'merge') {
@@ -319,4 +326,16 @@ const bodyPlaceholder = computed(() => {
   }
   return '{\n  "model": "claude-x",\n  "messages": [{"role":"user","content":"hi"}],\n  "max_tokens": 10\n}'
 })
+
+function supportsAPIMode(provider: Provider | undefined): boolean {
+  return provider === PROVIDER_OPENAI || provider === PROVIDER_OPENCODE_GO
+}
+
+function placeholderModel(provider: Provider | undefined, apiMode?: APIMode): string {
+  if (provider === PROVIDER_GROK) return DEFAULT_GROK_MODEL
+  if (provider === PROVIDER_OPENCODE_GO) {
+    return apiMode === API_MODE_RESPONSES ? 'gpt-5.6-luna' : 'glm-5.3'
+  }
+  return 'gpt-4o-mini'
+}
 </script>

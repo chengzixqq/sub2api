@@ -435,6 +435,7 @@ func TestSweepExpiredProxyWithoutFallbackInvalidatesOnlyExistingProbeSnapshot(t 
 	accountRepo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
 	past := time.Now().Add(-time.Hour)
 	proxy := &service.Proxy{
+		WorkspaceID:    1,
 		Name:           "expired-probe-proxy-none",
 		Protocol:       "http",
 		Host:           "127.0.0.1",
@@ -493,6 +494,7 @@ func TestSweepExpiredProxyFallbackRerouteDeletesProbeSnapshot(t *testing.T) {
 	accountRepo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
 	past := time.Now().Add(-time.Hour)
 	proxy := &service.Proxy{
+		WorkspaceID:    1,
 		Name:           "expired-probe-proxy-direct",
 		Protocol:       "http",
 		Host:           "127.0.0.1",

@@ -1,0 +1,27 @@
+# Import only into the LinAPI gateway sites, not unrelated sites.
+# Public API clients authenticate with their own API key, never ambient cookies.
+# Keep /api/v1 (console/auth/admin APIs) and frontend routes same-origin.
+@linapi_gateway_cors {
+	path /v1/* /v1beta/* /responses /responses/* /models /models/* /messages/count_tokens /alpha/search /chat/completions /embeddings /images/* /videos /videos/* /tts /stt /custom-voices /custom-voices/* /realtime /web_search /x_search /backend-api/codex/* /antigravity/models /antigravity/v1/* /antigravity/v1beta/*
+}
+header @linapi_gateway_cors {
+	Access-Control-Allow-Origin "*"
+	Access-Control-Allow-Methods "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"
+	Access-Control-Expose-Headers "ETag, Server-Timing, X-Request-Id, Request-Id, Retry-After"
+	Access-Control-Max-Age "600"
+	-Access-Control-Allow-Credentials
+	defer
+}
+@linapi_gateway_preflight {
+	method OPTIONS
+	path /v1/* /v1beta/* /responses /responses/* /models /models/* /messages/count_tokens /alpha/search /chat/completions /embeddings /images/* /videos /videos/* /tts /stt /custom-voices /custom-voices/* /realtime /web_search /x_search /backend-api/codex/* /antigravity/models /antigravity/v1/* /antigravity/v1beta/*
+	header Origin *
+	header_regexp linapi_cors_method Access-Control-Request-Method "^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$"
+}
+handle @linapi_gateway_preflight {
+	# Echo requested header names only, not Origin or any credential values.
+	# This supports OpenAI, Anthropic and Gemini SDK-specific headers.
+	header Access-Control-Allow-Headers "{http.request.header.Access-Control-Request-Headers}"
+	header +Vary "Access-Control-Request-Method, Access-Control-Request-Headers"
+	respond "" 204
+}

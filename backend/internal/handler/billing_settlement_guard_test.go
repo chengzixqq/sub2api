@@ -542,14 +542,18 @@ func TestBillingSettlementGuardPartialUsage(t *testing.T) {
 		g.ObserveAttempt(&service.Account{ID: 1})
 		g.ObserveForwardOutcome(&service.UpstreamFailoverError{StatusCode: 500}, false)
 		g.ObserveOpenAIForwardResult(&service.OpenAIForwardResult{Usage: service.OpenAIUsage{
-			ImageInputTokens:  6,
-			ImageOutputTokens: 7,
+			CacheReadInputTokens: 10,
+			ImageInputTokens:     6,
+			ImageCacheReadTokens: 4,
+			ImageOutputTokens:    7,
 		}})
 		g.Flush()
 
 		require.True(t, got.Billable)
 		assert.Equal(t, service.BillingProvenanceFailedUpstream, got.Provenance)
 		assert.Equal(t, 6, got.Usage.ImageInputTokens)
+		assert.Equal(t, 4, got.Usage.ImageCacheReadTokens)
+		assert.Equal(t, 10, got.Usage.CacheReadInputTokens)
 		assert.Equal(t, 7, got.Usage.ImageOutputTokens)
 	})
 

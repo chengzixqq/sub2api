@@ -192,6 +192,7 @@ export interface CustomMenuItem {
   icon_svg: string
   url: string
   page_slug?: string
+  hide_open_button?: boolean
   visibility: 'user' | 'admin'
   sort_order: number
 }
@@ -274,7 +275,13 @@ export interface PublicSettings {
   channel_monitor_hide_throughput?: boolean
   /** When true, user monitor shows account quota/balance snapshots (default off). */
   channel_monitor_show_quota?: boolean
+  /** When true, user monitor hides the user ranking tab and /users payload. */
+  channel_monitor_hide_user_ranking?: boolean
   available_channels_enabled: boolean
+  /** When false, the whole user-facing subscription surface is hidden. Default true. */
+  subscription_enabled: boolean
+  /** Mirrors payment config BALANCE_PAYMENT_DISABLED; true = balance top-up closed (subscription-only site). */
+  payment_balance_disabled: boolean
   model_plaza_enabled: boolean
   model_plaza_require_auth: boolean
   plugin_management_enabled: boolean
@@ -555,7 +562,7 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'composite'
+export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'composite'
 
 export type VideoModelPrices = Record<string, Record<string, number>>
 
@@ -936,7 +943,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -1529,6 +1536,15 @@ export interface UpdateAccountRequest {
   confirm_mixed_channel_risk?: boolean
 }
 
+export type GrokMediaEligibilityMode = 'auto' | 'enabled' | 'disabled'
+
+export interface GrokMediaEligibilityState {
+  account_id: number
+  mode: GrokMediaEligibilityMode
+  eligible: boolean
+  reason: string
+}
+
 export interface CheckMixedChannelRequest {
   platform: AccountPlatform
   group_ids: number[]
@@ -1799,6 +1815,10 @@ export interface AdminUsageLog extends UsageLog {
 }
 
 export interface UsageCleanupFilters {
+  end_exclusive?: boolean
+  native_compaction_v2?: boolean | null
+  upstream_model_mismatch?: boolean
+  billing_mode?: string | null
   start_time: string
   end_time: string
   user_id?: number
@@ -2149,6 +2169,8 @@ export interface UserErrorRequestDetail extends UserErrorRequest {
 }
 
 export interface UserErrorListParams {
+  start_time?: string
+  end_time?: string
   page?: number
   page_size?: number
   start_date?: string
@@ -2164,6 +2186,10 @@ export interface UserErrorListParams {
 }
 
 export interface UsageQueryParams {
+  start_time?: string
+  end_time?: string
+  force_refresh?: boolean
+  count_mode?: 'deferred' | 'exact'
   page?: number
   page_size?: number
   api_key_id?: number

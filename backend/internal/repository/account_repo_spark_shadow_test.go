@@ -15,16 +15,18 @@ func TestAccountRepoSparkShadowRoundTrip(t *testing.T) {
 	repo := newAccountRepositoryWithSQL(tx.Client(), tx, nil)
 
 	parent := &service.Account{
-		Name:     "parent",
-		Platform: service.PlatformOpenAI,
-		Type:     service.AccountTypeOAuth,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "parent",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
 	}
 	if err := repo.Create(ctx, parent); err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
 	pid := parent.ID
 	shadow := &service.Account{
+		WorkspaceID:     1,
 		Name:            "shadow",
 		Platform:        service.PlatformOpenAI,
 		Type:            service.AccountTypeOAuth,
@@ -58,10 +60,11 @@ func TestListShadowsByParent(t *testing.T) {
 
 	// Create parent1 and its spark shadow
 	parent1 := &service.Account{
-		Name:     "list-parent1",
-		Platform: service.PlatformOpenAI,
-		Type:     service.AccountTypeOAuth,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "list-parent1",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
 	}
 	if err := repo.Create(ctx, parent1); err != nil {
 		t.Fatalf("create parent1: %v", err)
@@ -69,6 +72,7 @@ func TestListShadowsByParent(t *testing.T) {
 	pid1 := parent1.ID
 
 	shadow1 := &service.Account{
+		WorkspaceID:     1,
 		Name:            "shadow1",
 		Platform:        service.PlatformOpenAI,
 		Type:            service.AccountTypeOAuth,
@@ -82,10 +86,11 @@ func TestListShadowsByParent(t *testing.T) {
 
 	// Create parent2 and its spark shadow (must NOT appear in parent1's list)
 	parent2 := &service.Account{
-		Name:     "list-parent2",
-		Platform: service.PlatformOpenAI,
-		Type:     service.AccountTypeOAuth,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "list-parent2",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
 	}
 	if err := repo.Create(ctx, parent2); err != nil {
 		t.Fatalf("create parent2: %v", err)
@@ -93,6 +98,7 @@ func TestListShadowsByParent(t *testing.T) {
 	pid2 := parent2.ID
 
 	shadow2 := &service.Account{
+		WorkspaceID:     1,
 		Name:            "shadow2",
 		Platform:        service.PlatformOpenAI,
 		Type:            service.AccountTypeOAuth,
@@ -106,10 +112,11 @@ func TestListShadowsByParent(t *testing.T) {
 
 	// Create 1 unrelated normal account (no parent, global dimension)
 	unrelated := &service.Account{
-		Name:     "unrelated",
-		Platform: service.PlatformOpenAI,
-		Type:     service.AccountTypeOAuth,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "unrelated",
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
 	}
 	if err := repo.Create(ctx, unrelated); err != nil {
 		t.Fatalf("create unrelated: %v", err)

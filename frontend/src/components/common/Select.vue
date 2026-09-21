@@ -73,6 +73,8 @@
             />
           </div>
 
+          <slot name="before-options" />
+
           <!-- Options list -->
           <div class="select-options" ref="optionsListRef">
             <div
@@ -158,12 +160,14 @@ interface Props {
   remote?: boolean
   /** 远程搜索模式下的加载态：options 为空时下拉显示 loading 文案 */
   loading?: boolean
+  optionFilter?: (option: SelectOption) => boolean
 }
 
 interface Emits {
   (e: 'update:modelValue', value: string | number | boolean | null): void
   (e: 'change', value: string | number | boolean | null, option: SelectOption | null): void
   (e: 'search', query: string): void
+  (e: 'open'): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -289,6 +293,7 @@ const hasValue = computed(
 
 const filteredOptions = computed(() => {
   let opts = props.options as any[]
+  if (props.optionFilter) opts = opts.filter(props.optionFilter)
   // 远程搜索模式不在本地过滤（选项即服务端搜索结果的一页）。
   if (isSearchable.value && searchQuery.value && !props.remote) {
     const query = searchQuery.value.toLowerCase()
@@ -370,6 +375,7 @@ const toggle = () => {
 
 watch(isOpen, (open) => {
   if (open) {
+    emit('open')
     calculateDropdownPosition()
     // Reset focused index to current selection or first item
     if (filteredOptions.value.length === 0) {
@@ -399,6 +405,10 @@ watch(isOpen, (open) => {
     window.removeEventListener('scroll', updateTriggerRect, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
   }
+})
+
+watch(filteredOptions, () => {
+  focusedIndex.value = findNextEnabledIndex(0)
 })
 
 // 远程搜索：输入防抖后交给父组件请求（!isOpen 抑制关闭重置 searchQuery 触发的空 query）。

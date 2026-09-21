@@ -50,6 +50,7 @@ vi.mock('@/components/common/BaseDialog.vue', () => ({
 
 import UserPlatformQuotaModal from '../UserPlatformQuotaModal.vue'
 import type { UserSubscription } from '@/types'
+import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 
 function makeUser(overrides: { subscriptions?: UserSubscription[] } = {}) {
   return { id: 99, email: 'u@example.com', ...overrides } as any
@@ -79,14 +80,12 @@ describe('UserPlatformQuotaModal', () => {
     expect(apiMocks.getPlatformQuotas).toHaveBeenCalledWith(99)
   })
 
-  it('空数据渲染 5 个 platform 行', async () => {
+  it('空数据渲染全部 platform 行', async () => {
     const w = await mountAndOpen()
     const html = w.html()
-    expect(html).toContain('anthropic')
-    expect(html).toContain('openai')
-    expect(html).toContain('gemini')
-    expect(html).toContain('antigravity')
-    expect(html).toContain('grok')
+    for (const { value } of CONCRETE_PLATFORM_OPTIONS) {
+      expect(html).toContain(value)
+    }
   })
 
   it('已有数据正确填充 limit input', async () => {
@@ -98,13 +97,13 @@ describe('UserPlatformQuotaModal', () => {
     })
     const w = await mountAndOpen()
     const inputs = w.findAll('input[type=number]')
-    // 5 platforms × 3 windows = 15 inputs
-    expect(inputs.length).toBe(15)
+    // 10 platforms × 3 windows = 30 inputs
+    expect(inputs.length).toBe(30)
     // 第一个 input 是 anthropic.daily = 10
     expect((inputs[0].element as HTMLInputElement).value).toBe('10')
   })
 
-  it('保存提交完整 5 platform payload', async () => {
+  it('保存提交完整 platform payload', async () => {
     apiMocks.getPlatformQuotas.mockResolvedValueOnce({
       platform_quotas: [
         { platform: 'openai', daily_limit_usd: null, weekly_limit_usd: 20, monthly_limit_usd: null,
@@ -121,7 +120,7 @@ describe('UserPlatformQuotaModal', () => {
     expect(apiMocks.updatePlatformQuotas).toHaveBeenCalledTimes(1)
     const [uid, payload] = apiMocks.updatePlatformQuotas.mock.calls[0]
     expect(uid).toBe(99)
-    expect(payload).toHaveLength(5) // 5 platforms always submitted
+    expect(payload).toHaveLength(CONCRETE_PLATFORM_OPTIONS.length)
     const openai = payload.find((p: any) => p.platform === 'openai')
     expect(openai.weekly_limit_usd).toBe(20)
   })
@@ -168,7 +167,42 @@ describe('UserPlatformQuotaModal', () => {
     confirmSpy.mockRestore()
   })
 
+  // 只有已保存限额的平台在后端有配额记录，重置按钮才可用
+  const anthropicConfigured = {
+    platform_quotas: [
+      {
+        platform: 'anthropic',
+        daily_limit_usd: 10,
+        weekly_limit_usd: null,
+        monthly_limit_usd: null,
+        daily_usage_usd: 0,
+        weekly_usage_usd: 0,
+        monthly_usage_usd: 0,
+      },
+    ],
+  }
+
+  it('未配置限额的平台重置按钮禁用并提示不可用', async () => {
+    const w = await mountAndOpen()
+    const resetBtns = w.findAll('button').filter((b) => b.text() === '↻')
+    expect(resetBtns.length).toBe(CONCRETE_PLATFORM_OPTIONS.length * 3)
+    for (const b of resetBtns) {
+      expect((b.element as HTMLButtonElement).disabled).toBe(true)
+      expect(b.attributes('title')).toBe('admin.users.platformQuota.reset.unavailable')
+    }
+  })
+
+  it('已保存限额的平台重置按钮可用，其余仍禁用', async () => {
+    apiMocks.getPlatformQuotas.mockResolvedValue(anthropicConfigured)
+    const w = await mountAndOpen()
+    const resetBtns = w.findAll('button').filter((b) => b.text() === '↻')
+    const enabled = resetBtns.filter((b) => !(b.element as HTMLButtonElement).disabled)
+    expect(enabled.length).toBe(3) // anthropic 的 daily/weekly/monthly
+    expect(enabled[0].attributes('title')).toBe('admin.users.platformQuota.reset.button')
+  })
+
   it('重置按钮 confirm 取消则不调用 API', async () => {
+    apiMocks.getPlatformQuotas.mockResolvedValue(anthropicConfigured)
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const w = await mountAndOpen()
     const resetBtns = w.findAll('button').filter((b) => b.text() === '↻')
@@ -180,6 +214,7 @@ describe('UserPlatformQuotaModal', () => {
   })
 
   it('重置按钮 confirm 确认则调用 API', async () => {
+    apiMocks.getPlatformQuotas.mockResolvedValue(anthropicConfigured)
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const w = await mountAndOpen()
     const resetBtns = w.findAll('button').filter((b) => b.text() === '↻')

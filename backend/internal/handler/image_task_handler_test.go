@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,27 @@ import (
 type asyncImageMemoryStore struct {
 	mu    sync.RWMutex
 	tasks map[string]*service.ImageTaskRecord
+}
+
+type asyncImageRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f asyncImageRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type asyncImageObservationSink chan service.ChannelMonitorEvent
+
+func (s asyncImageObservationSink) Submit(event service.ChannelMonitorEvent) bool {
+	s <- event
+	return true
+}
+
+type asyncImageLifecycleSink struct {
+	asyncImageObservationSink
+	inFlight atomic.Int64
+}
+
+func (s *asyncImageLifecycleSink) Begin() func() {
+	s.inFlight.Add(1)
+	return func() { s.inFlight.Add(-1) }
 }
 
 func (s *asyncImageMemoryStore) Save(_ context.Context, task *service.ImageTaskRecord, _ time.Duration) error {
@@ -48,10 +71,26 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &asyncImageMemoryStore{tasks: make(map[string]*service.ImageTaskRecord)}
 	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	events := make(asyncImageObservationSink, 4)
+	lifecycle := &asyncImageLifecycleSink{asyncImageObservationSink: events}
+	tasks.SetObservationSink(lifecycle)
 	release := make(chan struct{})
 	h := &AsyncImageHandler{tasks: tasks}
 	h.execute = func(_ string, c *gin.Context) {
 		<-release
+		request, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, "https://upstream.invalid/v1/images/generations", nil)
+		if err != nil {
+			panic(err)
+		}
+		client := &http.Client{Transport: asyncImageRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		})}
+		response, err := service.ObserveChannelMonitorHTTPClient(client, request, 12).Do(request)
+		if err != nil {
+			panic(err)
+		}
+		_ = response.Body.Close()
+		observeMonitorImageResult(c, &service.OpenAIForwardResult{Model: "gpt-image-1", ImageCount: 1}, nil)
 		c.JSON(http.StatusOK, gin.H{"created": 123, "data": []gin.H{{"url": "https://example.test/image.png"}}})
 	}
 
@@ -87,6 +126,8 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	require.Equal(t, service.ImageTaskStatusProcessing, accepted.Status)
 	require.Equal(t, "/v1/images/tasks/"+accepted.TaskID, accepted.PollURL)
 	require.Equal(t, accepted.PollURL, w.Header().Get("Location"))
+	require.Empty(t, events)
+	require.Eventually(t, func() bool { return lifecycle.inFlight.Load() == 1 }, time.Second, time.Millisecond)
 
 	// The detached background request must survive completion of/cancellation
 	// from the short submission request.
@@ -104,6 +145,20 @@ func TestAsyncImageHandlerSubmitAndPoll(t *testing.T) {
 	require.Equal(t, "no-store", pollWriter.Header().Get("Cache-Control"))
 	require.Empty(t, pollWriter.Header().Get("Retry-After"))
 	require.Contains(t, pollWriter.Body.String(), "https://example.test/image.png")
+	select {
+	case event := <-events:
+		require.Equal(t, int64(3), event.GroupID)
+		require.Equal(t, "gpt-image-1", event.RequestedModel)
+		require.Equal(t, "images_async", event.Protocol)
+		require.Equal(t, "success", event.Outcome)
+		require.Len(t, event.Attempts, 1)
+		require.Equal(t, "success", event.Attempts[0].Outcome)
+		require.Equal(t, int64(12), event.Attempts[0].AccountID)
+	case <-time.After(time.Second):
+		t.Fatal("terminal image observation was not submitted")
+	}
+	require.Empty(t, events)
+	require.Eventually(t, func() bool { return lifecycle.inFlight.Load() == 0 }, time.Second, time.Millisecond)
 }
 
 // When object storage is not configured the feature is fully disabled: the

@@ -600,7 +600,12 @@ type ClaudeUsage struct {
 	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
 	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
 	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
-	ImageOutputTokens        int `json:"image_output_tokens,omitempty"`
+	// ImageCacheReadTokens is an OpenAI-compatible image subset of
+	// CacheReadInputTokens.  It is carried through the shared failure-billing
+	// decision type so an OpenAI failure cannot lose the cheaper image-cache
+	// price while being bridged to OpenAIRecordUsageInput.
+	ImageCacheReadTokens int `json:"image_cache_read_tokens,omitempty"`
+	ImageOutputTokens    int `json:"image_output_tokens,omitempty"`
 }
 
 // ForwardResult 转发结果
@@ -681,6 +686,11 @@ const (
 
 type GatewayFailureReason string
 
+const (
+	GatewayFailureReasonEmptyResponse   GatewayFailureReason = "empty_response"
+	GatewayFailureReasonStreamReadError GatewayFailureReason = "stream_read_error"
+)
+
 // UpstreamFailoverError indicates an upstream or credential error that may
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
@@ -755,7 +765,13 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	case http.StatusBadRequest:
 		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
 	case http.StatusBadGateway:
-		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+		// HTTP 502 alone does not establish an empty or interrupted stream.
+		switch failoverErr.Reason {
+		case GatewayFailureReasonEmptyResponse:
+			tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
+		case GatewayFailureReasonStreamReadError:
+			tempUnscheduleStreamReadFailure(ctx, s.accountRepo, accountID, "[handler]")
+		}
 	}
 }
 
@@ -1635,8 +1651,8 @@ func (s *GatewayService) initDebugGatewayBodyFile(path string) {
 	slog.Info("gateway debug logging enabled", "path", path)
 }
 
-// debugLogGatewaySnapshot 将网关请求的完整快照（headers + body）写入独立的调试日志文件，
-// 用于对比客户端原始请求和上游转发请求。
+// debugLogGatewaySnapshot 将网关请求快照（headers + 脱敏 body）写入独立的调试日志文件，
+// 用于对比客户端原始请求和上游转发请求。字段结构会保留，但凭据值不会落盘。
 //
 // 启用方式（环境变量）：
 //
@@ -1675,17 +1691,17 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 		}
 	}
 
-	// 3. body（完整输出，格式化 JSON 便于 diff）
+	// 3. body（递归清除 token/key 等凭据值后格式化，字段仍可用于 diff）
 	fmt.Fprint(&buf, "--- body ---\n")
 	if len(body) == 0 {
 		fmt.Fprint(&buf, "  (empty)\n")
 	} else {
+		debugBody := []byte(RedactAuditBody(body, "application/json"))
 		var pretty bytes.Buffer
-		if json.Indent(&pretty, body, "  ", "  ") == nil {
+		if json.Indent(&pretty, debugBody, "  ", "  ") == nil {
 			fmt.Fprintf(&buf, "  %s\n", pretty.Bytes())
 		} else {
-			// JSON 格式化失败时原样输出
-			fmt.Fprintf(&buf, "  %s\n", body)
+			fmt.Fprintf(&buf, "  %s\n", debugBody)
 		}
 	}
 

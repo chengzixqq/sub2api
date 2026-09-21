@@ -100,3 +100,15 @@ func TestGetUserBreakdownStatsFiltersNativeCompactionV2(t *testing.T) {
 	require.Empty(t, rows)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestGetUserBreakdownStatsPreservesRequestedModelAcrossSources(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+	start := time.Date(2026, 9, 8, 12, 59, 0, 0, time.UTC)
+	end := start.Add(time.Minute)
+	expected := "AND COALESCE(NULLIF(TRIM(upstream_model), ''), model) = $3 AND COALESCE(NULLIF(TRIM(ul.requested_model), ''), ul.model) = $4"
+	mock.ExpectQuery(regexp.QuoteMeta(expected)).WithArgs(start, end, "upstream-b", "requested-a").WillReturnRows(sqlmock.NewRows([]string{"user_id", "email", "requests", "input_tokens", "output_tokens", "cache_tokens", "total_tokens", "cost", "actual_cost", "account_cost"}))
+	_, err := repo.GetUserBreakdownStats(context.Background(), start, end, usagestats.UserBreakdownDimension{Model: "upstream-b", ModelType: usagestats.ModelSourceUpstream, RequestedModel: "requested-a"}, 0)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

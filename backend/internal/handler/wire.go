@@ -51,9 +51,11 @@ func ProvideAdminHandlers(
 	userAdjustmentHandler *admin.UserAdjustmentHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
+	settingService *service.SettingService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
+	accountHandler.SetClaudeCustomizationService(settingService)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
@@ -117,6 +119,7 @@ func ProvideGatewayHandler(
 	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
+	geminiCompatService.SetSettingService(settingService)
 	h.securityAuditCoordinator = coordinator
 	return h
 }
@@ -186,6 +189,8 @@ func ProvideHandlers(
 	announcementHandler *AnnouncementHandler,
 	channelMonitorUserHandler *ChannelMonitorUserHandler,
 	channelMonitorV2Handler *ChannelMonitorV2Handler,
+	channelMonitorProbeHandler *ChannelMonitorProbeHandler,
+	channelMonitorProbeService *service.ChannelMonitorProbeService,
 	adminHandlers *AdminHandlers,
 	gatewayHandler *GatewayHandler,
 	openaiGatewayHandler *OpenAIGatewayHandler,
@@ -197,33 +202,41 @@ func ProvideHandlers(
 	availableChannelHandler *AvailableChannelHandler,
 	modelPlazaHandler *ModelPlazaHandler,
 	asyncImageHandler *AsyncImageHandler,
+	imageTaskService *service.ImageTaskService,
 	batchImageHandler *BatchImageHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 	_ *service.OpenAIQuotaAutoResetService,
 ) *Handlers {
+	channelMonitorV2Handler.overview.SetProbeService(channelMonitorProbeService)
+	channelMonitorV2Handler.overview.SetModelCatalogue(gatewayHandler.MonitorModelCatalogue)
+	channelMonitorProbeService.SetTargetValidator(gatewayHandler.validateMonitorProbeTarget)
+	openaiGatewayHandler.SetChannelMonitorCollector(channelMonitorV2Handler.collector)
+	imageTaskService.SetObservationSink(channelMonitorV2Handler.collector)
+	channelMonitorProbeService.Start()
 	return &Handlers{
-		Auth:             authHandler,
-		User:             userHandler,
-		APIKey:           apiKeyHandler,
-		Usage:            usageHandler,
-		Redeem:           redeemHandler,
-		Subscription:     subscriptionHandler,
-		Announcement:     announcementHandler,
-		ChannelMonitor:   channelMonitorUserHandler,
-		ChannelMonitorV2: channelMonitorV2Handler,
-		Admin:            adminHandlers,
-		Gateway:          gatewayHandler,
-		OpenAIGateway:    openaiGatewayHandler,
-		Setting:          settingHandler,
-		Totp:             totpHandler,
-		Passkey:          passkeyHandler,
-		Payment:          paymentHandler,
-		PaymentWebhook:   paymentWebhookHandler,
-		AvailableChannel: availableChannelHandler,
-		ModelPlaza:       modelPlazaHandler,
-		AsyncImage:       asyncImageHandler,
-		BatchImage:       batchImageHandler,
+		Auth:                authHandler,
+		User:                userHandler,
+		APIKey:              apiKeyHandler,
+		Usage:               usageHandler,
+		Redeem:              redeemHandler,
+		Subscription:        subscriptionHandler,
+		Announcement:        announcementHandler,
+		ChannelMonitor:      channelMonitorUserHandler,
+		ChannelMonitorV2:    channelMonitorV2Handler,
+		ChannelMonitorProbe: channelMonitorProbeHandler,
+		Admin:               adminHandlers,
+		Gateway:             gatewayHandler,
+		OpenAIGateway:       openaiGatewayHandler,
+		Setting:             settingHandler,
+		Totp:                totpHandler,
+		Passkey:             passkeyHandler,
+		Payment:             paymentHandler,
+		PaymentWebhook:      paymentWebhookHandler,
+		AvailableChannel:    availableChannelHandler,
+		ModelPlaza:          modelPlazaHandler,
+		AsyncImage:          asyncImageHandler,
+		BatchImage:          batchImageHandler,
 	}
 }
 
@@ -239,6 +252,7 @@ var ProviderSet = wire.NewSet(
 	NewAnnouncementHandler,
 	NewChannelMonitorUserHandler,
 	NewChannelMonitorV2Handler,
+	NewChannelMonitorProbeHandler,
 	ProvideGatewayHandler,
 	ProvideOpenAIGatewayHandler,
 	NewTotpHandler,

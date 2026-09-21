@@ -43,8 +43,19 @@ const mountRanking = (props: Record<string, unknown> = {}) =>
 
 describe('UserTokenRanking', () => {
   beforeEach(() => {
+    window.matchMedia = vi.fn().mockImplementation((media: string) => ({
+      matches: true, media, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }))
     getUserBreakdown.mockReset()
     getUserBreakdown.mockResolvedValue({ users: [item(1, 100), item(2, 50)] })
+  })
+
+  it('uses shared column ordering without changing the requested ranking metric', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.find('[data-test="column-order-toggle"]').exists()).toBe(true)
+    expect(getUserBreakdown.mock.calls.at(-1)![0].sort_by).toBe('total_tokens')
+    wrapper.unmount()
   })
 
   it('loads on mount with shared filters and emits select-user with id + email on row click', async () => {
@@ -58,7 +69,7 @@ describe('UserTokenRanking', () => {
       end_date: '2026-07-08',
       sort_by: 'total_tokens',
       limit: 50,
-    }))
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
 
     const rows = wrapper.findAll('tbody tr')
     expect(rows).toHaveLength(2)
@@ -76,6 +87,23 @@ describe('UserTokenRanking', () => {
     await flushPromises()
 
     expect(getUserBreakdown).toHaveBeenCalledTimes(2)
-    expect(getUserBreakdown).toHaveBeenLastCalledWith(expect.objectContaining({ user_id: 9 }))
+    expect(getUserBreakdown).toHaveBeenLastCalledWith(expect.objectContaining({ user_id: 9 }), expect.anything())
+  })
+
+  it('uses exact shared boundaries and ignores a late previous ranking', async () => {
+    let resolveOld!: (value: any) => void
+    getUserBreakdown.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    const first = { start_time: '2026-09-01T04:00:00Z', end_time: '2026-09-08T04:00:00Z', billing_mode: 'image' }
+    const wrapper = mountRanking({ filters: first })
+    const signal = getUserBreakdown.mock.calls[0][1].signal as AbortSignal
+    await wrapper.setProps({ filters: { ...first, end_time: '2026-09-02T04:00:00Z' } })
+    await flushPromises()
+    resolveOld({ users: [item(99, 999)] })
+    await flushPromises()
+    expect(signal.aborted).toBe(true)
+    expect(wrapper.text()).not.toContain('u99@test.com')
+    expect(getUserBreakdown.mock.calls.at(-1)![0]).toMatchObject({ billing_mode: 'image', start_date: undefined, end_date: undefined, end_time: '2026-09-02T04:00:00Z' })
+    wrapper.unmount()
+    expect(getUserBreakdown.mock.calls.at(-1)![1].signal.aborted).toBe(true)
   })
 })

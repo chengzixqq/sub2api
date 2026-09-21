@@ -1,6 +1,26 @@
 /** Channel Monitor V2 (user + admin passive monitor UI) */
 export default {
   channelMonitorV2: {
+    unified: {
+      current: 'Current status', traffic: 'Real traffic', probe: 'Probe', quota: 'Quota', accounts: 'Accounts', account: 'Account', recentEvents: 'Recent requests', successfulAttempts: 'Succeeded', failedAttempts: 'Failed',
+      legacySource: 'Historical source', preview: 'Preview unpublished data', historyInterval: '{minutes}-minute intervals',
+      refreshFailed: 'Refresh failed. The last successful snapshot is out of date.', loadFailed: 'Monitor data is temporarily unavailable.', accessDenied: 'This monitor is not available to your account.',
+      collector: { healthy: 'Collection healthy', stale: 'Collection delayed', write_failed: 'Collection write failed', disabled: 'Collection disabled', backlogged: 'Collection backlogged', unknown: 'Collection status unknown' },
+      pendingEvents: '{count} pending events',
+      sources: { traffic: 'Real traffic', probe: 'Probe result', none: 'No recent evidence' },
+      states: { healthy: 'Available', warning: 'Degraded', critical: 'Unavailable', unknown: 'Unknown', stale: 'Out of date', degraded: 'Degraded', unavailable: 'Unavailable', error: 'Failed', pending: 'Pending', ok: 'Available', exhausted: 'Exhausted', unsupported: 'Unsupported', not_configured: 'Not configured' },
+      reasons: { probe_success: 'Most recent probe succeeded', no_recent_evidence: 'No recent evidence', insufficient_samples: 'Insufficient real traffic', traffic_healthy: 'Recent real traffic is healthy', probe_failed: 'Recent probes failed', no_samples: 'No recent samples', collection_unavailable: 'Collection unavailable', traffic_expired: 'Real traffic evidence expired', recent_traffic: 'Recent real traffic', high_latency: 'High first-output latency', recent_probe: 'Recent probe result' },
+      gaps: { write_failed: 'Collection write failed', collector_stale: 'Collector heartbeat delayed', queue_overflow: 'Collection queue overflow', source_changed: 'Data source changed', collection_disabled: 'Collection disabled', legacy_log_semantics: 'Historical log source', probe_unavailable: 'Probe evidence unavailable', quota_unavailable: 'Quota evidence unavailable' },
+      settings: { title: 'Monitor policy', enabled: 'Collect real traffic', probeEnabled: 'Paid active probes', quotaEnabled: 'Quota monitoring', displayOn: 'User display: enabled', displayOff: 'User display: disabled', mode: 'Publication', shadow: 'Shadow', live: 'Live', liveGroups: 'Published groups', allGroups: 'All groups', refresh: 'Refresh', retention: 'Detail retention', retentionValue: '24 hours', refreshValue: '60 seconds', minimumSample: 'Minimum traffic samples', healthyReliability: 'Healthy reliability %', warningReliability: 'Warning reliability %', warningTtft: 'Warning first output ms', criticalTtft: 'Critical first output ms', legacy: 'Legacy display policy', saved: 'Monitor policy saved' },
+      probes: { title: 'Probe targets', add: 'Add target', group: 'Group', model: 'Model', protocol: 'Protocol', enabled: 'Enabled', run: 'Probe now', budget: 'Daily budget (UTC)', targetBudget: 'Target budget', empty: 'No probe targets', saved: 'Probe target saved', failed: 'Probe request failed', edit: 'Edit target', create: 'Create target', globalUsed: '{used} / {limit}', status: 'Last result', confirm: 'Run this paid probe?', confirmCost: 'This sends a billable upstream request and consumes the daily probe budget.', completed: 'Probe submitted', invalid: 'Choose a group, model and protocol.', cost: 'Upstream cost', budgetExhausted: 'Daily budget exhausted' },
+    },
+    observation: {
+      loading: 'Loading channel observations', loadFailed: 'Failed to load channel observations', empty: 'No observations for the selected filters', modelDetails: 'Model details', noModels: 'No model data', requests: 'Requests', errors: 'Channel errors', attempts: 'Upstream attempts', group: 'Group', reliability: 'Reliability', firstOutput: 'First output', cache: 'Cache hit rate', history: 'History', models: '{count} models', multiplier: 'User rate {value}x', priceUnavailable: 'Rate unavailable', slow: 'Slow response',
+      coverage: { complete: 'Complete data', partial: 'Partial coverage', stale: 'Data delayed', unavailable: 'Unavailable' },
+      layout: { cards: 'Cards', matrix: 'Matrix', list: 'Group list' },
+      switchToLegacy: 'Original V2 diagnostics', switchToCards: 'Observation cards', rpm: 'RPM', tpm: 'TPM', retries: 'Recovered retries',
+      states: { healthy: 'Healthy', warning: 'Reliability down', critical: 'Critical', unknown: 'Unknown', sufficient: 'Sufficient samples', insufficient: 'Insufficient samples', no_samples: 'No samples', partial: 'Partial coverage', stale: 'Data delayed', unavailable: 'Unavailable', missing: 'Missing data' },
+    },
     title: 'Channel Monitor',
     updating: 'Updating data',
     updatedTo: 'Updated to {time}',

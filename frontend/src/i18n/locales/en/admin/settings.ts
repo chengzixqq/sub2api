@@ -34,6 +34,9 @@ export default {
           showQuota: 'Show channel usage/balance to users',
           showQuotaHint:
             'When on, quota-mode channel monitors expose the linked account usage windows/balance on the user Channel Status page. Disabled by default; admins always see it.',
+          hideUserRanking: 'Hide user ranking from users',
+          hideUserRankingHint:
+            'When on, the user Channel Monitor V2 page hides the user ranking tab and the user API returns no ranking rows. Admins still see the ranking.',
         },
         availableChannels: {
           title: 'Available Channels',
@@ -41,6 +44,21 @@ export default {
           configureLink: 'Configure model pricing in Channel Management > Channel Pricing',
           enabled: 'Enable Available Channels',
           enabledHint: 'When off, the sidebar entry is hidden and the endpoint returns an empty list.',
+        },
+        siteBillingMode: {
+          title: 'Site Billing Mode',
+          description: 'Controls which purchase options users see. Defaults to "Recharge & Subscription".',
+          label: 'Purchase options',
+          options: {
+            rechargeAndSubscription: 'Recharge & Subscription',
+            rechargeOnly: 'Recharge only',
+            subscriptionOnly: 'Subscription only',
+          },
+          hints: {
+            rechargeAndSubscription: 'Users can both top up their balance and buy subscription plans.',
+            rechargeOnly: 'Hides "My Subscriptions", the purchase-page subscription tab, the header subscription badge and the usage billing-type filter; direct visits to "My Subscriptions" return to the dashboard. The admin sidebar also hides the "Subscription Management" entry (the page stays reachable by URL). Existing subscription billing and redeem-code subscriptions are unaffected.',
+            subscriptionOnly: 'The purchase page only offers subscription plans and the sidebar entry reads "Subscription"; balance top-up orders are rejected. Redeem codes, affiliate payouts and other balance credits are unaffected.',
+          },
         },
         modelPlaza: {
           title: 'Model Plaza',
@@ -101,8 +119,8 @@ export default {
               code: 'Invite Code',
               rate: 'Custom Rate',
               actions: 'Actions',
-            },
-          },
+      },
+    },
           modal: {
             addTitle: 'Add Custom User',
             editTitle: 'Edit Custom Settings',
@@ -404,7 +422,7 @@ export default {
         subscriptionGroup: 'Subscription Group',
         subscriptionValidityDays: 'Validity (days)',
         defaultPlatformQuotas: 'Default Platform Quotas (on signup)',
-        defaultPlatformQuotasHint: 'Automatically assigned to new users on signup; existing users are not affected. Leave blank = unlimited.',
+        defaultPlatformQuotasHint: 'Applied to new users on signup; existing users are not affected. Leave blank = no limit for that platform and window.',
         platformQuotaNotice: 'Monthly quota uses a 30-day rolling window, not a calendar month.',
       },
       platformQuota: {
@@ -681,6 +699,7 @@ export default {
         namePlaceholder: 'e.g. Help Center',
         url: 'Page URL',
         urlPlaceholder: 'https://example.com/page',
+        hideOpenButton: 'Hide the “Open in new tab” button',
         iconSvg: 'SVG Icon',
         iconSvgPlaceholder: '<svg>...</svg>',
         iconPreview: 'Icon Preview',
@@ -762,7 +781,7 @@ export default {
         validationFieldRequired: '{field} is required',
         validationEasyPayCustomMethodRequired: 'Each custom EasyPay method requires both a payment type and an upstream type',
         validationEasyPayCustomMethodTypeInvalid: 'Custom EasyPay payment types may only contain lowercase letters, digits, underscores, and hyphens',
-        validationEasyPayCustomMethodUpstreamTypeInvalid: 'EasyPay upstream types may only contain lowercase letters, digits, underscores, and hyphens',
+        validationEasyPayCustomMethodUpstreamTypeInvalid: 'EasyPay upstream types may only contain lowercase letters, digits, periods, underscores, and hyphens',
         validationEasyPayCustomMethodReserved: 'Custom EasyPay payment types cannot use built-in alipay or wxpay',
         validationEasyPayCustomMethodPrefixReserved: 'Custom EasyPay payment types cannot start with alipay or wxpay',
         validationEasyPayCustomMethodDuplicate: 'Custom EasyPay payment types must be unique',
@@ -1088,7 +1107,7 @@ export default {
       },
       openaiFastPolicy: {
         title: 'OpenAI Fast/Flex Policy',
-        description: 'Intercept, filter, or pass OpenAI fast(priority), ultrafast, or flex requests based on the request body service_tier field. Applies to the OpenAI gateway only.',
+        description: 'Intercept, filter, or pass OpenAI fast(priority), ultrafast, or flex requests based on the request body service_tier field. Applies to the OpenAI gateway only. "All tier values" includes explicitly sent tiers only.',
         empty: 'No rules configured. Click the button below to add one.',
         ruleHeader: 'Rule #{index}',
         removeRule: 'Remove rule',
@@ -1096,6 +1115,7 @@ export default {
         saveHint: 'Saved together with system settings (click the global Save button at the bottom of the page).',
         serviceTier: 'service_tier match',
         tierAll: 'All tier values',
+        tierMissing: 'Omitted tier',
         tierPriority: 'priority (fast)',
         tierUltrafast: 'ultrafast',
         tierFlex: 'flex',
@@ -1377,5 +1397,29 @@ export default {
       loadFailed: 'Failed to load profiles',
       saveFailed: 'Failed to save profile',
       deleteFailed: 'Failed to delete profile'
+    },
+    customization: {
+      presetLabel: 'Configuration Preset',
+      headerDescription: 'Global and account policies',
+      loadFailed: 'Settings could not be loaded. Please try again.',
+      sections: { compatibility: 'Request Compatibility', thinking: 'Thinking and Signatures', privacy: 'Identity and Privacy' },
+      title: 'Claude Compatibility',
+      description: 'Control Claude fallback, thinking, beta, and redaction behavior. Account overrides take precedence over global settings.',
+      accountTitle: 'Account-level Claude overrides',
+      accountHint: 'Choose inherit to follow the global policy. Account settings take precedence. Fallback remains owned by the upstream account.',
+      inherit: 'Inherit global',
+      presets: { magic: 'Magic compatibility', official: 'Official compatibility', custom: 'Custom' },
+      options: { native_passthrough: 'Native / automatic passthrough', strict: 'Official strict', fable_native_passthrough: 'Fable passthrough', capability_aware: 'Capability aware', official_strict: 'Official strict', client_passthrough: 'Client passthrough', pass_on_native_only: 'Pass on native exits only', filter: 'Filter unknown beta', pass: 'Pass all' },
+      fields: {
+        fallback_policy: { label: 'Fallback policy', hint: 'Recommended: native/automatic passthrough; the configured upstream owns fallback decisions and model switching.' },
+        beta_policy_mode: { label: 'Beta policy', hint: 'Recommended: capability aware, keeping body fields and beta headers consistent.' },
+        unknown_beta_action: { label: 'Unknown beta behavior', hint: 'Recommended: pass only on native exits to avoid 400 responses.' },
+        thinking_prefilter_enabled: { label: 'Thinking pre-filter', hint: 'Recommended off in magic mode to preserve client signatures and history.' },
+        thinking_signature_retry_enabled: { label: 'Retry signature errors', hint: 'Recommended off for faithful passthrough. Enable for compatibility repair: matching signature or thinking-structure 400 errors trigger a rewritten retry.' },
+        thinking_tool_downgrade_retry_enabled: { label: 'Retry with downgraded tool signatures', hint: 'Recommended off for faithful passthrough. Requires signature retries and automatic passthrough off; downgrades tool structures if the first retry still encounters a tool error.' },
+        fingerprint_unification: { label: 'Fingerprint unification', hint: 'Unifies X-Stainless headers for users sharing an OAuth account.' },
+        metadata_passthrough: { label: 'Metadata passthrough', hint: 'Recommended on; turning it off may inject compatibility metadata.' },
+        url_redaction_enabled: { label: 'API key URL redaction', hint: 'Recommended on; affects errors, logs, and diagnostics only, never the actual request URL.' }
+      }
     }
 }

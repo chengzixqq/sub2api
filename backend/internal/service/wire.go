@@ -486,6 +486,7 @@ func ProvideRateLimitService(
 	openAI403CounterCache OpenAI403CounterCache,
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
+	ollamaCloudUsage *OllamaCloudUsageService,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	if healthCache, ok := tempUnschedCache.(OpenAIAPIKeyHealthCache); ok {
@@ -495,6 +496,7 @@ func ProvideRateLimitService(
 	svc.SetOpenAI403CounterCache(openAI403CounterCache)
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
+	svc.SetOllamaCloudUsageProbeScheduler(ollamaCloudUsage)
 	return svc
 }
 
@@ -948,6 +950,10 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorRunner,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
+	NewChannelMonitorOverviewService,
+	ProvideChannelMonitorCollector,
+	NewChannelMonitorProbeExecutor,
+	ProvideChannelMonitorProbeService,
 	ProvideChannelMonitorV2Aggregator,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
@@ -1032,8 +1038,30 @@ func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settingServ
 	return svc
 }
 
+func ProvideChannelMonitorCollector(repo ChannelMonitorObservationRepository) *ChannelMonitorCollector {
+	collector := NewChannelMonitorCollector(repo, ChannelMonitorCollectorOptions{})
+	collector.Start()
+	return collector
+}
+
+func ProvideChannelMonitorProbeService(repo ChannelMonitorProbeRepository, groups GroupRepository, executor *ChannelMonitorProbeExecutor, quota *ChannelMonitorQuotaFetcher, observations ChannelMonitorObservationRepository) *ChannelMonitorProbeService {
+	svc := NewChannelMonitorProbeService(repo, groups, executor, quota)
+	if activity, ok := observations.(ChannelMonitorProbeActivityReader); ok {
+		svc.SetActivityReader(activity)
+	}
+	svc.SetEnabledReader(func(ctx context.Context) bool {
+		cfg, err := observations.GetConfig(ctx)
+		return err == nil && cfg != nil && cfg.Enabled && cfg.ProbeEnabled
+	})
+	svc.SetQuotaEnabledReader(func(ctx context.Context) bool {
+		cfg, err := observations.GetConfig(ctx)
+		return err == nil && cfg != nil && cfg.QuotaEnabled
+	})
+	return svc
+}
+
 // ProvideChannelMonitorV2Aggregator starts the passive minute-rollup worker.
-// Aggregation only runs when channel_monitor_enabled=true and mode=v2 (and V2 config enabled).
+// Aggregation remains available to the unified shadow/rollback view in both legacy modes.
 // Set CHANNEL_MONITOR_V2_DISABLE_AGGREGATOR=1 to skip Start (local demo with seeded facts).
 func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.DB, settingService *SettingService) *ChannelMonitorV2Aggregator {
 	aggregator := NewChannelMonitorV2Aggregator(repo, db, settingService)

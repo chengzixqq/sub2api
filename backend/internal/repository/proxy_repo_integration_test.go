@@ -21,7 +21,7 @@ type ProxyRepoSuite struct {
 }
 
 func (s *ProxyRepoSuite) SetupTest() {
-	s.ctx = context.Background()
+	s.ctx = service.WithScope(context.Background(), service.AdminScope())
 	tx := testEntTx(s.T())
 	s.tx = tx
 	s.repo = newProxyRepositoryWithSQL(tx.Client(), tx)
@@ -35,11 +35,12 @@ func TestProxyRepoSuite(t *testing.T) {
 
 func (s *ProxyRepoSuite) TestCreate() {
 	proxy := &service.Proxy{
-		Name:     "test-create",
-		Protocol: "http",
-		Host:     "127.0.0.1",
-		Port:     8080,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "test-create",
+		Protocol:    "http",
+		Host:        "127.0.0.1",
+		Port:        8080,
+		Status:      service.StatusActive,
 	}
 
 	err := s.repo.Create(s.ctx, proxy)
@@ -58,11 +59,12 @@ func (s *ProxyRepoSuite) TestGetByID_NotFound() {
 
 func (s *ProxyRepoSuite) TestUpdate() {
 	proxy := &service.Proxy{
-		Name:     "original",
-		Protocol: "http",
-		Host:     "127.0.0.1",
-		Port:     8080,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "original",
+		Protocol:    "http",
+		Host:        "127.0.0.1",
+		Port:        8080,
+		Status:      service.StatusActive,
 	}
 	s.Require().NoError(s.repo.Create(s.ctx, proxy))
 
@@ -77,11 +79,12 @@ func (s *ProxyRepoSuite) TestUpdate() {
 
 func (s *ProxyRepoSuite) TestDelete() {
 	proxy := &service.Proxy{
-		Name:     "to-delete",
-		Protocol: "http",
-		Host:     "127.0.0.1",
-		Port:     8080,
-		Status:   service.StatusActive,
+		WorkspaceID: 1,
+		Name:        "to-delete",
+		Protocol:    "http",
+		Host:        "127.0.0.1",
+		Port:        8080,
+		Status:      service.StatusActive,
 	}
 	s.Require().NoError(s.repo.Create(s.ctx, proxy))
 
@@ -291,6 +294,7 @@ func (s *ProxyRepoSuite) TestExistsByHostPortAuth_And_AccountCountAggregates() {
 
 func (s *ProxyRepoSuite) mustCreateProxy(p *service.Proxy) *service.Proxy {
 	s.T().Helper()
+	p.WorkspaceID = 1
 	s.Require().NoError(s.repo.Create(s.ctx, p), "create proxy")
 	return p
 }

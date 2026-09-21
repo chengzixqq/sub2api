@@ -14,6 +14,10 @@ import (
 
 const maxOpenAIImageDimensionProbeBytes int64 = 1 << 20
 
+func isValidOpenAIImageResult(encoded string) bool {
+	return detectOpenAIImageResultSize(encoded) != ""
+}
+
 func detectOpenAIImageResultSize(encoded string) string {
 	payload := strings.TrimSpace(encoded)
 	if strings.HasPrefix(strings.ToLower(payload), "data:") {

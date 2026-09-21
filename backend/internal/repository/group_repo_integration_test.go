@@ -735,6 +735,8 @@ func (s *GroupRepoSuite) TestListBindableWithFiltersAppliesFilterBeforePaginatio
 }
 
 func (s *GroupRepoSuite) TestListActiveByPlatform() {
+	baseline, err := s.repo.ListActiveByPlatform(s.ctx, service.PlatformAnthropic)
+	s.Require().NoError(err)
 	s.Require().NoError(s.repo.Create(s.ctx, &service.Group{
 		Name:             "g1",
 		Platform:         service.PlatformAnthropic,
@@ -762,8 +764,8 @@ func (s *GroupRepoSuite) TestListActiveByPlatform() {
 
 	groups, err := s.repo.ListActiveByPlatform(s.ctx, service.PlatformAnthropic)
 	s.Require().NoError(err, "ListActiveByPlatform")
-	// 1 default anthropic group + 1 test active anthropic group = 2 total
-	s.Require().Len(groups, 2)
+	// Other suites may have committed fixtures; only the new active group is added.
+	s.Require().Len(groups, len(baseline)+1)
 	// Verify our test group is in the results
 	var found bool
 	for _, g := range groups {

@@ -96,12 +96,13 @@ func TestGetUserBreakdown_ModelSourceFilter(t *testing.T) {
 	router := newUserBreakdownRouter(repo)
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&model=claude-opus-4-6&model_source=upstream", nil)
+		"/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&model=claude-opus-4-6&model_source=upstream&requested_model=requested-a", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Equal(t, usagestats.ModelSourceUpstream, repo.capturedDim.ModelType)
+	require.Equal(t, "requested-a", repo.capturedDim.RequestedModel)
 }
 
 func TestGetUserBreakdown_InvalidModelSource(t *testing.T) {

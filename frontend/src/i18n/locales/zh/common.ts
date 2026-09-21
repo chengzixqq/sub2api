@@ -1,5 +1,6 @@
 export default {
   common: {
+    retry: '重试',
     loading: '加载中...',
     submitting: '提交中...',
     justNow: '刚刚',
@@ -194,6 +195,7 @@ export default {
     ops: '运维监控',
     promoCodes: '优惠码',
     settings: '系统设置',
+    customization: 'Claude 魔改设置',
     myAccount: '我的账户',
     lightMode: '浅色模式',
     darkMode: '深色模式',
@@ -203,6 +205,8 @@ export default {
     github: 'GitHub',
     mySubscriptions: '我的订阅',
     buySubscription: '充值/订阅',
+    recharge: '充值',
+    subscribe: '订阅',
     docs: '文档',
     myOrders: '我的订单',
     orderManagement: '订单管理',

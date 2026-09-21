@@ -72,7 +72,7 @@ func TestAdminService_UpdateGroup_RejectsEmptyEnabledModelAllowlist(t *testing.T
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		ModelAllowlist: &GroupModelAllowlist{Enabled: true},
 	})
 
@@ -88,7 +88,7 @@ func TestAdminService_UpdateGroup_RejectsInvalidAllowlistWildcard(t *testing.T) 
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{
 		ModelAllowlist: &GroupModelAllowlist{Enabled: true, Models: []string{"foo-*bar"}},
 	})
 
@@ -109,7 +109,7 @@ func TestAdminService_UpdateGroup_NormalizesAndResetsModelAllowlist(t *testing.T
 
 	// 归一化：按小写去重保序（保留首次出现的原始拼写）。
 	updated := GroupModelAllowlist{Enabled: true, Models: []string{" GPT-5.4 ", "claude-*"}}
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{ModelAllowlist: &updated})
+	_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{ModelAllowlist: &updated})
 	require.NoError(t, err)
 	require.NotNil(t, repo.updated)
 	require.Equal(t, []string{"GPT-5.4", "claude-*"}, repo.updated.ModelAllowlist.Models)
@@ -117,7 +117,7 @@ func TestAdminService_UpdateGroup_NormalizesAndResetsModelAllowlist(t *testing.T
 	// 关闭且清空条目也应被接受（关闭白名单）。
 	repo.updated = nil
 	disabled := GroupModelAllowlist{Enabled: false}
-	_, err = svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{ModelAllowlist: &disabled})
+	_, err = svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{ModelAllowlist: &disabled})
 	require.NoError(t, err)
 	require.NotNil(t, repo.updated)
 	require.False(t, repo.updated.ModelAllowlist.Enabled)

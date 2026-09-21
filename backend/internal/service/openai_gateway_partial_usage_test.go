@@ -77,6 +77,7 @@ func newGrokPartialUsageAccount() *Account {
 
 func TestHasOpenAIPartialUsageIncludesImageTokens(t *testing.T) {
 	require.True(t, hasOpenAIPartialUsage(&OpenAIUsage{ImageInputTokens: 3}))
+	require.True(t, hasOpenAIPartialUsage(&OpenAIUsage{ImageCacheReadTokens: 2}))
 	require.True(t, hasOpenAIPartialUsage(&OpenAIUsage{ImageOutputTokens: 5}))
 	require.False(t, hasOpenAIPartialUsage(&OpenAIUsage{}))
 	require.False(t, hasOpenAIPartialUsage(nil))

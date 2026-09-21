@@ -527,7 +527,7 @@ func TestBulkAssignSubscriptionCreatedReusedAndConflict(t *testing.T) {
 	})
 
 	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
-	result, err := svc.BulkAssignSubscription(context.Background(), &BulkAssignSubscriptionInput{
+	result, err := svc.BulkAssignSubscription(WithScope(context.Background(), AdminScope()), &BulkAssignSubscriptionInput{
 		UserIDs:      []int64{1, 2, 3},
 		GroupID:      1,
 		ValidityDays: 30,
@@ -566,7 +566,7 @@ func TestBulkAssignSubscriptionRenewsExpiredSemanticMatch(t *testing.T) {
 
 	svc := NewSubscriptionService(groupRepo, subRepo, nil, nil, nil)
 	before := time.Now()
-	result, err := svc.BulkAssignSubscription(context.Background(), &BulkAssignSubscriptionInput{
+	result, err := svc.BulkAssignSubscription(WithScope(context.Background(), AdminScope()), &BulkAssignSubscriptionInput{
 		UserIDs:      []int64{4},
 		GroupID:      1,
 		ValidityDays: 7,

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -110,15 +109,26 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 	if !ShouldRectifyThinkingSignatureError(mappedModel) {
 		return false
 	}
+	if s == nil || s.settingService == nil || account == nil {
+		return false
+	}
+	if s.settingService != nil {
+		customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
+		if !customization.ThinkingSignatureRetryEnabled {
+			return false
+		}
+	}
 	if account.Type == AccountTypeAPIKey {
-		// API Key 账号：独立开关，一次读取配置
+		// Built-in signature errors are governed by the resolved customization
+		// policy above. The legacy rectifier switch only gates its optional custom
+		// patterns, otherwise the new global/account setting could be enabled in
+		// the UI while retries remained silently disabled.
+		if s.isThinkingBlockSignatureError(respBody) {
+			return true
+		}
 		settings, err := s.settingService.GetRectifierSettings(ctx)
 		if err != nil || !settings.Enabled || !settings.APIKeySignatureEnabled {
 			return false
-		}
-		// 先检查内置模式（同 OAuth），再检查自定义关键词
-		if s.isThinkingBlockSignatureError(respBody) {
-			return true
 		}
 		return matchSignaturePatterns(respBody, settings.APIKeySignaturePatterns)
 	}
@@ -129,6 +139,9 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 // isSignatureErrorPattern 仅做模式匹配，不检查开关。
 // 用于已进入重试流程后的二阶段检测（此时开关已在首次调用时验证过）。
 func (s *GatewayService) isSignatureErrorPattern(ctx context.Context, account *Account, respBody []byte) bool {
+	if s == nil || s.settingService == nil || account == nil {
+		return false
+	}
 	if s.isThinkingBlockSignatureError(respBody) {
 		return true
 	}
@@ -368,16 +381,18 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	if readErr != nil {
 		// 读取失败时 body 可能被截断，错误分类会基于不完整数据；记录日志以便排查，
 		// 避免静默吞掉导致误判。
-		logger.LegacyPrintf("service.gateway", "[Forward] Failed to fully read upstream error body: Account=%d(%s) Status=%d err=%v",
-			account.ID, account.Name, resp.StatusCode, readErr)
+		logger.LegacyPrintf("service.gateway", "[Forward] Failed to fully read upstream error body: Account=%d(%s) Status=%d err=%s",
+			account.ID, account.Name, resp.StatusCode, sanitizeUpstreamErrorMessageForContext(c, readErr.Error()))
 	}
 
 	// 调试日志：打印上游错误响应
+	logBody := redactUpstreamResponseBodyForClient(c, body)
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	safeUpstreamMsg := sanitizeUpstreamErrorMessageForContext(c, upstreamMsg)
 
 	// Print a compact upstream request fingerprint when we hit the Claude Code OAuth
 	// credential scope error. This avoids requiring env-var tweaks in a fixed deploy.
@@ -417,7 +432,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	// 处理上游错误，标记账号状态
 	shouldDisable := false
-	if s.rateLimitService != nil {
+	if s.rateLimitService != nil && resp.StatusCode != http.StatusRequestEntityTooLarge {
 		if len(requestedModel) > 0 {
 			shouldDisable = s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, requestedModel[0])
 		} else {
@@ -438,7 +453,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(body, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 
@@ -460,7 +475,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			},
 		})
 
-		summary := upstreamMsg
+		summary := safeUpstreamMsg
 		if summary == "" {
 			summary = errMsg
 		}
@@ -475,11 +490,19 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	var statusCode int
 
 	switch resp.StatusCode {
+	case http.StatusRequestEntityTooLarge:
+		statusCode = http.StatusRequestEntityTooLarge
+		errType = "request_too_large"
+		errMsg = "Request body is too large. Reduce the request size and try again."
 	case 400:
-		c.Data(http.StatusBadRequest, "application/json", body)
-		summary := upstreamMsg
+		// API-key URL redaction applies to the client-visible raw upstream error
+		// too. Keep the original body for classification/ops, and only redact the
+		// copy written downstream.
+		clientBody := redactUpstreamResponseBodyForClient(c, body)
+		c.Data(http.StatusBadRequest, "application/json", clientBody)
+		summary := safeUpstreamMsg
 		if summary == "" {
-			summary = truncateForLog(body, 512)
+			summary = truncateForLog(redactUpstreamResponseBodyForClient(c, body), 512)
 		}
 		if summary == "" {
 			return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
@@ -520,10 +543,10 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		},
 	})
 
-	if upstreamMsg == "" {
+	if safeUpstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
-	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, safeUpstreamMsg)
 }
 
 func (s *GatewayService) handleRetryExhaustedSideEffects(ctx context.Context, resp *http.Response, account *Account) {
@@ -563,6 +586,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	safeUpstreamMsg := sanitizeUpstreamErrorMessageForContext(c, upstreamMsg)
 
 	if isClaudeCodeCredentialScopeError(upstreamMsg) && c != nil {
 		if v, ok := c.Get(claudeMimicDebugInfoKey); ok {
@@ -598,13 +622,14 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	})
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		logBody := redactUpstreamResponseBodyForClient(c, respBody)
 		logger.LegacyPrintf("service.gateway",
 			"Upstream error %d retries_exhausted (account=%d platform=%s type=%s): %s",
 			resp.StatusCode,
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(respBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
 		)
 	}
 
@@ -625,7 +650,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 			},
 		})
 
-		summary := upstreamMsg
+		summary := safeUpstreamMsg
 		if summary == "" {
 			summary = errMsg
 		}
@@ -644,10 +669,10 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		},
 	})
 
-	if upstreamMsg == "" {
+	if safeUpstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d (retries exhausted)", resp.StatusCode)
 	}
-	return nil, fmt.Errorf("upstream error: %d (retries exhausted) message=%s", resp.StatusCode, upstreamMsg)
+	return nil, fmt.Errorf("upstream error: %d (retries exhausted) message=%s", resp.StatusCode, safeUpstreamMsg)
 }
 
 // streamingResult 流式响应结果
@@ -665,7 +690,7 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 ||
 		u.CacheCreationInputTokens > 0 || u.CacheReadInputTokens > 0 ||
 		u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0 ||
-		u.ImageInputTokens > 0 || u.ImageOutputTokens > 0
+		u.ImageInputTokens > 0 || u.ImageCacheReadTokens > 0 || u.ImageOutputTokens > 0
 }
 
 // partialStreamUsageResult 在流式转发中途出错时，把已观测到 usage 的部分结果包装为
@@ -727,7 +752,13 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
-	scanner := bufio.NewScanner(resp.Body)
+	streamInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	idleReader := newUpstreamIdleReader(resp.Body, streamInterval)
+	defer idleReader.Stop()
+	scanner := bufio.NewScanner(idleReader)
 	// 设置更大的buffer以处理长行
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
@@ -751,13 +782,10 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			return false
 		}
 	}
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 	go func(scanBuf *sseScannerBuf64K) {
 		defer putSSEScannerBuf64K(scanBuf)
 		defer close(events)
 		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 			if !sendEvent(scanEvent{line: scanner.Text()}) {
 				return
 			}
@@ -767,21 +795,6 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 	}(scanBuf)
 	defer close(done)
-
-	streamInterval := time.Duration(0)
-	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
-		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
-	}
-	// 仅监控上游数据间隔超时，避免下游写入阻塞导致误判
-	var intervalTicker *time.Ticker
-	if streamInterval > 0 {
-		intervalTicker = time.NewTicker(streamInterval)
-		defer intervalTicker.Stop()
-	}
-	var intervalCh <-chan time.Time
-	if intervalTicker != nil {
-		intervalCh = intervalTicker.C
-	}
 
 	// 下游 keepalive：防止代理/Cloudflare Tunnel 因连接空闲而断开
 	keepaliveInterval := time.Duration(0)
@@ -1041,11 +1054,11 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 若尚未向客户端写过任何字节，包成 UpstreamFailoverError 让 handler 层走 failover/重试。
 				// 已经开始写流时 SSE 协议无 resume，只能透传错误事件给客户端。
 				// 注意:面向客户端的 disconnectMsg 必须用 sanitizeStreamError 剥离地址,
-				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。完整 ev.err
-				// 仅在下方 LegacyPrintf 内部日志中保留供运维诊断。
+				// 默认 *net.OpError 的 Error() 会泄露内部 IP/端口和上游地址。日志保留
+				// 错误类别，但仍遵循请求级上游 URL 脱敏策略。
 				disconnectMsg := "upstream stream disconnected: " + sanitizeStreamError(ev.err)
 				if !c.Writer.Written() {
-					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %v", account.ID, ev.err)
+					logger.LegacyPrintf("service.gateway", "Upstream stream read error before any client output (account=%d), failing over: %s", account.ID, sanitizeUpstreamErrorMessageForContext(c, ev.err.Error()))
 					body, _ := json.Marshal(map[string]any{
 						"type": "error",
 						"error": map[string]string{
@@ -1057,6 +1070,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           body,
 						RetryableOnSameAccount: true,
+						Reason:                 GatewayFailureReasonStreamReadError,
 					}
 				}
 				sendErrorEvent("stream_read_error", disconnectMsg)
@@ -1110,9 +1124,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 			pendingEventLines = append(pendingEventLines, line)
 
-		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
+		case <-idleReader.C():
+			if !idleReader.Expired() {
 				continue
 			}
 			if clientDisconnected {

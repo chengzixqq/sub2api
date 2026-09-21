@@ -89,6 +89,10 @@ func claudeCodeBodyMapFromParsedRequest(parsedReq *service.ParsedRequest) map[st
 	bodyMap := map[string]any{
 		"model": parsedReq.Model,
 	}
+	// 探测识别（max_tokens=1）需要看到该字段，复用已解析请求时一并带上。
+	if parsedReq.MaxTokens > 0 {
+		bodyMap["max_tokens"] = parsedReq.MaxTokens
+	}
 	if parsedReq.HasSystem {
 		if system, ok := parsedReq.SystemValue(); ok {
 			bodyMap["system"] = system
@@ -268,6 +272,7 @@ func (h *ConcurrencyHelper) AcquireUserSlotWithWait(c *gin.Context, userID int64
 }
 
 func (h *ConcurrencyHelper) acquireUserSlotWithWaitTimeout(c *gin.Context, userID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+	defer service.MeasureGatewayTiming(c.Request.Context(), service.GatewayTimingUserAdmission)()
 	ctx := c.Request.Context()
 
 	// Try to acquire immediately
@@ -374,6 +379,12 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 			return result.ReleaseFunc, nil
 		}
 	}
+
+	phase := service.GatewayTimingAccountWait
+	if slotType == "user" {
+		phase = service.GatewayTimingUserWait
+	}
+	defer service.MeasureGatewayTiming(c.Request.Context(), phase)()
 
 	// Determine if ping is needed (streaming + ping format defined)
 	needPing := isStream && h.pingFormat != ""

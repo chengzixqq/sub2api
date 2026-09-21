@@ -612,7 +612,7 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	if !rt.Enabled {
 		return nil, ErrChannelMonitorDisabled
 	}
-	if !rt.ActiveProbesAllowed() {
+	if !rt.ActiveProbesAllowed() && s.repo == nil {
 		return nil, ErrChannelMonitorActiveProbesRetired
 	}
 	m, err := s.Get(ctx, id) // 已解密 APIKey
@@ -620,6 +620,9 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 		return nil, err
 	}
 	checkMode := defaultCheckMode(m.CheckMode)
+	if checkMode != MonitorCheckModeQuota && !rt.ActiveProbesAllowed() {
+		return nil, ErrChannelMonitorActiveProbesRetired
+	}
 	if checkMode != MonitorCheckModeQuota && m.APIKeyDecryptFailed {
 		return nil, ErrChannelMonitorAPIKeyDecryptFailed
 	}
@@ -655,6 +658,9 @@ func (s *ChannelMonitorService) fetchQuotaSnapshot(ctx context.Context, m *Chann
 	}
 	if s.quotaFetcher == nil {
 		return quotaErrorSnapshot("usage", "quota fetcher is not configured", time.Now())
+	}
+	if !s.probeRuntime(ctx).ActiveProbesAllowed() {
+		return s.quotaFetcher.FetchReadOnly(ctx, *m.AccountID)
 	}
 	return s.quotaFetcher.Fetch(ctx, *m.AccountID)
 }

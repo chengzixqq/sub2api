@@ -78,11 +78,28 @@ export default {
       speedTest: '测速',
     },
     allGroups: '全部分组',
+    allPlatforms: '全部',
+    platformFilter: '筛选分组平台',
     allStatus: '全部状态',
     columnSettings: '列设置',
     columnAlwaysVisible: '该列固定显示，不可隐藏',
     createKey: '创建密钥',
     editKey: '编辑密钥',
+    bulkEdit: {
+      title: '批量编辑',
+      selectedCount: '已选择 {count} 个密钥',
+      selectKey: '选择密钥 {name}',
+      clearSelection: '取消选择',
+      hint: '勾选需要修改的字段，未勾选的字段保持原值。',
+      limitHint: '输入 0 表示不限制；已用额度保持不变。',
+      ipHint: '每行一个 IP 或 CIDR；留空将清空所选密钥的此项名单。',
+      invalidLimit: '请输入大于或等于 0 的有效金额。',
+      invalidExpiration: '请选择有效的过期时间，或勾选永久有效。',
+      apply: '应用到 {count} 个密钥',
+      success: '已更新 {count} 个密钥',
+      partialFailure: '已更新 {success} 个密钥，{failed} 个失败',
+      failureHint: '以下密钥更新失败，可修改设置后重试。再次提交只会更新失败的密钥。'
+    },
     deleteKey: '删除密钥',
     deleteConfirmMessage: "确定要删除 '{name}' 吗？此操作无法撤销。",
     id: 'ID',
@@ -101,6 +118,19 @@ export default {
     nameLabel: '名称',
     namePlaceholder: '我的 API 密钥',
     groupLabel: '分组',
+    providerLabel: '厂商',
+    providers: {
+      anthropic: 'Anthropic',
+      openai: 'OpenAI',
+      domestic: '国产模型',
+      other: '其他'
+    },
+    providerHints: {
+      anthropic: '选择 Anthropic / Claude 的可用分组',
+      openai: '选择 OpenAI / GPT 的可用分组',
+      domestic: '包含 DeepSeek、Kimi、智谱 GLM、MiniMax',
+      other: '包含 Gemini、Grok、Antigravity、OpenCode 和混合分组'
+    },
     selectGroup: '选择分组',
     statusLabel: '状态',
     selectStatus: '选择状态',
@@ -201,6 +231,12 @@ export default {
         codexConfigTomlHint: '下载下方模型目录，将两个文件保存到 Codex 配置目录后重启 Codex。',
         codexNote: '启动 Codex 前先导出 SUB2API_API_KEY。下载的目录只包含模型元数据，不包含 API Key。'
       },
+      minimax: {
+        description: '通过当前 MiniMax 分组配置 Claude Code、Codex 或 OpenCode。',
+        codexDescription: '使用 API Key 配置 Codex，并通过当前 MiniMax 分组发送请求。',
+        codexConfigTomlHint: '下载下方模型目录，将两个文件保存到 Codex 配置目录后重启 Codex。',
+        codexNote: '启动 Codex 前先导出 SUB2API_API_KEY。下载的目录只包含模型元数据，不包含 API Key。'
+      },
       composite: {
         description: '通过当前 Composite 路由分组配置受支持的客户端。',
         codexDescription: '使用 API Key 和当前 Composite 分组的完整模型目录配置 Codex。',
@@ -296,6 +332,19 @@ export default {
 
   // Usage
   usage: {
+    rankingSort: '排行指标',
+    rankingTop: '前 {count} 名',
+    queryFailed: '此分区加载失败。',
+    queryRefreshing: '刷新中...',
+    tokenTrend: {
+      input: '输入',
+      output: '输出',
+      cacheCreation: '缓存写入',
+      cacheRead: '缓存读取',
+      cacheHitRate: '缓存命中率',
+      actualCost: '实际扣费',
+      standardCost: '标准费用',
+    },
     title: '使用记录',
     description: '查看和分析您的 API 使用历史',
     costDetails: '费用明细',
@@ -474,7 +523,9 @@ export default {
       antigravity: 'Antigravity',
       kimi: 'Kimi',
       zhipu: '智谱 GLM',
-      deepseek: 'DeepSeek'
+      deepseek: 'DeepSeek',
+      minimax: 'MiniMax',
+      opencode_go: 'OpenCode'
     },
     // 检查模式（监控条目的工作方式）
     checkMode: {
@@ -491,6 +542,7 @@ export default {
         '7dSonnet': '7 天 Sonnet',
         '7dFable': '7 天 Fable',
         weekly: '周',
+        monthly: '月',
         daily: '日',
         '30d': '30 天',
         total: '总量'
@@ -754,6 +806,7 @@ export default {
     days: '天',
     codeRedeemSuccess: '兑换成功！',
     failedToRedeem: '兑换失败，请检查兑换码后重试。',
+    userRefreshFailed: '兑换成功，但账户信息刷新失败。',
     subscriptionRefreshFailed: '兑换成功，但订阅状态刷新失败。',
     pleaseEnterCode: '请输入兑换码'
   },
@@ -965,6 +1018,8 @@ export default {
 
   // Pagination
   pagination: {
+    currentPage: '第 {page} 页',
+    totalPending: '正在计算精确总数...',
     showing: '显示',
     to: '至',
     of: '共',

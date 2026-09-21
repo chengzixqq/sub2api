@@ -46,7 +46,7 @@ func TestAdminServiceBatchUpdateLimitsPassesOnlyProvidedFields(t *testing.T) {
 	service := &adminServiceImpl{userRepo: repo, authCacheInvalidator: invalidator}
 
 	affected, err := service.BatchUpdateLimits(
-		context.Background(),
+		WithScope(context.Background(), AdminScope()),
 		[]int64{3, 0, 3, 7, -1},
 		&concurrency,
 		nil,
@@ -69,7 +69,7 @@ func TestAdminServiceBatchUpdateLimitsDoesNotInvalidateCacheOnRepositoryError(t 
 	invalidator := &authCacheInvalidatorStub{}
 	service := &adminServiceImpl{userRepo: repo, authCacheInvalidator: invalidator}
 
-	affected, err := service.BatchUpdateLimits(context.Background(), []int64{1, 2}, nil, &rpmLimit)
+	affected, err := service.BatchUpdateLimits(WithScope(context.Background(), AdminScope()), []int64{1, 2}, nil, &rpmLimit)
 
 	require.EqualError(t, err, "database unavailable")
 	require.Zero(t, affected)
@@ -80,7 +80,7 @@ func TestAdminServiceBatchUpdateLimitsRequiresAField(t *testing.T) {
 	repo := &batchLimitsUserRepoStub{userRepoStub: &userRepoStub{}}
 	service := &adminServiceImpl{userRepo: repo, authCacheInvalidator: &authCacheInvalidatorStub{}}
 
-	affected, err := service.BatchUpdateLimits(context.Background(), []int64{1}, nil, nil)
+	affected, err := service.BatchUpdateLimits(WithScope(context.Background(), AdminScope()), []int64{1}, nil, nil)
 
 	require.Error(t, err)
 	require.Zero(t, affected)

@@ -25,6 +25,7 @@ func TestCreateWithAccountGroupsPersistsPausedCopyAtomically(t *testing.T) {
 	require.NoError(t, err)
 
 	success := &service.Account{
+		WorkspaceID: 1,
 		Name:        fmt.Sprintf("duplicate-success-%d", suffix),
 		Platform:    service.PlatformAnthropic,
 		Type:        service.AccountTypeAPIKey,
@@ -52,6 +53,7 @@ func TestCreateWithAccountGroupsPersistsPausedCopyAtomically(t *testing.T) {
 	require.Equal(t, 1, outboxCount)
 
 	failure := &service.Account{
+		WorkspaceID: 1,
 		Name:        fmt.Sprintf("duplicate-failure-%d", suffix),
 		Platform:    service.PlatformAnthropic,
 		Type:        service.AccountTypeAPIKey,

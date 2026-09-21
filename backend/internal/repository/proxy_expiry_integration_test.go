@@ -21,7 +21,7 @@ type ProxyExpirySuite struct {
 }
 
 func (s *ProxyExpirySuite) SetupTest() {
-	s.ctx = context.Background()
+	s.ctx = service.WithScope(context.Background(), service.AdminScope())
 	s.tx = testEntTx(s.T())
 	s.repo = newProxyRepositoryWithSQL(s.tx.Client(), s.tx)
 }
@@ -29,7 +29,8 @@ func TestProxyExpirySuite(t *testing.T) { suite.Run(t, new(ProxyExpirySuite)) }
 
 func (s *ProxyExpirySuite) mkProxy(name, mode string, expiresAt *time.Time, backupID *int64) int64 {
 	p := &service.Proxy{Name: name, Protocol: "http", Host: "127.0.0.1", Port: 8080,
-		Status: service.StatusActive, FallbackMode: mode, ExpiryWarnDays: 7,
+		WorkspaceID: 1,
+		Status:      service.StatusActive, FallbackMode: mode, ExpiryWarnDays: 7,
 		ExpiresAt: expiresAt, BackupProxyID: backupID}
 	s.Require().NoError(s.repo.Create(s.ctx, p))
 	return p.ID

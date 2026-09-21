@@ -1,7 +1,10 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
-      <UsageStatsCards :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
+      <div class="min-h-28">
+        <UsageRegionState :loading="endpointStatsLoading" :error="statsError" :refreshing="!!usageStats" @retry="loadStats(true)" />
+        <UsageStatsCards v-if="usageStats" :stats="usageStats" :show-account-cost="false" :strike-standard-cost="true" />
+      </div>
 
       <div class="space-y-4">
         <div class="card p-4">
@@ -11,20 +14,25 @@
               <DateRangePicker
                 v-model:start-date="startDate"
                 v-model:end-date="endDate"
+                include-time
+                required-range
                 @change="onDateRangeChange"
               />
             </div>
             <div class="ml-auto flex items-center gap-2">
               <span class="text-sm font-medium text-gray-700 dark:text-gray-300">{{ t('admin.dashboard.granularity') }}:</span>
               <div class="w-28">
-                <Select v-model="granularity" :options="granularityOptions" @change="loadChartData" />
+                <Select v-model="granularity" :options="granularityOptions" @change="changeGranularity" />
               </div>
             </div>
           </div>
         </div>
 
+        <UsageRegionState :loading="modelStatsLoading" :error="modelError" :refreshing="requestedModelStats.length > 0" @retry="loadModelStats(true)" />
+        <UsageRegionState :loading="chartsLoading" :error="chartsError" :refreshing="trendData.length > 0" @retry="loadChartData(true)" />
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <ModelDistributionChart
+            v-if="!modelError"
             v-model:metric="modelDistributionMetric"
             :model-stats="requestedModelStats"
             :loading="modelStatsLoading"
@@ -36,6 +44,7 @@
             :end-date="endDate"
           />
           <GroupDistributionChart
+            v-if="!chartsError"
             v-model:metric="groupDistributionMetric"
             :group-stats="groupStats"
             :loading="chartsLoading"
@@ -49,6 +58,7 @@
 
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <EndpointDistributionChart
+            v-if="!statsError"
             v-model:source="endpointDistributionSource"
             v-model:metric="endpointDistributionMetric"
             :endpoint-stats="inboundEndpointStats"
@@ -62,7 +72,7 @@
             :start-date="startDate"
             :end-date="endDate"
           />
-          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+          <TokenUsageTrend v-if="!chartsError" :trend-data="trendData" :loading="chartsLoading" />
         </div>
       </div>
 
@@ -115,7 +125,7 @@
               <label class="input-label">{{ t('usage.compactionFilter') }}</label>
               <Select v-model="filters.native_compaction_v2" :options="compactionOptions" @change="applyFilters" />
             </div>
-            <div class="w-full sm:w-auto sm:min-w-[200px]">
+            <div v-if="subscriptionFeatureEnabled" class="w-full sm:w-auto sm:min-w-[200px]">
               <label class="input-label">{{ t('admin.usage.billingType') }}</label>
               <Select v-model="filters.billing_type" :options="billingTypeOptions" @change="applyFilters" />
             </div>
@@ -177,7 +187,10 @@
       </div>
 
       <template v-if="activeTab === 'usage'">
+        <UsageRegionState :error="logsError" @retry="loadLogs" />
         <UsageTable
+          column-order-key="user.usage"
+          :column-order-columns="allColumns"
           :data="usageLogs"
           :loading="loading"
           :columns="visibleColumns"
@@ -191,17 +204,20 @@
         />
 
         <Pagination
-          v-if="pagination.total > 0"
+          v-if="usageLogs.length > 0 || pagination.page > 1"
           :page="pagination.page"
           :total="pagination.total"
+          :has-more="pagination.has_more"
+          :item-count="usageLogs.length"
           :page-size="pagination.page_size"
           @update:page="handlePageChange"
           @update:pageSize="handlePageSizeChange"
         />
       </template>
 
+      <UsageRegionState v-if="activeTab === 'errors'" :error="errorsError" @retry="loadErrors" />
       <UserErrorRequestsTable
-        v-else-if="errorViewEnabled"
+        v-if="activeTab === 'errors' && errorViewEnabled"
         :rows="errorRows"
         :total="errorTotal"
         :loading="errorLoading"
@@ -222,6 +238,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import { FeatureFlags, resolveFeatureFlag } from '@/utils/featureFlags'
 import { keysAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -238,7 +255,7 @@ import UserErrorRequestsTable from '@/components/user/UserErrorRequestsTable.vue
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { getBillingModeLabel, getDisplayBillingMode as resolveDisplayBillingMode } from '@/utils/billingMode'
-import { resolveUsageRequestType, requestTypeToLegacyStream } from '@/utils/usageRequestType'
+import { resolveUsageRequestType } from '@/utils/usageRequestType'
 import type {
   ApiKey,
   EndpointStat,
@@ -253,6 +270,8 @@ import type {
 } from '@/types'
 import type { Column } from '@/components/common/types'
 import { COMMON_ERROR_STATUS_CODES } from '@/utils/errorBadges'
+import UsageRegionState from '@/components/common/UsageRegionState.vue'
+import { createUsageRequests, last24Hours, reconcileUsageTotal, snapshotUsageQuery, usageGranularity } from '@/utils/usageQuery'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -321,29 +340,20 @@ const errorStatusOptions = computed<SelectOption[]>(() => [
 ])
 
 const applyErrorFilters = () => {
-  errorPage.value = 1
-  void loadErrors()
+  filters.value = { ...filters.value, model: errorFilter.value.model || undefined, api_key_id: errorFilter.value.api_key_id ?? undefined }
+  applyFilters()
 }
 
 let abortController: AbortController | null = null
-let chartReqSeq = 0
-let statsReqSeq = 0
-let modelStatsReqSeq = 0
-
-const formatLocalDate = (date: Date): string =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-
-const getLast24HoursRangeDates = () => {
-  const end = new Date()
-  const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
-  return { start: formatLocalDate(start), end: formatLocalDate(end) }
-}
-
-const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
-  const startTime = new Date(`${start}T00:00:00`).getTime()
-  const endTime = new Date(`${end}T00:00:00`).getTime()
-  return Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24)) <= 1 ? 'hour' : 'day'
-}
+const requests = createUsageRequests()
+const statsError = ref(false)
+const logsError = ref(false)
+const chartsError = ref(false)
+const modelError = ref(false)
+const errorsError = ref(false)
+let exportController: AbortController | null = null
+const getLast24HoursRangeDates = last24Hours
+const getGranularityForRange = usageGranularity
 
 const defaultRange = getLast24HoursRangeDates()
 const startDate = ref(defaultRange.start)
@@ -369,7 +379,8 @@ const filters = ref<UsageQueryParams>({
 const pagination = reactive({
   page: 1,
   page_size: getPersistedPageSize(),
-  total: 0,
+  total: null as number | null,
+  has_more: false,
 })
 const sortState = reactive({
   sort_by: 'created_at',
@@ -391,6 +402,8 @@ const compactionOptions = computed<SelectOption[]>(() => [
   { value: null, label: t('usage.allCompactionTypes') },
   { value: true, label: t('usage.compactionOnly') },
 ])
+// 订阅功能关闭后只剩余额计费，「计费类型」筛选（余额/订阅）失去意义，整块隐藏。
+const subscriptionFeatureEnabled = computed(() => resolveFeatureFlag(appStore.cachedPublicSettings, FeatureFlags.subscription))
 const billingTypeOptions = computed<SelectOption[]>(() => [
   { value: null, label: t('admin.usage.allBillingTypes') },
   { value: 0, label: t('admin.usage.billingTypeBalance') },
@@ -421,16 +434,7 @@ const modelOptions = computed<SelectOption[]>(() => [
   ...modelOptionValues.value.map((model) => ({ value: model, label: model })),
 ])
 
-const normalizedFilters = computed<UsageQueryParams>(() => {
-  const requestType = filters.value.request_type
-  const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-  return {
-    ...filters.value,
-    start_date: startDate.value,
-    end_date: endDate.value,
-    stream: legacyStream === null ? undefined : legacyStream,
-  }
-})
+const normalizedFilters = ref<Readonly<UsageQueryParams>>(snapshotUsageQuery(filters.value, startDate.value, endDate.value))
 
 const buildUsageListParams = (page: number, pageSize: number): UsageQueryParams => ({
   page,
@@ -445,16 +449,21 @@ const loadLogs = async () => {
   const controller = new AbortController()
   abortController = controller
   loading.value = true
+  logsError.value = false
+  usageLogs.value = []
   try {
-    const res = await usageAPI.query(buildUsageListParams(pagination.page, pagination.page_size), {
+    const res = await usageAPI.query({ ...buildUsageListParams(pagination.page, pagination.page_size), count_mode: 'deferred' }, {
       signal: controller.signal,
     })
     if (!controller.signal.aborted) {
       usageLogs.value = res.items
-      pagination.total = res.total
+      pagination.has_more = res.has_more ?? (res.total != null && pagination.page * pagination.page_size < res.total)
+      pagination.total = reconcileUsageTotal(usageStats.value?.total_requests ?? (res.total_exact === false ? null : res.total), pagination.page, pagination.page_size, res.items.length, pagination.has_more)
     }
   } catch (error: any) {
     if (error?.name !== 'AbortError' && error?.code !== 'ERR_CANCELED') {
+      if (abortController !== controller) return
+      logsError.value = true
       appStore.showError(t('usage.failedToLoad'))
     }
   } finally {
@@ -462,50 +471,59 @@ const loadLogs = async () => {
   }
 }
 
-const loadStats = async () => {
-  const seq = ++statsReqSeq
+const loadStats = async (force = false) => {
+  const request = requests.start('stats')
   endpointStatsLoading.value = true
+  statsError.value = false
   try {
-    const stats = await usageAPI.getStats(normalizedFilters.value)
-    if (seq !== statsReqSeq) return
+    const stats = await usageAPI.getStats({ ...normalizedFilters.value, force_refresh: force }, undefined, { signal: request.signal })
+    if (!request.current()) return
     usageStats.value = stats
+    pagination.total = loading.value ? stats.total_requests : reconcileUsageTotal(stats.total_requests, pagination.page, pagination.page_size, usageLogs.value.length, pagination.has_more)
     inboundEndpointStats.value = stats.endpoints || []
     upstreamEndpointStats.value = []
     endpointPathStats.value = []
   } catch (error) {
-    if (seq !== statsReqSeq) return
+    if (!request.current()) return
+    statsError.value = true
+    usageStats.value = null
+    pagination.total = null
     console.error('Failed to load usage stats:', error)
     inboundEndpointStats.value = []
     upstreamEndpointStats.value = []
     endpointPathStats.value = []
   } finally {
-    if (seq === statsReqSeq) endpointStatsLoading.value = false
+    if (request.current()) endpointStatsLoading.value = false
   }
 }
 
-const loadModelStats = async () => {
-  const seq = ++modelStatsReqSeq
+const loadModelStats = async (force = false) => {
+  const request = requests.start('models')
   modelStatsLoading.value = true
+  modelError.value = false
   try {
     const response = await usageAPI.getDashboardModels({
       ...normalizedFilters.value,
       model_source: 'requested',
-    })
-    if (seq !== modelStatsReqSeq) return
+      force_refresh: force,
+    }, { signal: request.signal })
+    if (!request.current()) return
     requestedModelStats.value = response.models || []
     refreshModelOptions(response.models || [])
   } catch (error) {
-    if (seq !== modelStatsReqSeq) return
+    if (!request.current()) return
+    modelError.value = true
     console.error('Failed to load model stats:', error)
     requestedModelStats.value = []
   } finally {
-    if (seq === modelStatsReqSeq) modelStatsLoading.value = false
+    if (request.current()) modelStatsLoading.value = false
   }
 }
 
-const loadChartData = async () => {
-  const seq = ++chartReqSeq
+const loadChartData = async (force = false) => {
+  const request = requests.start('charts')
   chartsLoading.value = true
+  chartsError.value = false
   try {
     const snapshot = await usageAPI.getDashboardSnapshotV2({
       ...normalizedFilters.value,
@@ -513,17 +531,19 @@ const loadChartData = async () => {
       include_trend: true,
       include_model_stats: false,
       include_group_stats: true,
-    })
-    if (seq !== chartReqSeq) return
+      force_refresh: force,
+    }, { signal: request.signal })
+    if (!request.current()) return
     trendData.value = snapshot.trend || []
     groupStats.value = snapshot.groups || []
   } catch (error) {
-    if (seq !== chartReqSeq) return
+    if (!request.current()) return
+    chartsError.value = true
     console.error('Failed to load chart data:', error)
     trendData.value = []
     groupStats.value = []
   } finally {
-    if (seq === chartReqSeq) chartsLoading.value = false
+    if (request.current()) chartsLoading.value = false
   }
 }
 
@@ -538,6 +558,24 @@ const refreshModelOptions = (models: ModelStat[]) => {
 }
 
 const applyFilters = () => {
+  let query: Readonly<UsageQueryParams>
+  try {
+    query = snapshotUsageQuery(filters.value, startDate.value, endDate.value)
+  } catch {
+    appStore.showError(t('admin.usage.cleanup.missingRange'))
+    return
+  }
+  requests.cancelAll()
+  normalizedFilters.value = query
+  usageStats.value = null
+  pagination.total = null
+  pagination.has_more = false
+  trendData.value = []
+  groupStats.value = []
+  requestedModelStats.value = []
+  inboundEndpointStats.value = []
+  upstreamEndpointStats.value = []
+  endpointPathStats.value = []
   pagination.page = 1
   void loadLogs()
   void loadStats()
@@ -548,10 +586,16 @@ const applyFilters = () => {
 
 const refreshData = () => {
   void loadLogs()
-  void loadStats()
-  void loadModelStats()
-  void loadChartData()
+  void loadStats(true)
+  void loadModelStats(true)
+  void loadChartData(true)
   if (activeTab.value === 'errors') void loadErrors()
+}
+
+const changeGranularity = () => {
+  trendData.value = []
+  groupStats.value = []
+  void loadChartData()
 }
 
 const resetFilters = () => {
@@ -575,6 +619,12 @@ const resetFilters = () => {
 }
 
 const onDateRangeChange = (range: { startDate: string; endDate: string; preset: string | null }) => {
+  try {
+    snapshotUsageQuery(filters.value, range.startDate, range.endDate)
+  } catch {
+    appStore.showError(t('admin.usage.cleanup.missingRange'))
+    return
+  }
   startDate.value = range.startDate
   endDate.value = range.endDate
   filters.value.start_date = range.startDate
@@ -634,14 +684,21 @@ const exportToCSV = async () => {
     return
   }
   exporting.value = true
+  const exportQuery = Object.freeze({ ...normalizedFilters.value, ...sortState })
+  const rangeName = `${startDate.value}_to_${endDate.value}`
+  exportController?.abort()
+  const controller = new AbortController()
+  exportController = controller
   appStore.showInfo(t('usage.preparingExport'))
   try {
     const allLogs: UsageLog[] = []
     const pageSize = 100
-    const totalPages = Math.ceil(pagination.total / pageSize)
-    for (let page = 1; page <= totalPages; page++) {
-      const response = await usageAPI.query(buildUsageListParams(page, pageSize))
+    for (let page = 1; ; page++) {
+      const response = await usageAPI.query({ ...exportQuery, page, page_size: pageSize, count_mode: 'exact' }, { signal: controller.signal })
+      if (controller.signal.aborted) return
       allLogs.push(...response.items)
+      const hasMore = response.has_more ?? (response.pages != null ? page < response.pages : response.items.length >= pageSize)
+      if (!hasMore || (response.total != null && allLogs.length >= response.total)) break
     }
     if (allLogs.length === 0) {
       appStore.showWarning(t('usage.noDataToExport'))
@@ -693,11 +750,12 @@ const exportToCSV = async () => {
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `usage_${startDate.value}_to_${endDate.value}.csv`
+    link.download = `usage_${rangeName}.csv`
     link.click()
     window.URL.revokeObjectURL(url)
     appStore.showSuccess(t('usage.exportSuccess'))
   } catch (error) {
+    if (controller.signal.aborted) return
     console.error('CSV Export failed:', error)
     appStore.showError(t('usage.exportFailed'))
   } finally {
@@ -837,6 +895,9 @@ const loadFilterOptions = async () => {
 
 const resetErrorRows = () => {
   errorPage.value = 1
+  errorRows.value = []
+  errorTotal.value = 0
+  errorsError.value = false
   if (activeTab.value === 'errors') {
     void loadErrors()
   } else {
@@ -846,27 +907,32 @@ const resetErrorRows = () => {
 }
 
 const loadErrors = async () => {
+  const request = requests.start('errors')
   errorLoading.value = true
+  errorsError.value = false
+  errorRows.value = []
   try {
     const resp = await usageAPI.listMyErrorRequests({
       page: errorPage.value,
       page_size: errorPageSize.value,
-      start_date: startDate.value,
-      end_date: endDate.value,
+      ...normalizedFilters.value,
       model: (errorFilter.value.model ?? '').trim() || undefined,
       category: errorFilter.value.category || undefined,
       api_key_id: errorFilter.value.api_key_id ?? undefined,
       status_code: errorFilter.value.status_code ?? undefined,
       sort_by: errorSortBy.value,
       sort_order: errorSortOrder.value,
-    })
+    }, { signal: request.signal })
+    if (!request.current()) return
     errorRows.value = resp.items
     errorTotal.value = resp.total
   } catch (error) {
+    if (!request.current()) return
+    errorsError.value = true
     console.error('[UsageView] loadErrors failed:', error)
     appStore.showError(t('usage.errors.failedToLoad'))
   } finally {
-    errorLoading.value = false
+    if (request.current()) errorLoading.value = false
   }
 }
 
@@ -890,6 +956,8 @@ const onErrorPageSize = (pageSize: number) => {
 
 const switchToErrors = () => {
   activeTab.value = 'errors'
+  errorFilter.value.model = normalizedFilters.value.model || ''
+  errorFilter.value.api_key_id = normalizedFilters.value.api_key_id ?? null
   if (errorRows.value.length === 0) void loadErrors()
 }
 
@@ -902,6 +970,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  requests.cancelAll()
+  exportController?.abort()
   abortController?.abort()
   document.removeEventListener('click', handleColumnClickOutside)
 })

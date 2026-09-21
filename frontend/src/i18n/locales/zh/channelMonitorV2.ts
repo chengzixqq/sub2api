@@ -1,6 +1,26 @@
 /** Channel Monitor V2 (user + admin passive monitor UI) */
 export default {
   channelMonitorV2: {
+    unified: {
+      current: '当前状态', traffic: '真实请求', probe: '探测', quota: '额度', accounts: '账号明细', account: '账号', recentEvents: '最近请求', successfulAttempts: '成功', failedAttempts: '失败',
+      legacySource: '历史数据源', preview: '预览未发布数据', historyInterval: '{minutes} 分钟区间',
+      refreshFailed: '刷新失败，当前保留上次快照，数据已过期。', loadFailed: '监控数据暂时不可用。', accessDenied: '当前账号无法访问此监控。',
+      collector: { healthy: '采集正常', stale: '采集延迟', write_failed: '采集写入失败', disabled: '采集已关闭', backlogged: '采集积压', unknown: '采集状态未知' },
+      pendingEvents: '积压 {count} 个事件',
+      sources: { traffic: '真实请求', probe: '探测结果', none: '暂无近期依据' },
+      states: { healthy: '可用', warning: '性能下降', critical: '不可用', unknown: '未知', stale: '已过期', degraded: '性能下降', unavailable: '不可用', error: '失败', pending: '等待中', ok: '充足', exhausted: '已耗尽', unsupported: '暂不支持', not_configured: '未配置' },
+      reasons: { probe_success: '最近一次探测成功', no_recent_evidence: '暂无近期依据', insufficient_samples: '真实请求样本不足', traffic_healthy: '近期真实请求正常', probe_failed: '近期探测失败', no_samples: '暂无近期样本', collection_unavailable: '采集不可用', traffic_expired: '真实请求依据已过期', recent_traffic: '近期真实请求', high_latency: '首字延迟过高', recent_probe: '近期探测结果' },
+      gaps: { write_failed: '采集写入失败', collector_stale: '采集器心跳延迟', queue_overflow: '采集队列溢出', source_changed: '数据源已变化', collection_disabled: '采集已关闭', legacy_log_semantics: '历史日志数据源', probe_unavailable: '探测依据不可用', quota_unavailable: '额度依据不可用' },
+      settings: { title: '监控策略', enabled: '采集真实请求', probeEnabled: '主动付费探活', quotaEnabled: '额度监控', displayOn: '用户展示：开启', displayOff: '用户展示：关闭', mode: '发布状态', shadow: '影子采集', live: '正式发布', liveGroups: '已发布分组', allGroups: '全部分组', refresh: '刷新间隔', retention: '明细保留', retentionValue: '24 小时', refreshValue: '60 秒', minimumSample: '最少真实请求样本', healthyReliability: '正常可靠性 %', warningReliability: '警告可靠性 %', warningTtft: '首字延迟警告 ms', criticalTtft: '首字延迟严重 ms', legacy: '旧版展示策略', saved: '监控策略已保存' },
+      probes: { title: '探测目标', add: '添加目标', group: '分组', model: '模型', protocol: '协议', enabled: '启用', run: '立即探测', budget: '每日预算（UTC）', targetBudget: '目标预算', empty: '暂无探测目标', saved: '探测目标已保存', failed: '探测请求失败', edit: '编辑目标', create: '创建目标', globalUsed: '{used} / {limit}', status: '最近结果', confirm: '执行付费探测？', confirmCost: '本次操作会发送计费上游请求，并占用当日探测预算。', completed: '探测已提交', invalid: '请选择分组并填写模型和协议。', cost: '上游费用', budgetExhausted: '当日预算已用尽' },
+    },
+    observation: {
+      loading: '正在加载渠道观测', loadFailed: '渠道观测加载失败', empty: '当前筛选范围暂无观测数据', modelDetails: '模型明细', noModels: '暂无模型数据', requests: '请求数', errors: '渠道错误', attempts: '上游尝试', group: '分组', reliability: '可靠率', firstOutput: '首字延迟', cache: '缓存命中率', history: '历史状态', models: '{count} 个模型', multiplier: '用户倍率 {value}x', priceUnavailable: '倍率不可用', slow: '响应偏慢',
+      coverage: { complete: '数据完整', partial: '部分覆盖', stale: '数据延迟', unavailable: '暂不可用' },
+      layout: { cards: '卡片视图', matrix: '矩阵视图', list: '分组列表' },
+      switchToLegacy: '原版 V2 诊断', switchToCards: '观测卡片', rpm: 'RPM', tpm: 'TPM', retries: '重试恢复',
+      states: { healthy: '正常', warning: '可靠性下降', critical: '异常', unknown: '未知', sufficient: '样本充足', insufficient: '样本不足', no_samples: '暂无样本', partial: '部分覆盖', stale: '数据延迟', unavailable: '暂不可用', missing: '数据缺失' },
+    },
     title: '渠道监控',
     updating: '正在更新数据',
     updatedTo: '更新至 {time}',

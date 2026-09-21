@@ -171,6 +171,33 @@ func TestVendorMonitorViewCanReadExactAccountBatches(t *testing.T) {
 	}
 }
 
+func TestVendorRoutesDenyAllOwnerOnlyBulkEndpoints(t *testing.T) {
+	// Keep this independent from permission bits: even a fully-enabled vendor
+	// must not reach fan-out operations that have no single-resource scope.
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	paths := []string{
+		"/api/v1/admin/accounts/upstream-billing-probe/batch",
+		"/api/v1/admin/accounts/batch",
+		"/api/v1/admin/accounts/batch-update-credentials",
+		"/api/v1/admin/accounts/batch-refresh-tier",
+		"/api/v1/admin/accounts/bulk-update",
+		"/api/v1/admin/accounts/batch-delete",
+		"/api/v1/admin/accounts/batch-clear-error",
+		"/api/v1/admin/accounts/batch-refresh",
+		"/api/v1/admin/users/batch-concurrency",
+		"/api/v1/admin/users/batch-limits",
+		"/api/v1/admin/subscriptions/bulk-assign",
+		"/api/v1/admin/subscriptions/bulk-action",
+		"/api/v1/admin/proxies/batch",
+		"/api/v1/admin/proxies/batch-delete",
+	}
+	for _, path := range paths {
+		if vendorRouteAllowed(newFullPathContext("POST", path), scope) {
+			t.Errorf("POST %s must remain station-owner only", path)
+		}
+	}
+}
+
 func TestVendorGrokOAuthOnlyAllowsScopedReauthHelpers(t *testing.T) {
 	scope := VendorScope{
 		WorkspaceID: 7,

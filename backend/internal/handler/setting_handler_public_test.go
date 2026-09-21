@@ -75,11 +75,13 @@ func TestSettingHandler_GetPublicSettings_ExposesForceEmailOnThirdPartySignup(t 
 		Code int `json:"code"`
 		Data struct {
 			ForceEmailOnThirdPartySignup bool `json:"force_email_on_third_party_signup"`
+			Version                       string `json:"version"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
 	require.Equal(t, 0, resp.Code)
 	require.True(t, resp.Data.ForceEmailOnThirdPartySignup)
+	require.Equal(t, "test-version", resp.Data.Version)
 }
 
 func TestSettingHandler_GetPublicSettings_ExposesTencentCaptchaConfiguration(t *testing.T) {

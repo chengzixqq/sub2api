@@ -78,7 +78,7 @@
         </p>
       </div>
 
-      <div v-if="form.provider === PROVIDER_OPENAI && usesProbePart" class="rounded-lg border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+      <div v-if="supportsAPIMode(form.provider) && usesProbePart" class="rounded-lg border border-blue-100 bg-blue-50/50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
         <label class="input-label">{{ t('admin.channelMonitor.form.apiMode') }}</label>
         <div class="grid gap-3 sm:grid-cols-2">
           <button
@@ -269,6 +269,8 @@ import {
   PROVIDER_KIMI,
   PROVIDER_ZHIPU,
   PROVIDER_DEEPSEEK,
+  PROVIDER_MINIMAX,
+  PROVIDER_OPENCODE_GO,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
   CHECK_MODE_PROBE,
@@ -279,6 +281,8 @@ import {
   DEFAULT_KIMI_ENDPOINT,
   DEFAULT_ZHIPU_ENDPOINT,
   DEFAULT_DEEPSEEK_ENDPOINT,
+  DEFAULT_MINIMAX_ENDPOINT,
+  DEFAULT_OPENCODE_GO_ENDPOINT,
   DEFAULT_INTERVAL_SECONDS,
 } from '@/constants/channelMonitor'
 
@@ -371,7 +375,7 @@ const templatesLoading = ref(false)
 const templateOptions = computed(() => {
   const items = templatesCache.value.filter((t) => {
     if (t.provider !== form.provider) return false
-    if (form.provider !== PROVIDER_OPENAI) return true
+    if (!supportsAPIMode(form.provider)) return true
     return normalizeAPIMode(t.api_mode) === form.api_mode
   })
   return [
@@ -436,6 +440,11 @@ function normalizeAPIMode(mode: APIMode | undefined | null): APIMode {
   return mode === API_MODE_RESPONSES ? API_MODE_RESPONSES : API_MODE_CHAT_COMPLETIONS
 }
 
+/** OpenAI-compatible providers expose both Chat Completions and Responses. */
+function supportsAPIMode(provider: Provider): boolean {
+  return provider === PROVIDER_OPENAI || provider === PROVIDER_OPENCODE_GO
+}
+
 function apiModeButtonClass(mode: APIMode): string {
   const active = form.api_mode === mode
   if (active) {
@@ -445,7 +454,7 @@ function apiModeButtonClass(mode: APIMode): string {
 }
 
 function templateOptionLabel(tpl: ChannelMonitorTemplate): string {
-  if (tpl.provider !== PROVIDER_OPENAI) return tpl.name
+  if (!supportsAPIMode(tpl.provider)) return tpl.name
   const labelKey = normalizeAPIMode(tpl.api_mode) === API_MODE_RESPONSES
     ? 'admin.channelMonitor.form.apiModeResponses'
     : 'admin.channelMonitor.form.apiModeChatCompletions'
@@ -473,6 +482,8 @@ const providerOptions = computed<ProviderOption[]>(() => [
   { value: PROVIDER_KIMI, label: t('monitorCommon.providers.kimi') },
   { value: PROVIDER_ZHIPU, label: t('monitorCommon.providers.zhipu') },
   { value: PROVIDER_DEEPSEEK, label: t('monitorCommon.providers.deepseek') },
+  { value: PROVIDER_MINIMAX, label: t('monitorCommon.providers.minimax') },
+  { value: PROVIDER_OPENCODE_GO, label: t('monitorCommon.providers.opencode_go') },
 ])
 
 // 国产 provider 预填的官方 endpoint（仅探活侧；配额模式 endpoint 可留空）。
@@ -480,6 +491,8 @@ const PROVIDER_DEFAULT_ENDPOINTS: Partial<Record<Provider, string>> = {
   [PROVIDER_KIMI]: DEFAULT_KIMI_ENDPOINT,
   [PROVIDER_ZHIPU]: DEFAULT_ZHIPU_ENDPOINT,
   [PROVIDER_DEEPSEEK]: DEFAULT_DEEPSEEK_ENDPOINT,
+  [PROVIDER_MINIMAX]: DEFAULT_MINIMAX_ENDPOINT,
+  [PROVIDER_OPENCODE_GO]: DEFAULT_OPENCODE_GO_ENDPOINT,
 }
 
 interface CheckModeOption {
@@ -702,7 +715,7 @@ function selectProvider(provider: Provider) {
 watch(() => form.provider, () => {
   if (suppressFormWatchers) return
   form.api_key = ''
-  if (form.provider !== PROVIDER_OPENAI) {
+  if (!supportsAPIMode(form.provider)) {
     form.api_mode = API_MODE_CHAT_COMPLETIONS
   }
   clearRequestSnapshot()
@@ -710,7 +723,7 @@ watch(() => form.provider, () => {
 
 watch(() => form.api_mode, () => {
   if (suppressFormWatchers) return
-  if (form.provider === PROVIDER_OPENAI) {
+  if (supportsAPIMode(form.provider)) {
     clearRequestSnapshot()
   }
 }, { flush: 'sync' })
@@ -811,7 +824,7 @@ function buildPayload(): CreateParams {
   return {
     name: form.name.trim(),
     provider: form.provider,
-    api_mode: form.provider === PROVIDER_OPENAI ? form.api_mode : API_MODE_CHAT_COMPLETIONS,
+    api_mode: supportsAPIMode(form.provider) ? form.api_mode : API_MODE_CHAT_COMPLETIONS,
     check_mode: form.check_mode,
     account_id: usesQuotaMode.value ? form.account_id : null,
     endpoint: usesProbePart.value ? form.endpoint.trim() : '',

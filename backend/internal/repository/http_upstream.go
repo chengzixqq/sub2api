@@ -76,13 +76,13 @@ const (
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
-	// OpenAI HTTP/2 连接健康探测：Codex 上游改走 HTTP/2 后，池化连接被代理/NAT
+	// 长流 HTTP/2 连接健康探测：池化连接被代理/NAT
 	// 静默掐断会成为“死连接”（两端都以为存活），请求落上去会挂到 TCP 重传超时
 	// （分钟级）。Go 的 http2.Transport 默认 ReadIdleTimeout=0（不发健康 PING），
 	// 无法检测。启用主动 PING 探测：连接空闲 ReadIdleTimeout 后发 PING，PingTimeout
 	// 内无响应即判定死连接并关闭，从源头避免请求挂在死连接上。
-	openAIHTTP2ReadIdleTimeout = 15 * time.Second
-	openAIHTTP2PingTimeout     = 15 * time.Second
+	longStreamHTTP2ReadIdleTimeout = 10 * time.Second
+	longStreamHTTP2PingTimeout     = 5 * time.Second
 
 	// The Grok CLI proxy rejects requests that do not identify a supported
 	// client version. Host/env/version pins live in package xai so service,
@@ -96,6 +96,7 @@ const (
 
 const (
 	upstreamProtocolModeDefault          = "default"
+	upstreamProtocolModeLongStreamH2     = "long_stream_h2"
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
 	upstreamProtocolModeOpenAIH1Fallback = "openai_h1_fallback"
@@ -128,7 +129,7 @@ type upstreamClientEntry struct {
 	client       *http.Client // HTTP 客户端实例
 	proxyKey     string       // 代理标识（用于检测代理变更）
 	poolKey      string       // 连接池配置标识（用于检测配置变更）
-	protocolMode string       // 协议模式（default/openai_h1/openai_h2/openai_h1_fallback）
+	protocolMode string       // 协议模式（default/long_stream_h2/openai_h1/openai_h2/openai_h1_fallback）
 	lastUsed     int64        // 最后使用时间戳（纳秒），用于 LRU 淘汰
 	inFlight     int64        // 当前进行中的请求数，>0 时不可淘汰
 }
@@ -207,7 +208,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用
+	var timingContext context.Context
+	if req != nil {
+		timingContext = req.Context()
+	}
+	finishAcquire := service.MeasureGatewayTiming(timingContext, service.GatewayTimingClientAcquire)
 	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
+	finishAcquire()
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +222,10 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
+	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
+	finishTiming(resp, err)
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
 		// 请求失败，立即减少计数
@@ -271,7 +281,13 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		return nil, err
 	}
 
+	var timingContext context.Context
+	if req != nil {
+		timingContext = req.Context()
+	}
+	finishAcquire := service.MeasureGatewayTiming(timingContext, service.GatewayTimingClientAcquire)
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
+	finishAcquire()
 	if err != nil {
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
@@ -279,7 +295,10 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
+	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
+	req, finishTiming := service.TraceGatewayUpstream(req)
 	resp, err := servertiming.Do(client, req)
+	finishTiming(resp, err)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
@@ -1007,6 +1026,9 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 }
 
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
+	if profile == service.HTTPUpstreamProfileLongStream {
+		return upstreamProtocolModeLongStreamH2
+	}
 	if profile == service.HTTPUpstreamProfileGrok {
 		return upstreamProtocolModeGrok
 	}
@@ -1332,11 +1354,11 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
 	}
 	switch protocolMode {
-	case upstreamProtocolModeOpenAIH2:
+	case upstreamProtocolModeLongStreamH2, upstreamProtocolModeOpenAIH2:
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
-		if _, err := enableOpenAIHTTP2KeepAlive(transport); err != nil {
+		if _, err := enableHTTP2KeepAlive(transport); err != nil {
 			return nil, err
 		}
 	case upstreamProtocolModeOpenAIH1:
@@ -1353,18 +1375,18 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 	return transport, nil
 }
 
-// enableOpenAIHTTP2KeepAlive 在 http.Transport 上显式配置 HTTP/2 并启用连接健康探测。
+// enableHTTP2KeepAlive 在 http.Transport 上显式配置 HTTP/2 并启用连接健康探测。
 // Go 默认惰性配置 http2 且 ReadIdleTimeout=0（不发健康 PING），无法检测被代理/NAT
 // 静默掐断的死连接。此处主动设置 ReadIdleTimeout/PingTimeout，让死连接被提前 PING
 // 出并关闭，请求得以重建连接而非挂到 TCP 重传超时。返回底层 *http2.Transport 便于测试。
-func enableOpenAIHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
+func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
 	h2, err := http2.ConfigureTransports(transport)
 	if err != nil {
 		return nil, err
 	}
 	if h2 != nil {
-		h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
-		h2.PingTimeout = openAIHTTP2PingTimeout
+		h2.ReadIdleTimeout = longStreamHTTP2ReadIdleTimeout
+		h2.PingTimeout = longStreamHTTP2PingTimeout
 	}
 	return h2, nil
 }

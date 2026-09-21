@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -91,6 +90,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, err
 		}
 	}
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
 
 	var resp *http.Response
 	retryStart := time.Now()
@@ -120,7 +123,48 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 		}
 
-		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
+		// Keep passthrough body intact by default, but allow the same opt-in
+		// post-error signature retry as the managed gateway path. This is the
+		// only thinking rectifier in passthrough; no pre-filter is applied.
+		if resp.StatusCode == http.StatusBadRequest && claudePolicy.ThinkingSignatureRetryEnabled {
+			respBody, readErr := s.readUpstreamErrorBody(resp)
+			if readErr == nil && s.shouldRectifySignatureError(ctx, account, respBody, input.RequestModel) {
+				_ = resp.Body.Close()
+				filteredBody := FilterThinkingBlocksForRetry(input.Body, input.RequestModel)
+				retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+				retryReq, retryWireBody, buildErr := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(retryCtx, c, account, filteredBody, token)
+				releaseRetryCtx()
+				if buildErr == nil {
+					retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+					if retryErr == nil && retryResp != nil {
+						if retryResp.StatusCode < 400 {
+							resp = retryResp
+							input.Body = retryWireBody
+							if input.Parsed != nil {
+								if err := input.Parsed.ReplaceBody(retryWireBody); err != nil {
+									_ = retryResp.Body.Close()
+									return nil, err
+								}
+							}
+							logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: signature retry succeeded", account.ID)
+						} else {
+							if retryResp.Body != nil {
+								_ = retryResp.Body.Close()
+							}
+							resp = &http.Response{StatusCode: retryResp.StatusCode, Header: retryResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(respBody))}
+						}
+					} else {
+						resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
+					}
+				} else {
+					resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
+				}
+			} else if readErr == nil {
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
+		}
+
+		// 透传分支不执行通用 400 body 降级；上面的签名重试是唯一例外。
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
 				elapsed := time.Since(retryStart)
@@ -150,10 +194,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
 					Passthrough:        true,
 					Kind:               "retry",
-					Message:            extractUpstreamErrorMessage(respBody),
+					Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 					Detail: func() string {
 						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+							return truncateString(string(redactUpstreamResponseBodyForClient(c, respBody)), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 						}
 						return ""
 					}(),
@@ -182,7 +226,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(redactUpstreamResponseBodyForClient(c, respBody)), 1000))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -195,10 +239,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
 				Passthrough:        true,
 				Kind:               "retry_exhausted_failover",
-				Message:            extractUpstreamErrorMessage(respBody),
+				Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 				Detail: func() string {
 					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+						return truncateString(string(redactUpstreamResponseBodyForClient(c, respBody)), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 					}
 					return ""
 				}(),
@@ -218,7 +262,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(redactUpstreamResponseBodyForClient(c, respBody)), 1000))
 
 		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -231,10 +275,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			UpstreamRequestID:  resp.Header.Get("x-request-id"),
 			Passthrough:        true,
 			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
+			Message:            sanitizeUpstreamErrorMessageForContext(c, extractUpstreamErrorMessage(respBody)),
 			Detail: func() string {
 				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
+					return truncateString(string(redactUpstreamResponseBodyForClient(c, respBody)), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 				}
 				return ""
 			}(),
@@ -321,7 +365,11 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
 		clientBeta = beta
 	}
-	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, clientBeta, claudePolicy.FallbackPolicy, true); changed {
 		body = sanitized
 	}
 
@@ -362,9 +410,10 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if getHeaderRaw(req.Header, "anthropic-version") == "" {
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
-
-	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
+	// 账号级请求头覆写覆盖通用来源；严格协议边界仍在下方做最终过滤。
 	account.ApplyHeaderOverrides(req.Header)
+	// Strict remains authoritative over account-level header overrides.
+	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
 
 	return req, body, nil
 }
@@ -414,7 +463,13 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	clientDisconnected := false
 	sawTerminalEvent := false
 
-	scanner := bufio.NewScanner(resp.Body)
+	streamInterval := time.Duration(0)
+	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
+		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
+	}
+	idleReader := newUpstreamIdleReader(resp.Body, streamInterval)
+	defer idleReader.Stop()
+	scanner := bufio.NewScanner(idleReader)
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
@@ -436,13 +491,10 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			return false
 		}
 	}
-	var lastReadAt int64
-	atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 	go func(scanBuf *sseScannerBuf64K) {
 		defer putSSEScannerBuf64K(scanBuf)
 		defer close(events)
 		for scanner.Scan() {
-			atomic.StoreInt64(&lastReadAt, time.Now().UnixNano())
 			if !sendEvent(scanEvent{line: scanner.Text()}) {
 				return
 			}
@@ -452,20 +504,6 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		}
 	}(scanBuf)
 	defer close(done)
-
-	streamInterval := time.Duration(0)
-	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
-		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
-	}
-	var intervalTicker *time.Ticker
-	if streamInterval > 0 {
-		intervalTicker = time.NewTicker(streamInterval)
-		defer intervalTicker.Stop()
-	}
-	var intervalCh <-chan time.Time
-	if intervalTicker != nil {
-		intervalCh = intervalTicker.C
-	}
 
 	keepaliveInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamKeepaliveInterval > 0 {
@@ -481,6 +519,8 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		keepaliveCh = keepaliveTimer.C
 	}
 	lastDataAt := time.Now()
+	inErrorEvent := false
+	var pendingStreamError *sseStreamErrorEventError
 	resetKeepaliveTimer := func() {
 		if keepaliveTimer == nil {
 			return
@@ -503,10 +543,13 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					// 兜底补刷，确保最后一个未以空行结尾的事件也能及时送达客户端。
 					flusher.Flush()
 				}
+				if pendingStreamError != nil {
+					MarkResponseCommitted(c)
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, pendingStreamError
+				}
 				if !sawTerminalEvent {
 					if clientDisconnected && streamInterval > 0 {
-						lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-						if time.Since(lastRead) >= streamInterval {
+						if idleReader.idleFor() >= streamInterval {
 							return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout")
 						}
 					}
@@ -534,11 +577,15 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if inErrorEvent || gjson.Get(trimmed, "type").String() == "error" {
+					inErrorEvent = true
+					pendingStreamError = &sseStreamErrorEventError{RawData: trimmed}
+				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
 				}
-				if firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
+				if pendingStreamError == nil && firstTokenMs == nil && trimmed != "" && trimmed != "[DONE]" {
 					ms := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &ms
 					c.Set(GatewayUpstreamDeliveredKey, true)
@@ -546,13 +593,24 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				parseSSEUsagePassthrough(data, usage)
 			} else {
 				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
-					sawTerminalEvent = true
+				if strings.HasPrefix(trimmed, "event:") {
+					eventName := strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+					inErrorEvent = strings.EqualFold(eventName, "error")
+					if inErrorEvent {
+						pendingStreamError = &sseStreamErrorEventError{}
+					}
+					if anthropicStreamEventIsTerminal(eventName, "") {
+						sawTerminalEvent = true
+					}
 				}
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				clientLine := []byte(line)
+				if inErrorEvent {
+					clientLine = redactUpstreamResponseBodyForClient(c, clientLine)
+				}
+				restored := string(reverseToolNamesIfPresent(c, clientLine))
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -565,14 +623,18 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 					lastDataAt = time.Now()
 					resetKeepaliveTimer()
 					inPartialEvent = false
+					inErrorEvent = false
 				} else {
 					inPartialEvent = true
 				}
 			}
+			if line == "" && pendingStreamError != nil {
+				MarkResponseCommitted(c)
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, pendingStreamError
+			}
 
-		case <-intervalCh:
-			lastRead := time.Unix(0, atomic.LoadInt64(&lastReadAt))
-			if time.Since(lastRead) < streamInterval {
+		case <-idleReader.C():
+			if !idleReader.Expired() {
 				continue
 			}
 			if clientDisconnected {

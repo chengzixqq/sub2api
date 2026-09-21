@@ -92,7 +92,8 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", "streaming image requests cannot be submitted as asynchronous tasks")
 		return
 	}
-	if err := h.validateRequest(c, platform, body); err != nil {
+	model, err := h.validateRequest(c, platform, body)
+	if err != nil {
 		imageTaskJSONError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
@@ -101,7 +102,12 @@ func (h *AsyncImageHandler) Submit(c *gin.Context) {
 	}
 
 	taskCtx, recorder, cancel := newAsyncImageContext(c, body, h.tasks.ExecutionTimeout())
-	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID})
+	groupID := apiKey.Group.ID
+	if apiKey.GroupID != nil {
+		groupID = *apiKey.GroupID
+	}
+	task, err := h.tasks.Create(c.Request.Context(), service.ImageTaskOwner{UserID: apiKey.UserID, APIKeyID: apiKey.ID,
+		Observation: &service.ImageTaskObservationScope{GroupID: groupID, Platform: platform, Model: monitorIdentifier(model)}})
 	if err != nil {
 		cancel()
 		imageTaskError(c, err)
@@ -187,25 +193,29 @@ func (h *AsyncImageHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, task)
 }
 
-func (h *AsyncImageHandler) validateRequest(c *gin.Context, platform string, body []byte) error {
+func (h *AsyncImageHandler) validateRequest(c *gin.Context, platform string, body []byte) (string, error) {
 	if h.openAI == nil || h.openAI.gatewayService == nil {
-		return nil
+		var request struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &request)
+		return request.Model, nil
 	}
 	if platform == service.PlatformGrok {
 		parsed := service.ParseGrokMediaRequest(c.GetHeader("Content-Type"), body)
 		if strings.TrimSpace(parsed.Model) == "" {
-			return errors.New("model is required")
+			return "", errors.New("model is required")
 		}
-		return nil
+		return parsed.Model, nil
 	}
 	parsed, err := h.openAI.gatewayService.ParseOpenAIImagesRequest(c, body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if parsed.Stream {
-		return errors.New("streaming image requests cannot be submitted as asynchronous tasks")
+		return "", errors.New("streaming image requests cannot be submitted as asynchronous tasks")
 	}
-	return nil
+	return parsed.Model, nil
 }
 
 func (h *AsyncImageHandler) executeWithGateway(platform string, c *gin.Context) {
@@ -222,17 +232,40 @@ func (h *AsyncImageHandler) executeWithGateway(platform string, c *gin.Context) 
 
 func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, recorder *httptest.ResponseRecorder, cancel context.CancelFunc) {
 	defer cancel()
+	endObservation := h.tasks.BeginObservation()
+	defer endObservation()
+	ctx, attempts := service.WithChannelMonitorAttempts(taskCtx.Request.Context())
+	taskCtx.Request = taskCtx.Request.WithContext(ctx)
+	completionContext := func(status int) context.Context {
+		facts := service.ChannelMonitorEvent{}
+		facts.Attempts, facts.AttemptsTruncated = attempts.Snapshot()
+		facts.PhaseMs, facts.FirstOutputMs = channelMonitorTimingFacts(taskCtx.Request.Context())
+		result, hasAdapterResult := monitorImageResult(taskCtx)
+		if !hasAdapterResult {
+			result = newChannelMonitorParser("images", false).result(status)
+		}
+		result = channelMonitorFinalizeAttempts(result, facts.Attempts, facts.AttemptsTruncated, time.Now().UTC())
+		if hasAdapterResult || status >= http.StatusBadRequest {
+			facts.Outcome, facts.ErrorCategory = result.Outcome, result.ErrorCategory
+			facts.TerminalSeen = result.TerminalSeen
+			facts.ResponseModel = result.Model
+			facts.OutputSeen = result.OutputSeen
+			facts.InputTokens, facts.OutputTokens = result.InputTokens, result.OutputTokens
+			facts.CacheReadTokens = result.CacheReadTokens
+		}
+		return service.WithImageTaskObservation(context.Background(), facts)
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			logger.L().Error("image_task.execution_panicked", zap.String("task_id", taskID), zap.Any("panic", recovered))
-			h.failTask(taskID, http.StatusInternalServerError, imageTaskErrorPayload("api_error", "image generation task panicked"))
+			h.failTask(completionContext(http.StatusInternalServerError), taskID, http.StatusInternalServerError, imageTaskErrorPayload("api_error", "image generation task panicked"))
 		}
 	}()
 
 	h.execute(platform, taskCtx)
 	body := bytes.TrimSpace(recorder.Body.Bytes())
 	if err := taskCtx.Request.Context().Err(); err != nil && len(body) == 0 {
-		h.failTask(taskID, http.StatusGatewayTimeout, imageTaskErrorPayload("timeout_error", "image generation task timed out"))
+		h.failTask(completionContext(http.StatusGatewayTimeout), taskID, http.StatusGatewayTimeout, imageTaskErrorPayload("timeout_error", "image generation task timed out"))
 		return
 	}
 	statusCode := recorder.Code
@@ -241,19 +274,19 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 	}
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
 		if len(body) == 0 || !json.Valid(body) {
-			h.failTask(taskID, http.StatusBadGateway, imageTaskErrorPayload("api_error", "upstream returned an invalid image response"))
+			h.failTask(completionContext(http.StatusBadGateway), taskID, http.StatusBadGateway, imageTaskErrorPayload("api_error", "upstream returned an invalid image response"))
 			return
 		}
-		if err := h.tasks.Complete(context.Background(), taskID, statusCode, json.RawMessage(body)); err != nil {
+		if err := h.tasks.Complete(completionContext(statusCode), taskID, statusCode, json.RawMessage(body)); err != nil {
 			logger.L().Error("image_task.complete_store_failed", zap.String("task_id", taskID), zap.Error(err))
 		}
 		return
 	}
-	h.failTask(taskID, statusCode, extractImageTaskError(body))
+	h.failTask(completionContext(statusCode), taskID, statusCode, extractImageTaskError(body))
 }
 
-func (h *AsyncImageHandler) failTask(taskID string, statusCode int, taskErr json.RawMessage) {
-	if err := h.tasks.Fail(context.Background(), taskID, statusCode, taskErr); err != nil {
+func (h *AsyncImageHandler) failTask(ctx context.Context, taskID string, statusCode int, taskErr json.RawMessage) {
+	if err := h.tasks.Fail(ctx, taskID, statusCode, taskErr); err != nil {
 		logger.L().Error("image_task.failure_store_failed", zap.String("task_id", taskID), zap.Error(err))
 	}
 }

@@ -57,37 +57,11 @@
       </p>
 
       <div v-else class="card overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200 dark:divide-dark-600">
-          <thead class="bg-gray-50 dark:bg-dark-700/50">
-            <tr>
-              <th
-                class="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
-              >
-                {{ t('admin.settlement.columns.group') }}
-              </th>
-              <th
-                class="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
-              >
-                {{ t('admin.settlement.columns.priority') }}
-              </th>
-              <th
-                class="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
-              >
-                {{ t('admin.settlement.columns.status') }}
-              </th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-gray-200 dark:divide-dark-600">
-            <tr v-for="grant in grants" :key="grant.group_id">
-              <td class="px-4 py-3 text-sm text-gray-900 dark:text-white">
-                {{ groupLabel(grant.group_id) }}
-              </td>
-              <td class="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                {{ grant.base_priority }}
-              </td>
-              <td class="px-4 py-3 text-sm">
+        <DataTable column-order-key="admin.settlement-grants" :columns="grantColumns" :data="grants" row-key="group_id">
+          <template #cell-group_id="{ value }">{{ groupLabel(value) }}</template>
+          <template #cell-enabled="{ value }">
                 <span
-                  v-if="grant.enabled"
+                  v-if="value"
                   class="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700 dark:bg-green-900/40 dark:text-green-300"
                 >
                   {{ t('admin.settlement.enabled') }}
@@ -98,10 +72,8 @@
                 >
                   {{ t('admin.settlement.disabled') }}
                 </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+          </template>
+        </DataTable>
       </div>
     </template>
   </div>
@@ -121,14 +93,20 @@
  * 只显示成本口径，不显示官方原价与用户实付 —— 站长的毛利不属于供应商可见
  * 范围（后端序列化层已剔除那两档金额）。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { groupsAPI } from '@/api/admin/groups'
 import { useMyWorkspaceGrants } from '@/composables/useMyWorkspaceGrants'
 import { useAppStore } from '@/stores/app'
+import DataTable from '@/components/common/DataTable.vue'
 
 const { t } = useI18n()
+const grantColumns = computed(() => [
+  { key: 'group_id', label: t('admin.settlement.columns.group') },
+  { key: 'base_priority', label: t('admin.settlement.columns.priority') },
+  { key: 'enabled', label: t('admin.settlement.columns.status') }
+])
 const appStore = useAppStore()
 const {
   workspace,

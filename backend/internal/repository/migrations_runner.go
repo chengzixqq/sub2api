@@ -191,10 +191,9 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			continue // 跳过空文件
 		}
 
-		// 计算文件内容的 SHA256 校验和，用于检测文件是否被修改。
-		// 这是一种防篡改机制：如果有人修改了已应用的迁移文件，系统会拒绝启动。
-		sum := sha256.Sum256([]byte(content))
-		checksum := hex.EncodeToString(sum[:])
+		// 计算文件内容的 SHA256 校验和，用于检测迁移文件是否被修改。
+		// Runner 与只读 preflight 必须共用同一个算法，避免门禁与启动行为漂移。
+		checksum := calculateMigrationChecksum(content)
 
 		// 检查该迁移是否已经应用
 		var existing string

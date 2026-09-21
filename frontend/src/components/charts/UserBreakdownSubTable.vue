@@ -3,6 +3,7 @@
     <div v-if="loading" class="flex items-center justify-center py-3">
       <LoadingSpinner />
     </div>
+    <UsageRegionState v-else-if="error" error @retry="$emit('retry')" />
     <div v-else-if="items.length === 0" class="py-2 text-center text-xs text-gray-400">
       {{ t('admin.dashboard.noDataAvailable') }}
     </div>
@@ -41,6 +42,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
+import UsageRegionState from '@/components/common/UsageRegionState.vue'
 import type { UserBreakdownItem } from '@/types'
 
 const { t } = useI18n()
@@ -48,11 +50,13 @@ const { t } = useI18n()
 const props = withDefaults(defineProps<{
   items: UserBreakdownItem[]
   loading?: boolean
+  error?: boolean
   showAccountCost?: boolean
 }>(), {
   loading: false,
   showAccountCost: true,
 })
+defineEmits<{ retry: [] }>()
 
 const showAccountCost = computed(() => props.showAccountCost)
 

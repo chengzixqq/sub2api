@@ -4,6 +4,9 @@ FRONTEND_CRITICAL_VITEST := \
 	src/i18n/__tests__/localeKeyCompleteness.spec.ts \
 	src/api/__tests__/client.spec.ts \
 	src/api/__tests__/tokenRefresh.spec.ts \
+	src/api/__tests__/keys.bulkUpdate.spec.ts \
+	src/components/keys/__tests__/BulkEditKeysModal.spec.ts \
+	src/views/user/__tests__/KeysView.spec.ts \
 	src/api/__tests__/channelMonitorV2.spec.ts \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
 	src/views/auth/__tests__/WechatCallbackView.spec.ts \
@@ -25,7 +28,7 @@ build-backend:
 
 # 编译前端（需要已安装依赖）
 build-frontend:
-	@pnpm --dir frontend run build
+	@cd frontend && pnpm run build
 
 # 运行测试（后端 + 前端）
 test: test-backend test-frontend
@@ -34,9 +37,9 @@ test-backend:
 	@$(MAKE) -C backend test
 
 test-frontend:
-	@pnpm --dir frontend run lint:check
-	@pnpm --dir frontend run typecheck
+	@cd frontend && pnpm run lint:check
+	@cd frontend && pnpm run typecheck
 	@$(MAKE) test-frontend-critical
 
 test-frontend-critical:
-	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
+	@cd frontend && pnpm exec vitest run $(FRONTEND_CRITICAL_VITEST)

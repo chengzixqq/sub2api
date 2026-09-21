@@ -1,12 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { reactive, nextTick } from 'vue'
 
 import TokenUsageTrend from '../TokenUsageTrend.vue'
 
-const messages: Record<string, string> = {
+const messages: Record<string, string> = reactive({
   'admin.dashboard.tokenUsageTrend': 'Token Usage Trend',
   'admin.dashboard.noDataAvailable': 'No data available',
-}
+  'usage.tokenTrend.input': 'Input',
+  'usage.tokenTrend.output': 'Output',
+  'usage.tokenTrend.cacheCreation': 'Cache Creation',
+  'usage.tokenTrend.cacheRead': 'Cache Read',
+  'usage.tokenTrend.cacheHitRate': 'Cache Hit Rate',
+  'usage.tokenTrend.actualCost': 'Actual',
+  'usage.tokenTrend.standardCost': 'Standard',
+})
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
@@ -20,12 +28,34 @@ vi.mock('vue-i18n', async () => {
 
 vi.mock('vue-chartjs', () => ({
   Line: {
+    name: 'Line',
     props: ['data', 'options'],
     template: '<div class="chart-data">{{ JSON.stringify(data) }}</div>',
   },
 }))
 
 describe('TokenUsageTrend', () => {
+  it('reacts to translated legends and tooltip costs without changing metrics', async () => {
+    const wrapper = mount(TokenUsageTrend, { props: { trendData: [{
+      date: '2026-09-14', requests: 1, input_tokens: 10, output_tokens: 20,
+      cache_creation_tokens: 30, cache_read_tokens: 40, cost: 2, actual_cost: 1,
+    }] } })
+    const original = { ...messages }
+    try {
+      messages['usage.tokenTrend.input'] = 'Translated input'
+      messages['usage.tokenTrend.actualCost'] = 'Translated actual'
+      await nextTick()
+      const chart = wrapper.findComponent({ name: 'Line' })
+      const data = JSON.parse(wrapper.get('.chart-data').text())
+      expect(data.datasets[0].label).toBe('Translated input')
+      expect(data.datasets[0].data).toEqual([10])
+      expect(chart.props('options').plugins.tooltip.callbacks.footer([{ dataIndex: 0 }]))
+        .toBe('Translated actual: $1.00 | Standard: $2.00')
+    } finally {
+      Object.assign(messages, original)
+      wrapper.unmount()
+    }
+  })
   it('calculates cache hit rate against all prompt tokens', () => {
     const wrapper = mount(TokenUsageTrend, {
       props: {

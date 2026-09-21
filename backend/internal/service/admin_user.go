@@ -549,6 +549,9 @@ func (s *adminServiceImpl) deleteUserWithAPIKeys(ctx context.Context, userID int
 }
 
 func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error) {
+	if err := RequireStationOwnerScope(ctx); err != nil {
+		return 0, err
+	}
 	cleaned := make([]int64, 0, len(userIDs))
 	seen := make(map[int64]struct{}, len(userIDs))
 	for _, uid := range userIDs {
@@ -591,6 +594,9 @@ func (s *adminServiceImpl) BatchUpdateConcurrency(ctx context.Context, userIDs [
 }
 
 func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error) {
+	if err := RequireStationOwnerScope(ctx); err != nil {
+		return 0, err
+	}
 	if concurrency == nil && rpmLimit == nil {
 		return 0, fmt.Errorf("at least one of concurrency or rpm_limit is required")
 	}

@@ -1,4 +1,11 @@
 <template>
+  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+  <ColumnOrderControls
+    v-if="columnOrderKey && movableColumns.length > 1"
+    :columns="movableColumns"
+    @move="moveColumnBy"
+    @reset="resetColumnOrder"
+  />
   <div v-if="!isDesktopViewport" class="space-y-3">
     <template v-if="loading">
       <div v-for="i in 5" :key="i" class="rounded-lg border border-gray-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900">
@@ -94,6 +101,7 @@
     v-else
     ref="tableWrapperRef"
     class="table-wrapper"
+    :style="selectable ? { '--select-col-width': '44px' } : undefined"
     :class="{
       'actions-expanded': actionsExpanded,
       'is-scrollable': isScrollable
@@ -105,7 +113,7 @@
           <th
             v-if="selectable"
             scope="col"
-            class="sticky-header-cell w-11 min-w-11 px-3 py-3 text-center"
+            class="sticky-header-cell sticky-col sticky-col-left-first w-11 min-w-11 px-3 py-3 text-center"
           >
             <input
               type="checkbox"
@@ -118,18 +126,26 @@
             />
           </th>
           <th
-            v-for="(column, index) in columns"
+            v-for="(column, index) in orderedColumns"
             :key="column.key"
             scope="col"
+            :data-column-key="column.key"
+            :draggable="Boolean(columnOrderKey && isMovableColumn(column.key))"
+            :title="columnOrderKey && isMovableColumn(column.key) ? t('tableColumns.drag', { column: column.label }) : undefined"
             :aria-sort="column.sortable ? getColumnAriaSort(column.key) : undefined"
             :class="[
               'sticky-header-cell py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-dark-400',
               getAdaptivePaddingClass(),
               { 'cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700': column.sortable },
+              { 'column-drop-before': dropColumn?.key === column.key && dropColumn.side === 'before', 'column-drop-after': dropColumn?.key === column.key && dropColumn.side === 'after' },
               getStickyColumnClass(column, index),
               column.class
             ]"
             @click="column.sortable && handleSort(column.key)"
+            @dragstart="startColumnDrag($event, column.key)"
+            @dragover="overColumnDrag($event, column.key)"
+            @drop="dropColumnDrag($event, column.key)"
+            @dragend="endColumnDrag"
           >
             <div :class="['flex items-center space-x-1', getHeaderContentAlignmentClass(column)]">
               <slot
@@ -172,7 +188,7 @@
           <td v-if="selectable" class="w-11 min-w-11 px-3 py-4">
             <div class="mx-auto h-4 w-4 animate-pulse rounded bg-gray-200 dark:bg-dark-700"></div>
           </td>
-          <td v-for="column in columns" :key="column.key" :class="['whitespace-nowrap py-4', getAdaptivePaddingClass()]">
+          <td v-for="column in orderedColumns" :key="column.key" :class="['whitespace-nowrap py-4', getAdaptivePaddingClass()]">
             <div class="animate-pulse">
               <div class="h-4 w-3/4 rounded bg-gray-200 dark:bg-dark-700"></div>
             </div>
@@ -220,7 +236,7 @@
             }"
             @click="clickableRows && emit('rowClick', item.row)"
           >
-            <td v-if="selectable" class="w-11 min-w-11 px-3 py-4 text-center">
+            <td v-if="selectable" class="sticky-col sticky-col-left-first w-11 min-w-11 px-3 py-4 text-center">
               <input
                 type="checkbox"
                 class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
@@ -232,7 +248,7 @@
               />
             </td>
             <td
-              v-for="(column, colIndex) in columns"
+              v-for="(column, colIndex) in orderedColumns"
               :key="column.key"
               :class="[
                 'whitespace-nowrap py-4 text-sm text-gray-900 dark:text-gray-100',
@@ -260,14 +276,18 @@
       </tbody>
     </table>
   </div>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch, nextTick, getCurrentInstance } from 'vue'
 import { useVirtualizer, observeElementRect as observeElementRectDefault } from '@tanstack/vue-virtual'
 import { useI18n } from 'vue-i18n'
+import type { Pinia } from 'pinia'
 import type { Column } from './types'
 import Icon from '@/components/icons/Icon.vue'
+import ColumnOrderControls from './ColumnOrderControls.vue'
+import { columnOrderStorageKey, isMovableColumn, useColumnOrder } from '@/composables/useColumnOrder'
 
 const { t } = useI18n()
 
@@ -448,6 +468,10 @@ interface Props {
    * If provided, DataTable will load the stored sort state on mount.
    */
   sortStorageKey?: string
+  /** Stable business table identity. Omit for configuration and detail tables. */
+  columnOrderKey?: string
+  /** Complete default schema when the caller has column visibility controls. */
+  columnOrderColumns?: Column[]
   /**
    * Enable server-side sorting mode. When true, clicking sort headers
    * will emit 'sort' events instead of performing client-side sorting.
@@ -487,6 +511,61 @@ const props = withDefaults(defineProps<Props>(), {
 const sortKey = ref<string>('')
 const sortOrder = ref<'asc' | 'desc'>('asc')
 const actionsExpanded = ref(false)
+
+const pinia = getCurrentInstance()?.appContext.config.globalProperties.$pinia as Pinia | undefined
+const columnStorageKey = computed(() => {
+  // Read the active identity without making this generic table initialize authentication.
+  const auth = pinia?.state.value.auth
+  return columnOrderStorageKey(props.columnOrderKey, auth?.user?.id, auth?.user?.role, auth?.workspace?.id)
+})
+const columnOrder = useColumnOrder(() => props.columns, columnStorageKey, () => props.columnOrderColumns ?? props.columns)
+const orderedColumns = computed(() => props.columnOrderKey ? columnOrder.orderedColumns.value : props.columns)
+const movableColumns = columnOrder.movableColumns
+const moveColumnBy = columnOrder.moveBy
+const resetColumnOrder = columnOrder.reset
+const draggedColumn = ref<string | null>(null)
+const dropColumn = ref<{ key: string; side: 'before' | 'after' } | null>(null)
+let suppressSortUntil = 0
+
+function startColumnDrag(event: DragEvent, key: string) {
+  if (!props.columnOrderKey || !isMovableColumn(key) || (event.target as HTMLElement)?.closest('button, input, a')) {
+    event.preventDefault()
+    return
+  }
+  draggedColumn.value = key
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', key)
+  }
+}
+
+function overColumnDrag(event: DragEvent, key: string) {
+  if (!draggedColumn.value || !isMovableColumn(key)) return
+  event.preventDefault()
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  dropColumn.value = { key, side: event.clientX > rect.left + rect.width / 2 ? 'after' : 'before' }
+  const wrapper = tableWrapperRef.value
+  if (wrapper) {
+    const bounds = wrapper.getBoundingClientRect()
+    if (event.clientX < bounds.left + 32) wrapper.scrollLeft -= 24
+    else if (event.clientX > bounds.right - 32) wrapper.scrollLeft += 24
+  }
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+function dropColumnDrag(event: DragEvent, key: string) {
+  if (!draggedColumn.value || !isMovableColumn(key)) return
+  event.preventDefault()
+  overColumnDrag(event, key)
+  columnOrder.move(draggedColumn.value, key, dropColumn.value?.side)
+  endColumnDrag()
+}
+
+function endColumnDrag() {
+  suppressSortUntil = Date.now() + 250
+  draggedColumn.value = null
+  dropColumn.value = null
+}
 
 type PersistedSortState = {
   key: string
@@ -634,7 +713,7 @@ const resolveStableRowKey = (row: any): string | number | undefined => {
 
 const resolveRowKey = (row: any, index: number) => resolveStableRowKey(row) ?? index
 
-const dataColumns = computed(() => props.columns.filter((column) => column.key !== 'actions'))
+const dataColumns = computed(() => orderedColumns.value.filter((column) => column.key !== 'actions'))
 const columnsSignature = computed(() =>
   props.columns.map((column) => `${column.key}:${column.sortable ? '1' : '0'}`).join('|')
 )
@@ -669,6 +748,7 @@ watch(actionsExpanded, async () => {
 })
 
 const handleSort = (key: string) => {
+  if (draggedColumn.value || Date.now() < suppressSortUntil) return
   let newOrder: 'asc' | 'desc' = 'asc'
   if (sortKey.value === key) {
     newOrder = sortOrder.value === 'asc' ? 'desc' : 'asc'
@@ -849,7 +929,7 @@ const hasActionsColumn = computed(() => {
 })
 
 const hasSelectColumn = computed(() => {
-  return props.columns.length > 0 && props.columns[0].key === 'select'
+  return orderedColumns.value.length > 0 && ['select', 'selection'].includes(orderedColumns.value[0].key)
 })
 
 // 生成固定列的 CSS 类
@@ -858,7 +938,9 @@ const getStickyColumnClass = (column: Column, index: number) => {
 
   if (props.stickyFirstColumn) {
     // 如果第一列是勾选列，固定前两列（勾选+名称）
-    if (hasSelectColumn.value) {
+    if (props.selectable) {
+      if (index === 0) classes.push('sticky-col sticky-col-left-second')
+    } else if (hasSelectColumn.value) {
       if (index === 0) {
         classes.push('sticky-col sticky-col-left-first')
       } else if (index === 1) {
@@ -951,6 +1033,14 @@ defineExpose({
 </script>
 
 <style scoped>
+.column-drop-before {
+  box-shadow: inset 3px 0 0 rgb(59 130 246);
+}
+
+.column-drop-after {
+  box-shadow: inset -3px 0 0 rgb(59 130 246);
+}
+
 /* 表格横向滚动 */
 .table-wrapper {
   --select-col-width: 52px; /* 勾选列宽度：px-6 (24px*2) + checkbox (16px) */

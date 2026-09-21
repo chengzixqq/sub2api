@@ -60,6 +60,25 @@ var vendorDeniedRoutes = []vendorRoute{
 	// 代理导入/导出同理：导出会带出全站代理的主机、端口与凭证，
 	// 导入则批量建号且无法归属发起方工作区。
 	{prefix: "/api/v1/admin/proxies/data", methods: allMethods, exact: true},
+
+	// Bulk/admin fan-out endpoints are station-owner only.  Keep these explicit
+	// even when a future broad /accounts, /users, /proxies, or /subscriptions
+	// rule is added: a batch request can cross workspace boundaries and must not
+	// become reachable through prefix matching.
+	{prefix: "/api/v1/admin/accounts/upstream-billing-probe/batch", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch-update-credentials", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch-refresh-tier", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/bulk-update", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch-delete", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch-clear-error", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/batch-refresh", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/users/batch-concurrency", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/users/batch-limits", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/subscriptions/bulk-assign", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/subscriptions/bulk-action", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/proxies/batch", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/proxies/batch-delete", methods: allMethods, exact: true},
 }
 
 // writeMethods 表示仅对写方法生效。
@@ -133,6 +152,14 @@ var vendorAllowedRoutes = []vendorRoute{
 }
 
 var vendorBatchAccountRoutes = []string{
+	"/api/v1/admin/accounts/upstream-billing-probe/batch",
+	"/api/v1/admin/accounts/batch",
+	"/api/v1/admin/accounts/batch-update-credentials",
+	"/api/v1/admin/accounts/batch-refresh-tier",
+	"/api/v1/admin/accounts/bulk-update",
+	"/api/v1/admin/accounts/batch-delete",
+	"/api/v1/admin/accounts/batch-clear-error",
+	"/api/v1/admin/accounts/batch-refresh",
 	"/api/v1/admin/accounts/usage/batch",
 	"/api/v1/admin/accounts/today-stats/batch",
 }

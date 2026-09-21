@@ -104,7 +104,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 	// The handler normally owns this registration across retry attempts. Direct
 	// callers still get the same session-scoped preemption behavior here.
-	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemption(ctx, c, account, firstClientMessage); armed {
+	if preemptCtx, cleanupPreempt, armed := s.BeginOpenAIWSIngressSessionPreemptionWithClient(ctx, c, account, firstClientMessage, clientConn); armed {
 		ctx = preemptCtx
 		defer cleanupPreempt()
 		defer func() {
@@ -525,12 +525,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	turnState := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
 	stateStore := s.getOpenAIWSStateStore()
 	groupID := getOpenAIGroupIDFromContext(c)
+	apiKeyID := getAPIKeyIDFromContext(c)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	sessionHash := ""
 	preferredConnID := ""
 	storeDisabled := false
 	refreshIngressRouteState := func(payload openAIWSClientPayload) {
+		// 会话级状态按执行作用域隔离：codex 多智能体共用 session-id，只有线程标识能把
+		// 父线程与子智能体区分开；没有声明身份时沿用原会话哈希。账号粘性仍由 handler 决定。
 		sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+		if scope, _ := resolveOpenAIWSExecutionScope(c, payload.rawForHash, apiKeyID); scope != "" {
+			sessionHash = scope
+		}
 		preferredConnID = ""
 		storeDisabled = s.isOpenAIWSStoreDisabledInRequestRaw(payload.payloadRaw, account)
 		if useHTTPBridge {
@@ -582,6 +588,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				if err := hooks.BeforeRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel); err != nil {
 					return err
 				}
+			}
+			if hooks != nil && hooks.ObserveTurnStart != nil {
+				hooks.ObserveTurnStart(turn, time.Now(), currentBridgePayload.originalModel)
 			}
 			if hooks != nil && hooks.BeforeTurn != nil {
 				if err := hooks.BeforeTurn(turn); err != nil {
@@ -670,6 +679,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					return fmt.Errorf("resolve Grok websocket cache identity: %w", err)
 				}
 			}
+			if hooks != nil && hooks.ObserveTurnStart != nil {
+				hooks.ObserveTurnStart(turn, time.Now(), currentBridgePayload.originalModel)
+			}
 			result, bridgeErr := s.proxyOpenAIWSHTTPBridgeTurn(
 				ctx,
 				c,
@@ -685,6 +697,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				turn,
 				writeClientMessage,
 			)
+			if hooks != nil && hooks.ObserveMonitorAttempt != nil {
+				hooks.ObserveMonitorAttempt(turn, result, bridgeErr)
+			}
 			if bridgeErr != nil && isOpenAIWSSessionPreempted(ctx) {
 				return errOpenAIWSSessionPreempted
 			}
@@ -853,13 +868,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	agentTaskRecoveryTried := false
-	var acquireTurnLease func(int, string, bool) (*openAIWSConnLease, error)
-	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool) (*openAIWSConnLease, error) {
+	var acquireTurnLease func(int, string, bool, bool) (*openAIWSConnLease, error)
+	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool, forceNewConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
-		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
-		req.ForceNewConn = dedicatedMode
+		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文；
+		// 上游读写失败后的重试同样新建，避免再拿到同批陈旧的空闲连接。
+		req.ForceNewConn = dedicatedMode || forceNewConn
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
@@ -869,7 +885,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if recoveryErr := s.recoverAgentIdentityTask(ctx, account, account.GetCredential("task_id")); recoveryErr != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", recoveryErr)
 			}
-			return acquireTurnLease(turn, preferred, forcePreferredConn)
+			return acquireTurnLease(turn, preferred, forcePreferredConn, forceNewConn)
 		}
 		if acquireErr != nil {
 			if isOpenAIWSSessionPreempted(ctx) {
@@ -933,11 +949,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			baseAcquireReq.Headers = updatedHeaders
 		}
 		logOpenAIWSModeInfo(
-			"ingress_ws_upstream_connected account_id=%d turn=%d conn_id=%s conn_reused=%v conn_pick_ms=%d queue_wait_ms=%d preferred_conn_id=%s",
+			"ingress_ws_upstream_connected account_id=%d turn=%d conn_id=%s conn_reused=%v conn_idle_ms=%d conn_age_ms=%d upstream_pings=%d conn_pick_ms=%d queue_wait_ms=%d preferred_conn_id=%s",
 			account.ID,
 			turn,
 			truncateOpenAIWSLogValue(connID, openAIWSIDValueMaxLen),
 			lease.Reused(),
+			lease.IdleBefore().Milliseconds(),
+			lease.AgeBefore().Milliseconds(),
+			lease.UpstreamPingCount(),
 			lease.ConnPickDuration().Milliseconds(),
 			lease.QueueWaitDuration().Milliseconds(),
 			truncateOpenAIWSLogValue(preferred, openAIWSIDValueMaxLen),
@@ -946,13 +965,29 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	var rejectedFieldRetryState *openAIResponsesRejectedFieldRetryState
-	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, requestedReasoningEffort *string) (*OpenAIForwardResult, error) {
+	sendAndRelay := func(turn int, lease *openAIWSConnLease, payload []byte, payloadBytes int, originalModel string, imageBillingModel string, imageSizeTier string, imageInputSize string, requestedReasoningEffort *string) (forwardResult *OpenAIForwardResult, forwardErr error) {
 		responseModelObserver := &upstreamResponseModelObserver{}
 		if lease == nil {
 			return nil, errors.New("upstream websocket lease is nil")
 		}
 		turnStart := time.Now()
 		wroteDownstream := false
+		usage := OpenAIUsage{}
+		var firstTokenMs *int
+		clientDisconnected := false
+		if hooks != nil && hooks.ObserveTurnStart != nil {
+			hooks.ObserveTurnStart(turn, turnStart, originalModel)
+		}
+		defer func() {
+			if hooks == nil || hooks.ObserveMonitorAttempt == nil {
+				return
+			}
+			observed := forwardResult
+			if observed == nil {
+				observed = &OpenAIForwardResult{Model: originalModel, Usage: usage, FirstTokenMs: firstTokenMs, Duration: time.Since(turnStart), ClientDisconnect: clientDisconnected, UpstreamResponseModel: responseModelObserver.Model(), Stream: true, OpenAIWSMode: true}
+			}
+			hooks.ObserveMonitorAttempt(turn, observed, forwardErr)
+		}()
 		if err := lease.WriteJSONWithContextTimeout(ctx, json.RawMessage(payload), s.openAIWSWriteTimeout()); err != nil {
 			return nil, wrapOpenAIWSIngressTurnError(
 				"write_upstream",
@@ -971,9 +1006,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		responseID := ""
-		usage := OpenAIUsage{}
 		imageCounter := newOpenAIImageOutputCounter()
-		var firstTokenMs *int
 		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
 		turnPreviousResponseID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
 		turnPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(turnPreviousResponseID)
@@ -987,7 +1020,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		firstEventType := ""
 		lastEventType := ""
 		needModelReplace := false
-		clientDisconnected := false
 		mappedModel := ""
 		var mappedModelBytes []byte
 		if originalModel != "" {
@@ -1460,6 +1492,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return err
 			}
 		}
+		if !skipBeforeTurn && hooks != nil && hooks.ObserveTurnStart != nil {
+			hooks.ObserveTurnStart(turn, time.Now(), currentOriginalModel)
+		}
 		if !skipBeforeTurn && hooks != nil && hooks.BeforeTurn != nil {
 			if err := hooks.BeforeTurn(turn); err != nil {
 				return err
@@ -1634,7 +1669,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		forcePreferredConn := isStrictAffinityTurn(currentPayload)
 		if sessionLease == nil {
-			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
+			acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn, turnRetry > 0)
 			if acquireErr != nil {
 				return fmt.Errorf("acquire upstream websocket: %w", acquireErr)
 			}
@@ -1653,7 +1688,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 		}
 		if shouldPreflightPing {
-			if pingErr := sessionLease.PingWithTimeout(openAIWSConnHealthCheckTO); pingErr != nil {
+			if pingErr := sessionLease.PingWithTimeout(openAIWSProbePingTO); pingErr != nil {
 				logOpenAIWSModeInfo(
 					"ingress_ws_upstream_preflight_ping_fail account_id=%d turn=%d conn_id=%s cause=%s",
 					account.ID,
@@ -1742,7 +1777,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				resetSessionLease(true)
 
-				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn)
+				acquiredLease, acquireErr := acquireTurnLease(turn, preferredConnID, forcePreferredConn, false)
 				if acquireErr != nil {
 					return fmt.Errorf("acquire upstream websocket after preflight ping fail: %w", acquireErr)
 				}

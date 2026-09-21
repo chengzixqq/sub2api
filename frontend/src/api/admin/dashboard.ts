@@ -45,6 +45,11 @@ export async function getRealtimeMetrics(): Promise<{
 }
 
 export interface TrendParams {
+  start_time?: string
+  end_time?: string
+  timezone?: string
+  force_refresh?: boolean
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   granularity?: 'day' | 'hour'
@@ -78,6 +83,11 @@ export async function getUsageTrend(params?: TrendParams): Promise<TrendResponse
 }
 
 export interface ModelStatsParams {
+  start_time?: string
+  end_time?: string
+  timezone?: string
+  force_refresh?: boolean
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   user_id?: number
@@ -104,8 +114,8 @@ export interface ModelStatsResponse {
  * @param params - Query parameters for filtering
  * @returns Model usage statistics
  */
-export async function getModelStats(params?: ModelStatsParams): Promise<ModelStatsResponse> {
-  const { data } = await apiClient.get<ModelStatsResponse>('/admin/dashboard/models', { params })
+export async function getModelStats(params?: ModelStatsParams, options?: { signal?: AbortSignal }): Promise<ModelStatsResponse> {
+  const { data } = await apiClient.get<ModelStatsResponse>('/admin/dashboard/models', { params, signal: options?.signal })
   return data
 }
 
@@ -165,6 +175,12 @@ export async function getGroupStats(params?: GroupStatsParams): Promise<GroupSta
 }
 
 export interface UserBreakdownParams {
+  requested_model?: string
+  start_time?: string
+  end_time?: string
+  timezone?: string
+  force_refresh?: boolean
+  billing_mode?: string | null
   start_date?: string
   end_date?: string
   group_id?: number
@@ -191,9 +207,10 @@ export interface UserBreakdownResponse {
   end_date: string
 }
 
-export async function getUserBreakdown(params: UserBreakdownParams): Promise<UserBreakdownResponse> {
+export async function getUserBreakdown(params: UserBreakdownParams, options?: { signal?: AbortSignal }): Promise<UserBreakdownResponse> {
   const { data } = await apiClient.get<UserBreakdownResponse>('/admin/dashboard/user-breakdown', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }
@@ -201,9 +218,10 @@ export async function getUserBreakdown(params: UserBreakdownParams): Promise<Use
 /**
  * Get dashboard snapshot v2 (aggregated response for heavy admin pages).
  */
-export async function getSnapshotV2(params?: DashboardSnapshotV2Params): Promise<DashboardSnapshotV2Response> {
+export async function getSnapshotV2(params?: DashboardSnapshotV2Params, options?: { signal?: AbortSignal }): Promise<DashboardSnapshotV2Response> {
   const { data } = await apiClient.get<DashboardSnapshotV2Response>('/admin/dashboard/snapshot-v2', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }

@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -18,14 +20,79 @@ import (
 type fakeFailureSinkUsageLogRepo struct {
 	service.UsageLogRepository
 
+	mu      sync.Mutex
 	calls   int
 	lastLog *service.UsageLog
 }
 
 func (s *fakeFailureSinkUsageLogRepo) Create(ctx context.Context, log *service.UsageLog) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	log = cloneFailureSinkUsageLog(log)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls++
 	s.lastLog = log
 	return true, nil
+}
+
+func (s *fakeFailureSinkUsageLogRepo) snapshot() (int, *service.UsageLog) {
+	if s == nil {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls, cloneFailureSinkUsageLog(s.lastLog)
+}
+
+func cloneFailureSinkUsageLog(log *service.UsageLog) *service.UsageLog {
+	if log == nil {
+		return nil
+	}
+	cloned := *log
+	cloned.RequestedModel = log.RequestedModel
+	cloned.UpstreamModel = cloneFailureSinkPtr(log.UpstreamModel)
+	cloned.UpstreamResponseModel = cloneFailureSinkPtr(log.UpstreamResponseModel)
+	cloned.UpstreamModelMismatch = cloneFailureSinkPtr(log.UpstreamModelMismatch)
+	cloned.ChannelID = cloneFailureSinkPtr(log.ChannelID)
+	cloned.ModelMappingChain = cloneFailureSinkPtr(log.ModelMappingChain)
+	cloned.BillingTier = cloneFailureSinkPtr(log.BillingTier)
+	cloned.BillingMode = cloneFailureSinkPtr(log.BillingMode)
+	cloned.BillingProvenance = cloneFailureSinkPtr(log.BillingProvenance)
+	cloned.ServiceTier = cloneFailureSinkPtr(log.ServiceTier)
+	cloned.ReasoningEffort = cloneFailureSinkPtr(log.ReasoningEffort)
+	cloned.RequestedReasoningEffort = cloneFailureSinkPtr(log.RequestedReasoningEffort)
+	cloned.InboundEndpoint = cloneFailureSinkPtr(log.InboundEndpoint)
+	cloned.UpstreamEndpoint = cloneFailureSinkPtr(log.UpstreamEndpoint)
+	cloned.GroupID = cloneFailureSinkPtr(log.GroupID)
+	cloned.SubscriptionID = cloneFailureSinkPtr(log.SubscriptionID)
+	cloned.AccountRateMultiplier = cloneFailureSinkPtr(log.AccountRateMultiplier)
+	cloned.AccountStatsCost = cloneFailureSinkPtr(log.AccountStatsCost)
+	cloned.DurationMs = cloneFailureSinkPtr(log.DurationMs)
+	cloned.FirstTokenMs = cloneFailureSinkPtr(log.FirstTokenMs)
+	cloned.UserAgent = cloneFailureSinkPtr(log.UserAgent)
+	cloned.IPAddress = cloneFailureSinkPtr(log.IPAddress)
+	cloned.SessionID = cloneFailureSinkPtr(log.SessionID)
+	cloned.UpstreamRequestID = cloneFailureSinkPtr(log.UpstreamRequestID)
+	cloned.ImageSize = cloneFailureSinkPtr(log.ImageSize)
+	cloned.ImageInputSize = cloneFailureSinkPtr(log.ImageInputSize)
+	cloned.ImageOutputSize = cloneFailureSinkPtr(log.ImageOutputSize)
+	cloned.ImageSizeSource = cloneFailureSinkPtr(log.ImageSizeSource)
+	cloned.MediaType = cloneFailureSinkPtr(log.MediaType)
+	cloned.VideoResolution = cloneFailureSinkPtr(log.VideoResolution)
+	cloned.VideoDurationSeconds = cloneFailureSinkPtr(log.VideoDurationSeconds)
+	cloned.ProbeLeaderRequestID = cloneFailureSinkPtr(log.ProbeLeaderRequestID)
+	cloned.ImageSizeBreakdown = maps.Clone(log.ImageSizeBreakdown)
+	return &cloned
+}
+
+func cloneFailureSinkPtr[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 type fakeFailureSinkUserRepo struct {
@@ -72,6 +139,29 @@ func newFailureSinkTestContext(path string) *gin.Context {
 	return c
 }
 
+func TestOpenAIFailureUsageFromDecisionPreservesImageCacheRead(t *testing.T) {
+	decision := service.FailureBillingDecision{Usage: service.ClaudeUsage{
+		InputTokens:              100,
+		ImageInputTokens:         80,
+		ImageCacheReadTokens:     40,
+		OutputTokens:             20,
+		CacheReadInputTokens:     50,
+		CacheCreationInputTokens: 3,
+		ImageOutputTokens:        7,
+	}}
+
+	got := openAIFailureUsageFromDecision(decision)
+	require.Equal(t, service.OpenAIUsage{
+		InputTokens:              100,
+		ImageInputTokens:         80,
+		ImageCacheReadTokens:     40,
+		OutputTokens:             20,
+		CacheReadInputTokens:     50,
+		CacheCreationInputTokens: 3,
+		ImageOutputTokens:        7,
+	}, got)
+}
+
 // TestClaudeFailureSink_RecordsFailureUsageWithProvenanceAndChannelFields 验证
 // claudeFailureSink 把 FailureBillingDecision 正确落成 RecordUsageInput：
 // BillingProvenance 与 ChannelUsageFields 必须一路传到持久化的 UsageLog（brief 原始
@@ -110,9 +200,9 @@ func TestClaudeFailureSink_RecordsFailureUsageWithProvenanceAndChannelFields(t *
 
 	sink(decision, account)
 
-	require.Equal(t, 1, usageRepo.calls)
-	require.NotNil(t, usageRepo.lastLog)
-	log := usageRepo.lastLog
+	calls, log := usageRepo.snapshot()
+	require.Equal(t, 1, calls)
+	require.NotNil(t, log)
 
 	require.Equal(t, account.ID, log.AccountID)
 	require.Equal(t, apiKey.ID, log.APIKeyID)
@@ -156,15 +246,19 @@ func TestClaudeFailureSink_UpstreamEndpointReflectsInvocationTimeAccount(t *test
 
 	anthropicAccount := &service.Account{ID: 1, Platform: service.PlatformAnthropic}
 	sink(decision, anthropicAccount)
-	require.Equal(t, 1, usageRepo.calls)
-	require.NotNil(t, usageRepo.lastLog.UpstreamEndpoint)
-	anthropicEndpoint := *usageRepo.lastLog.UpstreamEndpoint
+	calls, log := usageRepo.snapshot()
+	require.Equal(t, 1, calls)
+	require.NotNil(t, log)
+	require.NotNil(t, log.UpstreamEndpoint)
+	anthropicEndpoint := *log.UpstreamEndpoint
 
 	geminiAccount := &service.Account{ID: 2, Platform: service.PlatformGemini}
 	sink(decision, geminiAccount)
-	require.Equal(t, 2, usageRepo.calls)
-	require.NotNil(t, usageRepo.lastLog.UpstreamEndpoint)
-	geminiEndpoint := *usageRepo.lastLog.UpstreamEndpoint
+	calls, log = usageRepo.snapshot()
+	require.Equal(t, 2, calls)
+	require.NotNil(t, log)
+	require.NotNil(t, log.UpstreamEndpoint)
+	geminiEndpoint := *log.UpstreamEndpoint
 
 	require.NotEqual(t, anthropicEndpoint, geminiEndpoint,
 		"UpstreamEndpoint 必须按调用时传入的 account.Platform 重新推导，而不是在 sink 创建时固化")
@@ -194,5 +288,6 @@ func TestClaudeFailureSink_NotBillableDecisionNeverReachesSink(t *testing.T) {
 
 	guard.Flush()
 
-	require.Equal(t, 0, usageRepo.calls, "request-scope 失败（未进入推理）不应计费")
+	calls, _ := usageRepo.snapshot()
+	require.Equal(t, 0, calls, "request-scope 失败（未进入推理）不应计费")
 }

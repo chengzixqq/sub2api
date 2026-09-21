@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,6 +23,7 @@ type userUsageFilters struct {
 	Filters   usagestats.UsageLogFilters
 	StartTime time.Time
 	EndTime   time.Time
+	Range     usagequery.Range
 }
 
 type userModelStat struct {
@@ -157,27 +160,6 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 	now := timezone.NowInUserLocation(userTZ)
 	var startTime, endTime time.Time
 	var startPtr, endPtr *time.Time
-	startDateStr := strings.TrimSpace(c.Query("start_date"))
-	endDateStr := strings.TrimSpace(c.Query("end_date"))
-
-	if startDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
-			return nil, false
-		}
-		startTime = t
-		startPtr = &startTime
-	}
-	if endDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
-			return nil, false
-		}
-		endTime = t.AddDate(0, 0, 1)
-		endPtr = &endTime
-	}
 
 	if requireRange {
 		if startPtr == nil {
@@ -202,6 +184,12 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 			endPtr = &endTime
 		}
 	}
+	queryRange, err := usagequery.ParseRange(c.Request.URL.Query(), startPtr, endPtr)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return nil, false
+	}
+	startPtr, endPtr = queryRange.Start, queryRange.End
 
 	return &userUsageFilters{
 		Filters: usagestats.UsageLogFilters{
@@ -209,6 +197,7 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 			APIKeyID:           apiKeyID,
 			GroupID:            groupID,
 			Model:              strings.TrimSpace(c.Query("model")),
+			RequestID:          strings.TrimSpace(c.Query("request_id")),
 			ModelFilterSource:  usagestats.ModelSourceRequested,
 			RequestType:        requestType,
 			Stream:             stream,
@@ -220,6 +209,7 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 		},
 		StartTime: derefTime(startPtr),
 		EndTime:   derefTime(endPtr),
+		Range:     queryRange,
 	}, true
 }
 
@@ -238,6 +228,13 @@ func (h *UsageHandler) List(c *gin.Context) {
 	if !ok {
 		return
 	}
+	deferred, err := usagequery.DeferredCount(c.Request.URL.Query())
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	parsed.Filters.DeferredTotal = deferred
+	parsed.Filters.ExactTotal = !deferred
 
 	params := pagination.PaginationParams{
 		Page:      page,
@@ -256,7 +253,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 	for i := range records {
 		out = append(out, *dto.UsageLogFromService(&records[i]))
 	}
-	response.Paginated(c, out, result.Total, page, pageSize)
+	response.UsagePaginated(c, out, result.Total, page, pageSize, deferred, parsed.Range.Metadata())
 }
 
 // ListErrors handles listing the current user's failed requests (redacted).
@@ -285,27 +282,23 @@ func (h *UsageHandler) ListErrors(c *gin.Context) {
 
 	filter := &service.OpsErrorLogFilter{Page: page, PageSize: pageSize}
 
-	// Date range (half-open [start, end)), reuse usage-list semantics.
-	userTZ := c.Query("timezone")
-	if startDateStr := c.Query("start_date"); startDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
-			return
-		}
-		filter.StartTime = &t
+	queryRange, err := usagequery.ParseRange(c.Request.URL.Query(), nil, nil)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
 	}
-	if endDateStr := c.Query("end_date"); endDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
-		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
-			return
-		}
-		t = t.AddDate(0, 0, 1)
-		filter.EndTime = &t
-	}
+	filter.StartTime, filter.EndTime = queryRange.Start, queryRange.End
 
 	filter.Model = strings.TrimSpace(c.Query("model"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
+	if raw := strings.TrimSpace(c.Query("group_id")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid group_id")
+			return
+		}
+		filter.GroupID = &id
+	}
 
 	if k := strings.TrimSpace(c.Query("api_key_id")); k != "" {
 		n, err := strconv.ParseInt(k, 10, 64)
@@ -341,7 +334,7 @@ func (h *UsageHandler) ListErrors(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Paginated(c, result.Items, int64(result.Total), result.Page, result.PageSize)
+	response.UsagePaginated(c, result.Items, int64(result.Total), result.Page, result.PageSize, false, queryRange.Metadata())
 }
 
 // GetErrorDetail handles fetching one of the current user's failed-request details (redacted).
@@ -411,16 +404,22 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.usageService.GetStatsWithFilters(c.Request.Context(), parsed.Filters)
+	stats, err := loadUserUsageQuery(userQueryContext(c), "stats", parsed.Filters, func(work context.Context) (*usagestats.UsageStats, error) {
+		return h.usageService.GetStatsWithFilters(work, parsed.Filters)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	stats.TotalAccountCost = nil
-	stats.UpstreamEndpoints = nil
-	stats.EndpointPaths = nil
+	publicStats := *stats
+	publicStats.TotalAccountCost = nil
+	publicStats.UpstreamEndpoints = nil
+	publicStats.EndpointPaths = nil
 
-	response.Success(c, stats)
+	response.Success(c, struct {
+		*usagestats.UsageStats
+		Query usagequery.Metadata `json:"query"`
+	}{&publicStats, parsed.Range.Metadata()})
 }
 
 const (
@@ -473,7 +472,9 @@ func (h *UsageHandler) DashboardTrend(c *gin.Context) {
 	}
 	granularity := c.DefaultQuery("granularity", "day")
 
-	trend, err := h.usageService.GetUsageTrendWithFilters(c.Request.Context(), parsed.StartTime, parsed.EndTime, granularity, parsed.Filters)
+	trend, err := loadUserUsageQuery(userQueryContext(c), "trend:"+granularity, parsed.Filters, func(work context.Context) ([]usagestats.TrendDataPoint, error) {
+		return h.usageService.GetUsageTrendWithFilters(work, parsed.StartTime, parsed.EndTime, granularity, parsed.Filters)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -481,8 +482,9 @@ func (h *UsageHandler) DashboardTrend(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"trend":       trend,
+		"query":       parsed.Range.Metadata(),
 		"start_date":  parsed.StartTime.Format("2006-01-02"),
-		"end_date":    parsed.EndTime.Add(-24 * time.Hour).Format("2006-01-02"),
+		"end_date":    parsed.EndTime.Add(-time.Nanosecond).Format("2006-01-02"),
 		"granularity": granularity,
 	})
 }
@@ -501,7 +503,9 @@ func (h *UsageHandler) DashboardModels(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.usageService.GetModelStatsWithFiltersBySource(c.Request.Context(), parsed.StartTime, parsed.EndTime, parsed.Filters, usagestats.ModelSourceRequested)
+	stats, err := loadUserUsageQuery(userQueryContext(c), "models:requested", parsed.Filters, func(work context.Context) ([]usagestats.ModelStat, error) {
+		return h.usageService.GetModelStatsWithFiltersBySource(work, parsed.StartTime, parsed.EndTime, parsed.Filters, usagestats.ModelSourceRequested)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -509,8 +513,9 @@ func (h *UsageHandler) DashboardModels(c *gin.Context) {
 
 	response.Success(c, gin.H{
 		"models":     userModelStatsFromUsageStats(stats),
+		"query":      parsed.Range.Metadata(),
 		"start_date": parsed.StartTime.Format("2006-01-02"),
-		"end_date":   parsed.EndTime.Add(-24 * time.Hour).Format("2006-01-02"),
+		"end_date":   parsed.EndTime.Add(-time.Nanosecond).Format("2006-01-02"),
 	})
 }
 
@@ -541,13 +546,16 @@ func (h *UsageHandler) DashboardSnapshotV2(c *gin.Context) {
 
 	resp := gin.H{
 		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		"query":        parsed.Range.Metadata(),
 		"start_date":   parsed.StartTime.Format("2006-01-02"),
-		"end_date":     parsed.EndTime.Add(-24 * time.Hour).Format("2006-01-02"),
+		"end_date":     parsed.EndTime.Add(-time.Nanosecond).Format("2006-01-02"),
 		"granularity":  granularity,
 	}
 
 	if includeTrend {
-		trend, err := h.usageService.GetUsageTrendWithFilters(c.Request.Context(), parsed.StartTime, parsed.EndTime, granularity, parsed.Filters)
+		trend, err := loadUserUsageQuery(userQueryContext(c), "trend:"+granularity, parsed.Filters, func(work context.Context) ([]usagestats.TrendDataPoint, error) {
+			return h.usageService.GetUsageTrendWithFilters(work, parsed.StartTime, parsed.EndTime, granularity, parsed.Filters)
+		})
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -555,7 +563,9 @@ func (h *UsageHandler) DashboardSnapshotV2(c *gin.Context) {
 		resp["trend"] = trend
 	}
 	if includeModels {
-		models, err := h.usageService.GetModelStatsWithFiltersBySource(c.Request.Context(), parsed.StartTime, parsed.EndTime, parsed.Filters, usagestats.ModelSourceRequested)
+		models, err := loadUserUsageQuery(userQueryContext(c), "models:requested", parsed.Filters, func(work context.Context) ([]usagestats.ModelStat, error) {
+			return h.usageService.GetModelStatsWithFiltersBySource(work, parsed.StartTime, parsed.EndTime, parsed.Filters, usagestats.ModelSourceRequested)
+		})
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -563,7 +573,9 @@ func (h *UsageHandler) DashboardSnapshotV2(c *gin.Context) {
 		resp["models"] = userModelStatsFromUsageStats(models)
 	}
 	if includeGroups {
-		groups, err := h.usageService.GetGroupStatsWithFilters(c.Request.Context(), parsed.StartTime, parsed.EndTime, parsed.Filters)
+		groups, err := loadUserUsageQuery(userQueryContext(c), "groups", parsed.Filters, func(work context.Context) ([]usagestats.GroupStat, error) {
+			return h.usageService.GetGroupStatsWithFilters(work, parsed.StartTime, parsed.EndTime, parsed.Filters)
+		})
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -721,6 +733,6 @@ func (h *UsageHandler) GetMyAPIKeyDailyUsage(c *gin.Context) {
 		"items":      items,
 		"days":       days,
 		"start_date": startTime.Format("2006-01-02"),
-		"end_date":   endTime.AddDate(0, 0, -1).Format("2006-01-02"),
+		"end_date":   endTime.Add(-time.Nanosecond).Format("2006-01-02"),
 	})
 }

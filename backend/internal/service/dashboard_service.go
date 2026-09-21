@@ -124,6 +124,15 @@ func (s *DashboardService) GetDashboardStats(ctx context.Context) (*usagestats.D
 	return stats, nil
 }
 
+// GetDashboardStatsFresh supplies snapshots without nesting the dashboard cache TTL.
+func (s *DashboardService) GetDashboardStatsFresh(ctx context.Context) (*usagestats.DashboardStats, error) {
+	stats, err := s.refreshDashboardStats(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get fresh dashboard stats: %w", err)
+	}
+	return stats, nil
+}
+
 func (s *DashboardService) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.TrendDataPoint, error) {
 	trend, err := s.usageRepo.GetUsageTrendWithFilters(ctx, startTime, endTime, granularity, userID, apiKeyID, accountID, groupID, model, requestType, stream, billingType)
 	if err != nil {

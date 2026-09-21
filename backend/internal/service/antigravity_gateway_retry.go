@@ -829,6 +829,16 @@ func tempUnscheduleEmptyResponse(ctx context.Context, repo AccountRepository, ac
 	}
 }
 
+func tempUnscheduleStreamReadFailure(ctx context.Context, repo AccountRepository, accountID int64, logPrefix string) {
+	until := time.Now().Add(emptyResponseCooldown)
+	reason := "stream read failure before client output (auto temp-unschedule 1m)"
+	if err := repo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+		log.Printf("%s temp_unschedule_failed account=%d error=%v", logPrefix, accountID, err)
+	} else {
+		log.Printf("%s temp_unscheduled account=%d until=%v reason=%q", logPrefix, accountID, until.Format("15:04:05"), reason)
+	}
+}
+
 // sleepAntigravityBackoffWithContext 带 context 取消检查的退避等待
 // 返回 true 表示正常完成等待，false 表示 context 已取消
 func sleepAntigravityBackoffWithContext(ctx context.Context, attempt int) bool {

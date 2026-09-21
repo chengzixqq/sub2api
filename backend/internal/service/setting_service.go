@@ -150,6 +150,7 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsCache atomic.Value // *cachedOpenAIQuotaAutoPauseSettings
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 	openAIAPIKeyHealthBreakerCache    atomic.Value // *cachedOpenAIAPIKeyHealthBreakerSettings
+	claudeCustomizationErrorLogAt     atomic.Int64
 
 	// failureBillingUpstreamUsageOnlyCache keeps the failure settlement policy
 	// available to gateway guards without a database read on every request.
@@ -165,6 +166,11 @@ type DefaultPlatformQuotaSetting struct {
 	DailyLimitUSD   *float64 `json:"daily"`
 	WeeklyLimitUSD  *float64 `json:"weekly"`
 	MonthlyLimitUSD *float64 `json:"monthly"`
+}
+
+// HasAnyLimit 报告是否至少配置了一档限额（0 也算配置）。nil receiver 视为未配置。
+func (q *DefaultPlatformQuotaSetting) HasAnyLimit() bool {
+	return q != nil && (q.DailyLimitUSD != nil || q.WeeklyLimitUSD != nil || q.MonthlyLimitUSD != nil)
 }
 
 type ProviderDefaultGrantSettings struct {

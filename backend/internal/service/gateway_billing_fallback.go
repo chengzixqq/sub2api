@@ -98,7 +98,8 @@ func DecideFailureBilling(in FailureBillingInput) FailureBillingDecision {
 	if in.Usage.InputTokens > 0 || in.Usage.OutputTokens > 0 ||
 		in.Usage.CacheReadInputTokens > 0 || in.Usage.CacheCreationInputTokens > 0 ||
 		in.Usage.CacheCreation5mTokens > 0 || in.Usage.CacheCreation1hTokens > 0 ||
-		in.Usage.ImageInputTokens > 0 || in.Usage.ImageOutputTokens > 0 || imageCount > 0 {
+		in.Usage.ImageInputTokens > 0 || in.Usage.ImageCacheReadTokens > 0 ||
+		in.Usage.ImageOutputTokens > 0 || imageCount > 0 {
 		baseDecision.Billable = true
 		baseDecision.Usage = in.Usage
 		baseDecision.Provenance = BillingProvenanceFailedUpstream

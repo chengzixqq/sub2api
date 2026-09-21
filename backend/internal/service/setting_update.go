@@ -422,6 +422,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyProbeCoalescingWindowSeconds] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingWindowSeconds), 60, 3600))
 	updates[SettingKeyProbeCoalescingLeaderTimeoutSeconds] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingLeaderTimeoutSeconds), 8, 60))
 	updates[SettingKeyProbeCoalescingAttemptBudget] = strconv.Itoa(parseProbePositive(strconv.Itoa(settings.ProbeCoalescingAttemptBudget), 8, 64))
+	updates[SettingKeyChannelMonitorHideUserRanking] = strconv.FormatBool(settings.ChannelMonitorHideUserRanking)
 
 	// Grok model mapping policy
 	if v := strings.TrimSpace(settings.GrokDefaultTextModel); v != "" {
@@ -434,6 +435,9 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Available channels feature switch
 	updates[SettingKeyAvailableChannelsEnabled] = strconv.FormatBool(settings.AvailableChannelsEnabled)
+
+	// Subscription feature switch
+	updates[SettingKeySubscriptionEnabled] = strconv.FormatBool(settings.SubscriptionEnabled)
 
 	// Model plaza feature switches + description
 	updates[SettingKeyModelPlazaEnabled] = strconv.FormatBool(settings.ModelPlazaEnabled)

@@ -1,6 +1,7 @@
 <template>
   <BaseDialog :show="show" :title="t('admin.usage.cleanup.title')" width="wide" @close="handleClose">
     <div class="space-y-4">
+      <DateRangePicker v-model:start-date="localStartDate" v-model:end-date="localEndDate" include-time required-range />
       <UsageFilters
         v-model="localFilters"
         v-model:startDate="localStartDate"
@@ -101,7 +102,7 @@
     :confirm-text="t('admin.usage.cleanup.confirmSubmit')"
     danger
     @confirm="submitCleanup"
-    @cancel="confirmVisible = false"
+    @cancel="confirmVisible = false; pendingPayload = null"
   />
 
   <ConfirmDialog
@@ -123,6 +124,8 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import UsageFilters from '@/components/admin/usage/UsageFilters.vue'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import { localMinute, snapshotUsageQuery } from '@/utils/usageQuery'
 import { adminUsageAPI } from '@/api/admin/usage'
 import type { AdminUsageQueryParams, UsageCleanupTask, CreateUsageCleanupTaskRequest } from '@/api/admin/usage'
 import { requestTypeToLegacyStream } from '@/utils/usageRequestType'
@@ -151,6 +154,7 @@ const tasksPageSize = ref(5)
 const tasksTotal = ref(0)
 const submitting = ref(false)
 const confirmVisible = ref(false)
+const pendingPayload = ref<Readonly<CreateUsageCleanupTaskRequest> | null>(null)
 const cancelConfirmVisible = ref(false)
 const canceling = ref(false)
 const cancelTarget = ref<UsageCleanupTask | null>(null)
@@ -162,6 +166,12 @@ const resetFilters = () => {
   localFilters.value = { ...props.filters }
   localStartDate.value = props.startDate
   localEndDate.value = props.endDate
+  if (/^\d{4}-\d{2}-\d{2}$/.test(props.startDate) && /^\d{4}-\d{2}-\d{2}$/.test(props.endDate)) {
+    localStartDate.value = `${props.startDate}T00:00`
+    const end = new Date(`${props.endDate}T00:00`)
+    end.setDate(end.getDate() + 1)
+    localEndDate.value = localMinute(end)
+  }
   localFilters.value.start_date = localStartDate.value
   localFilters.value.end_date = localEndDate.value
   tasksPage.value = 1
@@ -185,6 +195,7 @@ const stopPolling = () => {
 const handleClose = () => {
   stopPolling()
   confirmVisible.value = false
+  pendingPayload.value = null
   cancelConfirmVisible.value = false
   canceling.value = false
   cancelTarget.value = null
@@ -227,14 +238,6 @@ const formatRange = (task: UsageCleanupTask) => {
   return `${start} ~ ${end}`
 }
 
-const getUserTimezone = () => {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone
-  } catch {
-    return 'UTC'
-  }
-}
-
 const loadTasks = async () => {
   if (!props.show) return
   tasksLoading.value = true
@@ -272,6 +275,9 @@ const handleTaskPageSizeChange = (size: number) => {
 }
 
 const openConfirm = () => {
+  const payload = buildPayload()
+  if (!payload) return
+  pendingPayload.value = Object.freeze(payload)
   confirmVisible.value = true
 }
 
@@ -290,10 +296,20 @@ const buildPayload = (): CreateUsageCleanupTaskRequest | null => {
     return null
   }
 
+  let range: ReturnType<typeof snapshotUsageQuery>
+  try {
+    range = snapshotUsageQuery({}, localStartDate.value, localEndDate.value)
+  } catch {
+    appStore.showError(t('admin.usage.cleanup.missingRange'))
+    return null
+  }
   const payload: CreateUsageCleanupTaskRequest = {
-    start_date: localStartDate.value,
-    end_date: localEndDate.value,
-    timezone: getUserTimezone()
+    start_time: range.start_time,
+    end_time: range.end_time,
+    timezone: range.timezone,
+    native_compaction_v2: localFilters.value.native_compaction_v2,
+    billing_mode: localFilters.value.billing_mode,
+    upstream_model_mismatch: localFilters.value.upstream_model_mismatch,
   }
 
   if (localFilters.value.user_id && localFilters.value.user_id > 0) {
@@ -328,7 +344,8 @@ const buildPayload = (): CreateUsageCleanupTaskRequest | null => {
 }
 
 const submitCleanup = async () => {
-  const payload = buildPayload()
+  if (submitting.value) return
+  const payload = pendingPayload.value
   if (!payload) {
     confirmVisible.value = false
     return
@@ -344,6 +361,7 @@ const submitCleanup = async () => {
     appStore.showError(t('admin.usage.cleanup.submitFailed'))
   } finally {
     submitting.value = false
+    pendingPayload.value = null
   }
 }
 

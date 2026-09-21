@@ -142,6 +142,8 @@ docs/*
 !docs/COMPOSITE_GROUPS.md
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/channel-monitor-v2-safe-defaults.md
+!docs/channel-monitor-unified.md
+!docs/channel-monitor-capacity.md
 !docs/legal/
 !docs/legal/*.md
 !docs/screenshots/
@@ -158,3 +160,17 @@ output/
 .vite/
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
 /plugins/
+
+# Local operations, diagnostics, private exports and source-publication evidence
+/outputs/
+/deploy-evidence*/
+.learnings/
+.playwright-cli/
+__pycache__/
+*.pyc
+/docs/upgrade-v0.2.5/
+/docs/channel-monitor-v2-review.md
+/deploy/WORKSPACE_ROLLOUT_PROMPT.md
+/deploy/linapi_v025*.py
+/deploy/test_linapi_v025*.py
+/tools/redact_*_user_excel.py

@@ -5,7 +5,9 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -38,6 +40,10 @@ func TestAPIContracts(t *testing.T) {
 		headers    map[string]string
 		wantStatus int
 		wantJSON   string
+		// allowAdditionalJSON is used for additive response contracts whose
+		// server-generated metadata (for example generated_at) is intentionally
+		// not fixed in the fixture.
+		allowAdditionalJSON bool
 	}{
 		{
 			name:       "GET /api/v1/auth/me",
@@ -527,9 +533,10 @@ func TestAPIContracts(t *testing.T) {
 					},
 				})
 			},
-			method:     http.MethodGet,
-			path:       "/api/v1/usage/stats?start_date=2025-01-01&end_date=2025-01-02",
-			wantStatus: http.StatusOK,
+			method:              http.MethodGet,
+			path:                "/api/v1/usage/stats?start_date=2025-01-01&end_date=2025-01-02",
+			wantStatus:          http.StatusOK,
+			allowAdditionalJSON: true,
 			wantJSON: `{
 				"code": 0,
 				"message": "success",
@@ -575,9 +582,10 @@ func TestAPIContracts(t *testing.T) {
 					},
 				})
 			},
-			method:     http.MethodGet,
-			path:       "/api/v1/usage?page=1&page_size=10",
-			wantStatus: http.StatusOK,
+			method:              http.MethodGet,
+			path:                "/api/v1/usage?page=1&page_size=10",
+			wantStatus:          http.StatusOK,
+			allowAdditionalJSON: true,
 			wantJSON: `{
 				"code": 0,
 				"message": "success",
@@ -865,7 +873,7 @@ func TestAPIContracts(t *testing.T) {
 					"force_email_on_third_party_signup": false,
 					"default_concurrency": 5,
 					"default_balance": 1.25,
-					"default_platform_quotas": {"anthropic":{"daily":null,"weekly":null,"monthly":null},"antigravity":{"daily":null,"weekly":null,"monthly":null},"deepseek":{"daily":null,"weekly":null,"monthly":null},"gemini":{"daily":null,"weekly":null,"monthly":null},"grok":{"daily":null,"weekly":null,"monthly":null},"kimi":{"daily":null,"weekly":null,"monthly":null},"openai":{"daily":null,"weekly":null,"monthly":null},"zhipu":{"daily":null,"weekly":null,"monthly":null}},
+					"default_platform_quotas": {"anthropic":{"daily":null,"weekly":null,"monthly":null},"antigravity":{"daily":null,"weekly":null,"monthly":null},"deepseek":{"daily":null,"weekly":null,"monthly":null},"gemini":{"daily":null,"weekly":null,"monthly":null},"grok":{"daily":null,"weekly":null,"monthly":null},"kimi":{"daily":null,"weekly":null,"monthly":null},"minimax":{"daily":null,"weekly":null,"monthly":null},"openai":{"daily":null,"weekly":null,"monthly":null},"opencode_go":{"daily":null,"weekly":null,"monthly":null},"zhipu":{"daily":null,"weekly":null,"monthly":null}},
 					"auth_source_default_email_platform_quotas": null,
 					"auth_source_default_github_platform_quotas": null,
 					"auth_source_default_google_platform_quotas": null,
@@ -994,12 +1002,14 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_mode": "v1",
 					"channel_monitor_hide_throughput": true,
 					"channel_monitor_show_quota": false,
+					"channel_monitor_hide_user_ranking": false,
 					"channel_monitor_default_interval_seconds": 60,
 					"probe_coalescing_mode": "shadow",
 					"probe_coalescing_window_seconds": 60,
 					"probe_coalescing_leader_timeout_seconds": 8,
 					"probe_coalescing_attempt_budget": 8,
 					"available_channels_enabled": false,
+					"subscription_enabled": true,
 					"model_plaza_enabled": false,
 					"model_plaza_require_auth": false,
 					"model_plaza_description": "",
@@ -1187,7 +1197,7 @@ func TestAPIContracts(t *testing.T) {
 					"purchase_subscription_url": "",
 					"table_default_page_size": 20,
 					"table_page_size_options": [10, 20, 50],
-					"default_platform_quotas": {"anthropic":{"daily":null,"weekly":null,"monthly":null},"antigravity":{"daily":null,"weekly":null,"monthly":null},"deepseek":{"daily":null,"weekly":null,"monthly":null},"gemini":{"daily":null,"weekly":null,"monthly":null},"grok":{"daily":null,"weekly":null,"monthly":null},"kimi":{"daily":null,"weekly":null,"monthly":null},"openai":{"daily":null,"weekly":null,"monthly":null},"zhipu":{"daily":null,"weekly":null,"monthly":null}},
+					"default_platform_quotas": {"anthropic":{"daily":null,"weekly":null,"monthly":null},"antigravity":{"daily":null,"weekly":null,"monthly":null},"deepseek":{"daily":null,"weekly":null,"monthly":null},"gemini":{"daily":null,"weekly":null,"monthly":null},"grok":{"daily":null,"weekly":null,"monthly":null},"kimi":{"daily":null,"weekly":null,"monthly":null},"minimax":{"daily":null,"weekly":null,"monthly":null},"openai":{"daily":null,"weekly":null,"monthly":null},"opencode_go":{"daily":null,"weekly":null,"monthly":null},"zhipu":{"daily":null,"weekly":null,"monthly":null}},
 					"auth_source_default_email_platform_quotas": null,
 					"auth_source_default_github_platform_quotas": null,
 					"auth_source_default_google_platform_quotas": null,
@@ -1312,12 +1322,14 @@ func TestAPIContracts(t *testing.T) {
 					"channel_monitor_mode": "v1",
 					"channel_monitor_hide_throughput": true,
 					"channel_monitor_show_quota": false,
+					"channel_monitor_hide_user_ranking": false,
 					"channel_monitor_default_interval_seconds": 60,
 					"probe_coalescing_mode": "shadow",
 					"probe_coalescing_window_seconds": 60,
 					"probe_coalescing_leader_timeout_seconds": 8,
 					"probe_coalescing_attempt_budget": 8,
 					"available_channels_enabled": false,
+					"subscription_enabled": true,
 					"model_plaza_enabled": false,
 					"model_plaza_require_auth": false,
 					"model_plaza_description": "",
@@ -1418,8 +1430,43 @@ func TestAPIContracts(t *testing.T) {
 
 			status, body := doRequest(t, deps.router, tt.method, tt.path, tt.body, tt.headers)
 			require.Equal(t, tt.wantStatus, status)
-			require.JSONEq(t, tt.wantJSON, body)
+			if tt.allowAdditionalJSON {
+				requireJSONSubset(t, tt.wantJSON, body)
+			} else {
+				require.JSONEq(t, tt.wantJSON, body)
+			}
 		})
+	}
+}
+
+func requireJSONSubset(t *testing.T, expectedJSON, actualJSON string) {
+	t.Helper()
+	var expected, actual any
+	require.NoError(t, json.Unmarshal([]byte(expectedJSON), &expected))
+	require.NoError(t, json.Unmarshal([]byte(actualJSON), &actual))
+	assertJSONSubset(t, expected, actual, "$")
+}
+
+func assertJSONSubset(t *testing.T, expected, actual any, path string) {
+	t.Helper()
+	switch want := expected.(type) {
+	case map[string]any:
+		got, ok := actual.(map[string]any)
+		require.Truef(t, ok, "%s must be an object, got %T", path, actual)
+		for key, value := range want {
+			gotValue, exists := got[key]
+			require.Truef(t, exists, "%s.%s is missing", path, key)
+			assertJSONSubset(t, value, gotValue, path+"."+key)
+		}
+	case []any:
+		got, ok := actual.([]any)
+		require.Truef(t, ok, "%s must be an array, got %T", path, actual)
+		require.Len(t, got, len(want), "%s array length", path)
+		for i := range want {
+			assertJSONSubset(t, want[i], got[i], fmt.Sprintf("%s[%d]", path, i))
+		}
+	default:
+		require.Equalf(t, want, actual, "%s differs", path)
 	}
 }
 

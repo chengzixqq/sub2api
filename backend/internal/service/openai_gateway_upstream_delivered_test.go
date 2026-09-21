@@ -385,7 +385,7 @@ func runOpenAIDeliveredImagesStream(sse string) *gin.Context {
 		Body:       io.NopCloser(strings.NewReader(sse)),
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
-	_, _, _, _, _ = svc.handleOpenAIImagesStreamingResponse(resp, c, time.Now())
+	_, _, _, _, _ = svc.handleOpenAIImagesStreamingResponse(resp, c, time.Now(), nil)
 	return c
 }
 

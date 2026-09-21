@@ -15,6 +15,11 @@ type openAIImageOutputCounter struct {
 	dataSizes    []string
 	count        int
 	maxDataCount int
+	// requireValidImageData is enabled only for native Codex Images.  Generic
+	// Responses fixtures and third-party providers may carry opaque result
+	// strings, but a native image response must not become billable merely
+	// because b64_json is non-empty.
+	requireValidImageData bool
 }
 
 func newOpenAIImageOutputCounter() *openAIImageOutputCounter {
@@ -74,7 +79,7 @@ func (c *openAIImageOutputCounter) AddSSEData(data []byte) {
 		c.addImageOutputItem(root.Get("item"))
 	case "response.completed", "response.done":
 		c.addOutputArray(root.Get("response.output"))
-	case "image_generation.completed":
+	case "image_generation.completed", "image_edit.completed":
 		if item := root.Get("item"); item.Exists() {
 			c.addImageOutputItem(item)
 			return
@@ -105,8 +110,12 @@ func (c *openAIImageOutputCounter) addDataArray(data gjson.Result) {
 		if !item.IsObject() {
 			continue
 		}
-		hasImageOutput := strings.TrimSpace(item.Get("url").String()) != "" ||
-			strings.TrimSpace(item.Get("b64_json").String()) != ""
+		url := strings.TrimSpace(item.Get("url").String())
+		b64 := strings.TrimSpace(item.Get("b64_json").String())
+		hasImageOutput := url != "" || b64 != ""
+		if c.requireValidImageData && b64 != "" && !isValidOpenAIImageResult(b64) {
+			hasImageOutput = false
+		}
 		if !hasImageOutput {
 			continue
 		}
@@ -138,20 +147,26 @@ func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
 		return
 	}
 	itemType := strings.TrimSpace(item.Get("type").String())
-	if itemType != "" && itemType != "image_generation_call" && itemType != "image_generation.completed" {
+	if itemType != "" && itemType != "image_generation_call" && itemType != "image_generation.completed" && itemType != "image_edit.completed" {
 		return
 	}
 	if strings.Contains(strings.ToLower(item.Raw), "partial_image") {
 		return
 	}
 	result := strings.TrimSpace(item.Get("result").String())
+	resultIsEncoded := result != ""
 	if result == "" {
 		result = strings.TrimSpace(item.Get("b64_json").String())
+		resultIsEncoded = result != ""
 	}
 	if result == "" {
 		result = strings.TrimSpace(item.Get("url").String())
+		resultIsEncoded = false
 	}
 	if result == "" {
+		return
+	}
+	if c.requireValidImageData && resultIsEncoded && !isValidOpenAIImageResult(result) {
 		return
 	}
 	key := strings.TrimSpace(item.Get("id").String())

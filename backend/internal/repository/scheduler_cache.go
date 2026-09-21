@@ -225,6 +225,13 @@ type schedulerCache struct {
 	writeChunkSize int
 }
 
+const schedulerMetadataVersion = 1
+
+type schedulerMetadataPayload struct {
+	service.Account
+	Version int `json:"scheduler_metadata_version"`
+}
+
 func NewSchedulerCache(rdb *redis.Client) service.SchedulerCache {
 	return newSchedulerCacheWithChunkSizes(rdb, defaultSchedulerSnapshotMGetChunkSize, defaultSchedulerSnapshotWriteChunkSize)
 }
@@ -292,18 +299,54 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 
 	accounts := make([]*service.Account, 0, len(values))
+	legacyIndices := make([]int, 0)
+	legacyKeys := make([]string, 0)
 	for i, val := range values {
 		if val == nil {
 			return nil, false, nil
 		}
-		account, err := decodeCachedAccount(val)
+		metadata, err := decodeCachedSchedulerMetadata(val)
 		if err != nil {
 			return nil, false, err
 		}
+		if metadata.Version != 0 && metadata.Version != schedulerMetadataVersion {
+			return nil, false, nil
+		}
+		if strconv.FormatInt(metadata.ID, 10) != ids[i] {
+			return nil, false, nil
+		}
+		if metadata.Version == 0 {
+			legacyIndices = append(legacyIndices, i)
+			legacyKeys = append(legacyKeys, schedulerAccountKey(ids[i]))
+		}
+		accounts = append(accounts, &metadata.Account)
+	}
+	// During rolling upgrades an older writer may publish the legacy projection
+	// and consume the shared outbox event. Re-project its full payload locally;
+	// never publish the read back over a newer concurrent writer.
+	fullValues, err := c.mgetChunked(ctx, legacyKeys)
+	if err != nil {
+		return nil, false, err
+	}
+	for j, val := range fullValues {
+		if val == nil {
+			return nil, false, nil
+		}
+		full, err := decodeCachedAccount(val)
+		if err != nil {
+			return nil, false, err
+		}
+		i := legacyIndices[j]
+		if strconv.FormatInt(full.ID, 10) != ids[i] {
+			return nil, false, nil
+		}
+		projected := buildSchedulerMetadataAccount(*full)
+		accounts[i] = &projected
+	}
+	for i, account := range accounts {
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			return nil, false, err
 		}
-		accounts = append(accounts, account)
 	}
 
 	return accounts, true, nil
@@ -776,6 +819,23 @@ func decodeCachedAccount(val any) (*service.Account, error) {
 	return &account, nil
 }
 
+func decodeCachedSchedulerMetadata(val any) (*schedulerMetadataPayload, error) {
+	var payload []byte
+	switch raw := val.(type) {
+	case string:
+		payload = []byte(raw)
+	case []byte:
+		payload = raw
+	default:
+		return nil, fmt.Errorf("unexpected scheduler metadata cache type: %T", val)
+	}
+	var metadata schedulerMetadataPayload
+	if err := json.Unmarshal(payload, &metadata); err != nil {
+		return nil, err
+	}
+	return &metadata, nil
+}
+
 func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service.Account) ([]int64, error) {
 	if len(accounts) == 0 {
 		return nil, nil
@@ -831,7 +891,7 @@ func marshalSchedulerCacheAccount(account service.Account) ([]byte, []byte, erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal account: %w", err)
 	}
-	metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+	metaPayload, err := json.Marshal(schedulerMetadataPayload{Account: buildSchedulerMetadataAccount(account), Version: schedulerMetadataVersion})
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal account metadata: %w", err)
 	}
@@ -955,7 +1015,9 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type"}
+	// Candidate-list admission evaluates the account override before hydrating
+	// the full account. Dropping it silently falls back to the platform threshold.
+	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold"}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -973,6 +1035,13 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		// Anthropic shared-window and Fable-only threshold checks run on this
+		// projection. UpdateExtra refreshes both payloads without a bucket rebuild.
+		"session_window_utilization",
+		"passive_usage_7d_utilization",
+		"passive_usage_7d_reset",
+		"passive_usage_7d_oi_utilization",
+		"passive_usage_7d_oi_reset",
 		"quota_limit",
 		"quota_used",
 		"quota_daily_limit",

@@ -13,12 +13,11 @@ function read(rel: string) {
 }
 
 describe('channel-monitor-v2 design system structure', () => {
-  it('user ChannelStatus V2 shell uses page-header, card, btn, tabs utilities', () => {
+  it('unified status uses an unframed responsive shell and one overview path', () => {
     // Route wrapper may switch V1/V2; design chrome lives on the V2 implementation.
     const src = read('views/user/ChannelStatusV2View.vue')
     expect(src).toContain('page-header')
     expect(src).toContain('page-title')
-    expect(src).toContain('class="card')
     expect(src).toContain('btn btn-secondary')
     expect(src).toContain('class="tab')
     expect(src).toContain('tab-active')
@@ -26,23 +25,18 @@ describe('channel-monitor-v2 design system structure', () => {
     // Compact single-row toolbar
     expect(src).toContain('monitor-toolbar')
     expect(src).toContain('clearFilters')
-    expect(src).toContain('healthModeOptions')
-    expect(src).toContain("'cache'")
-    // Ops elevation: rounded-3xl + ring surfaces
-    expect(src).toContain('rounded-3xl')
-    expect(src).toContain('ring-1 ring-gray-900/5')
-    // Overview-first KPI strip before primary viz
-    expect(src.indexOf('summaryAria')).toBeLessThan(src.indexOf('MonitorTrendChart'))
+    expect(src).toContain('useObservationOverview')
+    expect(src).toContain('ObservationCards')
+    expect(src).toContain('ObservationDetailDrawer')
+    expect(src).not.toContain('toggleObservationMode')
+    expect(src).not.toContain('getSnapshot')
+    expect(src).not.toContain('rounded-3xl')
     // No page-level fixed min-width that forces viewport horizontal scroll
     expect(src).not.toMatch(/min-width:\s*980px/)
     expect(src).not.toMatch(/min-w-\[980px\]/)
-    // Dense tables scroll internally
-    expect(src).toMatch(/max-h-\[min\(52vh/)
-    expect(src).toContain('overflow-auto')
-    // Trend view toggle (pulse matrix / line chart) + default platform/group dimension
-    expect(src).toContain("trendView")
-    expect(src).toContain("'platform_group'")
-    expect(src).toContain('MonitorTrendChart')
+    expect(src).toContain('flex-wrap')
+    expect(src).toContain("'24h'")
+    expect(src).toContain('60_000')
   })
 
   it('RelayPulseMatrix uses card chrome, matrix scroll, and hover tooltips (no click modal)', () => {

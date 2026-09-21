@@ -1,5 +1,6 @@
 export default {
   common: {
+    retry: 'Retry',
     loading: 'Loading...',
     submitting: 'Submitting...',
     justNow: 'just now',
@@ -194,6 +195,7 @@ export default {
     ops: 'Ops',
     promoCodes: 'Promo Codes',
     settings: 'Settings',
+    customization: 'Claude Compatibility',
     myAccount: 'My Account',
     lightMode: 'Light Mode',
     darkMode: 'Dark Mode',
@@ -203,6 +205,8 @@ export default {
     github: 'GitHub',
     mySubscriptions: 'My Subscriptions',
     buySubscription: 'Recharge / Subscription',
+    recharge: 'Recharge',
+    subscribe: 'Subscription',
     docs: 'Docs',
     myOrders: 'My Orders',
     orderManagement: 'Orders',

@@ -192,25 +192,10 @@
           </div>
         </div>
 
-        <div class="overflow-x-auto">
-          <table class="w-full min-w-[800px] text-sm">
-            <thead>
-              <tr class="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-dark-700 dark:text-gray-400">
-                <th class="py-2 pr-4">ID</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.status') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.fileName') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.size') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.parts') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.expiresAt') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.triggeredBy') }}</th>
-                <th class="py-2 pr-4">{{ t('admin.backup.columns.startedAt') }}</th>
-                <th class="py-2">{{ t('admin.backup.columns.actions') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="record in backups" :key="record.id" class="border-b border-gray-100 align-top dark:border-dark-800">
-                <td class="py-3 pr-4 font-mono text-xs">{{ record.id }}</td>
-                <td class="py-3 pr-4">
+        <div>
+          <DataTable column-order-key="admin.backup-records" :columns="backupColumns" :data="backups" :loading="loadingBackups" row-key="id">
+            <template #cell-id="{ value }"><span class="font-mono text-xs">{{ value }}</span></template>
+            <template #cell-status="{ row: record }">
                   <span
                     class="rounded px-2 py-0.5 text-xs"
                     :class="statusClass(record.status)"
@@ -219,18 +204,17 @@
                       ? t(`admin.backup.progress.${record.progress}`)
                       : t(`admin.backup.status.${record.status}`) }}
                   </span>
-                </td>
-                <td class="py-3 pr-4 text-xs">{{ record.file_name }}</td>
-                <td class="py-3 pr-4 text-xs">{{ formatSize(record.size_bytes) }}</td>
-                <td class="py-3 pr-4 text-xs">{{ record.parts?.length || (record.status === 'running' ? '-' : 1) }}</td>
-                <td class="py-3 pr-4 text-xs">
+            </template>
+            <template #cell-size_bytes="{ value }">{{ formatSize(value) }}</template>
+            <template #cell-parts="{ row: record }">{{ record.parts?.length || (record.status === 'running' ? '-' : 1) }}</template>
+            <template #cell-expires_at="{ row: record }">
                   {{ record.expires_at ? formatDate(record.expires_at) : t('admin.backup.neverExpire') }}
-                </td>
-                <td class="py-3 pr-4 text-xs">
+            </template>
+            <template #cell-triggered_by="{ row: record }">
                   {{ record.triggered_by === 'scheduled' ? t('admin.backup.trigger.scheduled') : t('admin.backup.trigger.manual') }}
-                </td>
-                <td class="py-3 pr-4 text-xs">{{ formatDate(record.started_at) }}</td>
-                <td class="py-3 text-xs">
+            </template>
+            <template #cell-started_at="{ value }">{{ formatDate(value) }}</template>
+            <template #cell-actions="{ row: record }">
                   <div class="flex flex-wrap gap-1">
                     <button
                       v-if="record.status === 'completed'"
@@ -258,15 +242,9 @@
                       {{ t('common.delete') }}
                     </button>
                   </div>
-                </td>
-              </tr>
-              <tr v-if="backups.length === 0">
-                <td colspan="9" class="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                  {{ t('admin.backup.empty') }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+            </template>
+            <template #empty>{{ t('admin.backup.empty') }}</template>
+          </DataTable>
         </div>
       </div>
     </div>
@@ -413,8 +391,20 @@ import type {
 } from '@/api/admin/backup'
 import { useStepUp, isStepUpBlocked, isStepUpCancelled, stepUpBlockReason } from '@/composables/useStepUp'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import DataTable from '@/components/common/DataTable.vue'
 
 const { t } = useI18n()
+const backupColumns = computed(() => [
+  { key: 'id', label: 'ID' },
+  { key: 'status', label: t('admin.backup.columns.status') },
+  { key: 'file_name', label: t('admin.backup.columns.fileName') },
+  { key: 'size_bytes', label: t('admin.backup.columns.size') },
+  { key: 'parts', label: t('admin.backup.columns.parts') },
+  { key: 'expires_at', label: t('admin.backup.columns.expiresAt') },
+  { key: 'triggered_by', label: t('admin.backup.columns.triggeredBy') },
+  { key: 'started_at', label: t('admin.backup.columns.startedAt') },
+  { key: 'actions', label: t('admin.backup.columns.actions') }
+])
 const appStore = useAppStore()
 const backupStepUp = useStepUp()
 

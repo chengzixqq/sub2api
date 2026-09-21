@@ -1,6 +1,6 @@
 <template>
   <div class="card p-4">
-    <div class="mb-4 flex items-center justify-between gap-3">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <h3 class="text-sm font-semibold text-gray-900 dark:text-white">
         {{ title || t('usage.endpointDistribution') }}
       </h3>
@@ -118,6 +118,8 @@
                   <UserBreakdownSubTable
                     :items="breakdownItems"
                     :loading="breakdownLoading"
+                    :error="breakdownError"
+                    @retry="toggleBreakdown(item.endpoint, true)"
                   />
                 </td>
               </tr>
@@ -133,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js'
 import { Doughnut } from 'vue-chartjs'
@@ -141,6 +143,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import UserBreakdownSubTable from './UserBreakdownSubTable.vue'
 import type { EndpointStat, UserBreakdownItem } from '@/types'
 import { getUserBreakdown } from '@/api/admin/dashboard'
+import { createUsageRequests } from '@/utils/usageQuery'
 
 ChartJS.register(ArcElement, Tooltip, Legend)
 
@@ -164,6 +167,7 @@ const props = withDefaults(
     startDate?: string
     endDate?: string
     filters?: Record<string, any>
+    refreshKey?: number
   }>(),
   {
     upstreamEndpointStats: () => [],
@@ -186,28 +190,44 @@ const emit = defineEmits<{
 const expandedKey = ref<string | null>(null)
 const breakdownItems = ref<UserBreakdownItem[]>([])
 const breakdownLoading = ref(false)
+const breakdownError = ref(false)
+const requests = createUsageRequests()
+watch(() => [props.startDate, props.endDate, props.source, props.refreshKey, JSON.stringify(props.filters)], () => {
+  requests.cancelAll()
+  expandedKey.value = null
+  breakdownItems.value = []
+  breakdownLoading.value = false
+  breakdownError.value = false
+}, { flush: 'sync' })
+onUnmounted(() => requests.cancelAll())
 
-const toggleBreakdown = async (endpoint: string) => {
-  if (expandedKey.value === endpoint) {
+const toggleBreakdown = async (endpoint: string, force = false) => {
+  const request = requests.start('breakdown')
+  if (expandedKey.value === endpoint && !force) {
     expandedKey.value = null
     return
   }
   expandedKey.value = endpoint
   breakdownLoading.value = true
+  breakdownError.value = false
   breakdownItems.value = []
   try {
     const res = await getUserBreakdown({
       ...props.filters,
-      start_date: props.startDate,
-      end_date: props.endDate,
+      start_date: props.filters?.start_time ? undefined : props.startDate,
+      end_date: props.filters?.end_time ? undefined : props.endDate,
       endpoint,
       endpoint_type: props.source,
-    })
+      force_refresh: force,
+    }, { signal: request.signal })
+    if (!request.current()) return
     breakdownItems.value = res.users || []
   } catch {
+    if (!request.current()) return
+    breakdownError.value = true
     breakdownItems.value = []
   } finally {
-    breakdownLoading.value = false
+    if (request.current()) breakdownLoading.value = false
   }
 }
 

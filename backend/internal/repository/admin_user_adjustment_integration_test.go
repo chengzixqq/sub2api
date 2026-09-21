@@ -529,7 +529,8 @@ func newAdjustmentIntegrationAdminServiceWithGroupRates(
 
 func adjustmentIntegrationContext(operator *service.User, notes string) context.Context {
 	operatorID := operator.ID
-	return service.WithAdminAdjustmentMetadata(context.Background(), service.AdminAdjustmentMetadata{
+	base := service.WithScope(context.Background(), service.AdminScope())
+	return service.WithAdminAdjustmentMetadata(base, service.AdminAdjustmentMetadata{
 		OperatorID: &operatorID, OperatorEmail: operator.Email, Notes: notes,
 		ClientIP: "127.0.0.1", AuthMethod: "jwt", RequestID: uuid.NewString(),
 	})
@@ -537,7 +538,8 @@ func adjustmentIntegrationContext(operator *service.User, notes string) context.
 
 func adjustmentIntegrationIdempotentContext(operator *service.User, actionID uuid.UUID, notes string) context.Context {
 	operatorID := operator.ID
-	return service.WithAdminAdjustmentMetadata(context.Background(), service.AdminAdjustmentMetadata{
+	base := service.WithScope(context.Background(), service.AdminScope())
+	return service.WithAdminAdjustmentMetadata(base, service.AdminAdjustmentMetadata{
 		ActionID: actionID, Idempotent: true, OperatorID: &operatorID, OperatorEmail: operator.Email, Notes: notes,
 		ClientIP: "127.0.0.1", AuthMethod: "jwt", RequestID: uuid.NewString(),
 	})

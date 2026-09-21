@@ -142,13 +142,15 @@ func (s *RedeemCodeRepoSuite) TestDelete() {
 // --- List / ListWithFilters ---
 
 func (s *RedeemCodeRepoSuite) TestList() {
+	_, baseline, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 1})
+	s.Require().NoError(err)
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "LIST-1", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "LIST-2", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 
-	codes, page, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10})
+	codes, page, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: int(baseline.Total) + 2})
 	s.Require().NoError(err, "List")
-	s.Require().Len(codes, 2)
-	s.Require().Equal(int64(2), page.Total)
+	s.Require().Len(codes, int(baseline.Total)+2)
+	s.Require().Equal(baseline.Total+2, page.Total)
 }
 
 func (s *RedeemCodeRepoSuite) TestListWithFilters_Type() {
@@ -165,7 +167,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_Status() {
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-UNUSED", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-USED", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUsed}))
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", service.StatusUsed, "")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", service.StatusUsed, "STAT-")
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().Equal(service.StatusUsed, codes[0].Status)
@@ -211,7 +213,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_GroupPreload() {
 		Save(s.ctx)
 	s.Require().NoError(err)
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "WITH-GROUP")
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().NotNil(codes[0].Group, "expected Group preload")

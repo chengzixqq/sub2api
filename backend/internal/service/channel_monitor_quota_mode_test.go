@@ -72,6 +72,29 @@ func newQuotaModeFetcher(accounts map[int64]*Account, usage *stubMonitorUsageSou
 
 // --- RunCheck 分派 ---
 
+func TestRunCheck_QuotaModeWorksInV2(t *testing.T) {
+	repo := &quotaModeRepoStub{monitor: &ChannelMonitor{ID: 40, CheckMode: MonitorCheckModeQuota, PrimaryModel: "quota"}}
+	svc := newQuotaModeService(repo)
+	svc.SetRuntimeReader(channelMonitorRuntimeStub{rt: ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}})
+	results, err := svc.RunCheck(context.Background(), 40)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].Quota)
+	require.Nil(t, results[0].LatencyMs)
+}
+
+func TestRunCheck_V2QuotaNeverGeneratesForOAuth(t *testing.T) {
+	repo := &quotaModeRepoStub{monitor: &ChannelMonitor{ID: 40, CheckMode: MonitorCheckModeQuota, PrimaryModel: "quota", AccountID: int64Ptr(9)}}
+	svc := newQuotaModeService(repo)
+	svc.SetRuntimeReader(channelMonitorRuntimeStub{rt: ChannelMonitorRuntime{Enabled: true, Mode: ChannelMonitorModeV2}})
+	usage := &stubMonitorUsageSource{}
+	svc.SetQuotaFetcher(newQuotaModeFetcher(map[int64]*Account{9: {ID: 9, Platform: PlatformOpenAI, Type: AccountTypeOAuth}}, usage))
+	results, err := svc.RunCheck(context.Background(), 40)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, 0, usage.getCalls())
+}
+
 func TestRunCheck_QuotaModeProducesSingleQuotaResult(t *testing.T) {
 	repo := &quotaModeRepoStub{monitor: &ChannelMonitor{
 		ID:              1,
@@ -369,6 +392,7 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 	for _, p := range []string{
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderOpenCodeGo,
 	} {
 		require.True(t, providerSupportsProbe(p), p)
 	}
@@ -376,6 +400,7 @@ func TestProviderProbeCapabilityMatrix(t *testing.T) {
 		MonitorProviderOpenAI, MonitorProviderAnthropic, MonitorProviderGemini,
 		MonitorProviderGrok, MonitorProviderAntigravity,
 		MonitorProviderKimi, MonitorProviderZhipu, MonitorProviderDeepseek,
+		MonitorProviderMiniMax, MonitorProviderOpenCodeGo,
 	} {
 		require.NoError(t, validateProvider(p), p)
 	}
@@ -459,8 +484,23 @@ func TestMonitorAccountQuotaCapability_Matrix(t *testing.T) {
 			account: &Account{ID: 4, Platform: domain.PlatformZhipu, Credentials: map[string]any{"account_mode": AccountModeCoding}},
 		},
 		{
+			name:    "minimax coding default endpoint ok",
+			account: &Account{ID: 14, Platform: domain.PlatformMiniMax, Credentials: map[string]any{"account_mode": AccountModeCoding}},
+		},
+		{
+			name: "custom-domain minimax coding unsupported",
+			account: &Account{ID: 16, Platform: domain.PlatformMiniMax, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"account_mode": AccountModeCoding, "base_url": "https://relay.example.com/v1"}},
+			wantErr: ErrChannelMonitorAccountNotSupportable,
+		},
+		{
 			name:    "zhipu payg has no balance endpoint",
 			account: &Account{ID: 5, Platform: domain.PlatformZhipu},
+			wantErr: ErrChannelMonitorAccountNotSupportable,
+		},
+		{
+			name:    "minimax payg has no balance endpoint",
+			account: &Account{ID: 15, Platform: domain.PlatformMiniMax},
 			wantErr: ErrChannelMonitorAccountNotSupportable,
 		},
 		{

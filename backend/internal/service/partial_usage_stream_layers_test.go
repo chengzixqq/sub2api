@@ -124,7 +124,7 @@ func TestGeminiCompatibilityStreamingReadErrorPreservesPartialUsage(t *testing.T
 		c := partialUsageTestContext("/v1beta/models/gemini:streamGenerateContent")
 		resp := partialUsageReadErrorResponse("data: " + geminiPayload + "\n\n")
 
-		result, err := svc.handleNativeStreamingResponse(c, resp, time.Now(), false)
+		result, err := svc.handleNativeStreamingResponse(c, resp, time.Now(), false, nil, "")
 
 		require.Error(t, err)
 		require.NotNil(t, result)

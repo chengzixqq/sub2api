@@ -190,7 +190,8 @@ func (s *ChannelMonitorV2Aggregator) passiveAggregationAllowed(ctx context.Conte
 		// Fail closed without settings: do not aggregate under ambiguous mode.
 		return false
 	}
-	return s.settings.GetChannelMonitorRuntime(ctx).PassiveAggregationAllowed()
+	// The unified shadow/rollback view needs fresh legacy facts in either UI mode.
+	return s.settings.GetChannelMonitorRuntime(ctx).Enabled
 }
 
 func (s *ChannelMonitorV2Aggregator) wait(interval time.Duration) bool {

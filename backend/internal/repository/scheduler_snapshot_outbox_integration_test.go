@@ -35,6 +35,7 @@ func TestSchedulerSnapshotOutboxReplay(t *testing.T) {
 	}
 
 	account := &service.Account{
+		WorkspaceID: 1,
 		Name:        "outbox-replay-" + time.Now().Format("150405.000000"),
 		Platform:    service.PlatformOpenAI,
 		Type:        service.AccountTypeAPIKey,

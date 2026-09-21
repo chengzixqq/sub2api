@@ -1,0 +1,106 @@
+<template>
+  <div class="relative min-w-0" @mouseleave="clearTooltip">
+    <div data-testid="observation-timeline" class="grid min-h-8 w-full py-1" :style="{ gridTemplateColumns: `repeat(${Math.max(1, slots.length)}, minmax(0, 1fr))`, gap: slots.length <= 60 ? '2px' : '0' }" :aria-label="t('channelMonitorV2.observation.history')">
+      <button
+        v-for="slot in slots" :key="slot.start" type="button"
+        class="h-6 min-w-0 first:rounded-l-sm last:rounded-r-sm focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+        :class="bucketClass(slot.bucket)"
+        :aria-describedby="tooltip?.slotStart === slot.start ? tooltipId : undefined"
+        :aria-label="tooltipLabel(slot.start, slot.bucket)" :title="tooltipLabel(slot.start, slot.bucket)"
+        @mouseenter="showTooltip($event, slot)" @focus="showTooltip($event, slot)"
+        @mousemove="moveTooltip($event, slot)"
+        @mouseleave="clearTooltip" @blur="clearTooltip"
+        @click="$emit('select', slot)"
+      />
+    </div>
+    <div
+      v-if="tooltip"
+      :id="tooltipId"
+      role="tooltip"
+      class="pointer-events-none fixed z-[100] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg"
+      :class="tooltip.above ? '-translate-y-full' : ''"
+      :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
+    >
+      {{ tooltipText }}
+    </div>
+    <div class="mt-1 flex justify-between gap-2 text-[10px] tabular-nums text-gray-400">
+      <span>{{ time(coverage.requested_start) }}</span><span>{{ time(coverage.requested_end || coverage.data_through) }}</span>
+    </div>
+  </div>
+</template>
+<script setup lang="ts">
+import { computed, getCurrentInstance, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
+import { observationTimeline } from './observationViewModel'
+import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
+const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage']; admin?: boolean }>(), { admin: false })
+defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
+const { t, locale } = useI18n()
+const slots = computed(() => observationTimeline(props.buckets, props.coverage))
+let fallbackTimelineId = 0
+const tooltipId = `observation-timeline-tooltip-${getCurrentInstance()?.uid ?? ++fallbackTimelineId}`
+const tooltip = ref<{ slotStart: string; left: number; top: number; above: boolean } | null>(null)
+const tooltipText = computed(() => {
+  if (!tooltip.value) return ''
+  const slot = slots.value.find((candidate) => candidate.start === tooltip.value?.slotStart)
+  return slot ? tooltipLabel(slot.start, slot.bucket) : ''
+})
+watch(slots, (next) => {
+  if (tooltip.value && !next.some((slot) => slot.start === tooltip.value?.slotStart)) clearTooltip()
+})
+const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
+function time(value: string, precise = false) {
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) ? date.toLocaleString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(precise ? { second: '2-digit' } : {}) }) : '-'
+}
+function period(start: string) {
+  const startMs = Date.parse(start)
+  const seconds = Number(props.coverage.bucket_seconds)
+  if (!Number.isFinite(startMs) || !Number.isFinite(seconds) || seconds <= 0) return time(start)
+  const requestedStartMs = Date.parse(props.coverage.requested_start)
+  const requestedEndMs = Date.parse(props.coverage.requested_end || props.coverage.data_through)
+  const effectiveStartMs = Number.isFinite(requestedStartMs) ? Math.max(startMs, requestedStartMs) : startMs
+  const calculatedEndMs = startMs + seconds * 1000
+  const endMs = Number.isFinite(requestedEndMs) ? Math.min(calculatedEndMs, requestedEndMs) : calculatedEndMs
+  if (!(endMs > effectiveStartMs)) return time(start)
+  const clipped = effectiveStartMs !== startMs || endMs !== calculatedEndMs
+  return `${time(new Date(effectiveStartMs).toISOString(), clipped)} – ${time(new Date(endMs).toISOString(), clipped)}`
+}
+function bucketClass(bucket: ObservationBucket | null) {
+  if (!bucket || props.coverage.state === 'unavailable') return 'border border-dashed border-gray-300 bg-transparent dark:border-dark-500'
+  if (bucket.metrics.sample_state === 'no_samples') return 'bg-gray-200 dark:bg-dark-600'
+  if (bucket.metrics.sample_state === 'insufficient') return 'bg-gray-400 dark:bg-dark-400'
+  if (bucket.health.reliability === 'critical') return 'bg-red-500'
+  if (bucket.health.reliability === 'warning' || bucket.health.latency === 'critical' || bucket.health.latency === 'warning') return 'bg-amber-500'
+  if (bucket.health.reliability === 'healthy') return 'bg-emerald-500'
+  return 'bg-gray-300 dark:bg-dark-500'
+}
+function label(start: string, bucket: ObservationBucket | null) {
+  const status = bucket ? bucket.metrics.sample_state === 'sufficient' ? bucket.health.reliability : bucket.metrics.sample_state : 'missing'
+  return `${period(start)} · ${t(`channelMonitorV2.observation.states.${status}`)}${bucket ? ` · ${t('channelMonitorV2.observation.reliability')} ${percent(bucket.metrics.reliability_rate)}` : ''}`
+}
+function tooltipLabel(start: string, bucket: ObservationBucket | null) {
+  const base = label(start, bucket)
+  if (!bucket) return base
+  const m = bucket.metrics
+  const details = `${base} · ${t('channelMonitorV2.metrics.ttftValue', { value: formatMonitorMs(m.ttft?.p50_ms) })} · ${t('channelMonitorV2.metrics.durationValue', { value: formatMonitorMs(m.duration?.p50_ms) })} · ${t('channelMonitorV2.metrics.cacheRateValue', { value: percent(m.cache_rate) })}`
+  if (!props.admin) return details
+  return `${details} · ${t('channelMonitorV2.observation.requests')} ${m.request_count ?? 0} · ${t('channelMonitorV2.observation.errors')} ${m.channel_errors ?? 0} · ${t('channelMonitorV2.observation.attempts')} ${m.attempt_count ?? 0}`
+}
+function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; bucket: ObservationBucket | null }) {
+  const target = event.currentTarget as HTMLElement | null
+  if (!target) return
+  const rect = target.getBoundingClientRect()
+  const above = rect.top > 96 || rect.bottom + 96 > window.innerHeight
+  const halfWidth = Math.min(160, Math.max(12, (window.innerWidth - 24) / 2))
+  const center = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2))
+  tooltip.value = { slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
+}
+function moveTooltip(event: MouseEvent, slot: { start: string; bucket: ObservationBucket | null }) {
+  if (tooltip.value?.slotStart === slot.start) showTooltip(event, slot)
+}
+function clearTooltip() {
+  tooltip.value = null
+}
+</script>

@@ -47,7 +47,14 @@
         </div>
       </header>
 
-      <MonitorSettingsPanel v-if="adminMonitorTab === 'v2'" />
+      <div v-if="adminMonitorTab === 'v2'" class="space-y-6">
+        <ObservationSettingsPanel />
+        <MonitorProbeSettings />
+        <details class="border-t border-gray-200 pt-4 dark:border-dark-700">
+          <summary class="cursor-pointer text-sm font-medium">{{ t('channelMonitorV2.unified.settings.legacy') }}</summary>
+          <MonitorSettingsPanel />
+        </details>
+      </div>
 
       <TablePageLayout v-else>
       <template #filters>
@@ -64,7 +71,7 @@
       </template>
 
       <template #table>
-        <DataTable :columns="columns" :data="monitors" :loading="loading">
+        <DataTable column-order-key="admin.channel-monitors" :columns="columns" :data="monitors" :loading="loading">
           <template #cell-name="{ row, value }">
             <div class="flex items-center gap-1.5">
               <span class="font-medium text-gray-900 dark:text-white">{{ value }}</span>
@@ -199,12 +206,14 @@ import MonitorActionsCell from '@/components/admin/monitor/MonitorActionsCell.vu
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import MonitorSettingsPanel from '@/features/channel-monitor-v2/MonitorSettingsPanel.vue'
+import ObservationSettingsPanel from '@/features/channel-monitor-v2/ObservationSettingsPanel.vue'
+import MonitorProbeSettings from '@/features/channel-monitor-v2/MonitorProbeSettings.vue'
 import { isChannelMonitorV1Mode } from '@/utils/featureFlags'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const isV1Mode = computed(() => isChannelMonitorV1Mode())
-const adminMonitorTab = ref<'v2' | 'legacy'>(isChannelMonitorV1Mode() ? 'legacy' : 'v2')
+const adminMonitorTab = ref<'v2' | 'legacy'>('v2')
 const {
   providerLabel,
   providerBadgeClass,

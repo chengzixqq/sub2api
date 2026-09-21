@@ -155,7 +155,9 @@ func TestDecideFailureBillingPreservesExtendedUpstreamUsage(t *testing.T) {
 		CacheCreation5mTokens: 4,
 		CacheCreation1hTokens: 5,
 		ImageInputTokens:      6,
+		ImageCacheReadTokens:  2,
 		ImageOutputTokens:     7,
+		CacheReadInputTokens:  3,
 	}
 
 	got := DecideFailureBilling(FailureBillingInput{

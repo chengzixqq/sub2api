@@ -29,10 +29,8 @@ import (
 //
 // fallbacks 是 beta Messages API 的 server-side refusal fallback 字段；本仓
 // 不写入该字段，全部来自客户端（Claude Code / SDK / OpenCode 等）透传。
-// OAuth mimic 用 FullClaudeCodeMimicryBetas 覆盖客户端 beta（不含 fallback
-// beta），因此必须在出口按最终 beta header 条件 strip，与 context_management
-// 的对称约束同构。策略是"剥字段，不注入 beta"：fallback 会换模型、改计费，
-// 不允许当默认打开。
+// OAuth mimic / strict 路径继续按最终 beta header 条件 strip；原生 API-key
+// 路径则由上游负责 Fallback 决策，必须保留客户端字段和相关 beta。
 //
 // 本文件覆盖：
 //   1) sanitizeAnthropicBodyForBetaTokens 对 fallbacks / fallback_credit_token
@@ -182,8 +180,10 @@ func TestBuildUpstreamRequest_OAuthMimicHaiku_StripsFallbacksEndToEnd(t *testing
 		"mimic beta 集合本身不受影响")
 }
 
-// API-key passthrough + 客户端 header 未带 fallback beta → strip
-func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsFallbacksWhenClientHeaderMissingBeta(t *testing.T) {
+// API-key passthrough + 客户端 header 未带 fallback beta → 仍原样透传。
+// 自动透传的约定是保留客户端 fallback 语义；网关不擅自删除触发字段，
+// 也不替客户端补 beta header。
+func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_PreservesFallbacksWhenClientHeaderMissingBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -197,8 +197,12 @@ func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsFallbacksWhenClien
 		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
 	)
 	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, req), "fallbacks").Exists(),
-		"API-key passthrough + 客户端未带 fallback beta → strip body 字段")
+	outBody := readUpstreamBodyForTest(t, req)
+	require.True(t, gjson.GetBytes(outBody, "fallbacks").Exists(),
+		"API-key passthrough + 客户端未带 fallback beta → 仍保留 body 字段")
+	require.Equal(t, "default", gjson.GetBytes(outBody, "fallbacks").String())
+	require.Equal(t, "oauth-2025-04-20", getHeaderRaw(req.Header, "anthropic-beta"),
+		"透传不应替客户端补 server-side-fallback beta")
 }
 
 // API-key passthrough + 客户端 header 带 fallback beta → 保留（不过度删除）

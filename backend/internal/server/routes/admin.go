@@ -410,6 +410,8 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/upstream-billing-probe/batch", h.Admin.Account.ProbeUpstreamBillingBatch)
 		accounts.GET("/ollama-cloud-usage/settings", h.Admin.Account.GetOllamaCloudUsageSettings)
 		accounts.PUT("/ollama-cloud-usage/settings", h.Admin.Account.UpdateOllamaCloudUsageSettings)
+		accounts.GET("/:id/customization", h.Admin.Account.GetClaudeCustomization)
+		accounts.PUT("/:id/customization", h.Admin.Account.UpdateClaudeCustomization)
 		accounts.GET("/:id", h.Admin.Account.GetByID)
 		accounts.POST("", h.Admin.Account.Create)
 		accounts.POST("/:id/duplicate", h.Admin.Account.Duplicate)
@@ -418,6 +420,8 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/sync/crs", h.Admin.Account.SyncFromCRS)
 		accounts.POST("/sync/crs/preview", h.Admin.Account.PreviewFromCRS)
 		accounts.PUT("/:id", h.Admin.Account.Update)
+		accounts.GET("/:id/grok-media-eligibility", h.Admin.Account.GetGrokMediaEligibility)
+		accounts.PUT("/:id/grok-media-eligibility", h.Admin.Account.UpdateGrokMediaEligibility)
 		accounts.PUT("/:id/upstream-billing-probe", h.Admin.Account.SetUpstreamBillingProbeEnabled)
 		accounts.POST("/:id/upstream-billing-probe", h.Admin.Account.ProbeUpstreamBilling)
 		accounts.GET("/:id/ollama-cloud-usage", h.Admin.Account.GetOllamaCloudUsage)
@@ -635,6 +639,11 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)
+		// Claude 魔改兼容策略（全局预设）
+		adminSettings.GET("/customization", h.Admin.Setting.GetClaudeCustomization)
+		adminSettings.PUT("/customization", h.Admin.Setting.UpdateClaudeCustomization)
+		adminSettings.POST("/customization/apply-preset", h.Admin.Setting.ApplyClaudeCustomizationPreset)
+		adminSettings.POST("/customization/reset", h.Admin.Setting.ResetClaudeCustomization)
 		// Web Search 模拟配置
 		adminSettings.GET("/web-search-emulation", h.Admin.Setting.GetWebSearchEmulationConfig)
 		adminSettings.PUT("/web-search-emulation", h.Admin.Setting.UpdateWebSearchEmulationConfig)
@@ -719,6 +728,7 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		subscriptions.GET("/:id/progress", h.Admin.Subscription.GetProgress)
 		subscriptions.POST("/assign", h.Admin.Subscription.Assign)
 		subscriptions.POST("/bulk-assign", h.Admin.Subscription.BulkAssign)
+		subscriptions.POST("/bulk-action", h.Admin.Subscription.BulkAction)
 		subscriptions.POST("/:id/extend", h.Admin.Subscription.Extend)
 		subscriptions.POST("/:id/reset-quota", h.Admin.Subscription.ResetQuota)
 		subscriptions.POST("/:id/revoke", h.Admin.Subscription.Revoke)
@@ -882,6 +892,15 @@ func registerChannelMonitorV2Routes(admin *gin.RouterGroup, h *handler.Handlers,
 		{
 			config.GET("/config", h.ChannelMonitorV2.GetConfig)
 			config.PUT("/config", h.ChannelMonitorV2.UpdateConfig)
+			config.GET("/observation-config", h.ChannelMonitorV2.ObservationConfig)
+			config.PUT("/observation-config", h.ChannelMonitorV2.UpdateObservationConfig)
+			config.GET("/overview", h.ChannelMonitorV2.AdminObservationOverview)
+			config.GET("/groups/:id/accounts", middleware.AdminOnly(), h.ChannelMonitorV2.ObservationAccounts)
+			config.GET("/probe-targets", middleware.AdminOnly(), h.ChannelMonitorProbe.ListTargets)
+			config.POST("/probe-targets", middleware.AdminOnly(), h.ChannelMonitorProbe.CreateTarget)
+			config.PUT("/probe-targets/:id", middleware.AdminOnly(), h.ChannelMonitorProbe.UpdateTarget)
+			config.POST("/probe-targets/:id/probe", middleware.AdminOnly(), h.ChannelMonitorProbe.Probe)
+			config.GET("/probe-budget", middleware.AdminOnly(), h.ChannelMonitorProbe.Budget)
 		}
 		reads := monitor.Group("")
 		reads.Use(modeV2Guard)

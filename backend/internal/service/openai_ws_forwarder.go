@@ -267,6 +267,9 @@ type OpenAIWSIngressHooks struct {
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)
 	AfterTurn       func(turn int, result *OpenAIForwardResult, turnErr error)
+	// Monitoring callbacks are read-only and independent from billing callbacks.
+	ObserveTurnStart      func(turn int, startedAt time.Time, model string)
+	ObserveMonitorAttempt func(turn int, result *OpenAIForwardResult, turnErr error)
 }
 
 func (s *OpenAIGatewayService) getOpenAIWSConnPool() *openAIWSConnPool {

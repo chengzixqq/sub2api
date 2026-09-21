@@ -444,6 +444,7 @@ func antigravityCompatEmptyStreamError() error {
 		StatusCode:             http.StatusBadGateway,
 		ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 		RetryableOnSameAccount: true,
+		Reason:                 GatewayFailureReasonEmptyResponse,
 	}
 }
 

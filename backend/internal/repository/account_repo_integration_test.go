@@ -136,7 +136,7 @@ func (s *schedulerCacheRecorder) SetOutboxWatermark(ctx context.Context, id int6
 }
 
 func (s *AccountRepoSuite) SetupTest() {
-	s.ctx = context.Background()
+	s.ctx = service.WithScope(context.Background(), service.AdminScope())
 	tx := testEntTx(s.T())
 	s.client = tx.Client()
 	s.repo = newAccountRepositoryWithSQL(s.client, tx, nil)
@@ -150,6 +150,7 @@ func TestAccountRepoSuite(t *testing.T) {
 
 func (s *AccountRepoSuite) TestCreate() {
 	account := &service.Account{
+		WorkspaceID: 1,
 		Name:        "test-create",
 		Platform:    service.PlatformAnthropic,
 		Type:        service.AccountTypeOAuth,
@@ -610,7 +611,7 @@ func (s *AccountRepoSuite) TestListWithFilters() {
 			tx := testEntTx(s.T())
 			client := tx.Client()
 			repo := newAccountRepositoryWithSQL(client, tx, nil)
-			ctx := context.Background()
+			ctx := service.WithScope(context.Background(), service.AdminScope())
 
 			tt.setup(client)
 
@@ -1538,6 +1539,41 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 	s.Require().NotNil(cacheRecorder.accounts[account.ID])
 	s.Require().Equal(service.StatusActive, cacheRecorder.accounts[account.ID].Status)
 	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.accounts[account.ID].Extra["codex_usage_updated_at"])
+}
+
+// Exercise the complete UpdateExtra -> PostgreSQL -> Redis metadata -> admission
+// path. A recorder-only cache would miss fields discarded by the slim projection.
+func (s *AccountRepoSuite) TestUpdateExtra_AnthropicThresholdRefreshesCandidateSnapshot() {
+	now := time.Now().UTC().Truncate(time.Second)
+	end := now.Add(time.Hour)
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "threshold-refresh", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth,
+		Credentials: map[string]any{"account_scheduling_threshold": 60},
+		Extra:       map[string]any{"passive_usage_7d_utilization": .59, "passive_usage_7d_reset": end.Unix()},
+	})
+	cache := NewSchedulerCache(testRedis(s.T()))
+	s.repo.schedulerCache = cache
+	bucket := service.SchedulerBucket{GroupID: account.ID, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeSingle}
+	token, err := cache.CaptureBucketWriteToken(s.ctx, bucket)
+	s.Require().NoError(err)
+	s.Require().NoError(cache.SetSnapshot(s.ctx, bucket, token, []service.Account{*account}))
+	for _, step := range []struct {
+		used   float64
+		reset  time.Time
+		paused bool
+	}{
+		{.59, end, false}, {.66, end, true}, {.66, now.Add(-time.Hour), false}, {.10, end, false},
+	} {
+		s.Require().NoError(s.repo.UpdateExtra(s.ctx, account.ID, map[string]any{
+			"passive_usage_7d_utilization": step.used, "passive_usage_7d_reset": step.reset.Unix(),
+		}))
+		candidates, hit, err := cache.GetSnapshot(s.ctx, bucket)
+		s.Require().NoError(err)
+		s.Require().True(hit)
+		s.Require().Len(candidates, 1)
+		decision := service.EvaluateAccountSchedulingThreshold(candidates[0], map[string]int{service.PlatformAnthropic: 100}, now)
+		s.Require().Equal(step.paused, decision.ShouldPause)
+	}
 }
 
 func (s *AccountRepoSuite) TestUpdateExtra_ExhaustedCodexSnapshotSyncsSchedulerCache() {

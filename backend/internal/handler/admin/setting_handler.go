@@ -389,12 +389,14 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		ProbeCoalescingWindowSeconds:         settings.ProbeCoalescingWindowSeconds,
 		ProbeCoalescingLeaderTimeoutSeconds:  settings.ProbeCoalescingLeaderTimeoutSeconds,
 		ProbeCoalescingAttemptBudget:         settings.ProbeCoalescingAttemptBudget,
+		ChannelMonitorHideUserRanking:        settings.ChannelMonitorHideUserRanking,
 
 		GrokDefaultTextModel:           settings.GrokDefaultTextModel,
 		GrokCrossClientModelMapEnabled: settings.GrokCrossClientModelMapEnabled,
 		GrokDefaultBaseURLMode:         settings.GrokDefaultBaseURLMode,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
+		SubscriptionEnabled:      settings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       settings.ModelPlazaEnabled,
 		ModelPlazaRequireAuth:   settings.ModelPlazaRequireAuth,

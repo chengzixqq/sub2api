@@ -191,6 +191,7 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 		CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
 		CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
 		ImageInputTokens:         result.Usage.ImageInputTokens,
+		ImageCacheReadTokens:     result.Usage.ImageCacheReadTokens,
 		ImageOutputTokens:        result.Usage.ImageOutputTokens,
 	})
 	g.imageCount = result.ImageCount
@@ -356,7 +357,7 @@ func hasFailureBillingUsage(usage service.ClaudeUsage) bool {
 	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
 		usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0 ||
-		usage.ImageInputTokens > 0 || usage.ImageOutputTokens > 0
+		usage.ImageInputTokens > 0 || usage.ImageCacheReadTokens > 0 || usage.ImageOutputTokens > 0
 }
 
 // claudeFailureSink 把失败计费决策落成 Claude 家族的 RecordUsageInput，
