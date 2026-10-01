@@ -20,7 +20,7 @@ func TestCompactObservationIntegration_PolicyMigrationStartsShadowOnce(t *testin
 	ctx := context.Background()
 	tx, err := integrationDB.BeginTx(ctx, nil)
 	require.NoError(t, err)
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `DELETE FROM channel_monitor_compact_config; UPDATE channel_monitor_observation_config SET config=config || '{"enabled":false,"mode":"live","minimum_sample":123,"live_group_ids":[7]}'::jsonb WHERE id=TRUE`)
 	require.NoError(t, err)
 	migration, err := migrations.FS.ReadFile("239_channel_monitor_compact.sql")
@@ -51,7 +51,8 @@ func TestCompactObservationIntegration_PolicyMigrationStartsShadowOnce(t *testin
 
 func TestCompactObservationIntegration_AtomicConcurrentReplayAndSourceIsolation(t *testing.T) {
 	ctx := context.Background()
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	now := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
 	groupID := now.UnixNano()
 	e := service.ChannelMonitorEvent{RequestID: uuid.NewString(), SessionID: uuid.NewString(), StartedAt: now.Add(-time.Second), CompletedAt: now, Platform: "openai", GroupID: groupID, RequestedModel: "compact-test", Protocol: "openai_chat", Outcome: "success", DurationMs: 1000, Source: "traffic", Attempts: []service.ChannelMonitorAttempt{{Sequence: 1, AccountID: 11, Outcome: "channel_error", DurationMs: 100}, {Sequence: 2, AccountID: 12, Outcome: "success", DurationMs: 900}}}
@@ -88,13 +89,18 @@ func TestCompactObservationIntegration_AtomicConcurrentReplayAndSourceIsolation(
 	accounts, err := repo.QueryAccounts(ctx, filter)
 	require.NoError(t, err)
 	require.Len(t, accounts, 2)
-	var success, failed int64
+	var success, channelErrors, unclassified int64
 	for _, a := range accounts {
 		success += a.SuccessAttempts
-		failed += a.FailedAttempts
+		channelErrors += a.ChannelErrorAttempts
+		unclassified += a.UnclassifiedAttempts
+		require.Zero(t, a.FailedAttempts, "new attempts must not use the legacy unclassified counter")
+		require.Zero(t, a.ClientErrorAttempts)
+		require.Zero(t, a.CancelledAttempts)
 	}
 	require.Equal(t, int64(1), success)
-	require.Equal(t, int64(1), failed)
+	require.Equal(t, int64(1), channelErrors)
+	require.Zero(t, unclassified)
 	var oldCount int
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM channel_monitor_observation_events WHERE request_id=$1`, e.RequestID).Scan(&oldCount))
 	require.Zero(t, oldCount)
@@ -109,7 +115,8 @@ func TestCompactObservationIntegration_AtomicConcurrentReplayAndSourceIsolation(
 
 func TestCompactObservationIntegration_SampleBudgetAndMaintenance(t *testing.T) {
 	ctx := context.Background()
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	now := time.Now().UTC()
 	groupID := now.UnixNano()
 	session := uuid.NewString()
@@ -169,7 +176,8 @@ func TestCompactObservationIntegration_RollbackLeavesReplayableEvent(t *testing.
 
 func TestCompactObservationIntegration_RetentionAndUTCPartitions(t *testing.T) {
 	ctx := context.Background()
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	now := time.Now().UTC()
 	groupID := now.UnixNano()
 	requestID := uuid.NewString()
@@ -229,7 +237,8 @@ func TestCompactObservationIntegration_SamplesRetentionUsesUTCPartitions(t *test
 		_, err = integrationDB.ExecContext(ctx, `INSERT INTO channel_monitor_compact_samples(request_id,completed_at,source,group_id,kind,facts) VALUES($1,$2,'traffic',$3,'failure',$4)`, uuid.NewString(), timestamp, groupID, raw)
 		require.NoError(t, err)
 	}
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	require.NoError(t, repo.Maintain(ctx, now))
 	var count int
 	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM channel_monitor_compact_samples WHERE group_id=$1`, groupID).Scan(&count))
@@ -272,7 +281,8 @@ func BenchmarkCompactObservationStore(b *testing.B) {
 
 func TestCompactObservationIntegration_IdleProgressAndProbeProtocol(t *testing.T) {
 	ctx := context.Background()
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	now := time.Now().UTC()
 	session := uuid.NewString()
 	groupID := now.UnixNano()
@@ -298,12 +308,22 @@ func TestCompactObservationIntegration_IdleProgressAndProbeProtocol(t *testing.T
 	require.NoError(t, repo.Heartbeat(ctx, state))
 	activity, err = repo.ProbeActivity(ctx, groupID, "model", "openai_chat")
 	require.NoError(t, err)
-	require.False(t, activity.CollectionHealthy, "a fresh heartbeat must not hide queued events")
+	require.True(t, activity.CollectionHealthy, "a small flush-sized burst is not a collector backlog")
 	backlogged, err := repo.Query(ctx, filter)
 	require.NoError(t, err)
-	require.Equal(t, "backlogged", backlogged.Coverage.CollectorState)
+	require.Equal(t, "healthy", backlogged.Coverage.CollectorState)
 	require.Equal(t, int64(20), backlogged.Coverage.PendingEvents)
 	require.WithinDuration(t, now, backlogged.Coverage.DataThrough, time.Microsecond)
+	state.PendingEvents = compactObservationBacklogThreshold
+	state.HeartbeatAt = now.Add(2 * time.Second)
+	require.NoError(t, repo.Heartbeat(ctx, state))
+	activity, err = repo.ProbeActivity(ctx, groupID, "model", "openai_chat")
+	require.NoError(t, err)
+	require.False(t, activity.CollectionHealthy, "a full pending batch is a collector backlog")
+	backlogged, err = repo.Query(ctx, filter)
+	require.NoError(t, err)
+	require.Equal(t, "backlogged", backlogged.Coverage.CollectorState)
+	require.Equal(t, compactObservationBacklogThreshold, backlogged.Coverage.PendingEvents)
 	state.PendingEvents = 0
 	state.HeartbeatAt = now
 	require.NoError(t, repo.Heartbeat(ctx, state))
@@ -349,7 +369,8 @@ func TestCompactObservationIntegration_IdleProgressAndProbeProtocol(t *testing.T
 
 func TestCompactObservationIntegration_CoverageDetectsRestartDowntime(t *testing.T) {
 	ctx := context.Background()
-	repo := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	repo, ok := NewChannelMonitorObservationRepository(integrationDB).(*compactObservationRepository)
+	require.True(t, ok)
 	now := time.Now().UTC()
 	first, second := uuid.NewString(), uuid.NewString()
 	ended := now.Add(-time.Hour)

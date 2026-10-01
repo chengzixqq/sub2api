@@ -22,7 +22,6 @@ func TestChannelMonitorWSHooks_TerminalAndPartialSnapshots(t *testing.T) {
 				name = mode + "/complete"
 			}
 			t.Run(name, func(t *testing.T) {
-				gin.SetMode(gin.TestMode)
 				cfg := &config.Config{}
 				cfg.Security.URLAllowlist.Enabled = false
 				cfg.Security.URLAllowlist.AllowInsecureHTTP = true
@@ -64,7 +63,7 @@ func TestChannelMonitorWSHooks_TerminalAndPartialSnapshots(t *testing.T) {
 						done <- err
 						return
 					}
-					defer conn.CloseNow()
+					defer func() { _ = conn.CloseNow() }()
 					ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 					defer cancel()
 					_, first, err := conn.Read(ctx)
@@ -81,7 +80,7 @@ func TestChannelMonitorWSHooks_TerminalAndPartialSnapshots(t *testing.T) {
 				defer cancel()
 				client, _, err := coderws.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 				require.NoError(t, err)
-				defer client.CloseNow()
+				defer func() { _ = client.CloseNow() }()
 				require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-test","stream":true}`)))
 				for i := 0; i < 2; i++ {
 					_, _, err = client.Read(ctx)

@@ -52,7 +52,6 @@ func (r *fallbackPolicySettingRepo) Delete(context.Context, string) error { retu
 // builder is used when it is enabled. Neither path may reinterpret or trim
 // the upstream fallback request.
 func TestNativeAnthropicAPIKeyPaths_PreserveUpstreamFallbackRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	const betaHeader = claude.BetaServerSideFallback + "," + claude.BetaFallbackCredit + ",x-future-fallback-beta"
 	body := []byte(`{"model":"claude-fable-5","max_tokens":200000,"fallbacks":["claude-opus-4-6","claude-sonnet-4-6"],"fallback_credit_token":"credit-token","messages":[{"role":"user","content":"hello"}]}`)
@@ -122,7 +121,6 @@ func TestNativeAnthropicAPIKeyPaths_PreserveUpstreamFallbackRequest(t *testing.T
 // even when the client did not send a fallback beta. The gateway must not
 // inject a beta token or silently delete the upstream trigger.
 func TestNativeAnthropicAPIKeyPaths_DoNotInventFallbackBeta(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	const betaHeader = "x-client-experimental-beta"
 	body := []byte(`{"model":"claude-fable-5-1","max_tokens":200000,"fallbacks":"default","fallback_credit_token":"credit-token","messages":[]}`)
@@ -173,7 +171,6 @@ func TestNativeAnthropicAPIKeyPaths_DoNotInventFallbackBeta(t *testing.T) {
 }
 
 func TestManagedAnthropicAPIKeyPath_PreservesFallbackBetaAgainstGenericFilterRule(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -215,7 +212,6 @@ func TestManagedAnthropicAPIKeyPath_PreservesFallbackBetaAgainstGenericFilterRul
 }
 
 func TestNativeAnthropicAPIKeyPaths_StrictModeRemovesFallbackContract(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	settings := DefaultClaudeCustomizationSettings()
 	settings.Preset = ClaudePresetCustom
 	settings.FallbackPolicy = ClaudeFallbackStrict
@@ -322,7 +318,6 @@ func TestBetaPolicyFilterCacheIsScopedToAccountAndModel(t *testing.T) {
 }
 
 func TestBetaPolicyMappedModelBlockIsPropagatedAfterCacheMiss(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	globalRaw, err := json.Marshal(DefaultClaudeCustomizationSettings())
 	require.NoError(t, err)
 	betaRaw, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
@@ -359,7 +354,6 @@ func TestBetaPolicyMappedModelBlockIsPropagatedAfterCacheMiss(t *testing.T) {
 }
 
 func TestNativeAnthropicAPIKeyNonStrictDoesNotBlockFallbackBeta(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	globalRaw, err := json.Marshal(DefaultClaudeCustomizationSettings())
 	require.NoError(t, err)
 	betaRaw, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{

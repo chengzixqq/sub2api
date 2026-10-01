@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -76,6 +77,8 @@ const (
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
+	openAIHTTP2ReadIdleTimeout               = 15 * time.Second
+	openAIHTTP2PingTimeout                   = 15 * time.Second
 	// 长流 HTTP/2 连接健康探测：池化连接被代理/NAT
 	// 静默掐断会成为“死连接”（两端都以为存活），请求落上去会挂到 TCP 重传超时
 	// （分钟级）。Go 的 http2.Transport 默认 ReadIdleTimeout=0（不发健康 PING），
@@ -104,6 +107,12 @@ const (
 )
 
 var errUpstreamClientLimitReached = errors.New("upstream client cache limit reached")
+var errUpstreamHealthQuarantined = errors.New("upstream route temporarily quarantined")
+
+const (
+	defaultUpstreamHealthProbeTimeout = 10 * time.Second
+	maxUpstreamHealthEntries          = 4096
+)
 
 // poolSettings 连接池配置参数
 // 封装 Transport 所需的各项连接池参数
@@ -141,6 +150,24 @@ type openAIHTTP2FallbackState struct {
 	fallbackUntil time.Time
 }
 
+type upstreamHealthSettings struct {
+	enabled          bool
+	failureThreshold int
+	window           time.Duration
+	quarantineTTL    time.Duration
+	probeTimeout     time.Duration
+}
+
+type upstreamHealthState struct {
+	mu            sync.Mutex
+	windowStart   time.Time
+	failureCount  int
+	quarantinedTo time.Time
+	probeInFlight bool
+	probeDeadline time.Time
+	lastTouched   time.Time
+}
+
 // httpUpstreamService 通用 HTTP 上游服务
 // 用于向任意 HTTP API（Claude、OpenAI 等）发送请求，支持可选代理
 //
@@ -164,6 +191,10 @@ type httpUpstreamService struct {
 	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	// Optional route health state. It is disabled by default and bounded by
+	// eviction, so the normal connection-pool path is unchanged.
+	upstreamHealthMu sync.Mutex
+	upstreamHealth   map[string]*upstreamHealthState
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -176,8 +207,9 @@ type httpUpstreamService struct {
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 	return &httpUpstreamService{
-		cfg:     cfg,
-		clients: make(map[string]*upstreamClientEntry),
+		cfg:            cfg,
+		clients:        make(map[string]*upstreamClientEntry),
+		upstreamHealth: make(map[string]*upstreamHealthState),
 	}
 }
 
@@ -198,6 +230,19 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req == nil {
+		return nil, errors.New("nil upstream request")
+	}
+	requestCtx, cancelRequest := context.WithCancel(req.Context())
+	releaseRequest := true
+	defer func() {
+		// Once a response is returned, cancelRequest is owned by the response
+		// body. On every error path there is no body for the caller to close.
+		if releaseRequest {
+			cancelRequest()
+		}
+	}()
+	req = req.WithContext(requestCtx)
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -205,6 +250,10 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	profile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
+	}
+	healthKey := upstreamHealthKey(req, proxyURL, accountID, string(profile))
+	if !s.upstreamRouteAllowed(healthKey, time.Now()) {
+		return nil, errUpstreamHealthQuarantined
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用
@@ -227,16 +276,26 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	resp, err := servertiming.Do(client, req)
 	finishTiming(resp, err)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		s.recordUpstreamHealthFailure(healthKey, time.Now(), err)
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
 		// 请求失败，立即减少计数
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 		return nil, err
 	}
+	// Bind the request context to the response body. A caller may close a
+	// streaming body while a transport read is still in flight; canceling first
+	// tells net/http to tear down that read before the connection can be reused.
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancelRequest}
+	releaseRequest = false
 	s.recordOpenAIHTTP2Success(profile, entry.protocolMode, entry.proxyKey)
 
 	// 如果上游返回了压缩内容，解压后再交给业务层
 	decompressResponseBody(resp)
+	resp.Body = s.wrapUpstreamHealthBody(resp.Body, healthKey, resp.StatusCode)
 
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
@@ -261,10 +320,29 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	if req == nil {
+		return nil, errors.New("nil upstream request")
+	}
+	requestCtx, cancelRequest := context.WithCancel(req.Context())
+	releaseRequest := true
+	defer func() {
+		if releaseRequest {
+			cancelRequest()
+		}
+	}()
+	req = req.WithContext(requestCtx)
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		upstreamProfile = service.HTTPUpstreamProfileFromContext(req.Context())
+	}
+	healthProfile := string(upstreamProfile)
+	if profile != nil {
+		healthProfile += ":tls:" + profile.Name
+	}
+	healthKey := upstreamHealthKey(req, proxyURL, accountID, healthProfile)
+	if !s.upstreamRouteAllowed(healthKey, time.Now()) {
+		return nil, errUpstreamHealthQuarantined
 	}
 
 	targetHost := ""
@@ -273,7 +351,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 	proxyInfo := "direct"
 	if proxyURL != "" {
-		proxyInfo = proxyURL
+		proxyInfo = safeProxyLogValue(proxyURL)
 	}
 	slog.Debug("tls_fingerprint_enabled", "account_id", accountID, "target", targetHost, "proxy", proxyInfo, "profile", profile.Name)
 
@@ -300,13 +378,22 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	resp, err := servertiming.Do(client, req)
 	finishTiming(resp, err)
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		s.recordUpstreamHealthFailure(healthKey, time.Now(), err)
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 		slog.Debug("tls_fingerprint_request_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
 
+	// Keep cancellation attached to the innermost response body so decoder
+	// Close can cancel the network read before waiting for that read to finish.
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancelRequest}
+	releaseRequest = false
 	decompressResponseBody(resp)
+	resp.Body = s.wrapUpstreamHealthBody(resp.Body, healthKey, resp.StatusCode)
 
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
@@ -1025,6 +1112,166 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 	return settings
 }
 
+func (s *httpUpstreamService) resolveUpstreamHealthSettings() upstreamHealthSettings {
+	settings := upstreamHealthSettings{
+		failureThreshold: 3,
+		window:           60 * time.Second,
+		quarantineTTL:    30 * time.Second,
+		probeTimeout:     defaultUpstreamHealthProbeTimeout,
+	}
+	if s == nil || s.cfg == nil {
+		return settings
+	}
+	cfg := s.cfg.Gateway.UpstreamHealth
+	settings.enabled = cfg.Enabled
+	if cfg.FailureThreshold > 0 {
+		settings.failureThreshold = cfg.FailureThreshold
+	}
+	if cfg.WindowSeconds > 0 {
+		settings.window = time.Duration(cfg.WindowSeconds) * time.Second
+	}
+	if cfg.TTLSeconds > 0 {
+		settings.quarantineTTL = time.Duration(cfg.TTLSeconds) * time.Second
+	}
+	return settings
+}
+
+func upstreamHealthKey(req *http.Request, proxyURL string, accountID int64, profileKey string) string {
+	host := ""
+	if req != nil && req.URL != nil {
+		host = strings.ToLower(strings.TrimSuffix(req.URL.Hostname(), "."))
+		if port := req.URL.Port(); port != "" {
+			host = net.JoinHostPort(host, port)
+		}
+	}
+	// A proxy URL may contain credentials. Hash the normalized identity so
+	// route keys remain useful for isolation without becoming a secret sink.
+	proxyIdentity := proxyURL
+	if normalized, _, err := normalizeProxyURL(proxyURL); err == nil {
+		proxyIdentity = normalized
+	}
+	proxyHash := sha256.Sum256([]byte(proxyIdentity))
+	return fmt.Sprintf("account:%d|host:%s|proxy:%x|profile:%s", accountID, host, proxyHash[:8], profileKey)
+}
+
+func safeProxyLogValue(raw string) string {
+	_, parsed, err := normalizeProxyURL(raw)
+	if err != nil {
+		hash := sha256.Sum256([]byte(raw))
+		return fmt.Sprintf("sha256:%x", hash[:8])
+	}
+	if parsed == nil {
+		return directProxyKey
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
+func (s *httpUpstreamService) upstreamRouteAllowed(key string, now time.Time) bool {
+	settings := s.resolveUpstreamHealthSettings()
+	if !settings.enabled || key == "" {
+		return true
+	}
+	state := s.getUpstreamHealthState(key)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.quarantinedTo.IsZero() {
+		state.lastTouched = now
+		return true
+	}
+	if !now.Before(state.quarantinedTo) {
+		if state.probeInFlight && now.Before(state.probeDeadline) {
+			state.lastTouched = now
+			return false
+		}
+		state.probeInFlight = true
+		state.probeDeadline = now.Add(settings.probeTimeout)
+		state.lastTouched = now
+		return true
+	}
+	state.lastTouched = now
+	return false
+}
+
+func (s *httpUpstreamService) getUpstreamHealthState(key string) *upstreamHealthState {
+	s.upstreamHealthMu.Lock()
+	defer s.upstreamHealthMu.Unlock()
+	if s.upstreamHealth == nil {
+		s.upstreamHealth = make(map[string]*upstreamHealthState)
+	}
+	if state := s.upstreamHealth[key]; state != nil {
+		return state
+	}
+	state := &upstreamHealthState{lastTouched: time.Now()}
+	if len(s.upstreamHealth) >= maxUpstreamHealthEntries {
+		var oldestKey string
+		var oldest time.Time
+		for candidateKey, candidate := range s.upstreamHealth {
+			candidate.mu.Lock()
+			touched := candidate.lastTouched
+			candidate.mu.Unlock()
+			if oldestKey == "" || touched.Before(oldest) {
+				oldestKey, oldest = candidateKey, touched
+			}
+		}
+		if oldestKey != "" {
+			delete(s.upstreamHealth, oldestKey)
+		}
+	}
+	s.upstreamHealth[key] = state
+	return state
+}
+
+func (s *httpUpstreamService) recordUpstreamHealthFailure(key string, now time.Time, err error) {
+	settings := s.resolveUpstreamHealthSettings()
+	if !settings.enabled || key == "" || !isUpstreamTransportFailure(err) {
+		return
+	}
+	state := s.getUpstreamHealthState(key)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.windowStart.IsZero() || now.Sub(state.windowStart) > settings.window {
+		state.windowStart = now
+		state.failureCount = 0
+	}
+	state.failureCount++
+	state.probeInFlight = false
+	state.probeDeadline = time.Time{}
+	state.lastTouched = now
+	if state.failureCount >= settings.failureThreshold {
+		state.quarantinedTo = now.Add(settings.quarantineTTL)
+		state.failureCount = 0
+		slog.Warn("upstream_route_quarantined", "failure_threshold", settings.failureThreshold, "until", state.quarantinedTo.Format(time.RFC3339))
+	}
+}
+
+func (s *httpUpstreamService) recordUpstreamHealthSuccess(key string) {
+	settings := s.resolveUpstreamHealthSettings()
+	if !settings.enabled || key == "" {
+		return
+	}
+	state := s.getUpstreamHealthState(key)
+	state.mu.Lock()
+	state.failureCount = 0
+	state.windowStart = time.Time{}
+	state.quarantinedTo = time.Time{}
+	state.probeInFlight = false
+	state.probeDeadline = time.Time{}
+	state.lastTouched = time.Now()
+	state.mu.Unlock()
+}
+
+func isUpstreamTransportFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, service.ErrUpstreamIdleTimeout) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
+}
+
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
 	if profile == service.HTTPUpstreamProfileLongStream {
 		return upstreamProtocolModeLongStreamH2
@@ -1358,7 +1605,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
-		if _, err := enableHTTP2KeepAlive(transport); err != nil {
+		if _, err := enableHTTP2KeepAlive(transport, protocolMode); err != nil {
 			return nil, err
 		}
 	case upstreamProtocolModeOpenAIH1:
@@ -1379,7 +1626,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 // Go 默认惰性配置 http2 且 ReadIdleTimeout=0（不发健康 PING），无法检测被代理/NAT
 // 静默掐断的死连接。此处主动设置 ReadIdleTimeout/PingTimeout，让死连接被提前 PING
 // 出并关闭，请求得以重建连接而非挂到 TCP 重传超时。返回底层 *http2.Transport 便于测试。
-func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
+func enableHTTP2KeepAlive(transport *http.Transport, protocolMode string) (*http2.Transport, error) {
 	h2, err := http2.ConfigureTransports(transport)
 	if err != nil {
 		return nil, err
@@ -1387,6 +1634,10 @@ func enableHTTP2KeepAlive(transport *http.Transport) (*http2.Transport, error) {
 	if h2 != nil {
 		h2.ReadIdleTimeout = longStreamHTTP2ReadIdleTimeout
 		h2.PingTimeout = longStreamHTTP2PingTimeout
+		if protocolMode == upstreamProtocolModeOpenAIH2 {
+			h2.ReadIdleTimeout = openAIHTTP2ReadIdleTimeout
+			h2.PingTimeout = openAIHTTP2PingTimeout
+		}
 	}
 	return h2, nil
 }
@@ -1453,22 +1704,148 @@ func buildUpstreamTransportWithTLSFingerprint(settings poolSettings, proxyURL *u
 	return transport, nil
 }
 
+// upstreamHealthBody records terminal read outcomes. A response header alone
+// is not a successful upstream exchange: streaming transports can fail after
+// headers, so health is updated only when the body reaches EOF or a transport
+// read error. Close by itself is intentionally neutral because callers may
+// cancel a healthy stream after message_stop.
+type upstreamHealthBody struct {
+	io.ReadCloser
+	onEOF     func()
+	onError   func(error)
+	once      sync.Once
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (s *httpUpstreamService) wrapUpstreamHealthBody(body io.ReadCloser, key string, statusCode int) io.ReadCloser {
+	if body == nil {
+		return body
+	}
+	var onEOF func()
+	if statusCode >= 200 && statusCode < 400 {
+		onEOF = func() { s.recordUpstreamHealthSuccess(key) }
+	}
+	return &upstreamHealthBody{
+		ReadCloser: body,
+		onEOF:      onEOF,
+		onError: func(readErr error) {
+			slog.Debug("upstream_body_read_failed", "class", classifyUpstreamReadError(readErr))
+			s.recordUpstreamHealthFailure(key, time.Now(), readErr)
+		},
+	}
+}
+
+func classifyUpstreamReadError(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "stale_eof"
+	case errors.Is(err, service.ErrUpstreamIdleTimeout):
+		return "idle_timeout"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "timeout"
+		}
+		return "transport"
+	}
+	return "read_error"
+}
+
+func (b *upstreamHealthBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err == io.EOF {
+		b.once.Do(func() {
+			if b.onEOF != nil {
+				b.onEOF()
+			}
+		})
+	} else if err != nil {
+		b.once.Do(func() {
+			if b.onError != nil {
+				b.onError(err)
+			}
+		})
+	}
+	return n, err
+}
+
+func (b *upstreamHealthBody) Close() error {
+	b.closeOnce.Do(func() {
+		if b.ReadCloser != nil {
+			b.closeErr = b.ReadCloser.Close()
+		}
+	})
+	return b.closeErr
+}
+
 // trackedBody 带跟踪功能的响应体包装器
 // 在 Close 时执行回调，用于更新请求计数
 type trackedBody struct {
 	io.ReadCloser // 原始响应体
 	once          sync.Once
 	onClose       func() // 关闭时的回调函数
+	closeErr      error
 }
 
-// Close 关闭响应体并执行回调
-// 使用 sync.Once 确保回调只执行一次
-func (b *trackedBody) Close() error {
-	err := b.ReadCloser.Close()
-	if b.onClose != nil {
-		b.once.Do(b.onClose)
+// cancelOnCloseBody binds a request-local context to the response body. The
+// HTTP/1 transport may still have a read in flight when a streaming caller
+// closes a body. Cancelling first makes that read stop before the connection
+// can be reused by another request.
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel   context.CancelFunc
+	once     sync.Once
+	closeErr error
+	readMu   sync.Mutex
+	closed   bool
+}
+
+func (b *cancelOnCloseBody) Read(p []byte) (int, error) {
+	b.readMu.Lock()
+	defer b.readMu.Unlock()
+	if b.closed {
+		return 0, http.ErrBodyReadAfterClose
 	}
-	return err
+	return b.ReadCloser.Read(p)
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	b.once.Do(func() {
+		if b.cancel != nil {
+			b.cancel()
+		}
+		// The request context interrupts the network read first. Wait for it
+		// before closing the HTTP/1 body, as required by the transport EOF path.
+		b.readMu.Lock()
+		defer b.readMu.Unlock()
+		b.closed = true
+		if b.ReadCloser != nil {
+			b.closeErr = b.ReadCloser.Close()
+		}
+	})
+	return b.closeErr
+}
+
+// Close 关闭响应体并执行回调。
+// 使用 sync.Once 确保底层 body 和回调都只执行一次。
+func (b *trackedBody) Close() error {
+	b.once.Do(func() {
+		if b.ReadCloser != nil {
+			b.closeErr = b.ReadCloser.Close()
+		}
+		if b.onClose != nil {
+			b.onClose()
+		}
+	})
+	return b.closeErr
 }
 
 // wrapTrackedBody 包装响应体以跟踪关闭事件
@@ -1487,56 +1864,84 @@ func wrapTrackedBody(body io.ReadCloser, onClose func()) io.ReadCloser {
 	return &trackedBody{ReadCloser: body, onClose: onClose}
 }
 
-// decompressResponseBody 根据 Content-Encoding 解压响应体。
-// 当请求显式设置了 accept-encoding 时，Go 的 Transport 不会自动解压，需要手动处理。
-// 解压成功后会删除 Content-Encoding 和 Content-Length header（长度已不准确）。
+// decompressResponseBody installs the decoder without reading the network.
+// gzip initialization and zstd header detection can otherwise block Do after
+// response headers, before the caller has installed its stream idle timeout.
+// Normalize headers synchronously: the scanner must not mutate shared response
+// metadata when its first Read initializes the decoder.
 func decompressResponseBody(resp *http.Response) {
 	if resp == nil || resp.Body == nil {
 		return
 	}
 	ce := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
-	if ce == "" {
-		return
-	}
-
-	originalBody := resp.Body
-	var reader io.Reader
 	switch ce {
-	case "gzip":
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return // 解压失败，保持原样
-		}
-		reader = gr
-	case "br":
-		reader = brotli.NewReader(resp.Body)
-	case "deflate":
-		reader = flate.NewReader(resp.Body)
-	case "zstd":
-		bufferedBody := bufio.NewReader(resp.Body)
-		resp.Body = &decompressedBody{reader: bufferedBody, closer: originalBody}
-
-		headerBytes, _ := bufferedBody.Peek(zstd.HeaderMaxSize)
-		var header zstd.Header
-		if err := header.Decode(headerBytes); err != nil {
-			slog.Warn("zstd_decompress_failed", "error", err)
-			return
-		}
-
-		zr, err := zstd.NewReader(bufferedBody)
-		if err != nil {
-			slog.Warn("zstd_decompress_failed", "error", err)
-			return
-		}
-		reader = &zstdResponseReader{ReadCloser: zr.IOReadCloser()}
+	case "gzip", "br", "deflate", "zstd":
 	default:
 		return
 	}
 
-	resp.Body = &decompressedBody{reader: reader, closer: originalBody}
+	originalBody := resp.Body
+	resp.Body = &decompressedBody{
+		closer: originalBody,
+		initReader: func() io.Reader {
+			return newDecompressionReader(originalBody, ce)
+		},
+	}
 	resp.Header.Del("Content-Encoding")
-	resp.Header.Del("Content-Length") // 解压后长度不确定
+	resp.Header.Del("Content-Length")
 	resp.ContentLength = -1
+}
+
+// decoderHeaderRecorder preserves bytes consumed during gzip initialization so
+// an invalid header can fall back to the complete original body. Recording is
+// disabled before normal decoding, so streamed payloads are never accumulated.
+type decoderHeaderRecorder struct {
+	reader    io.Reader
+	prefix    []byte
+	recording bool
+}
+
+func (r *decoderHeaderRecorder) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if r.recording {
+		r.prefix = append(r.prefix, p[:n]...)
+	}
+	return n, err
+}
+
+func newDecompressionReader(body io.Reader, encoding string) io.Reader {
+	switch encoding {
+	case "gzip":
+		recorder := &decoderHeaderRecorder{reader: body, recording: true}
+		gr, err := gzip.NewReader(recorder)
+		recorder.recording = false
+		prefix := recorder.prefix
+		recorder.prefix = nil
+		if err != nil {
+			return io.MultiReader(bytes.NewReader(prefix), body)
+		}
+		return gr
+	case "br":
+		return brotli.NewReader(body)
+	case "deflate":
+		return flate.NewReader(body)
+	case "zstd":
+		bufferedBody := bufio.NewReader(body)
+		headerBytes, _ := bufferedBody.Peek(zstd.HeaderMaxSize)
+		var header zstd.Header
+		if err := header.Decode(headerBytes); err != nil {
+			slog.Warn("zstd_decompress_failed", "error", err)
+			return bufferedBody
+		}
+		zr, err := zstd.NewReader(bufferedBody)
+		if err != nil {
+			slog.Warn("zstd_decompress_failed", "error", err)
+			return bufferedBody
+		}
+		return &zstdResponseReader{ReadCloser: zr.IOReadCloser()}
+	default:
+		return body
+	}
 }
 
 type zstdResponseReader struct {
@@ -1556,18 +1961,45 @@ func (r *zstdResponseReader) Read(p []byte) (int, error) {
 
 // decompressedBody 组合解压 reader 和原始 body 的 close。
 type decompressedBody struct {
-	reader io.Reader
-	closer io.Closer
+	initReader func() io.Reader
+	reader     io.Reader
+	closer     io.Closer
+	readMu     sync.Mutex
+	closeOnce  sync.Once
+	closed     bool
+	closeErr   error
 }
 
 func (d *decompressedBody) Read(p []byte) (int, error) {
+	d.readMu.Lock()
+	defer d.readMu.Unlock()
+	if d.closed {
+		return 0, io.ErrClosedPipe
+	}
+	if d.initReader != nil {
+		d.reader = d.initReader()
+		d.initReader = nil
+	}
 	return d.reader.Read(p)
 }
 
 func (d *decompressedBody) Close() error {
-	// 如果 reader 本身也是 Closer（如 gzip.Reader），先关闭它
-	if rc, ok := d.reader.(io.Closer); ok {
-		_ = rc.Close()
-	}
-	return d.closer.Close()
+	d.closeOnce.Do(func() {
+		// Close the underlying network body first. It is the cancelOnCloseBody
+		// in normal requests, so this interrupts a blocked decoder read. The
+		// read lock is acquired only after that close returns, which waits for an
+		// in-flight Read to finish without concurrently closing a decoder such as
+		// zstd.Reader.
+		if d.closer != nil {
+			d.closeErr = d.closer.Close()
+		}
+		d.readMu.Lock()
+		d.closed = true
+		d.initReader = nil
+		if rc, ok := d.reader.(io.Closer); ok {
+			_ = rc.Close()
+		}
+		d.readMu.Unlock()
+	})
+	return d.closeErr
 }

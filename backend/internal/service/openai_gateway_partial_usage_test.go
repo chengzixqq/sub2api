@@ -84,7 +84,6 @@ func TestHasOpenAIPartialUsageIncludesImageTokens(t *testing.T) {
 }
 
 func TestOpenAIGatewayForwardPreservesStreamingPartialUsageOnError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","stream":true,"input":"hello"}`)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -102,7 +101,6 @@ func TestOpenAIGatewayForwardPreservesStreamingPartialUsageOnError(t *testing.T)
 }
 
 func TestOpenAIGatewayPassthroughPreservesStreamingPartialUsageOnError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.4","stream":true,"input":"hello"}`)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -120,7 +118,6 @@ func TestOpenAIGatewayPassthroughPreservesStreamingPartialUsageOnError(t *testin
 }
 
 func TestForwardGrokResponsesPreservesStreamingPartialResultOnError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"grok-4.5","stream":true,"input":"hello"}`)
 
 	tests := []struct {

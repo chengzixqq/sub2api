@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/gin-gonic/gin"
 )
 
@@ -56,4 +57,15 @@ func redactUpstreamResponseBodyForClient(c *gin.Context, body []byte) []byte {
 		return []byte(redactUpstreamURLs(string(body)))
 	}
 	return body
+}
+
+// Diagnostic body output is opt-in. Redact before truncating so a cut through a
+// credential cannot prevent the JSON/text redactor from recognizing it.
+func (s *GatewayService) upstreamErrorBodyForLog(c *gin.Context, body []byte) string {
+	if s == nil || s.cfg == nil || !s.cfg.Gateway.LogUpstreamErrorBody {
+		return ""
+	}
+	safe := logredact.RedactJSON(body, "api_key", "api-key", "x-api-key", "authorization", "proxy-authorization", "key", "token")
+	safe = sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(safe))
+	return truncateForLog([]byte(safe), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
 }

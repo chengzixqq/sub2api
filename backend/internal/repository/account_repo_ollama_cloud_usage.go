@@ -39,7 +39,11 @@ func (r *accountRepository) ListOllamaCloudUsageGroupAccounts(ctx context.Contex
 		return nil, service.ErrOllamaCloudUsageUnavailable
 	}
 	keys := make([]string, 0, len(accounts))
-	seen := make(map[string]struct{}, len(accounts))
+	workspaceIDs := make([]int64, 0, len(accounts))
+	seen := make(map[struct {
+		workspaceID int64
+		apiKey      string
+	}]struct{}, len(accounts))
 	for _, account := range accounts {
 		if !service.IsOllamaCloudUsageAccount(account) || account.Credentials == nil {
 			continue
@@ -48,10 +52,15 @@ func (r *accountRepository) ListOllamaCloudUsageGroupAccounts(ctx context.Contex
 		if !ok || apiKey == "" {
 			continue
 		}
-		if _, duplicate := seen[apiKey]; duplicate {
+		identity := struct {
+			workspaceID int64
+			apiKey      string
+		}{account.WorkspaceID, apiKey}
+		if _, duplicate := seen[identity]; duplicate {
 			continue
 		}
-		seen[apiKey] = struct{}{}
+		seen[identity] = struct{}{}
+		workspaceIDs = append(workspaceIDs, account.WorkspaceID)
 		keys = append(keys, apiKey)
 	}
 	if len(keys) == 0 {
@@ -62,9 +71,11 @@ func (r *accountRepository) ListOllamaCloudUsageGroupAccounts(ctx context.Contex
 		FROM accounts
 		WHERE deleted_at IS NULL
 			AND `+ollamaCloudUsageEligibleSQL+`
-			AND credentials ->> 'api_key' = ANY($1)
+			AND (workspace_id, credentials ->> 'api_key') IN (
+				SELECT * FROM unnest($1::bigint[], $2::text[])
+			)
 		ORDER BY id
-	`, pq.Array(keys))
+	`, pq.Array(workspaceIDs), pq.Array(keys))
 	if err != nil {
 		return nil, err
 	}
@@ -310,9 +321,10 @@ func lockOllamaCloudUsageGroup(
 		WHERE deleted_at IS NULL
 			AND `+ollamaCloudUsageEligibleSQL+`
 			AND credentials ->> 'api_key' = $1
+			AND workspace_id = $7
 		ORDER BY id
 		FOR NO KEY UPDATE
-	`, apiKey, account.ID, account.Platform, account.Type, string(credentials), proxyID)
+	`, apiKey, account.ID, account.Platform, account.Type, string(credentials), proxyID, account.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +440,7 @@ func (r *accountRepository) ListDueOllamaCloudUsageAccounts(
 	minFetchIntervalSeconds := service.OllamaCloudUsageMinFetchInterval.Seconds()
 	rows, err := r.sql.QueryContext(ctx, `
 		WITH eligible AS (
-			SELECT id,
+			SELECT id, workspace_id,
 				credentials ->> 'api_key' AS api_key,
 				last_used_at,
 				extra -> 'ollama_cloud_usage_snapshot' AS snapshot
@@ -439,23 +451,23 @@ func (r *accountRepository) ListDueOllamaCloudUsageAccounts(
 				AND jsonb_typeof(extra -> 'ollama_cloud_usage_session') = 'string'
 				AND extra @> '{"ollama_cloud_usage_auto_refresh": true}'::jsonb
 		), group_activity AS (
-			SELECT credentials ->> 'api_key' AS api_key,
+			SELECT workspace_id, credentials ->> 'api_key' AS api_key,
 				MAX(last_used_at) AS group_last_used_at
 			FROM accounts
 			WHERE deleted_at IS NULL
 				AND `+ollamaCloudUsageEligibleSQL+`
 				AND jsonb_typeof(credentials -> 'api_key') = 'string'
-			GROUP BY credentials ->> 'api_key'
+			GROUP BY workspace_id, credentials ->> 'api_key'
 		), joined AS (
-			SELECT e.id, e.api_key, e.snapshot, g.group_last_used_at,
+			SELECT e.id, e.workspace_id, e.api_key, e.snapshot, g.group_last_used_at,
 				e.snapshot #>> '{status}' AS status,
 				e.snapshot #>> '{fetched_at}' AS fetched_at,
 				e.snapshot #>> '{last_attempt_at}' AS last_attempt_at,
 				e.snapshot #>> '{next_refresh_at}' AS next_refresh_at
 			FROM eligible e
-			JOIN group_activity g ON g.api_key = e.api_key
+			JOIN group_activity g ON g.workspace_id = e.workspace_id AND g.api_key = e.api_key
 		), parsed AS MATERIALIZED (
-			SELECT id, api_key, snapshot, group_last_used_at, status,
+			SELECT id, workspace_id, api_key, snapshot, group_last_used_at, status,
 				`+ollamaCloudUsageParseRFC3339SQL("fetched_at")+` AS parsed_fetched_at,
 				`+ollamaCloudUsageParseRFC3339SQL("last_attempt_at")+` AS parsed_last_attempt_at,
 				`+ollamaCloudUsageParseRFC3339SQL("next_refresh_at")+` AS parsed_next_refresh_at
@@ -501,9 +513,9 @@ func (r *accountRepository) ListDueOllamaCloudUsageAccounts(
 				activity_due_at AS due_at
 			FROM timed
 		), ranked AS (
-			SELECT id, api_key, group_last_used_at, due_class, due_at,
+			SELECT id, workspace_id, api_key, group_last_used_at, due_class, due_at,
 				row_number() OVER (
-					PARTITION BY api_key
+					PARTITION BY workspace_id, api_key
 					ORDER BY due_class,
 						due_at NULLS FIRST,
 						id

@@ -11,13 +11,18 @@
           <button type="button" class="btn btn-secondary btn-icon h-8 w-8 shrink-0" :aria-label="t('common.close')" @click="emit('close')"><Icon name="x" size="sm" /></button>
         </header>
         <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
-          <ObservationCurrentStatus :status="selectedModel ? selectedModel.current_status : item.current_status" :stale="stale" />
-          <section>
-            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.unified.traffic') }}</h3>
-            <ObservationMetrics v-if="selectedMetrics" :metrics="selectedMetrics" :health="selectedHealth" />
-            <p v-else class="text-sm text-gray-500">{{ t('channelMonitorV2.observation.states.no_samples') }}</p>
-          </section>
-          <section v-if="!selection && !model && item.models.length" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+          <nav v-if="admin" class="flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800" :aria-label="t('channelMonitorV2.detail.sections')">
+            <button v-for="tab in adminTabs" :key="tab.value" :data-testid="`detail-tab-${tab.value}`" :aria-pressed="detailTab === tab.value" type="button" class="rounded-lg px-3 py-1.5 text-xs font-medium" :class="detailTab === tab.value ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white' : 'text-gray-500 dark:text-gray-400'" @click="detailTab = tab.value">{{ tab.label }}</button>
+          </nav>
+          <template v-if="!admin || detailTab === 'overview'">
+            <ObservationCurrentStatus :status="selectedModel ? selectedModel.current_status : item.current_status" :stale="stale" />
+            <section>
+              <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.unified.traffic') }}</h3>
+              <ObservationMetrics v-if="selectedMetrics" :metrics="selectedMetrics" :health="selectedHealth" />
+              <p v-else class="text-sm text-gray-500">{{ t('channelMonitorV2.observation.states.no_samples') }}</p>
+            </section>
+          </template>
+          <section v-if="(!admin || detailTab === 'overview') && !selection && !model && item.models.length" class="border-t border-gray-200 pt-4 dark:border-dark-700">
             <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.observation.modelDetails') }}</h3>
             <div v-for="model in item.models" :key="model.model" class="space-y-2 border-b border-gray-100 py-3 last:border-0 dark:border-dark-700">
               <p class="break-all text-sm font-medium">{{ model.model }}</p>
@@ -25,7 +30,39 @@
               <ObservationMetrics :metrics="model.traffic || model.metrics" :health="model.health" />
             </div>
           </section>
-          <section v-if="admin" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+          <section v-if="admin && detailTab === 'models'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.models') }}</h3>
+            <div v-if="!item.models.length" class="text-sm text-gray-500">{{ t('channelMonitorV2.detail.noModels') }}</div>
+            <div v-for="modelItem in item.models" :key="modelItem.model" class="space-y-2 border-b border-gray-100 py-3 last:border-0 dark:border-dark-700">
+              <div class="flex items-center justify-between gap-3"><p class="break-all text-sm font-medium">{{ modelItem.model }}</p><span class="badge badge-gray">{{ t(`channelMonitorV2.observation.states.${modelItem.metrics.sample_state}`) }}</span></div>
+              <ObservationCurrentStatus :status="modelItem.current_status" :stale="stale" />
+              <ObservationMetrics :metrics="modelItem.traffic || modelItem.metrics" :health="modelItem.health" />
+            </div>
+          </section>
+          <section v-if="admin && detailTab === 'trend'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.trend') }}</h3>
+            <MonitorTrendPanel :items="trendItems" :coverage="coverage || emptyCoverage" :source="source" />
+          </section>
+          <section v-if="admin && detailTab === 'errors'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.errors') }}</h3>
+            <dl v-if="errorEntries.length" class="space-y-2 text-xs"><div v-for="entry in errorEntries" :key="entry[0]" class="flex items-center justify-between gap-3"><dt class="text-gray-500">{{ categoryLabel(entry[0]) }}</dt><dd class="font-medium tabular-nums">{{ entry[1] }}</dd></div></dl>
+            <p v-else class="text-sm text-gray-500" data-testid="detail-error-empty">{{ errorEmptyLabel }}</p>
+          </section>
+          <section v-if="admin && detailTab === 'probe'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.probeEvidence') }}</h3>
+            <ObservationCurrentStatus :status="item.current_status?.source === 'probe' ? item.current_status : undefined" :stale="stale" />
+            <p class="mt-2 text-xs text-gray-500">{{ item.probe ? `${statusLabel(item.probe.status)} · ${t('channelMonitorV2.detail.consecutiveFailures', { count: item.probe.consecutive_failures })}` : t('channelMonitorV2.detail.noProbe') }}</p>
+          </section>
+          <section v-if="admin && detailTab === 'quota'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.quotaSync') }}</h3>
+            <p class="text-sm" :class="item.quota?.status === 'error' ? 'text-red-600' : 'text-gray-700 dark:text-gray-200'">{{ item.quota ? statusLabel(item.quota.status) : t('channelMonitorV2.detail.noQuota') }}</p>
+            <p v-if="item.quota?.updated_at" class="mt-1 text-xs text-gray-500">{{ t('channelMonitorV2.updatedTo', { time: formatTime(item.quota.updated_at) }) }}</p>
+          </section>
+          <section v-if="admin && detailTab === 'quality'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
+            <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.detail.quality') }}</h3>
+            <dl class="grid grid-cols-2 gap-3 text-xs"><div><dt class="text-gray-500">{{ t('channelMonitorV2.evidence.source') }}</dt><dd class="mt-1 font-medium">{{ monitorSourceLabel(item.source || source, t, te) }}</dd></div><div><dt class="text-gray-500">{{ t('channelMonitorV2.evidence.coverage') }}</dt><dd class="mt-1 font-medium">{{ coverage ? t(`channelMonitorV2.observation.coverage.${coverage.state}`) : '—' }}</dd></div><div><dt class="text-gray-500">{{ t('channelMonitorV2.evidence.aggregationLag') }}</dt><dd class="mt-1 font-medium">{{ coverage?.aggregation_lag_seconds != null ? t('channelMonitorV2.evidence.seconds', { seconds: coverage.aggregation_lag_seconds }) : '—' }}</dd></div><div><dt class="text-gray-500">{{ t('channelMonitorV2.evidence.gapReasons') }}</dt><dd class="mt-1 font-medium">{{ coverage?.gap_reasons?.length ? coverage.gap_reasons.map(gapLabel).join(' · ') : t('channelMonitorV2.evidence.noGaps') }}</dd></div></dl>
+          </section>
+          <section v-if="admin && owner && detailTab === 'overview'" class="border-t border-gray-200 pt-4 dark:border-dark-700">
             <h3 class="mb-3 text-sm font-semibold">{{ t('channelMonitorV2.unified.accounts') }} <span class="font-normal text-gray-500">{{ t(`channelMonitorV2.ranges.${filter.range}`) }}</span></h3>
             <p v-if="accountLoading" class="text-sm text-gray-500">{{ t('common.loading') }}</p>
             <div v-else-if="accountError" role="alert" class="flex items-center justify-between gap-3 text-sm text-amber-700"><span>{{ t('channelMonitorV2.unified.loadFailed') }}</span><button class="btn btn-secondary btn-sm" type="button" @click="loadAccounts">{{ t('common.retry') }}</button></div>
@@ -38,7 +75,7 @@
             </div>
             <template v-if="accounts?.samples.length">
               <h4 class="mb-2 mt-5 text-xs font-semibold">{{ t('channelMonitorV2.unified.recentEvents') }}</h4>
-              <ol class="divide-y divide-gray-100 text-xs dark:divide-dark-700"><li v-for="(sample, index) in accounts.samples" :key="index" class="space-y-1 py-3"><p class="flex flex-wrap justify-between gap-2"><span class="break-all font-medium">{{ sample.model }}</span><time class="text-gray-500">{{ formatTime(sample.completed_at) }}</time></p><p class="text-gray-500">{{ sample.outcome }} · {{ sample.http_status }}<span v-if="sample.error_category"> · {{ sample.error_category }}</span><span v-if="sample.account_id"> · #{{ sample.account_id }}</span></p></li></ol>
+              <ol class="divide-y divide-gray-100 text-xs dark:divide-dark-700"><li v-for="(sample, index) in accounts.samples" :key="index" class="space-y-1 py-3"><p class="flex flex-wrap justify-between gap-2"><span class="break-all font-medium">{{ sample.model }}</span><time class="text-gray-500">{{ formatTime(sample.completed_at) }}</time></p><p class="text-gray-500">{{ monitorOutcomeLabel(sample.outcome, t, te) }} · {{ sample.http_status }}<span v-if="sample.error_category"> · {{ categoryLabel(sample.error_category) }}</span><span v-if="sample.account_id"> · #{{ sample.account_id }}</span></p></li></ol>
             </template>
           </section>
         </div>
@@ -53,16 +90,47 @@ import Icon from '@/components/icons/Icon.vue'
 import { getMonitorAccountDetail, type MonitorAccountDetail, type MonitorFilter, type ObservationBucket, type ObservationChannel, type ObservationOverview } from '@/api/channelMonitorV2'
 import ObservationCurrentStatus from './ObservationCurrentStatus.vue'
 import ObservationMetrics from './ObservationMetrics.vue'
-const props = withDefaults(defineProps<{ show: boolean; item: ObservationChannel | null; model?: string; selection: { start: string; bucket: ObservationBucket | null } | null; coverage?: ObservationOverview['coverage']; admin?: boolean; stale?: boolean; filter: MonitorFilter; identity: string }>(), { admin: false, stale: false })
+import MonitorTrendPanel from './MonitorTrendPanel.vue'
+import { monitorCategoryLabel, monitorOutcomeLabel, monitorSourceLabel } from './monitorLabels'
+const props = withDefaults(defineProps<{ show: boolean; item: ObservationChannel | null; model?: string; selection: { start: string; bucket: ObservationBucket | null } | null; coverage?: ObservationOverview['coverage']; source?: ObservationOverview['source']; admin?: boolean; owner?: boolean; preview?: boolean; stale?: boolean; filter: MonitorFilter; identity: string }>(), { admin: false, owner: false, preview: false, stale: false })
 const emit = defineEmits<{ close: [] }>()
-const { t, locale } = useI18n()
+const { t, te, locale } = useI18n()
+const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const panel = ref<HTMLElement | null>(null)
 const titleId = `monitor-detail-${getCurrentInstance()?.uid}`
 const accounts = shallowRef<MonitorAccountDetail | null>(null)
 const accountLoading = ref(false)
 const accountError = ref(false)
+const detailTab = ref<'overview' | 'models' | 'trend' | 'errors' | 'probe' | 'quota' | 'quality'>('overview')
+const adminTabs = computed(() => (['overview', 'models', 'trend', 'errors', 'probe', 'quota', 'quality'] as const).map(value => ({ value, label: t(`channelMonitorV2.detail.${value}`) })))
+const errorEntries = computed(() => Object.entries(selectedMetrics.value?.error_categories || {}).sort((a, b) => b[1] - a[1]))
+const emptyCoverage = computed(() => props.coverage || ({ requested_start: new Date(0).toISOString(), requested_end: new Date(0).toISOString(), coverage_start: new Date(0).toISOString(), data_through: new Date(0).toISOString(), computed_at: new Date(0).toISOString(), aggregation_lag_seconds: 0, coverage_complete: false, bucket_seconds: 3600, state: 'unavailable', detail_retention_hours: 0, unsupported_protocols: [] } as ObservationOverview['coverage']))
 const selectedModel = computed(() => props.model ? props.item?.models.find(model => model.model === props.model) : null)
 const selectedMetrics = computed(() => props.selection ? props.selection.bucket?.metrics : selectedModel.value?.traffic || selectedModel.value?.metrics || props.item?.traffic || props.item?.metrics)
+// A selected model owns a different history from its parent channel.
+const trendItems = computed<ObservationChannel[]>(() => {
+  if (!props.item) return []
+  const selected = selectedModel.value
+  return selected ? [{ ...props.item, group_name: `${props.item.group_name} · ${selected.model}`, metrics: selected.metrics, traffic: selected.traffic, health: selected.health, buckets: selected.buckets, models: [selected] }] : [props.item]
+})
+const errorEmptyLabel = computed(() => {
+  if (props.selection && !props.selection.bucket) return t('channelMonitorV2.observation.states.missing')
+  if (props.coverage?.state === 'unavailable') return t('channelMonitorV2.observation.states.unavailable')
+  if (!selectedMetrics.value || selectedMetrics.value.sample_state === 'no_samples') return t('channelMonitorV2.observation.states.no_samples')
+  return selectedMetrics.value.channel_errors === 0
+    ? text('已观测真实流量中没有渠道错误。', 'No channel errors in observed traffic.')
+    : text('当前范围没有已分类错误，不能据此推断错误率为零。', 'No classified errors in this range; this does not imply a zero error rate.')
+})
+const gapLabel = (reason: string) => {
+  const key = `channelMonitorV2.unified.gaps.${reason}`
+  return te(key) ? t(key) : reason
+}
+const categoryLabel = (category: string) => monitorCategoryLabel(category, t, te)
+const statusLabel = (status: string) => {
+  const key = `channelMonitorV2.unified.states.${status}`
+  return te(key) ? t(key) : status
+}
+
 const selectedHealth = computed(() => (props.selection ? props.selection.bucket?.health : selectedModel.value?.health || props.item?.health) || { reliability: 'unknown' as const, latency: 'unknown' as const })
 const formatTime = (value: string) => Date.parse(value) > 0 ? new Date(value).toLocaleString(locale.value) : '-'
 let controller: AbortController | null = null
@@ -71,7 +139,7 @@ async function loadAccounts() {
   controller?.abort()
   accounts.value = null
   accountError.value = false
-  if (!props.show || !props.admin || !props.item) { accountLoading.value = false; return }
+  if (!props.show || !props.admin || !props.owner || props.preview || !props.item) { accountLoading.value = false; return }
   const current = new AbortController()
   controller = current
   accountLoading.value = true
@@ -84,7 +152,8 @@ async function loadAccounts() {
     if (controller === current) accountLoading.value = false
   }
 }
-watch(() => [props.show, props.admin, props.identity, props.item?.group_id, props.model, JSON.stringify(props.filter)], () => { void loadAccounts() }, { immediate: true, flush: 'sync' })
+watch(() => [props.show, props.admin, props.owner, props.preview, props.identity, props.item?.group_id, props.item?.platform, props.model, JSON.stringify(props.filter)], () => { void loadAccounts() }, { immediate: true, flush: 'sync' })
+watch(() => props.show, show => { if (show) detailTab.value = 'overview' })
 watch(() => props.show, async (show) => {
   if (show) {
     previousFocus = document.activeElement as HTMLElement | null

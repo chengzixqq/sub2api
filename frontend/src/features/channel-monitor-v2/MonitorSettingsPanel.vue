@@ -379,21 +379,9 @@ function categoryLabel(category: string) {
 }
 
 function platformLabel(value: string) {
-  return (
-    {
-      anthropic: 'Claude',
-      openai: 'OpenAI',
-      grok: 'Grok',
-      kiro: 'Kiro',
-      gemini: 'Gemini',
-      antigravity: 'Antigravity',
-      kimi: 'Kimi',
-      zhipu: 'Zhipu GLM',
-      deepseek: 'DeepSeek',
-      minimax: 'MiniMax',
-      composite: 'Composite',
-    } as Record<string, string>
-  )[value] || value
+  const key = `channelMonitorV2.platforms.${value}`
+  if (te(key)) return t(key)
+  return value
 }
 
 function normalizeConfig(value: MonitorConfig): MonitorConfig {

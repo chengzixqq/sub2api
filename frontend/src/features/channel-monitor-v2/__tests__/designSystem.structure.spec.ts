@@ -93,6 +93,7 @@ describe('channel-monitor-v2 design system structure', () => {
     expect(src).toContain('page-title')
     expect(src).toContain('class="tabs')
     expect(src).toContain('tab-active')
-    expect(src).toContain('MonitorSettingsPanel')
+    expect(src).toContain('AdminMonitorSettingsDrawer')
+    expect(read('features/channel-monitor-v2/AdminMonitorSettingsDrawer.vue')).toContain('MonitorSettingsPanel')
   })
 })

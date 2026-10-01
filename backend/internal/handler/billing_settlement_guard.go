@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -79,6 +80,7 @@ type billingSettlementGuard struct {
 	imageSizeSource    string
 	imageSizeBreakdown map[string]int
 	clientDisconnect   bool
+	billingMetadata    service.FailureBillingMetadata
 
 	// Search calls are real upstream work and may be charged on every retry.
 	// Token usage intentionally remains attempt-scoped, while search calls are
@@ -120,6 +122,7 @@ func (g *billingSettlementGuard) ObserveAttempt(account *service.Account) {
 		g.imageSizeSource = ""
 		g.imageSizeBreakdown = nil
 		g.clientDisconnect = false
+		g.billingMetadata = service.FailureBillingMetadata{}
 		g.attemptNo++
 		g.attemptSearchCount = 0
 	}
@@ -175,9 +178,19 @@ func (g *billingSettlementGuard) ObservePartialUsage(usage service.ClaudeUsage) 
 }
 
 func (g *billingSettlementGuard) ObserveForwardResult(result *service.ForwardResult) {
-	if result != nil {
+	if g != nil && result != nil {
 		g.ObservePartialUsage(result.Usage)
 		g.clientDisconnect = g.clientDisconnect || result.ClientDisconnect
+		g.requestID = result.RequestID
+		g.upstreamModel = result.UpstreamModel
+		g.billingMetadata = service.FailureBillingMetadata{
+			ReasoningEffort:               failureBillingStringValue(result.ReasoningEffort),
+			RequestedReasoningEffort:      failureBillingStringValue(result.RequestedReasoningEffort),
+			ServiceTier:                   failureBillingStringValue(result.ServiceTier),
+			UpstreamResponseModel:         result.UpstreamResponseModel,
+			UpstreamResponseModelConflict: result.UpstreamResponseModelConflict,
+			UpstreamResponseServiceTier:   result.UpstreamResponseServiceTier,
+		}
 	}
 }
 
@@ -208,6 +221,14 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 	g.requestID = result.RequestID
 	g.billingModel = result.BillingModel
 	g.upstreamModel = result.UpstreamModel
+	g.billingMetadata = service.FailureBillingMetadata{
+		ReasoningEffort:               failureBillingStringValue(result.ReasoningEffort),
+		RequestedReasoningEffort:      failureBillingStringValue(result.RequestedReasoningEffort),
+		ServiceTier:                   failureBillingStringValue(result.ServiceTier),
+		UpstreamResponseModel:         result.UpstreamResponseModel,
+		UpstreamResponseModelConflict: result.UpstreamResponseModelConflict,
+		UpstreamResponseServiceTier:   result.UpstreamResponseServiceTier,
+	}
 
 	searchCount := service.NormalizeSearchCount(result.SearchCount)
 	if result.SearchCount < 0 {
@@ -310,22 +331,23 @@ func (g *billingSettlementGuard) Flush() {
 	}
 
 	in := service.FailureBillingInput{
-		RequestID:          g.requestID,
-		BillingModel:       g.billingModel,
-		UpstreamModel:      g.upstreamModel,
-		Usage:              g.usage,
-		SearchCount:        g.cumulativeSearchCount,
-		ImageCount:         g.imageCount,
-		ImageSize:          g.imageSize,
-		ImageInputSize:     g.imageInputSize,
-		ImageOutputSize:    g.imageOutputSize,
-		ImageOutputSizes:   append([]string(nil), g.imageOutputSizes...),
-		ImageSizeSource:    g.imageSizeSource,
-		ImageSizeBreakdown: cloneBillingImageSizeBreakdown(g.imageSizeBreakdown),
-		Err:                g.ferr,
-		OutputStarted:      g.outputStarted,
-		ClientDisconnect:   g.clientDisconnect,
-		UpstreamUsageOnly:  g.deps.upstreamUsageOnly,
+		FailureBillingMetadata: g.billingMetadata,
+		RequestID:              g.requestID,
+		BillingModel:           g.billingModel,
+		UpstreamModel:          g.upstreamModel,
+		Usage:                  g.usage,
+		SearchCount:            g.cumulativeSearchCount,
+		ImageCount:             g.imageCount,
+		ImageSize:              g.imageSize,
+		ImageInputSize:         g.imageInputSize,
+		ImageOutputSize:        g.imageOutputSize,
+		ImageOutputSizes:       append([]string(nil), g.imageOutputSizes...),
+		ImageSizeSource:        g.imageSizeSource,
+		ImageSizeBreakdown:     cloneBillingImageSizeBreakdown(g.imageSizeBreakdown),
+		Err:                    g.ferr,
+		OutputStarted:          g.outputStarted,
+		ClientDisconnect:       g.clientDisconnect,
+		UpstreamUsageOnly:      g.deps.upstreamUsageOnly,
 	}
 	if g.deps.estimatedPromptTokens != nil {
 		in.EstimatedPromptTokens = g.deps.estimatedPromptTokens()
@@ -360,6 +382,20 @@ func hasFailureBillingUsage(usage service.ClaudeUsage) bool {
 		usage.ImageInputTokens > 0 || usage.ImageCacheReadTokens > 0 || usage.ImageOutputTokens > 0
 }
 
+func failureBillingStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func failureBillingStringPointer(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
 // claudeFailureSink 把失败计费决策落成 Claude 家族的 RecordUsageInput，
 // 复用与成功路径完全相同的 RecordUsage 计费管线，不新增第二套费用计算。
 //
@@ -377,17 +413,33 @@ func (h *GatewayHandler) claudeFailureSink(
 	sessionID := service.ExtractClientSessionID(c)
 	requestPayloadHash := service.HashUsageRequestPayload(body)
 	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	pricingAt := service.GatewayTokenRequestPricingAtFromContext(c.Request.Context())
+	requestedEffort := failureBillingStringValue(service.RequestedReasoningEffortFromContext(c.Request.Context()))
 	return func(d service.FailureBillingDecision, account *service.Account) {
 		provenance := string(d.Provenance)
+		requestID := strings.TrimSpace(d.RequestID)
+		if requestID == "" {
+			requestID = c.Writer.Header().Get("X-Request-Id")
+		}
+		if d.RequestedReasoningEffort == "" {
+			d.RequestedReasoningEffort = requestedEffort
+		}
 		result := &service.ForwardResult{
-			RequestID: c.Writer.Header().Get("X-Request-Id"),
-			Usage:     d.Usage,
-			Model:     reqModel,
+			RequestID:                     requestID,
+			Usage:                         d.Usage,
+			Model:                         reqModel,
+			UpstreamModel:                 d.UpstreamModel,
+			ReasoningEffort:               failureBillingStringPointer(d.ReasoningEffort),
+			RequestedReasoningEffort:      failureBillingStringPointer(d.RequestedReasoningEffort),
+			ServiceTier:                   failureBillingStringPointer(d.ServiceTier),
+			UpstreamResponseModel:         d.UpstreamResponseModel,
+			UpstreamResponseModelConflict: d.UpstreamResponseModelConflict,
+			UpstreamResponseServiceTier:   d.UpstreamResponseServiceTier,
 		}
 		// Flush() 与本闭包本体都同步跑在请求 goroutine 内（由 defer 触发，
 		// 尚未进入下面的 worker 池闭包），此时访问 c 仍然安全。
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
-		channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, "")
+		channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, d.UpstreamModel)
 		logger.FromContext(c.Request.Context()).Warn("gateway.failure_billed",
 			zap.String("reason", d.Reason),
 			zap.String("provenance", provenance),
@@ -401,7 +453,7 @@ func (h *GatewayHandler) claudeFailureSink(
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
-				PricingAt:          service.GatewayTokenRequestPricingAtFromContext(c.Request.Context()),
+				PricingAt:          pricingAt,
 				InboundEndpoint:    inboundEndpoint,
 				UpstreamEndpoint:   upstreamEndpoint,
 				UserAgent:          userAgent,

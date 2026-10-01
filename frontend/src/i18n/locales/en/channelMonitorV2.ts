@@ -5,14 +5,50 @@ export default {
       current: 'Current status', traffic: 'Real traffic', probe: 'Probe', quota: 'Quota', accounts: 'Accounts', account: 'Account', recentEvents: 'Recent requests', successfulAttempts: 'Succeeded', failedAttempts: 'Failed',
       legacySource: 'Historical source', preview: 'Preview unpublished data', historyInterval: '{minutes}-minute intervals',
       refreshFailed: 'Refresh failed. The last successful snapshot is out of date.', loadFailed: 'Monitor data is temporarily unavailable.', accessDenied: 'This monitor is not available to your account.',
-      collector: { healthy: 'Collection healthy', stale: 'Collection delayed', write_failed: 'Collection write failed', disabled: 'Collection disabled', backlogged: 'Collection backlogged', unknown: 'Collection status unknown' },
+      collector: { healthy: 'Collection healthy', stale: 'Collection delayed', write_failed: 'Collection write failed', disabled: 'Collection disabled', backlogged: 'Collection backlogged', unavailable: 'Collection unavailable', unknown: 'Collection status unknown' },
       pendingEvents: '{count} pending events',
       sources: { traffic: 'Real traffic', probe: 'Probe result', none: 'No recent evidence' },
-      states: { healthy: 'Available', warning: 'Degraded', critical: 'Unavailable', unknown: 'Unknown', stale: 'Out of date', degraded: 'Degraded', unavailable: 'Unavailable', error: 'Failed', pending: 'Pending', ok: 'Available', exhausted: 'Exhausted', unsupported: 'Unsupported', not_configured: 'Not configured' },
-      reasons: { probe_success: 'Most recent probe succeeded', no_recent_evidence: 'No recent evidence', insufficient_samples: 'Insufficient real traffic', traffic_healthy: 'Recent real traffic is healthy', probe_failed: 'Recent probes failed', no_samples: 'No recent samples', collection_unavailable: 'Collection unavailable', traffic_expired: 'Real traffic evidence expired', recent_traffic: 'Recent real traffic', high_latency: 'High first-output latency', recent_probe: 'Recent probe result' },
-      gaps: { write_failed: 'Collection write failed', collector_stale: 'Collector heartbeat delayed', queue_overflow: 'Collection queue overflow', source_changed: 'Data source changed', collection_disabled: 'Collection disabled', legacy_log_semantics: 'Historical log source', probe_unavailable: 'Probe evidence unavailable', quota_unavailable: 'Quota evidence unavailable' },
+      outcomes: { http_complete: 'HTTP request completed', channel_error: 'Channel error', client_error: 'Client error', unknown: 'Unknown outcome', success: 'Succeeded', succeeded: 'Succeeded', error: 'Failed', failed: 'Failed', timeout: 'Timed out', cancelled: 'Cancelled', client_cancelled: 'Client cancelled' },
+      states: { healthy: 'Available', warning: 'Degraded', critical: 'Unavailable', unknown: 'Unknown', stale: 'Out of date', degraded: 'Degraded', available: 'Sync healthy', unavailable: 'Unavailable', error: 'Failed', pending: 'Pending', ok: 'Available', exhausted: 'Exhausted', unsupported: 'Unsupported', not_configured: 'Not configured' },
+      reasons: { probe_success: 'Most recent probe succeeded', no_recent_evidence: 'No recent evidence', insufficient_samples: 'Insufficient real traffic', traffic_healthy: 'Recent real traffic is healthy', probe_failed: 'Recent probes failed', no_samples: 'No recent samples', collection_unavailable: 'Collection unavailable', traffic_expired: 'Real traffic evidence expired', recent_traffic: 'Recent real traffic', high_latency: 'High first-output latency', high_error_rate: 'High traffic error rate', probe_only_no_traffic: 'Healthy probe with no real traffic samples', recent_probe: 'Recent probe result' },
+      gaps: { write_failed: 'Collection write failed', capacity: 'Collector capacity exhausted', queue_loss: 'Events lost from the collector queue', shutdown_loss: 'Requests were still in flight during shutdown', gap_write_failed: 'Gap record write failed', heartbeat_failed: 'Collector heartbeat write failed', terminal_conflict: 'Conflicting terminal records', collector_stale: 'Collector heartbeat delayed', collector_backlog: 'Collection queue backlogged', queue_overflow: 'Collection queue overflow', source_changed: 'Data source changed', collection_disabled: 'Collection disabled', legacy_log_semantics: 'Historical log source', legacy_window_unavailable: 'Historical data window unavailable', unsupported_protocol: 'Unsupported protocol', probe_unavailable: 'Probe evidence unavailable', quota_unavailable: 'Quota evidence unavailable' },
       settings: { title: 'Monitor policy', enabled: 'Collect real traffic', probeEnabled: 'Paid active probes', quotaEnabled: 'Quota monitoring', displayOn: 'User display: enabled', displayOff: 'User display: disabled', mode: 'Publication', shadow: 'Shadow', live: 'Live', liveGroups: 'Published groups', allGroups: 'All groups', refresh: 'Refresh', retention: 'Detail retention', retentionValue: '24 hours', refreshValue: '60 seconds', minimumSample: 'Minimum traffic samples', healthyReliability: 'Healthy reliability %', warningReliability: 'Warning reliability %', warningTtft: 'Warning first output ms', criticalTtft: 'Critical first output ms', legacy: 'Legacy display policy', saved: 'Monitor policy saved' },
       probes: { title: 'Probe targets', add: 'Add target', group: 'Group', model: 'Model', protocol: 'Protocol', enabled: 'Enabled', run: 'Probe now', budget: 'Daily budget (UTC)', targetBudget: 'Target budget', empty: 'No probe targets', saved: 'Probe target saved', failed: 'Probe request failed', edit: 'Edit target', create: 'Create target', globalUsed: '{used} / {limit}', status: 'Last result', confirm: 'Run this paid probe?', confirmCost: 'This sends a billable upstream request and consumes the daily probe budget.', completed: 'Probe submitted', invalid: 'Choose a group, model and protocol.', cost: 'Upstream cost', budgetExhausted: 'Daily budget exhausted' },
+    },
+    dashboard: {
+      eyebrow: 'Channel monitor', title: 'Know which channels are ready', subtitle: 'A traffic-first view of reliability, first output latency and recent service evidence.',
+      availableChannels: 'Available channels', healthRate: 'Healthy channel share', medianChannelTtft: 'TTFT P50 (median channel)', errorRate: 'Median channel error rate',
+      healthBasis: 'Sufficient-sample channels only', errorBasis: '1 − reliability, median across channels',
+      views: { label: 'Monitor view', cards: 'Cards', matrix: 'Matrix', trend: 'Trend' },
+    },
+    platforms: { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', antigravity: 'Antigravity', grok: 'Grok', kimi: 'Kimi', zhipu: 'Zhipu GLM', deepseek: 'DeepSeek', minimax: 'MiniMax', opencode_go: 'OpenCode', composite: 'Composite' },
+    preview: {
+      channelNames: { '101': 'Claude production', '102': 'OpenAI failover', '201': 'Claude slow lane', '202': 'Gemini warming', '301': 'Legacy OpenAI pool', '401': 'New probe target', '501': 'Quota constrained account', '502': 'Quota sync error', '601': 'Mixed source history', '602': 'Legacy backfill' },
+      language: 'Preview language',
+      eyebrow: 'Local development fixture', title: 'Channel monitor preview', description: 'Review local monitor fixtures without signing in. Switch scenarios and roles to inspect the evidence hierarchy; no live data is requested.', userEyebrow: 'Preview monitor', userTitle: 'Channel readiness', userSubtitle: 'Channel-level traffic summaries. Operator counters are not included in this user fixture.',
+      darkTheme: 'Dark theme', lightTheme: 'Light theme', adminView: 'Admin view', userView: 'User view', scenario: 'Scenario', quickScenarios: 'Quick scenarios', previewRole: 'Preview role', admin: 'Admin', user: 'User',
+      showHealthy: 'Show healthy state', error: 'Preview request failed (HTTP {status}). This fixture has no retained snapshot.', loading: 'Loading monitor evidence…', coverage: 'Coverage: {state}', viewLabel: 'Preview view', cards: 'Cards', matrix: 'Matrix', trend: 'Trend', emptyTitle: 'No channels match this preview range', emptyDescription: 'This empty state is intentional; the preview does not call the API.',
+      scenarios: {
+        normal: { label: 'Normal · compact', description: 'Healthy traffic with complete compact coverage over a fixed 24h window.' },
+        'high-latency': { label: 'High latency', description: 'Reliability is healthy while TTFT breaches the critical threshold.' },
+        'high-error': { label: 'High error · legacy', description: 'Legacy traffic has a critical error rate and classified failures.' },
+        'probe-no-traffic': { label: 'Probe · no traffic', description: 'An active probe is healthy even though no request samples exist.' },
+        'quota-abnormal': { label: 'Quota abnormal · legacy', description: 'Traffic is healthy but quota evidence is exhausted or stale.' },
+        'coverage-gap': { label: 'Coverage gap · mixed', description: 'Compact and legacy rows coexist with a visible aggregation gap.' },
+        empty: { label: 'Empty', description: 'The selected range has no channels.' },
+        loading: { label: 'Loading', description: 'The initial request is still in flight.' },
+        error: { label: 'Error', description: 'The monitor request failed without a retained snapshot.' },
+      },
+    },
+    evidence: {
+      sources: { compact: 'Compact aggregates', legacy: 'Legacy data', mixed: 'Mixed sources', terminal_v1: 'Terminal data V1', none: 'No recent evidence' },
+      snapshotStale: 'Stale snapshot', coverageWindow: 'Coverage window {start} → {end}', aggregationLagValue: 'Aggregation lag {seconds}s', aggregationLagUnknown: 'Aggregation lag unknown',
+      source: 'Source', coverage: 'Coverage', aggregationLag: 'Aggregation lag', gapReasons: 'Gap reasons', noGaps: 'No data gaps reported', seconds: '{seconds}s',
+    },
+    detail: {
+      sections: 'Monitor detail sections', overview: 'Overview', models: 'Models', trend: 'Trend', errors: 'Errors', probe: 'Probe', quota: 'Quota', quality: 'Data quality',
+      noModels: 'No model samples for this channel.', noErrors: 'No classified errors in this range.', probeEvidence: 'Probe evidence', noProbe: 'No probe result for this channel.',
+      consecutiveFailures: '{count} consecutive failures', quotaSync: 'Quota sync', noQuota: 'No quota snapshot',
     },
     observation: {
       loading: 'Loading channel observations', loadFailed: 'Failed to load channel observations', empty: 'No observations for the selected filters', modelDetails: 'Model details', noModels: 'No model data', requests: 'Requests', errors: 'Channel errors', attempts: 'Upstream attempts', group: 'Group', reliability: 'Reliability', firstOutput: 'First output', cache: 'Cache hit rate', history: 'History', models: '{count} models', multiplier: 'User rate {value}x', priceUnavailable: 'Rate unavailable', slow: 'Slow response',
@@ -87,7 +123,7 @@ export default {
     },
     errorDetail: { http: 'HTTP {code}', upstream: 'Upstream {code}', noMessage: 'No error message', empty: 'Category rates only (sample messages are admin-only)' },
     errorCategories: {
-      content_policy: 'Content policy', authentication: 'Authentication', context_limit: 'Context limit', invalid_request: 'Invalid request', model_unsupported: 'Unsupported model', group_access: 'Group access', quota_or_balance: 'Quota or balance', account_pool_unavailable: 'Account pool unavailable', rate_or_capacity: 'Rate or capacity', timeout: 'Timeout', transport_or_stream: 'Transport or stream', upstream_forbidden: 'Upstream forbidden', not_found: 'Not found', client_cancelled: 'Client cancelled', upstream_5xx: 'Upstream 5xx', internal: 'Internal', other: 'Other'
+      content_policy: 'Content policy', authentication: 'Authentication', context_limit: 'Context limit', invalid_request: 'Invalid request', model_unsupported: 'Unsupported model', group_access: 'Group access', quota_or_balance: 'Quota or balance', account_pool_unavailable: 'Account pool unavailable', rate_or_capacity: 'Rate or capacity', timeout: 'Timeout', transport_or_stream: 'Transport or stream', upstream_forbidden: 'Upstream forbidden', not_found: 'Not found', client_cancelled: 'Client cancelled', upstream_5xx: 'Upstream 5xx', internal: 'Internal', transport_error: 'Transport error', upstream_auth: 'Upstream authentication', upstream_balance: 'Insufficient upstream balance', request_too_large: 'Request too large', upstream_capacity: 'Upstream capacity', upstream_error: 'Upstream error', upstream_http: 'Upstream HTTP error', client_request: 'Client request error', incomplete_terminal: 'Incomplete response', empty_output: 'Empty upstream response', other: 'Other'
     },
     rank: {
       gold: 'Rank 1 gold',

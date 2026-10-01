@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/localredis"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -23,6 +24,11 @@ const authRouteRedisImageTag = "redis:8.4-alpine"
 func TestAuthRegisterRateLimitThresholdHitReturns429(t *testing.T) {
 	ctx := context.Background()
 	rdb := startAuthRouteRedis(t, ctx)
+	// This fixture owns exactly one key; keep local reruns independent without
+	// clearing unrelated keys in the dedicated Redis test database.
+	const fixtureKey = "rate_limit:auth-register:198.51.100.10"
+	require.NoError(t, rdb.Del(ctx, fixtureKey).Err())
+	t.Cleanup(func() { _ = rdb.Del(ctx, fixtureKey).Err() })
 
 	router := newAuthRoutesTestRouter(rdb)
 	const path = "/api/v1/auth/register"
@@ -46,6 +52,9 @@ func TestAuthRegisterRateLimitThresholdHitReturns429(t *testing.T) {
 
 func startAuthRouteRedis(t *testing.T, ctx context.Context) *redis.Client {
 	t.Helper()
+	if client := localredis.Open(t, ctx); client != nil {
+		return client
+	}
 	ensureAuthRouteDockerAvailable(t)
 
 	redisContainer, err := tcredis.Run(ctx, authRouteRedisImageTag)

@@ -392,12 +392,6 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 		}
 	}
 	coverage.CoverageComplete = coverage.State == "complete"
-	if !coverage.DataThrough.IsZero() {
-		coverage.AggregationLagSeconds = int64(time.Since(coverage.DataThrough).Seconds())
-		if coverage.AggregationLagSeconds < 0 {
-			coverage.AggregationLagSeconds = 0
-		}
-	}
 	if admin {
 		n := snapshot.Coverage.InFlight
 		coverage.InFlight = &n
@@ -477,6 +471,14 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 			if legacyCoverage.DataThrough.Before(out.Coverage.DataThrough) {
 				out.Coverage.DataThrough = legacyCoverage.DataThrough
 			}
+		}
+	}
+	// Mixed overviews use the oldest source watermark. Compute lag only after
+	// that boundary is final so the UI's freshness indicators describe the same data.
+	if !out.Coverage.DataThrough.IsZero() {
+		out.Coverage.AggregationLagSeconds = int64(time.Since(out.Coverage.DataThrough).Seconds())
+		if out.Coverage.AggregationLagSeconds < 0 {
+			out.Coverage.AggregationLagSeconds = 0
 		}
 	}
 	if len(compactIDs) > 0 && !policy.Enabled {

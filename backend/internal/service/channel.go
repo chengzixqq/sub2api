@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -87,26 +88,26 @@ type AccountStatsPricingRule struct {
 
 // ChannelModelPricing 渠道模型定价条目
 type ChannelModelPricing struct {
-	ID                           int64               `json:"id,omitempty"`
-	ChannelID                    int64               `json:"channel_id,omitempty"`
-	Platform                     string              `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
-	Models                       []string            `json:"models"`
-	BillingMode                  BillingMode         `json:"billing_mode"`
-	InputPrice                   *float64            `json:"input_price"`
-	OutputPrice                  *float64            `json:"output_price"`
-	CacheWritePrice              *float64            `json:"cache_write_price"`
-	CacheWrite1hPrice            *float64            `json:"cache_write_1h_price"`
-	CacheReadPrice               *float64            `json:"cache_read_price"`
-	FastMultiplier               *float64            `json:"fast_multiplier"`
-	FlexMultiplier               *float64            `json:"flex_multiplier"`
-	MaxReasoningEffortMultiplier *float64            `json:"max_reasoning_effort_multiplier"`
-	ImageInputPrice              *float64            `json:"image_input_price"`
-	ImageOutputPrice             *float64            `json:"image_output_price"`
-	PerRequestPrice              *float64            `json:"per_request_price"`
-	Intervals                    []PricingInterval   `json:"intervals"`
-	TimePricing                  *ChannelTimePricing `json:"time_pricing,omitempty"`
-	CreatedAt                    time.Time           `json:"created_at,omitempty"`
-	UpdatedAt                    time.Time           `json:"updated_at,omitempty"`
+	ID                         int64               `json:"id,omitempty"`
+	ChannelID                  int64               `json:"channel_id,omitempty"`
+	Platform                   string              `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
+	Models                     []string            `json:"models"`
+	BillingMode                BillingMode         `json:"billing_mode"`
+	InputPrice                 *float64            `json:"input_price"`
+	OutputPrice                *float64            `json:"output_price"`
+	CacheWritePrice            *float64            `json:"cache_write_price"`
+	CacheWrite1hPrice          *float64            `json:"cache_write_1h_price"`
+	CacheReadPrice             *float64            `json:"cache_read_price"`
+	FastMultiplier             *float64            `json:"fast_multiplier"`
+	FlexMultiplier             *float64            `json:"flex_multiplier"`
+	ReasoningEffortMultipliers map[string]float64  `json:"reasoning_effort_multipliers,omitempty"`
+	ImageInputPrice            *float64            `json:"image_input_price"`
+	ImageOutputPrice           *float64            `json:"image_output_price"`
+	PerRequestPrice            *float64            `json:"per_request_price"`
+	Intervals                  []PricingInterval   `json:"intervals"`
+	TimePricing                *ChannelTimePricing `json:"time_pricing,omitempty"`
+	CreatedAt                  time.Time           `json:"created_at,omitempty"`
+	UpdatedAt                  time.Time           `json:"updated_at,omitempty"`
 }
 
 // ChannelTimePricing 渠道模型定价的分时倍率配置。
@@ -222,10 +223,11 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp.InputPrice = clonePricingPtr(p.InputPrice)
 	cp.OutputPrice = clonePricingPtr(p.OutputPrice)
 	cp.CacheWritePrice = clonePricingPtr(p.CacheWritePrice)
+	cp.CacheWrite1hPrice = clonePricingPtr(p.CacheWrite1hPrice)
 	cp.CacheReadPrice = clonePricingPtr(p.CacheReadPrice)
 	cp.FastMultiplier = clonePricingPtr(p.FastMultiplier)
 	cp.FlexMultiplier = clonePricingPtr(p.FlexMultiplier)
-	cp.MaxReasoningEffortMultiplier = clonePricingPtr(p.MaxReasoningEffortMultiplier)
+	cp.ReasoningEffortMultipliers = maps.Clone(p.ReasoningEffortMultipliers)
 	cp.ImageInputPrice = clonePricingPtr(p.ImageInputPrice)
 	cp.ImageOutputPrice = clonePricingPtr(p.ImageOutputPrice)
 	cp.PerRequestPrice = clonePricingPtr(p.PerRequestPrice)
@@ -241,7 +243,12 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 			cp.Intervals[i].InputPrice = clonePricingPtr(p.Intervals[i].InputPrice)
 			cp.Intervals[i].OutputPrice = clonePricingPtr(p.Intervals[i].OutputPrice)
 			cp.Intervals[i].CacheWritePrice = clonePricingPtr(p.Intervals[i].CacheWritePrice)
+			cp.Intervals[i].CacheWrite1hPrice = clonePricingPtr(p.Intervals[i].CacheWrite1hPrice)
 			cp.Intervals[i].CacheReadPrice = clonePricingPtr(p.Intervals[i].CacheReadPrice)
+			cp.Intervals[i].InputMultiplier = clonePricingPtr(p.Intervals[i].InputMultiplier)
+			cp.Intervals[i].OutputMultiplier = clonePricingPtr(p.Intervals[i].OutputMultiplier)
+			cp.Intervals[i].CacheWriteMultiplier = clonePricingPtr(p.Intervals[i].CacheWriteMultiplier)
+			cp.Intervals[i].CacheReadMultiplier = clonePricingPtr(p.Intervals[i].CacheReadMultiplier)
 			cp.Intervals[i].PerRequestPrice = clonePricingPtr(p.Intervals[i].PerRequestPrice)
 		}
 	}

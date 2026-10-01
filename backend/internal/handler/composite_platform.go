@@ -133,6 +133,33 @@ func stampForwardRequestedReasoningEffort(result *service.ForwardResult, request
 	result.RequestedReasoningEffort = requested
 }
 
+// Capture the same effective effort on both success and partial-error results.
+// The parsed request belongs to the current attempt, after group policy mapping;
+// the request context retains the client's original effort for the usage log.
+func stampForwardBillingReasoningEffort(result *service.ForwardResult, c *gin.Context, parsed *service.ParsedRequest) {
+	if result == nil || parsed == nil {
+		return
+	}
+	var requested *string
+	if c != nil && c.Request != nil {
+		requested = service.RequestedReasoningEffortFromContext(c.Request.Context())
+	}
+	if requested == nil {
+		requested = service.NormalizeClaudeOutputEffort(parsed.OutputEffort)
+	}
+	stampForwardRequestedReasoningEffort(result, requested)
+	if result.ReasoningEffort == nil {
+		result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsed.OutputEffort)
+	}
+	if result.ReasoningEffort == nil && parsed.ThinkingEnabled {
+		model := result.UpstreamModel
+		if model == "" {
+			model = result.Model
+		}
+		result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(model)
+	}
+}
+
 func applyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.APIKey, body []byte) ([]byte, bool, error) {
 	bindRequestedReasoningEffort(c, body, strings.TrimSpace(gjson.GetBytes(body, "model").String()))
 	maxEffort, mappings, overLimit, ok := openAIReasoningEffortPolicyForRequest(c, apiKey)

@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 const apiMocks = vi.hoisted(() => ({
+  showError: vi.fn(),
   getPlatformQuotas: vi.fn(),
   updatePlatformQuotas: vi.fn(),
   resetPlatformQuotaWindow: vi.fn(),
@@ -20,7 +21,7 @@ vi.mock('@/api/admin', () => ({
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
+    showError: apiMocks.showError,
     showSuccess: vi.fn(),
   }),
 }))
@@ -75,6 +76,27 @@ beforeEach(() => {
 })
 
 describe('UserPlatformQuotaModal', () => {
+  it.each([0, 4, 14])('does not turn a negative limit in input %s into unlimited', async (index) => {
+    const w = await mountAndOpen()
+    await w.findAll('input[type=number]')[index].setValue('-1')
+    await w.findAll('button').find(b => b.text() === 'admin.users.platformQuota.save')!.trigger('click')
+    await flushPromises()
+    expect(apiMocks.updatePlatformQuotas).not.toHaveBeenCalled()
+    expect(apiMocks.showError).toHaveBeenCalledWith('admin.users.platformQuota.invalidNumber')
+    expect(w.emitted('success')).toBeUndefined()
+    w.unmount()
+  })
+
+  it.each([['0', 0], ['', null]])('preserves the meaning of a limit entered as %j', async (input, expected) => {
+    const w = await mountAndOpen()
+    await w.findAll('input[type=number]')[0].setValue(input)
+    await w.findAll('button').find(b => b.text() === 'admin.users.platformQuota.save')!.trigger('click')
+    await flushPromises()
+    expect(apiMocks.updatePlatformQuotas).toHaveBeenCalledTimes(1)
+    expect(apiMocks.updatePlatformQuotas.mock.calls[0][1][0].daily_limit_usd).toBe(expected)
+    w.unmount()
+  })
+
   it('挂载并 show=true 时调用 getPlatformQuotas', async () => {
     await mountAndOpen()
     expect(apiMocks.getPlatformQuotas).toHaveBeenCalledWith(99)
@@ -87,6 +109,33 @@ describe('UserPlatformQuotaModal', () => {
       expect(html).toContain(value)
     }
   })
+
+  it.each(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'] as const)(
+    'saves edits to %s without erasing existing platform limits', async (platform) => {
+      const existing: PlatformQuotaUpdateItem[] = [
+        { platform: 'openai', daily_limit_usd: 10, weekly_limit_usd: 20, monthly_limit_usd: 100 },
+        ...(['kimi', 'zhipu', 'deepseek', 'minimax', 'opencode_go'] as const).map(p => ({
+          platform: p, daily_limit_usd: 0, weekly_limit_usd: null, monthly_limit_usd: 50,
+        })),
+      ]
+      apiMocks.getPlatformQuotas.mockResolvedValueOnce({ platform_quotas: existing })
+      const w = await mountAndOpen()
+      const row = w.findAll('tbody tr').find(r => r.find('td').text() === platform)!
+      const inputs = row.findAll('input[type=number]')
+      expect(inputs.map(input => input.element.value)).toEqual(['0', '', '50'])
+      await inputs[1].setValue('12.5')
+      await w.findAll('button').find(b => b.text() === 'admin.users.platformQuota.save')!.trigger('click')
+      await flushPromises()
+      const expected = existing.map(item => item.platform === platform
+        ? { ...item, weekly_limit_usd: 12.5 }
+        : item)
+      expect(apiMocks.updatePlatformQuotas).toHaveBeenCalledTimes(1)
+      expect(apiMocks.updatePlatformQuotas).toHaveBeenCalledWith(99, expect.arrayContaining(expected))
+      expect(apiMocks.updatePlatformQuotas.mock.calls[0][1]).toHaveLength(10)
+      expect(w.emitted('success')).toHaveLength(1)
+      w.unmount()
+    },
+  )
 
   it('已有数据正确填充 limit input', async () => {
     apiMocks.getPlatformQuotas.mockResolvedValueOnce({

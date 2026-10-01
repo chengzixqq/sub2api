@@ -21,7 +21,9 @@ type IdentityCacheSuite struct {
 
 func (s *IdentityCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewIdentityCache(s.rdb).(*identityCache)
+	var ok bool
+	s.cache, ok = NewIdentityCache(s.rdb).(*identityCache)
+	s.Require().True(ok)
 }
 
 func (s *IdentityCacheSuite) TestGetFingerprint_Missing() {

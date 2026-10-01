@@ -48,12 +48,9 @@
       </header>
 
       <div v-if="adminMonitorTab === 'v2'" class="space-y-6">
-        <ObservationSettingsPanel />
-        <MonitorProbeSettings />
-        <details class="border-t border-gray-200 pt-4 dark:border-dark-700">
-          <summary class="cursor-pointer text-sm font-medium">{{ t('channelMonitorV2.unified.settings.legacy') }}</summary>
-          <MonitorSettingsPanel />
-        </details>
+        <div class="flex justify-end"><button type="button" class="btn btn-secondary" @click="showSettings = true"><Icon name="edit" size="sm" />{{ t('channelMonitorV2.unified.settings.title') }}</button></div>
+        <AdminMonitorDashboard />
+        <AdminMonitorSettingsDrawer :show="showSettings" @close="showSettings = false" />
       </div>
 
       <TablePageLayout v-else>
@@ -205,15 +202,15 @@ import MonitorPrimaryModelCell from '@/components/admin/monitor/MonitorPrimaryMo
 import MonitorActionsCell from '@/components/admin/monitor/MonitorActionsCell.vue'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
-import MonitorSettingsPanel from '@/features/channel-monitor-v2/MonitorSettingsPanel.vue'
-import ObservationSettingsPanel from '@/features/channel-monitor-v2/ObservationSettingsPanel.vue'
-import MonitorProbeSettings from '@/features/channel-monitor-v2/MonitorProbeSettings.vue'
+import AdminMonitorDashboard from '@/features/channel-monitor-v2/AdminMonitorDashboard.vue'
+import AdminMonitorSettingsDrawer from '@/features/channel-monitor-v2/AdminMonitorSettingsDrawer.vue'
 import { isChannelMonitorV1Mode } from '@/utils/featureFlags'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const isV1Mode = computed(() => isChannelMonitorV1Mode())
 const adminMonitorTab = ref<'v2' | 'legacy'>('v2')
+const showSettings = ref(false)
 const {
   providerLabel,
   providerBadgeClass,

@@ -21,7 +21,6 @@ func TestRedactUpstreamURLPreservesPath(t *testing.T) {
 }
 
 func TestHandleErrorResponse_RedactsURLFromClientBodyAndReturnedError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -54,7 +53,6 @@ func TestRedactUpstreamURLs(t *testing.T) {
 }
 
 func TestSanitizeUpstreamErrorMessageForContextAndOps(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Set(redactUpstreamURLContextKey, true)

@@ -121,6 +121,8 @@ async function mountView() {
         MonitorTemplateManagerDialog: true,
         MonitorRunResultDialog: true,
         MonitorPrimaryModelCell: true,
+        AdminMonitorDashboard: true,
+        AdminMonitorSettingsDrawer: true,
         ObservationSettingsPanel: true,
         MonitorProbeSettings: true,
       },

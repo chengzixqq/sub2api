@@ -72,23 +72,6 @@ type Account struct {
 	AccountGroups []AccountGroup
 	GroupIDs      []int64
 	Groups        []*Group
-
-	// model_mapping 热路径缓存（非持久化字段）
-	modelMappingCache               map[string]string
-	modelMappingCacheReady          bool
-	modelMappingCacheCredentialsPtr uintptr
-	modelMappingCacheRawPtr         uintptr
-	modelMappingCacheRawLen         int
-	modelMappingCacheRawSig         uint64
-	modelMappingCacheRuntimeVersion uint64
-
-	// header_overrides 热路径缓存（非持久化字段，同 model_mapping 缓存先例）
-	headerOverrideCache               map[string]string
-	headerOverrideCacheReady          bool
-	headerOverrideCacheCredentialsPtr uintptr
-	headerOverrideCacheRawPtr         uintptr
-	headerOverrideCacheRawLen         int
-	headerOverrideCacheRawSig         uint64
 }
 
 type OpenAIEndpointCapability string
@@ -593,39 +576,24 @@ func stringMappingFromRaw(raw any) map[string]string {
 	}
 }
 
+// GetModelMapping returns a read-only mapping snapshot. Shared Account snapshots
+// and their credential maps must not be mutated while requests are using them.
 func (a *Account) GetModelMapping() map[string]string {
-	runtimeVersion := xai.RuntimeModelMappingVersion()
-	credentialsPtr := mapPtr(a.Credentials)
 	rawMapping, _ := a.Credentials["model_mapping"].(map[string]any)
-	rawPtr := mapPtr(rawMapping)
-	rawLen := len(rawMapping)
-	rawSig := uint64(0)
-	rawSigReady := false
-
-	if a.modelMappingCacheReady &&
-		a.modelMappingCacheCredentialsPtr == credentialsPtr &&
-		a.modelMappingCacheRawPtr == rawPtr &&
-		a.modelMappingCacheRawLen == rawLen &&
-		a.modelMappingCacheRuntimeVersion == runtimeVersion {
-		rawSig = modelMappingSignature(rawMapping)
-		rawSigReady = true
-		if a.modelMappingCacheRawSig == rawSig {
-			return a.modelMappingCache
-		}
+	key := accountMappingCacheKey{
+		rawPtr:         mapPtr(rawMapping),
+		rawLen:         len(rawMapping),
+		rawSignature:   modelMappingSignature(rawMapping),
+		platform:       a.Platform,
+		googleOne:      a.IsGeminiGoogleOne(),
+		runtimeVersion: xai.RuntimeModelMappingVersion(),
+	}
+	if mapping, ok := modelMappingSnapshots.load(key); ok {
+		return mapping
 	}
 
 	mapping := a.resolveModelMapping(rawMapping)
-	if !rawSigReady {
-		rawSig = modelMappingSignature(rawMapping)
-	}
-
-	a.modelMappingCache = mapping
-	a.modelMappingCacheReady = true
-	a.modelMappingCacheCredentialsPtr = credentialsPtr
-	a.modelMappingCacheRawPtr = rawPtr
-	a.modelMappingCacheRawLen = rawLen
-	a.modelMappingCacheRawSig = rawSig
-	a.modelMappingCacheRuntimeVersion = runtimeVersion
+	modelMappingSnapshots.store(key, rawMapping, mapping)
 	return mapping
 }
 
@@ -1835,6 +1803,11 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if a == nil {
 		return false
 	}
+	if capability == OpenAIEndpointCapabilitySeedance {
+		configured, _ := a.openAIEndpointCapabilitySet()
+		return configured["seedance"] && a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey &&
+			strings.TrimSpace(a.GetCredential("base_url")) != ""
+	}
 	if capability == "" {
 		return true
 	}
@@ -2022,6 +1995,8 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 		return false
 	}
 	switch capability {
+	case OpenAIImagesCapabilityAPIKey:
+		return a.Type == AccountTypeAPIKey
 	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
 		return a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken || a.Type == AccountTypeAPIKey
 	default:

@@ -5,14 +5,50 @@ export default {
       current: '当前状态', traffic: '真实请求', probe: '探测', quota: '额度', accounts: '账号明细', account: '账号', recentEvents: '最近请求', successfulAttempts: '成功', failedAttempts: '失败',
       legacySource: '历史数据源', preview: '预览未发布数据', historyInterval: '{minutes} 分钟区间',
       refreshFailed: '刷新失败，当前保留上次快照，数据已过期。', loadFailed: '监控数据暂时不可用。', accessDenied: '当前账号无法访问此监控。',
-      collector: { healthy: '采集正常', stale: '采集延迟', write_failed: '采集写入失败', disabled: '采集已关闭', backlogged: '采集积压', unknown: '采集状态未知' },
+      collector: { healthy: '采集正常', stale: '采集延迟', write_failed: '采集写入失败', disabled: '采集已关闭', backlogged: '采集积压', unavailable: '采集不可用', unknown: '采集状态未知' },
       pendingEvents: '积压 {count} 个事件',
       sources: { traffic: '真实请求', probe: '探测结果', none: '暂无近期依据' },
-      states: { healthy: '可用', warning: '性能下降', critical: '不可用', unknown: '未知', stale: '已过期', degraded: '性能下降', unavailable: '不可用', error: '失败', pending: '等待中', ok: '充足', exhausted: '已耗尽', unsupported: '暂不支持', not_configured: '未配置' },
-      reasons: { probe_success: '最近一次探测成功', no_recent_evidence: '暂无近期依据', insufficient_samples: '真实请求样本不足', traffic_healthy: '近期真实请求正常', probe_failed: '近期探测失败', no_samples: '暂无近期样本', collection_unavailable: '采集不可用', traffic_expired: '真实请求依据已过期', recent_traffic: '近期真实请求', high_latency: '首字延迟过高', recent_probe: '近期探测结果' },
-      gaps: { write_failed: '采集写入失败', collector_stale: '采集器心跳延迟', queue_overflow: '采集队列溢出', source_changed: '数据源已变化', collection_disabled: '采集已关闭', legacy_log_semantics: '历史日志数据源', probe_unavailable: '探测依据不可用', quota_unavailable: '额度依据不可用' },
+      outcomes: { http_complete: 'HTTP 请求完成', channel_error: '渠道错误', client_error: '客户端错误', unknown: '结果未知', success: '成功', succeeded: '成功', error: '失败', failed: '失败', timeout: '超时', cancelled: '已取消', client_cancelled: '客户端取消' },
+      states: { healthy: '可用', warning: '性能下降', critical: '不可用', unknown: '未知', stale: '已过期', degraded: '性能下降', available: '同步正常', unavailable: '不可用', error: '失败', pending: '等待中', ok: '充足', exhausted: '已耗尽', unsupported: '暂不支持', not_configured: '未配置' },
+      reasons: { probe_success: '最近一次探测成功', no_recent_evidence: '暂无近期依据', insufficient_samples: '真实请求样本不足', traffic_healthy: '近期真实请求正常', probe_failed: '近期探测失败', no_samples: '暂无近期样本', collection_unavailable: '采集不可用', traffic_expired: '真实请求依据已过期', recent_traffic: '近期真实请求', high_latency: '首字延迟过高', high_error_rate: '真实流量错误率过高', probe_only_no_traffic: '探针正常，但暂无真实请求样本', recent_probe: '近期探测结果' },
+      gaps: { write_failed: '采集写入失败', capacity: '采集容量不足', queue_loss: '采集队列丢失事件', shutdown_loss: '服务停止时仍有请求未完成', gap_write_failed: '缺口记录写入失败', heartbeat_failed: '采集心跳写入失败', terminal_conflict: '终态记录冲突', collector_stale: '采集器心跳延迟', collector_backlog: '采集队列积压', queue_overflow: '采集队列溢出', source_changed: '数据源已变化', collection_disabled: '采集已关闭', legacy_log_semantics: '历史日志数据源', legacy_window_unavailable: '历史数据窗口不可用', unsupported_protocol: '协议暂不支持', probe_unavailable: '探测依据不可用', quota_unavailable: '额度依据不可用' },
       settings: { title: '监控策略', enabled: '采集真实请求', probeEnabled: '主动付费探活', quotaEnabled: '额度监控', displayOn: '用户展示：开启', displayOff: '用户展示：关闭', mode: '发布状态', shadow: '影子采集', live: '正式发布', liveGroups: '已发布分组', allGroups: '全部分组', refresh: '刷新间隔', retention: '明细保留', retentionValue: '24 小时', refreshValue: '60 秒', minimumSample: '最少真实请求样本', healthyReliability: '正常可靠性 %', warningReliability: '警告可靠性 %', warningTtft: '首字延迟警告 ms', criticalTtft: '首字延迟严重 ms', legacy: '旧版展示策略', saved: '监控策略已保存' },
       probes: { title: '探测目标', add: '添加目标', group: '分组', model: '模型', protocol: '协议', enabled: '启用', run: '立即探测', budget: '每日预算（UTC）', targetBudget: '目标预算', empty: '暂无探测目标', saved: '探测目标已保存', failed: '探测请求失败', edit: '编辑目标', create: '创建目标', globalUsed: '{used} / {limit}', status: '最近结果', confirm: '执行付费探测？', confirmCost: '本次操作会发送计费上游请求，并占用当日探测预算。', completed: '探测已提交', invalid: '请选择分组并填写模型和协议。', cost: '上游费用', budgetExhausted: '当日预算已用尽' },
+    },
+    dashboard: {
+      eyebrow: '渠道监控', title: '快速了解渠道可用情况', subtitle: '基于真实请求，查看渠道可靠性、首字延迟与近期服务依据。',
+      availableChannels: '可用渠道', healthRate: '正常渠道占比', medianChannelTtft: '各渠道首字 P50 的中位数', errorRate: '渠道错误率中位数',
+      healthBasis: '仅样本充足渠道', errorBasis: '1 − 可靠率，按渠道取中位数',
+      views: { label: '监控视图', cards: '卡片', matrix: '矩阵', trend: '趋势' },
+    },
+    platforms: { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', antigravity: 'Antigravity', grok: 'Grok', kimi: 'Kimi', zhipu: '智谱 GLM', deepseek: 'DeepSeek', minimax: 'MiniMax', opencode_go: 'OpenCode', composite: '综合' },
+    preview: {
+      channelNames: { '101': 'Claude 主力渠道', '102': 'OpenAI 备用渠道', '201': 'Claude 高延迟渠道', '202': 'Gemini 预热渠道', '301': 'OpenAI 旧版账号池', '401': '新增探针目标', '501': '额度受限账号', '502': '额度同步异常', '601': '混合来源历史', '602': '旧版历史回填' },
+      language: '预览语言',
+      eyebrow: '本地开发夹具', title: '渠道监控预览', description: '无需登录即可检查本地监控夹具。切换场景和角色，核对证据层级；预览不会请求线上数据。', userEyebrow: '预览监控', userTitle: '渠道可用性', userSubtitle: '按渠道汇总真实流量；此用户预览不包含运营计数。',
+      darkTheme: '深色主题', lightTheme: '浅色主题', adminView: '管理员视图', userView: '用户视图', scenario: '场景', quickScenarios: '快捷场景', previewRole: '预览角色', admin: '管理员', user: '用户',
+      showHealthy: '查看正常状态', error: '预览请求失败（HTTP {status}）。此夹具没有保留快照。', loading: '正在加载监控依据…', coverage: '覆盖状态：{state}', viewLabel: '预览视图', cards: '卡片', matrix: '矩阵', trend: '趋势', emptyTitle: '当前范围没有匹配的渠道', emptyDescription: '这是预期的空状态，预览不会调用 API。',
+      scenarios: {
+        normal: { label: '正常 · compact', description: '固定 24 小时窗口内，compact 数据覆盖完整且真实流量正常。' },
+        'high-latency': { label: '高延迟', description: '可靠性正常，但首字延迟超过严重阈值。' },
+        'high-error': { label: '高错误 · legacy', description: 'legacy 真实流量错误率严重，并且有已分类失败。' },
+        'probe-no-traffic': { label: '探针 · 无流量', description: '主动探针正常，但没有真实请求样本。' },
+        'quota-abnormal': { label: '额度异常 · legacy', description: '真实流量正常，但额度依据已耗尽或过期。' },
+        'coverage-gap': { label: '覆盖缺口 · mixed', description: 'compact 与 legacy 数据共存，并显示聚合缺口。' },
+        empty: { label: '空状态', description: '当前范围没有渠道。' },
+        loading: { label: '加载中', description: '初始请求仍在进行。' },
+        error: { label: '错误', description: '监控请求失败，且没有可保留的快照。' },
+      },
+    },
+    evidence: {
+      sources: { compact: '精简聚合数据', legacy: '旧版数据', mixed: '混合数据源', terminal_v1: '终态数据 V1', none: '暂无近期依据' },
+      snapshotStale: '快照已过期', coverageWindow: '覆盖时段 {start} → {end}', aggregationLagValue: '聚合延迟 {seconds} 秒', aggregationLagUnknown: '聚合延迟未知',
+      source: '数据源', coverage: '覆盖状态', aggregationLag: '聚合延迟', gapReasons: '缺口原因', noGaps: '未报告数据缺口', seconds: '{seconds} 秒',
+    },
+    detail: {
+      sections: '监控明细分区', overview: '概览', models: '模型', trend: '趋势', errors: '错误', probe: '探测', quota: '额度', quality: '数据质量',
+      noModels: '此渠道暂无模型样本。', noErrors: '此时间范围内暂无已分类错误。', probeEvidence: '探测依据', noProbe: '此渠道暂无探测结果。',
+      consecutiveFailures: '连续失败 {count} 次', quotaSync: '额度同步', noQuota: '暂无额度快照',
     },
     observation: {
       loading: '正在加载渠道观测', loadFailed: '渠道观测加载失败', empty: '当前筛选范围暂无观测数据', modelDetails: '模型明细', noModels: '暂无模型数据', requests: '请求数', errors: '渠道错误', attempts: '上游尝试', group: '分组', reliability: '可靠率', firstOutput: '首字延迟', cache: '缓存命中率', history: '历史状态', models: '{count} 个模型', multiplier: '用户倍率 {value}x', priceUnavailable: '倍率不可用', slow: '响应偏慢',
@@ -42,7 +78,7 @@ export default {
     otherModels: '其他模型',
     ignored: '忽略',
     currentUser: '当前用户',
-    ranges: { '90m': '90m', '24h': '24h', '7d': '7d', '30d': '30d' },
+    ranges: { '90m': '90 分钟', '24h': '24 小时', '7d': '7 天', '30d': '30 天' },
     filters: {
       platform: '平台', allPlatforms: '全部', group: '分组', allGroups: '全部', model: '模型', allModels: '全部',
       empty: '暂无可选项', selectedCount: '{count} 项', labelValue: '{label}：{value}'
@@ -51,7 +87,7 @@ export default {
       label: '展示维度', platform: '平台', platformGroup: '平台 / 分组', platformModel: '平台 / 模型', platformGroupModel: '平台 / 分组 / 模型'
     },
     trendView: { label: '趋势视图', pulse: '色块矩阵', line: '折线图' },
-    healthMode: { label: '健康显示', overall: '综合', success: '错误率', ttft: '首 Token', cache: '缓存率' },
+    healthMode: { label: '健康显示', overall: '综合', success: '错误率', ttft: '首字延迟', cache: '缓存率' },
     tabs: { aria: '明细维度', models: '模型', errors: '错误原因', users: '用户排行' },
     metrics: {
       rpm: 'RPM',
@@ -61,8 +97,8 @@ export default {
       tpmDetail: '每分钟 Token 数',
       tpsDetail: '由 TPM ÷ 60 换算',
       errorRate: '错误率',
-      ttft: '首 Token',
-      ttftP50: '首 Token P50',
+      ttft: '首字延迟',
+      ttftP50: '首字延迟 P50',
       durationP50: '请求时长 P50',
       cacheRate: '缓存率',
       cacheDetail: '读缓存占比',
@@ -72,7 +108,7 @@ export default {
       rpmValue: 'RPM {value}',
       tpmValue: 'TPM {value}',
       tpsValue: '每秒 Token {value}',
-      ttftValue: '首 Token {value}',
+      ttftValue: '首字延迟 {value}',
       durationValue: '请求时长 {value}',
       cacheRateValue: '缓存率 {value}',
     },
@@ -83,11 +119,11 @@ export default {
       title: '可用性趋势', description: '每行是一种渠道组合，每个色块代表一个统计区间；悬停查看明细', wheelZoom: '在色块上滚轮放大（区间变窄、色块变宽）', wheelZoomX: '在色块上滚轮放大（区间变窄、色块变宽）', dimension: '渠道维度', emptyTitle: '当前筛选窗口没有矩阵数据', legendAria: '健康分数图例', bad: '差', good: '好', healthyLegend: '健康 (≥80)', warningLegend: '需关注 (50–79)', criticalLegend: '异常 (<50)', unknownLegend: '无流量 / 样本不足', noTraffic: '该区间无流量', noTrafficAt: '{time} · 无流量', scoreLine: '健康分 {score}', resetZoom: '重置缩放'
     },
     chart: {
-      title: '可用性趋势', description: '平滑趋势：错误率 · 首 Token P50 · 缓存率', emptyTitle: '当前筛选窗口没有趋势数据', errorLegend: '错误率（左轴 %）', cacheLegend: '缓存率（左轴 %）', ttftLegend: '首 Token P50（右轴）', errorDataset: '错误率趋势 %', cacheDataset: '缓存率趋势 %', ttftDataset: '首 Token 趋势 P50 (ms)', percentAxis: '比率 %', resetZoom: '重置缩放'
+      title: '可用性趋势', description: '平滑趋势：错误率 · 首字延迟 P50 · 缓存率', emptyTitle: '当前筛选窗口没有趋势数据', errorLegend: '错误率（左轴 %）', cacheLegend: '缓存率（左轴 %）', ttftLegend: '首字延迟 P50（右轴）', errorDataset: '错误率趋势 %', cacheDataset: '缓存率趋势 %', ttftDataset: '首字延迟 趋势 P50 (ms)', percentAxis: '比率 %', resetZoom: '重置缩放'
     },
     errorDetail: { http: 'HTTP {code}', upstream: '上游 {code}', noMessage: '无错误消息', empty: '仅展示分类占比（样本消息仅管理员可见）' },
     errorCategories: {
-      content_policy: '内容策略', authentication: '认证失败', context_limit: '上下文超限', invalid_request: '请求格式', model_unsupported: '模型不支持', group_access: '分组权限', quota_or_balance: '额度或余额', account_pool_unavailable: '账号池不可用', rate_or_capacity: '限流或容量', timeout: '超时', transport_or_stream: '传输或流', upstream_forbidden: '上游拒绝', not_found: '资源不存在', client_cancelled: '客户端取消', upstream_5xx: '上游 5xx', internal: '内部错误', other: '其他'
+      content_policy: '内容策略', authentication: '认证失败', context_limit: '上下文超限', invalid_request: '请求格式', model_unsupported: '模型不支持', group_access: '分组权限', quota_or_balance: '额度或余额', account_pool_unavailable: '账号池不可用', rate_or_capacity: '限流或容量', timeout: '超时', transport_or_stream: '传输或流', upstream_forbidden: '上游拒绝', not_found: '资源不存在', client_cancelled: '客户端取消', upstream_5xx: '上游 5xx', internal: '内部错误', transport_error: '传输错误', upstream_auth: '上游认证失败', upstream_balance: '上游额度不足', request_too_large: '请求体过大', upstream_capacity: '上游容量不足', upstream_error: '上游错误', upstream_http: '上游 HTTP 错误', client_request: '客户端请求错误', incomplete_terminal: '响应未正常结束', empty_output: '上游没有返回内容', other: '其他'
     },
     rank: {
       gold: '第 1 名 金',
@@ -134,9 +170,9 @@ export default {
         minimumSample: '最小样本数',
         warningError: '错误率关注 %',
         criticalError: '错误率异常 %',
-        targetTtft: 'TTFT 目标 ms',
-        warningTtft: 'TTFT 关注 ms',
-        criticalTtft: 'TTFT 异常 ms',
+        targetTtft: '首字延迟目标（毫秒）',
+        warningTtft: '首字延迟关注（毫秒）',
+        criticalTtft: '首字延迟异常（毫秒）',
         warningCache: '缓存率关注 %',
         criticalCache: '缓存率异常 %',
       },
@@ -144,8 +180,8 @@ export default {
       namedModelsCount: '将展示 {count} 个命名模型维度；名单外模型归入各平台「其他」。',
       userContractTitle: '用户端展示约定',
       userContract: {
-        health: '健康色三指标：错误率 60% + 首 Token P50 20% + 缓存率 20%（阈值可在上方配置）',
-        trend: '趋势可切换色块矩阵 / 折线图（错误率 · 缓存率 · 首 Token）',
+        health: '健康色三指标：错误率 60% + 首字延迟 P50 20% + 缓存率 20%（阈值可在上方配置）',
+        trend: '趋势可切换色块矩阵 / 折线图（错误率 · 缓存率 · 首字延迟）',
         latency: '延迟展示 AVG · P50 · P90；不展示绝对请求数 / 错误数',
         models: '模型列表留空时展示真实模型名，不会全部归入「其他」',
       },

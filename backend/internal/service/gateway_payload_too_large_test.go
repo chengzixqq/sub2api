@@ -18,7 +18,6 @@ import (
 )
 
 func TestGatewayHandleErrorResponse_PreservesPayloadTooLarge(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	for _, body := range []string{
 		`<html><title>413 Request Entity Too Large</title><body>nginx at private.example</body></html>`,
 		`{"error":{"message":"request too large at https://private.example/v1?key=hidden"}}`,
@@ -72,7 +71,6 @@ func (u *payloadTooLargeUpstream) DoWithTLS(req *http.Request, proxy string, id 
 }
 
 func TestGatewayService_ForwardPayloadTooLargeDoesNotRetry(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	for _, passthrough := range []bool{false, true} {
 		for _, stream := range []bool{false, true} {
 			for _, custom := range []bool{false, true} {

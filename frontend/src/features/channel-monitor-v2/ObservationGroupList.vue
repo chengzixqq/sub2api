@@ -46,7 +46,7 @@ const emit = defineEmits<{ detail: [item: ObservationChannel]; model: [item: Obs
 const { t, te } = useI18n()
 const expanded = ref(new Set<number>())
 const platform = (value: string) => GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.value
-const platformLabel = (value: string) => GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.label || value
+const platformLabel = (value: string) => { const key = `channelMonitorV2.platforms.${value}`; return te(key) ? t(key) : GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.label || value }
 function toggle(id: number) {
   const next = new Set(expanded.value)
   if (next.has(id)) next.delete(id)

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,6 +26,7 @@ func swapMonitorHTTPClient(t *testing.T) {
 
 // captureHandler 把每次收到的请求 body 和 headers 存起来，测试断言用。
 type captureHandler struct {
+	mu          sync.Mutex
 	lastBody    map[string]any
 	lastHeaders http.Header
 	respondText string // 写到 Anthropic content[0].text 里（校验用）
@@ -32,23 +34,40 @@ type captureHandler struct {
 }
 
 func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.lastHeaders = r.Header.Clone()
 	defer func() { _ = r.Body.Close() }()
 	var parsed map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&parsed)
+	h.mu.Lock()
+	h.lastHeaders = r.Header.Clone()
 	h.lastBody = parsed
+	h.mu.Unlock()
 
-	if h.status == 0 {
-		h.status = 200
+	status := h.status
+	if status == 0 {
+		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(h.status)
+	w.WriteHeader(status)
 	// 构造 Anthropic 格式的响应：content[0].text = h.respondText
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": h.respondText},
 		},
 	})
+}
+
+type monitorCapturedRequest struct {
+	lastBody    map[string]any
+	lastHeaders http.Header
+	lastPath    string
+}
+
+func (h *captureHandler) snapshot() monitorCapturedRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Decoded request maps are immutable after publication. Each request gets
+	// a new map, so a snapshot remains stable while another handler runs.
+	return monitorCapturedRequest{lastBody: h.lastBody, lastHeaders: h.lastHeaders.Clone()}
 }
 
 func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
@@ -60,6 +79,7 @@ func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
 }
 
 type openAICaptureHandler struct {
+	mu                        sync.Mutex
 	lastBody                  map[string]any
 	lastHeaders               http.Header
 	lastPath                  string
@@ -69,25 +89,28 @@ type openAICaptureHandler struct {
 }
 
 func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.lastHeaders = r.Header.Clone()
-	h.lastPath = r.URL.Path
 	defer func() { _ = r.Body.Close() }()
 	var parsed map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&parsed)
+	h.mu.Lock()
+	h.lastHeaders = r.Header.Clone()
+	h.lastPath = r.URL.Path
 	h.lastBody = parsed
+	h.mu.Unlock()
 
-	if h.status == 0 {
-		h.status = http.StatusOK
+	status := h.status
+	if status == 0 {
+		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(h.status)
+	w.WriteHeader(status)
 	if h.rawResponse != "" {
 		_, _ = w.Write([]byte(h.rawResponse))
 		return
 	}
 
 	answer := answerFromOpenAIRequest(parsed)
-	if h.lastPath == providerOpenAIResponsesPath {
+	if r.URL.Path == providerOpenAIResponsesPath {
 		output := []map[string]any{}
 		if h.responsesLeadingReasoning {
 			output = append(output, map[string]any{
@@ -111,6 +134,12 @@ func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"choices": []map[string]any{{"message": map[string]any{"content": answer}}},
 	})
+}
+
+func (h *openAICaptureHandler) snapshot() monitorCapturedRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return monitorCapturedRequest{lastBody: h.lastBody, lastHeaders: h.lastHeaders.Clone(), lastPath: h.lastPath}
 }
 
 func setupFakeOpenAI(t *testing.T, handler *openAICaptureHandler) string {
@@ -155,14 +184,15 @@ func TestRunCheckForModel_OffMode_PreservesDefaultBody(t *testing.T) {
 	// 跑一次 off 模式（opts=nil），确认默认 body 行为未变
 	_ = runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
 
-	if h.lastBody["model"] != "claude-x" {
-		t.Errorf("default body should contain model=claude-x, got %v", h.lastBody["model"])
+	captured := h.snapshot()
+	if captured.lastBody["model"] != "claude-x" {
+		t.Errorf("default body should contain model=claude-x, got %v", captured.lastBody["model"])
 	}
-	if _, ok := h.lastBody["messages"]; !ok {
+	if _, ok := captured.lastBody["messages"]; !ok {
 		t.Error("default body should contain messages")
 	}
-	if h.lastHeaders.Get("x-api-key") != "sk-fake" {
-		t.Errorf("expected adapter's x-api-key header, got %q", h.lastHeaders.Get("x-api-key"))
+	if captured.lastHeaders.Get("x-api-key") != "sk-fake" {
+		t.Errorf("expected adapter's x-api-key header, got %q", captured.lastHeaders.Get("x-api-key"))
 	}
 }
 
@@ -175,23 +205,24 @@ func TestRunCheckForModel_OpenAI_DefaultChatRequest(t *testing.T) {
 	if res.Status != MonitorStatusOperational {
 		t.Fatalf("default chat request should pass challenge, got status=%s message=%q", res.Status, res.Message)
 	}
-	if h.lastPath != providerOpenAIPath {
-		t.Fatalf("expected chat completions path %q, got %q", providerOpenAIPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerOpenAIPath {
+		t.Fatalf("expected chat completions path %q, got %q", providerOpenAIPath, captured.lastPath)
 	}
-	if h.lastBody["model"] != "gpt-test" {
-		t.Errorf("chat body should contain model=gpt-test, got %v", h.lastBody["model"])
+	if captured.lastBody["model"] != "gpt-test" {
+		t.Errorf("chat body should contain model=gpt-test, got %v", captured.lastBody["model"])
 	}
-	if _, ok := h.lastBody["messages"]; !ok {
+	if _, ok := captured.lastBody["messages"]; !ok {
 		t.Error("chat body should contain messages")
 	}
-	if _, ok := h.lastBody["instructions"]; ok {
+	if _, ok := captured.lastBody["instructions"]; ok {
 		t.Error("chat body must not contain top-level instructions")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("chat body should set stream=false, got %v", h.lastBody["stream"])
+	if captured.lastBody["stream"] != false {
+		t.Errorf("chat body should set stream=false, got %v", captured.lastBody["stream"])
 	}
-	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
-		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	if captured.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
+		t.Errorf("expected bearer auth header, got %q", captured.lastHeaders.Get("Authorization"))
 	}
 }
 
@@ -203,14 +234,15 @@ func TestRunCheckForModel_OpenCodeGo_DefaultChatRequest(t *testing.T) {
 	if res.Status != MonitorStatusOperational {
 		t.Fatalf("OpenCode Go request should pass challenge, got status=%s message=%q", res.Status, res.Message)
 	}
-	if h.lastPath != providerOpenAIPath {
-		t.Fatalf("expected OpenCode Go Chat Completions path %q, got %q", providerOpenAIPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerOpenAIPath {
+		t.Fatalf("expected OpenCode Go Chat Completions path %q, got %q", providerOpenAIPath, captured.lastPath)
 	}
-	if h.lastBody["model"] != "gpt-5.3-codex" {
-		t.Errorf("OpenCode Go body should contain model, got %v", h.lastBody["model"])
+	if captured.lastBody["model"] != "gpt-5.3-codex" {
+		t.Errorf("OpenCode Go body should contain model, got %v", captured.lastBody["model"])
 	}
-	if h.lastHeaders.Get("Authorization") != "Bearer opencode-key" {
-		t.Errorf("expected OpenCode Go bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	if captured.lastHeaders.Get("Authorization") != "Bearer opencode-key" {
+		t.Errorf("expected OpenCode Go bearer auth header, got %q", captured.lastHeaders.Get("Authorization"))
 	}
 }
 
@@ -222,13 +254,14 @@ func TestRunCheckForModel_OpenCodeGo_ResponsesRequest(t *testing.T) {
 	if res.Status != MonitorStatusOperational {
 		t.Fatalf("OpenCode Go Responses request should pass challenge, got status=%s message=%q", res.Status, res.Message)
 	}
-	if h.lastPath != providerOpenAIResponsesPath {
-		t.Fatalf("expected OpenCode Go Responses path %q, got %q", providerOpenAIResponsesPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerOpenAIResponsesPath {
+		t.Fatalf("expected OpenCode Go Responses path %q, got %q", providerOpenAIResponsesPath, captured.lastPath)
 	}
-	if _, ok := h.lastBody["instructions"]; !ok {
+	if _, ok := captured.lastBody["instructions"]; !ok {
 		t.Error("OpenCode Go Responses body should contain instructions")
 	}
-	if _, ok := h.lastBody["input"]; !ok {
+	if _, ok := captured.lastBody["input"]; !ok {
 		t.Error("OpenCode Go Responses body should contain input")
 	}
 }
@@ -286,20 +319,21 @@ func TestRunCheckForModel_Grok_DefaultChatRequest(t *testing.T) {
 	if res.LatencyMs == nil {
 		t.Fatal("Grok request should record latency")
 	}
-	if h.lastPath != providerGrokPath {
-		t.Fatalf("expected Grok chat completions path %q, got %q", providerGrokPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerGrokPath {
+		t.Fatalf("expected Grok chat completions path %q, got %q", providerGrokPath, captured.lastPath)
 	}
-	if h.lastBody["model"] != MonitorDefaultGrokModel {
-		t.Errorf("Grok body should contain model=%s, got %v", MonitorDefaultGrokModel, h.lastBody["model"])
+	if captured.lastBody["model"] != MonitorDefaultGrokModel {
+		t.Errorf("Grok body should contain model=%s, got %v", MonitorDefaultGrokModel, captured.lastBody["model"])
 	}
-	if _, ok := h.lastBody["messages"]; !ok {
+	if _, ok := captured.lastBody["messages"]; !ok {
 		t.Error("Grok body should contain messages")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("Grok body should set stream=false, got %v", h.lastBody["stream"])
+	if captured.lastBody["stream"] != false {
+		t.Errorf("Grok body should set stream=false, got %v", captured.lastBody["stream"])
 	}
-	if h.lastHeaders.Get("Authorization") != "Bearer xai-key" {
-		t.Errorf("expected Grok bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	if captured.lastHeaders.Get("Authorization") != "Bearer xai-key" {
+		t.Errorf("expected Grok bearer auth header, got %q", captured.lastHeaders.Get("Authorization"))
 	}
 }
 
@@ -351,28 +385,29 @@ func TestRunCheckForModel_OpenAIResponses_DefaultRequest(t *testing.T) {
 	if res.Status != MonitorStatusOperational {
 		t.Fatalf("default responses request should pass challenge, got status=%s message=%q", res.Status, res.Message)
 	}
-	if h.lastPath != providerOpenAIResponsesPath {
-		t.Fatalf("expected responses path %q, got %q", providerOpenAIResponsesPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerOpenAIResponsesPath {
+		t.Fatalf("expected responses path %q, got %q", providerOpenAIResponsesPath, captured.lastPath)
 	}
-	if h.lastBody["model"] != "gpt-test" {
-		t.Errorf("responses body should contain model=gpt-test, got %v", h.lastBody["model"])
+	if captured.lastBody["model"] != "gpt-test" {
+		t.Errorf("responses body should contain model=gpt-test, got %v", captured.lastBody["model"])
 	}
-	instructions, _ := h.lastBody["instructions"].(string)
+	instructions, _ := captured.lastBody["instructions"].(string)
 	if strings.TrimSpace(instructions) == "" {
 		t.Error("responses body should contain non-empty instructions")
 	}
-	input, _ := h.lastBody["input"].(string)
+	input, _ := captured.lastBody["input"].(string)
 	if strings.TrimSpace(input) == "" {
 		t.Error("responses body should contain non-empty input")
 	}
-	if _, ok := h.lastBody["messages"]; ok {
+	if _, ok := captured.lastBody["messages"]; ok {
 		t.Error("responses body must not contain chat messages")
 	}
-	if h.lastBody["stream"] != false {
-		t.Errorf("responses body should set stream=false, got %v", h.lastBody["stream"])
+	if captured.lastBody["stream"] != false {
+		t.Errorf("responses body should set stream=false, got %v", captured.lastBody["stream"])
 	}
-	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
-		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
+	if captured.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
+		t.Errorf("expected bearer auth header, got %q", captured.lastHeaders.Get("Authorization"))
 	}
 }
 
@@ -387,8 +422,9 @@ func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T
 	if res.Status != MonitorStatusOperational {
 		t.Fatalf("responses request should find text after leading reasoning item, got status=%s message=%q", res.Status, res.Message)
 	}
-	if h.lastPath != providerOpenAIResponsesPath {
-		t.Fatalf("expected responses path %q, got %q", providerOpenAIResponsesPath, h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != providerOpenAIResponsesPath {
+		t.Fatalf("expected responses path %q, got %q", providerOpenAIResponsesPath, captured.lastPath)
 	}
 }
 
@@ -411,8 +447,9 @@ func TestRunCheckForModel_OpenAIResponsesReplaceMissingInstructionsFailsLocally(
 	if !strings.Contains(res.Message, "instructions and input are required") {
 		t.Errorf("expected local validation message about instructions/input, got %q", res.Message)
 	}
-	if h.lastPath != "" {
-		t.Errorf("invalid replace body should fail before HTTP request, got path %q", h.lastPath)
+	captured := h.snapshot()
+	if captured.lastPath != "" {
+		t.Errorf("invalid replace body should fail before HTTP request, got path %q", captured.lastPath)
 	}
 }
 
@@ -436,28 +473,29 @@ func TestRunCheckForModel_MergeMode_UserFieldsWinButDenyListProtects(t *testing.
 	}
 	_ = runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", opts)
 
-	if h.lastBody["system"] != "You are Claude Code..." {
-		t.Errorf("merge mode should inject system, got %v", h.lastBody["system"])
+	captured := h.snapshot()
+	if captured.lastBody["system"] != "You are Claude Code..." {
+		t.Errorf("merge mode should inject system, got %v", captured.lastBody["system"])
 	}
 	// max_tokens 覆盖生效
-	if mt, ok := h.lastBody["max_tokens"].(float64); !ok || mt != 999 {
-		t.Errorf("merge mode should override max_tokens to 999, got %v", h.lastBody["max_tokens"])
+	if mt, ok := captured.lastBody["max_tokens"].(float64); !ok || mt != 999 {
+		t.Errorf("merge mode should override max_tokens to 999, got %v", captured.lastBody["max_tokens"])
 	}
 	// model 在黑名单 — 应该保留默认值
-	if h.lastBody["model"] != "claude-x" {
-		t.Errorf("model should be protected by deny list, got %v", h.lastBody["model"])
+	if captured.lastBody["model"] != "claude-x" {
+		t.Errorf("model should be protected by deny list, got %v", captured.lastBody["model"])
 	}
 	// messages 在黑名单 — 应该保留默认值（非空）
-	msgs, _ := h.lastBody["messages"].([]any)
+	msgs, _ := captured.lastBody["messages"].([]any)
 	if len(msgs) == 0 {
 		t.Error("messages should be protected by deny list (kept default, non-empty)")
 	}
 	// header 合并
-	if h.lastHeaders.Get("User-Agent") != "claude-cli/1.0" {
-		t.Errorf("extra User-Agent should override, got %q", h.lastHeaders.Get("User-Agent"))
+	if captured.lastHeaders.Get("User-Agent") != "claude-cli/1.0" {
+		t.Errorf("extra User-Agent should override, got %q", captured.lastHeaders.Get("User-Agent"))
 	}
-	if h.lastHeaders.Get("x-custom") != "ok" {
-		t.Errorf("extra custom header should be present, got %q", h.lastHeaders.Get("x-custom"))
+	if captured.lastHeaders.Get("x-custom") != "ok" {
+		t.Errorf("extra custom header should be present, got %q", captured.lastHeaders.Get("x-custom"))
 	}
 	// Content-Length 黑名单：会被 net/http 自动重算，但不应由用户的 "999" 决定。
 	// 我们无法直接断言丢弃（http.Client 总会填上），只断言请求成功即可。
@@ -482,11 +520,12 @@ func TestRunCheckForModel_ReplaceMode_FullBodyUsedAndChallengeSkipped(t *testing
 	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", opts)
 
 	// 请求 body = 用户提供的原样
-	if h.lastBody["model"] != "user-forced-model" {
-		t.Errorf("replace mode should use user's model, got %v", h.lastBody["model"])
+	captured := h.snapshot()
+	if captured.lastBody["model"] != "user-forced-model" {
+		t.Errorf("replace mode should use user's model, got %v", captured.lastBody["model"])
 	}
-	if h.lastBody["system"] != "You are someone else" {
-		t.Errorf("replace mode should use user's system, got %v", h.lastBody["system"])
+	if captured.lastBody["system"] != "You are someone else" {
+		t.Errorf("replace mode should use user's system, got %v", captured.lastBody["system"])
 	}
 	// challenge 虽然没命中，但由于 replace 模式跳过 challenge 校验 + 响应非空 → operational
 	if res.Status != MonitorStatusOperational {

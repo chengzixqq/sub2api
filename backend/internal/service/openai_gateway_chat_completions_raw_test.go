@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -81,7 +82,6 @@ func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
 }
 
 func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDownstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -124,7 +124,6 @@ func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDown
 }
 
 func TestForwardAsChatCompletions_OpenAICompatibleGrokRawMissingUsageFailsBeforeWrite(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	recorder := httptest.NewRecorder()
@@ -207,7 +206,6 @@ func TestForwardAsChatCompletions_OpenAICompatibleRawUsageGuard(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
 			body := []byte(`{"model":"` + tt.model + `","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
@@ -245,7 +243,6 @@ func TestForwardAsChatCompletions_OpenAICompatibleRawUsageGuard(t *testing.T) {
 }
 
 func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"sol","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max","stream":false}`)
 	rec := httptest.NewRecorder()
@@ -278,7 +275,6 @@ func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T)
 }
 
 func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
 		name      string
@@ -329,7 +325,6 @@ func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *test
 }
 
 func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreaming(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -360,7 +355,6 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentNonStreami
 }
 
 func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -403,7 +397,6 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentStreaming(
 }
 
 func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"weather"},{"role":"assistant","reasoning_content":"need tool","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"cloudy"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -431,7 +424,6 @@ func TestForwardAsRawChatCompletions_PreservesDeepSeekReasoningContentInRequest(
 }
 
 func TestForwardAsRawChatCompletions_NormalizesGLMReasoningEffortForUpstream(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"xhigh","stream":false}`)
 	rec := httptest.NewRecorder()
@@ -455,10 +447,12 @@ func TestForwardAsRawChatCompletions_NormalizesGLMReasoningEffortForUpstream(t *
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "max", *result.ReasoningEffort)
+	require.Equal(t, 3.0, reasoningEffortBillingMultiplier(*result.ReasoningEffort, map[string]float64{"xhigh": 2, "max": 3}))
 }
 
 func TestForwardAsRawChatCompletions_SilentRefusalTriggersFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := largeRawChatCompletionsBody()
 	rec := httptest.NewRecorder()
@@ -496,7 +490,6 @@ func TestForwardAsRawChatCompletions_SilentRefusalTriggersFailover(t *testing.T)
 }
 
 func TestForwardAsRawChatCompletions_SilentRefusalToolCallsExempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := largeRawChatCompletionsBody()
 	rec := httptest.NewRecorder()
@@ -533,7 +526,6 @@ func TestForwardAsRawChatCompletions_SilentRefusalToolCallsExempt(t *testing.T) 
 }
 
 func TestHandleChatStreamingResponse_SilentRefusalReasoningSummaryExempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -571,7 +563,6 @@ func TestHandleChatStreamingResponse_SilentRefusalReasoningSummaryExempt(t *test
 }
 
 func TestForwardAsRawChatCompletions_SilentRefusalNormalContentExempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := largeRawChatCompletionsBody()
 	rec := httptest.NewRecorder()
@@ -613,7 +604,6 @@ func TestForwardAsRawChatCompletions_SilentRefusalNormalContentExempt(t *testing
 // `"id":""` / `"name":""`，避免 dsh 等客户端用 `!== undefined` 合并时把
 // 首包合法值覆盖掉（ToolNotFoundError: unknown tool ""）。
 func TestForwardAsRawChatCompletions_StripsEmptyToolCallIdentity(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"weather"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -691,7 +681,6 @@ func TestForwardAsRawChatCompletions_StripsEmptyToolCallIdentity(t *testing.T) {
 // 不能再记成 HTTP 200 成功，必须回带类型化的上游截断错误，由 handler 补 SSE error
 // 帧并计入 SLA 失败。
 func TestForwardAsRawChatCompletions_TruncatedStreamAfterOutputFailsRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -739,7 +728,6 @@ func TestForwardAsRawChatCompletions_TruncatedStreamAfterOutputFailsRequest(t *t
 
 // 截断 failover 事件必须带上本次传输真实使用的托管代理快照。
 func TestForwardAsRawChatCompletions_TruncationFailoverAttributesManagedProxy(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -775,7 +763,6 @@ func TestForwardAsRawChatCompletions_TruncationFailoverAttributesManagedProxy(t 
 
 // 上游 200 但一个 SSE 字节都没发：响应头尚未提交，应换号重试而不是回 200 空流。
 func TestForwardAsRawChatCompletions_EmptyStreamBeforeOutputTriggersFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -809,7 +796,6 @@ func TestForwardAsRawChatCompletions_EmptyStreamBeforeOutputTriggersFailover(t *
 // 传输层错误（Cloudflare edge reset 等）在写出后同样不能记成功，且分类要区别于
 // 干净 EOF，便于 ops 分辨 reset 与静默截断。
 func TestForwardAsRawChatCompletions_StreamReadErrorAfterOutputFailsRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -844,7 +830,6 @@ func TestForwardAsRawChatCompletions_StreamReadErrorAfterOutputFailsRequest(t *t
 // 边界：缺 [DONE] 但收到了 usage 帧 —— 生成已完整，只是尾巴丢失。必须继续按成功
 // 计费，否则会误伤那些跑完就直接 EOF 的兼容上游并白送 token。
 func TestForwardAsRawChatCompletions_MissingDoneWithUsageStillSucceeds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -878,7 +863,6 @@ func TestForwardAsRawChatCompletions_MissingDoneWithUsageStillSucceeds(t *testin
 
 // 边界：缺 [DONE] 与 usage，但末帧带 finish_reason —— 生成正常结束，同样不判截断。
 func TestForwardAsRawChatCompletions_MissingDoneWithFinishReasonStillSucceeds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -926,7 +910,6 @@ func (w *openAIRawStreamDisconnectedWriter) WriteString(string) (int, error) {
 // 客户端已断开时上游随后截断：两者不可区分，沿用既有语义按已收用量正常收尾计费，
 // 不得把客户端离场记成上游故障。
 func TestForwardAsRawChatCompletions_ClientDisconnectTruncationStillBills(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -957,7 +940,6 @@ func TestForwardAsRawChatCompletions_ClientDisconnectTruncationStillBills(t *tes
 
 // 客户端取消会连带取消上游请求，上游读因此报 context.Canceled：同样不判为上游截断。
 func TestForwardAsRawChatCompletions_ClientCancelTruncationStillBills(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -1052,7 +1034,6 @@ func TestOpenAIRawStreamTerminalState(t *testing.T) {
 }
 
 func TestForwardAsRawChatCompletions_ClientDisconnectDrainsUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	rec := httptest.NewRecorder()
@@ -1091,7 +1072,6 @@ func TestForwardAsRawChatCompletions_ClientDisconnectDrainsUsage(t *testing.T) {
 }
 
 func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	reqCtx, cancel := context.WithCancel(context.Background())
 	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"stream":true}`)
@@ -1127,7 +1107,6 @@ func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testi
 }
 
 func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedChatURL(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"glm-4.5-air","messages":[{"role":"user","content":"hello"}],"stream":false}`)
 	rec := httptest.NewRecorder()
@@ -1191,7 +1170,6 @@ func TestEnsureOpenAIChatStreamUsage(t *testing.T) {
 }
 
 func TestBufferRawChatCompletions_RejectsOversizedResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -1239,4 +1217,39 @@ func largeRawChatCompletionsBody() []byte {
 	return []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"` +
 		strings.Repeat("x", openAISilentRefusalMinRequestBodyBytes) +
 		`"}],"stream":true}`)
+}
+
+func TestForwardAsRawChatCompletions_RestoresMappedResponseModel(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, mapped := range []bool{false, true} {
+			for _, returned := range []string{"zhipu/glm-5.3", "glm-5.3-alias"} {
+				t.Run(fmt.Sprintf("stream=%v/mapped=%v/%s", stream, mapped, returned), func(t *testing.T) {
+					body := []byte(fmt.Sprintf(`{"model":"public","messages":[{"role":"user","content":"hello"}],"stream":%v}`, stream))
+					payload := `{"id":"chatcmpl_1","model":"` + returned + `","choices":[{"index":0,"delta":{"content":"keep alias"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+					upstreamBody, contentType := payload, "application/json"
+					if stream {
+						upstreamBody = "data: " + payload + "\n\ndata: [DONE]\n\n"
+						contentType = "text/event-stream"
+					}
+					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(upstreamBody))}}
+					svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+					account := rawChatCompletionsTestAccount()
+					expectedModel, expectedUpstream := returned, "public"
+					if mapped {
+						account.Credentials["model_mapping"] = map[string]any{"public": "ZHIPU/GLM-5.3"}
+						expectedModel = "public"
+						expectedUpstream = "ZHIPU/GLM-5.3"
+					}
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+					result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+					require.NoError(t, err)
+					require.Equal(t, expectedUpstream, gjson.GetBytes(upstream.lastBody, "model").String())
+					require.Contains(t, rec.Body.String(), strings.Replace(payload, `"model":"`+returned+`"`, `"model":"`+expectedModel+`"`, 1))
+					require.Equal(t, returned, result.UpstreamResponseModel)
+				})
+			}
+		}
+	}
 }

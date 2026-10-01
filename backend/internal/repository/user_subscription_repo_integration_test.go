@@ -25,7 +25,9 @@ func (s *UserSubscriptionRepoSuite) SetupTest() {
 	s.ctx = context.Background()
 	tx := testEntTx(s.T())
 	s.client = tx.Client()
-	s.repo = NewUserSubscriptionRepository(s.client).(*userSubscriptionRepository)
+	var ok bool
+	s.repo, ok = NewUserSubscriptionRepository(s.client).(*userSubscriptionRepository)
+	s.Require().True(ok)
 }
 
 func TestUserSubscriptionRepoSuite(t *testing.T) {

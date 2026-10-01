@@ -23,9 +23,22 @@ const (
 	BillingProvenanceFailedEstimated BillingProvenance = "failed_estimated"
 )
 
-// FailureBillingInput 是失败计费决策的全部输入。刻意只收标量与既有值类型,
-// 不收 gin.Context / ent client,使决策可独立单测。
+// FailureBillingMetadata snapshots the final attempt's effective pricing fields.
+// Values, rather than response pointers, prevent retries from changing a prior
+// observation after it has been handed to the settlement guard.
+type FailureBillingMetadata struct {
+	ReasoningEffort               string
+	RequestedReasoningEffort      string
+	ServiceTier                   string
+	UpstreamResponseModel         string
+	UpstreamResponseModelConflict bool
+	UpstreamResponseServiceTier   string
+}
+
+// FailureBillingInput contains only values needed for a failure settlement;
+// it must never retain a Gin context or live upstream response.
 type FailureBillingInput struct {
+	FailureBillingMetadata
 	RequestID              string
 	BillingModel           string
 	UpstreamModel          string
@@ -51,6 +64,7 @@ type FailureBillingInput struct {
 
 // FailureBillingDecision 是决策结果。Billable 为 false 时其余字段无意义。
 type FailureBillingDecision struct {
+	FailureBillingMetadata
 	Billable           bool
 	RequestID          string
 	BillingModel       string
@@ -193,17 +207,18 @@ func DecideFailureBilling(in FailureBillingInput) FailureBillingDecision {
 
 func failureBillingDecisionBase(in FailureBillingInput, searchCount, imageCount int) FailureBillingDecision {
 	return FailureBillingDecision{
-		RequestID:          in.RequestID,
-		BillingModel:       in.BillingModel,
-		UpstreamModel:      in.UpstreamModel,
-		SearchCount:        searchCount,
-		ImageCount:         imageCount,
-		ImageSize:          in.ImageSize,
-		ImageInputSize:     in.ImageInputSize,
-		ImageOutputSize:    in.ImageOutputSize,
-		ImageOutputSizes:   append([]string(nil), in.ImageOutputSizes...),
-		ImageSizeSource:    in.ImageSizeSource,
-		ImageSizeBreakdown: cloneFailureImageSizeBreakdown(in.ImageSizeBreakdown),
+		FailureBillingMetadata: in.FailureBillingMetadata,
+		RequestID:              in.RequestID,
+		BillingModel:           in.BillingModel,
+		UpstreamModel:          in.UpstreamModel,
+		SearchCount:            searchCount,
+		ImageCount:             imageCount,
+		ImageSize:              in.ImageSize,
+		ImageInputSize:         in.ImageInputSize,
+		ImageOutputSize:        in.ImageOutputSize,
+		ImageOutputSizes:       append([]string(nil), in.ImageOutputSizes...),
+		ImageSizeSource:        in.ImageSizeSource,
+		ImageSizeBreakdown:     cloneFailureImageSizeBreakdown(in.ImageSizeBreakdown),
 	}
 }
 

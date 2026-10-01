@@ -369,7 +369,7 @@ func (s *GroupRepoSuite) TestList() {
 
 	groups, page, err := s.repo.List(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10})
 	s.Require().NoError(err, "List")
-	s.Require().Len(groups, len(baseGroups)+2)
+	s.Require().Len(groups, min(len(baseGroups)+2, 10), "the first page remains bounded when fixtures already fill it")
 	s.Require().Equal(basePage.Total+2, page.Total)
 }
 

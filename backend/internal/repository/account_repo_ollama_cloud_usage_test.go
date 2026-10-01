@@ -72,7 +72,7 @@ func expectOllamaCloudUsageGroupLock(
 		proxyID = *account.ProxyID
 	}
 	mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("SELECT")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
-		WithArgs(apiKey, account.ID, account.Platform, account.Type, string(credentials), proxyID).
+		WithArgs(apiKey, account.ID, account.Platform, account.Type, string(credentials), proxyID, account.WorkspaceID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "anchor_matches", "session", "auto_refresh", "snapshot"}).
 			AddRow(account.ID, anchorMatches, sessionJSON, autoJSON, snapshotJSON))
 }
@@ -164,7 +164,7 @@ func TestListOllamaCloudUsageGroupAccountsUsesOneStrictBatchQuery(t *testing.T) 
 	t.Cleanup(func() { _ = db.Close() })
 	var capturedSQL string
 	mock.ExpectQuery("SELECT id").
-		WithArgs(sqlmock.AnyArg()).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	repo := newAccountRepositoryWithSQL(nil, captureQuerySQL{db: db, captured: &capturedSQL}, nil)
 	first := ollamaCloudUsageRepositoryAccount()
@@ -178,7 +178,7 @@ func TestListOllamaCloudUsageGroupAccountsUsesOneStrictBatchQuery(t *testing.T) 
 	require.NoError(t, err)
 	require.Empty(t, accounts)
 	query := normalizeSQLWhitespace(capturedSQL)
-	require.Contains(t, query, "credentials ->> 'api_key' = ANY($1)")
+	require.Contains(t, query, "(workspace_id, credentials ->> 'api_key') IN")
 	require.Contains(t, query, "platform IN ('openai', 'anthropic', 'kimi', 'zhipu', 'deepseek', 'minimax')")
 	require.Contains(t, query, "jsonb_typeof(credentials -> 'api_key') = 'string'")
 	require.Contains(t, query, ollamaCloudBaseURLMatchesSQL("credentials ->> 'base_url'"))
@@ -213,7 +213,7 @@ func TestListDueOllamaCloudUsageAccountsFiltersOrdersAndLimits(t *testing.T) {
 		"jsonb_typeof(extra -> 'ollama_cloud_usage_session') = 'string'",
 		`extra @> '{"ollama_cloud_usage_auto_refresh": true}'::jsonb`,
 		"MAX(last_used_at) AS group_last_used_at",
-		"PARTITION BY api_key",
+		"PARTITION BY workspace_id, api_key",
 		"WHERE group_rank = 1",
 		"LIMIT $4",
 		"make_interval(secs => $2::double precision)",

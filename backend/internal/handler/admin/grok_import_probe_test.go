@@ -27,6 +27,23 @@ type grokImportProbeStub struct {
 	done         chan int64
 }
 
+type lockedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedLogBuffer) snapshot() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buffer.Bytes()...)
+}
+
 func newGrokImportProbeStub(buffer int) *grokImportProbeStub {
 	return &grokImportProbeStub{
 		calls:    make(map[int64]int),
@@ -262,7 +279,7 @@ func TestGrokImportProbeSchedulerSkipsMissingServiceAndNonGrokAccounts(t *testin
 }
 
 func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
-	var logs bytes.Buffer
+	var logs lockedLogBuffer
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	defer slog.SetDefault(previousLogger)
@@ -274,8 +291,9 @@ func TestGrokImportProbeFailureLogDoesNotIncludeErrorMessage(t *testing.T) {
 	awaitGrokProbeSignal(t, prober.done)
 
 	require.Eventually(t, func() bool {
-		return bytes.Contains(logs.Bytes(), []byte("grok_import_active_probe_failed"))
+		return bytes.Contains(logs.snapshot(), []byte("grok_import_active_probe_failed"))
 	}, time.Second, 10*time.Millisecond)
-	require.Contains(t, logs.String(), "GROK_TEST_PROBE_FAILED")
-	require.NotContains(t, logs.String(), "refresh-token-secret")
+	logOutput := string(logs.snapshot())
+	require.Contains(t, logOutput, "GROK_TEST_PROBE_FAILED")
+	require.NotContains(t, logOutput, "refresh-token-secret")
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,7 +21,6 @@ import (
 // antigravity_gateway_compat_stream.go 里紧跟 session.consume(event.line) 之后新增的
 // if session.hasMeaningfulData() { c.Set(...) } 整块，不会让任何测试失败。
 func TestAntigravityCompatStream_MarksUpstreamDeliveredOnMeaningfulEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
 	c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/chat/completions", nil)
 	require.False(t, c.GetBool(GatewayUpstreamDeliveredKey), "读循环开始前不应预置投递标记")
@@ -45,7 +43,6 @@ func TestAntigravityCompatStream_MarksUpstreamDeliveredOnMeaningfulEvent(t *test
 // 防止有人为了让上一个测试通过，把 c.Set 提到 session.consume 之外无条件执行——那样会让本该走
 // 「未投递」不计费分支的空转请求被误判为已投递，属于比少算更严重的多算回归。
 func TestAntigravityCompatStream_UsageOnlyStreamDoesNotMarkUpstreamDelivered(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
 	c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/chat/completions", nil)
 	resp := &http.Response{
@@ -69,7 +66,6 @@ func TestAntigravityCompatStream_UsageOnlyStreamDoesNotMarkUpstreamDelivered(t *
 // *UpstreamFailoverError——这正是修复前漏埋点导致「已投递后中断」永不计费的那条具体路径。
 // 断言错误内容 + 投递标记仍为 true，证明本轮已经把它补回计费。
 func TestAntigravityCompatStream_KeepsUpstreamDeliveredAcrossPlainTimeoutError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(
 		config.GatewayConfig{MaxLineSize: defaultMaxLineSize, StreamDataIntervalTimeout: 1},
 		nil,

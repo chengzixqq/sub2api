@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/testutil/localredis"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -27,6 +28,7 @@ func TestRateLimiterSetsTTLAndDoesNotRefresh(t *testing.T) {
 	ctx := context.Background()
 	rdb := startRedis(t, ctx)
 	limiter := NewRateLimiter(rdb)
+	limiter.prefix += fmt.Sprintf("integration:%s:%d:", t.Name(), time.Now().UnixNano())
 
 	router := gin.New()
 	router.Use(limiter.Limit("ttl-test", 10, 2*time.Second))
@@ -38,6 +40,7 @@ func TestRateLimiterSetsTTLAndDoesNotRefresh(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 
 	redisKey := limiter.prefix + "ttl-test:127.0.0.1"
+	t.Cleanup(func() { _ = rdb.Del(ctx, redisKey).Err() })
 	ttlBefore, err := rdb.PTTL(ctx, redisKey).Result()
 	require.NoError(t, err)
 	require.Greater(t, ttlBefore, time.Duration(0))
@@ -59,6 +62,7 @@ func TestRateLimiterFixesMissingTTL(t *testing.T) {
 	ctx := context.Background()
 	rdb := startRedis(t, ctx)
 	limiter := NewRateLimiter(rdb)
+	limiter.prefix += fmt.Sprintf("integration:%s:%d:", t.Name(), time.Now().UnixNano())
 
 	router := gin.New()
 	router.Use(limiter.Limit("ttl-missing", 10, 2*time.Second))
@@ -67,6 +71,7 @@ func TestRateLimiterFixesMissingTTL(t *testing.T) {
 	})
 
 	redisKey := limiter.prefix + "ttl-missing:127.0.0.1"
+	t.Cleanup(func() { _ = rdb.Del(ctx, redisKey).Err() })
 	require.NoError(t, rdb.Set(ctx, redisKey, 5, 0).Err())
 
 	ttlBefore, err := rdb.PTTL(ctx, redisKey).Result()
@@ -91,6 +96,9 @@ func performRequest(router *gin.Engine) *httptest.ResponseRecorder {
 
 func startRedis(t *testing.T, ctx context.Context) *redis.Client {
 	t.Helper()
+	if client := localredis.Open(t, ctx); client != nil {
+		return client
+	}
 	ensureDockerAvailable(t)
 
 	redisContainer, err := tcredis.Run(ctx, redisImageTag)

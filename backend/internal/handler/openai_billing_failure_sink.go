@@ -86,6 +86,8 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 	sessionID := service.ExtractClientSessionID(c)
 	requestPayloadHash := service.HashUsageRequestPayload(p.RequestPayloadBytes)
 	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	pricingAt := service.OpenAIPricingAtFromContext(c.Request.Context())
+	requestedEffort := failureBillingStringValue(service.RequestedReasoningEffortFromContext(c.Request.Context()))
 	channelUsageFields := p.ChannelUsageFields
 	reqModel := p.ReqModel
 	component := p.Component
@@ -97,20 +99,29 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 		if requestID == "" {
 			requestID = c.Writer.Header().Get("X-Request-Id")
 		}
+		if d.RequestedReasoningEffort == "" {
+			d.RequestedReasoningEffort = requestedEffort
+		}
 		result := &service.OpenAIForwardResult{
-			RequestID:          requestID,
-			Model:              reqModel,
-			BillingModel:       d.BillingModel,
-			UpstreamModel:      d.UpstreamModel,
-			SearchCount:        d.SearchCount,
-			ImageCount:         d.ImageCount,
-			ImageSize:          d.ImageSize,
-			ImageInputSize:     d.ImageInputSize,
-			ImageOutputSize:    d.ImageOutputSize,
-			ImageOutputSizes:   append([]string(nil), d.ImageOutputSizes...),
-			ImageSizeSource:    d.ImageSizeSource,
-			ImageSizeBreakdown: cloneOpenAIFailureImageSizeBreakdown(d.ImageSizeBreakdown),
-			Usage:              openAIFailureUsageFromDecision(d),
+			RequestID:                     requestID,
+			Model:                         reqModel,
+			BillingModel:                  d.BillingModel,
+			UpstreamModel:                 d.UpstreamModel,
+			ReasoningEffort:               failureBillingStringPointer(d.ReasoningEffort),
+			RequestedReasoningEffort:      failureBillingStringPointer(d.RequestedReasoningEffort),
+			ServiceTier:                   failureBillingStringPointer(d.ServiceTier),
+			UpstreamResponseModel:         d.UpstreamResponseModel,
+			UpstreamResponseModelConflict: d.UpstreamResponseModelConflict,
+			UpstreamResponseServiceTier:   d.UpstreamResponseServiceTier,
+			SearchCount:                   d.SearchCount,
+			ImageCount:                    d.ImageCount,
+			ImageSize:                     d.ImageSize,
+			ImageInputSize:                d.ImageInputSize,
+			ImageOutputSize:               d.ImageOutputSize,
+			ImageOutputSizes:              append([]string(nil), d.ImageOutputSizes...),
+			ImageSizeSource:               d.ImageSizeSource,
+			ImageSizeBreakdown:            cloneOpenAIFailureImageSizeBreakdown(d.ImageSizeBreakdown),
+			Usage:                         openAIFailureUsageFromDecision(d),
 		}
 		// Flush() 与本闭包本体都同步跑在请求 goroutine 内（由 defer 触发，
 		// 尚未进入下面的 worker 池闭包），此时访问 c 仍然安全。
@@ -131,7 +142,7 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 				User:               apiKey.User,
 				Account:            account,
 				Subscription:       subscription,
-				PricingAt:          service.OpenAIPricingAtFromContext(c.Request.Context()),
+				PricingAt:          pricingAt,
 				InboundEndpoint:    inboundEndpoint,
 				UpstreamEndpoint:   upstreamEndpoint,
 				UserAgent:          userAgent,

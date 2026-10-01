@@ -28,7 +28,6 @@ func newStreamingResponseTestGatewayService() *GatewayService {
 }
 
 func TestGatewayService_StreamingReusesScannerBufferAndStillParsesUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 
 	rec := httptest.NewRecorder()
@@ -65,7 +64,6 @@ func TestGatewayService_StreamingReusesScannerBufferAndStillParsesUsage(t *testi
 // 那行的 c.Set(GatewayUpstreamDeliveredKey, true)，不会让任何测试失败，
 // 这条本该被复原计费的「流式已开始、上游已投递」中断请求就会重新被免单。
 func TestGatewayService_StreamingResponse_MarksUpstreamDeliveredOnFirstRealEvent(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 
 	rec := httptest.NewRecorder()
@@ -100,7 +98,6 @@ func TestGatewayService_StreamingResponse_MarksUpstreamDeliveredOnFirstRealEvent
 // 通过而把 c.Set 提到循环外部无条件执行（那样会让本该走 429/零投递不计费分支的
 // 挂死请求重新被误判为「已投递」）。
 func TestGatewayService_StreamingResponse_EmptyStreamDoesNotMarkUpstreamDelivered(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 
 	rec := httptest.NewRecorder()
@@ -125,7 +122,6 @@ func TestGatewayService_StreamingResponse_EmptyStreamDoesNotMarkUpstreamDelivere
 }
 
 func TestGatewayService_StreamingKeepaliveUsesIdleTimer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 	svc.cfg.Gateway.StreamKeepaliveInterval = 1
 
@@ -151,7 +147,6 @@ func TestGatewayService_StreamingKeepaliveUsesIdleTimer(t *testing.T) {
 }
 
 func TestGatewayService_StreamingKeepaliveUsesNoopDeltaForAffectedClaudeCodeVersion(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 	svc.cfg.Gateway.StreamKeepaliveInterval = 1
 
@@ -182,7 +177,6 @@ func TestGatewayService_StreamingKeepaliveUsesNoopDeltaForAffectedClaudeCodeVers
 }
 
 func TestGatewayService_StreamingKeepaliveUsesNoopDeltaDuringToolUseForAffectedClaudeCodeVersion(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 	svc.cfg.Gateway.StreamKeepaliveInterval = 1
 
@@ -214,7 +208,6 @@ func TestGatewayService_StreamingKeepaliveUsesNoopDeltaDuringToolUseForAffectedC
 }
 
 func TestGatewayService_StreamingKeepaliveKeepsPingForOlderClaudeCodeVersion(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newStreamingResponseTestGatewayService()
 	svc.cfg.Gateway.StreamKeepaliveInterval = 1
 

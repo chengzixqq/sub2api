@@ -23,7 +23,9 @@ func TestUserMsgQueueCacheSuite(t *testing.T) {
 
 func (s *UserMsgQueueCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
-	s.cache = NewUserMsgQueueCache(s.rdb).(*userMsgQueueCache)
+	var ok bool
+	s.cache, ok = NewUserMsgQueueCache(s.rdb).(*userMsgQueueCache)
+	s.Require().True(ok)
 }
 
 func (s *UserMsgQueueCacheSuite) TestAcquireLockWritesIndexAndReleaseRemovesIt() {

@@ -502,6 +502,9 @@ func (s *OllamaCloudUsageService) GetSettings(ctx context.Context) (*OllamaCloud
 }
 
 func (s *OllamaCloudUsageService) UpdateSettings(ctx context.Context, settings *OllamaCloudUsageSettings) error {
+	if err := RequireStationOwnerScope(ctx); err != nil {
+		return err
+	}
 	if s == nil || s.settingService == nil {
 		return ErrOllamaCloudUsageUnavailable
 	}
@@ -512,7 +515,7 @@ func (s *OllamaCloudUsageService) GetState(ctx context.Context, accountID int64)
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrOllamaCloudUsageUnavailable
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	account, err := loadAccountForUsage(ctx, s.accountRepo, accountID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +632,7 @@ func (s *OllamaCloudUsageService) SaveSession(ctx context.Context, accountID int
 	if err != nil {
 		return nil, infraerrors.BadRequest("INVALID_OLLAMA_CLOUD_USAGE_SESSION", err.Error())
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	account, err := loadAccountForUsage(ctx, s.accountRepo, accountID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -658,7 +661,7 @@ func (s *OllamaCloudUsageService) DeleteSession(ctx context.Context, accountID i
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrOllamaCloudUsageUnavailable
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	account, err := loadAccountForUsage(ctx, s.accountRepo, accountID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -682,7 +685,7 @@ func (s *OllamaCloudUsageService) SetAutoRefresh(ctx context.Context, accountID 
 	if s == nil || s.accountRepo == nil {
 		return nil, ErrOllamaCloudUsageUnavailable
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	account, err := loadAccountForUsage(ctx, s.accountRepo, accountID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -789,7 +792,7 @@ func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, accountID 
 	}
 	intervalMinutes := settings.IntervalMinutes
 	debounce, maxWait := ollamaCloudUsageDurations(settings)
-	anchor, err := s.accountRepo.GetByID(ctx, accountID)
+	anchor, err := loadAccountForUsage(ctx, s.accountRepo, accountID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +807,7 @@ func (s *OllamaCloudUsageService) refreshAccount(ctx context.Context, accountID 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		account, loadErr := s.accountRepo.GetByID(ctx, accountID)
+		account, loadErr := loadAccountForUsage(ctx, s.accountRepo, accountID, true)
 		if loadErr != nil {
 			return nil, loadErr
 		}
@@ -1076,13 +1079,15 @@ func ollamaCloudUsageIdentity(account *Account) map[string]any {
 	return map[string]any{"host": "ollama.com", "api_key": apiKey}
 }
 
+// Group aliases only within one workspace so a session saved by one vendor
+// cannot replace another workspace's session, snapshot or refresh switch.
 func ollamaCloudUsageGroupFingerprint(account *Account) (string, bool) {
 	identity := ollamaCloudUsageIdentity(account)
 	if identity == nil {
 		return "", false
 	}
 	apiKey, _ := identity["api_key"].(string)
-	sum := sha256.Sum256([]byte("ollama.com\x00" + apiKey))
+	sum := sha256.Sum256([]byte("ollama.com\x00" + strconv.FormatInt(account.WorkspaceID, 10) + "\x00" + apiKey))
 	return hex.EncodeToString(sum[:]), true
 }
 

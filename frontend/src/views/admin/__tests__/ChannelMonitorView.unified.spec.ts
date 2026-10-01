@@ -9,11 +9,14 @@ vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showSuccess: vi.fn(), sho
 vi.mock('vue-i18n', async importOriginal => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key }) }))
 
 describe('unified monitor management entry', () => {
-  it('opens unified policy before legacy mode settings are loaded', async () => {
+  it('opens the monitor dashboard and keeps settings and legacy loading on demand', async () => {
     const wrapper = shallowMount(ChannelMonitorView, { global: { stubs: { AppLayout: { template: '<main><slot /></main>' } } } })
     await flushPromises()
     expect(wrapper.get('[role="tab"]').attributes('aria-selected')).toBe('true')
-    expect(wrapper.find('observation-settings-panel-stub').exists()).toBe(true)
+    expect(wrapper.find('admin-monitor-dashboard-stub').exists()).toBe(true)
+    expect(wrapper.find('admin-monitor-settings-drawer-stub').attributes('show')).toBe('false')
+    await wrapper.findAll('button').find(button => button.text() === 'channelMonitorV2.unified.settings.title')!.trigger('click')
+    expect(wrapper.find('admin-monitor-settings-drawer-stub').attributes('show')).toBe('true')
     expect(list).not.toHaveBeenCalled()
     await wrapper.findAll('[role="tab"]')[1].trigger('click')
     await flushPromises()

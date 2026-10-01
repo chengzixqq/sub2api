@@ -193,7 +193,8 @@ func TestChannelClone_Nil(t *testing.T) {
 
 func TestChannelModelPricingClone(t *testing.T) {
 	original := ChannelModelPricing{
-		Models: []string{"a", "b"},
+		ReasoningEffortMultipliers: map[string]float64{"high": 1.5},
+		Models:                     []string{"a", "b"},
 		Intervals: []PricingInterval{
 			{MinTokens: 0, TierLabel: "tier1"},
 		},
@@ -209,6 +210,8 @@ func TestChannelModelPricingClone(t *testing.T) {
 	}
 
 	cloned := original.Clone()
+	cloned.ReasoningEffortMultipliers["high"] = 2
+	require.Equal(t, 1.5, original.ReasoningEffortMultipliers["high"])
 
 	// Modify clone slices — original unchanged
 	cloned.Models[0] = "hacked"
@@ -773,4 +776,31 @@ func TestSupportedModels_ExactMappingTargetMissingFromPricing(t *testing.T) {
 	require.Nil(t, got[0].Pricing, "target 在渠道定价中缺失时不虚假填充，留给 ListAvailable 走 LiteLLM 回落")
 	require.Equal(t, "some-priced-model", got[1].Name)
 	require.NotNil(t, got[1].Pricing)
+}
+
+func TestChannelModelPricingCloneIsolatesIntervalMultipliersAndCachePrices(t *testing.T) {
+	value := 1.5
+	original := ChannelModelPricing{
+		CacheWrite1hPrice: &value,
+		Intervals: []PricingInterval{{
+			CacheWrite1hPrice:    &value,
+			InputMultiplier:      &value,
+			OutputMultiplier:     &value,
+			CacheWriteMultiplier: &value,
+			CacheReadMultiplier:  &value,
+		}},
+	}
+	cloned := original.Clone()
+	*cloned.CacheWrite1hPrice = 3
+	*cloned.Intervals[0].CacheWrite1hPrice = 4
+	*cloned.Intervals[0].InputMultiplier = 5
+	*cloned.Intervals[0].OutputMultiplier = 6
+	*cloned.Intervals[0].CacheWriteMultiplier = 7
+	*cloned.Intervals[0].CacheReadMultiplier = 8
+	require.Equal(t, 1.5, *original.CacheWrite1hPrice)
+	require.Equal(t, 1.5, *original.Intervals[0].CacheWrite1hPrice)
+	require.Equal(t, 1.5, *original.Intervals[0].InputMultiplier)
+	require.Equal(t, 1.5, *original.Intervals[0].OutputMultiplier)
+	require.Equal(t, 1.5, *original.Intervals[0].CacheWriteMultiplier)
+	require.Equal(t, 1.5, *original.Intervals[0].CacheReadMultiplier)
 }

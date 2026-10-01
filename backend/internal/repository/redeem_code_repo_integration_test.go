@@ -25,7 +25,9 @@ func (s *RedeemCodeRepoSuite) SetupTest() {
 	tx := testEntTx(s.T())
 	s.ctx = dbent.NewTxContext(context.Background(), tx)
 	s.client = tx.Client()
-	s.repo = NewRedeemCodeRepository(s.client).(*redeemCodeRepository)
+	var ok bool
+	s.repo, ok = NewRedeemCodeRepository(s.client).(*redeemCodeRepository)
+	s.Require().True(ok)
 }
 
 func TestRedeemCodeRepoSuite(t *testing.T) {

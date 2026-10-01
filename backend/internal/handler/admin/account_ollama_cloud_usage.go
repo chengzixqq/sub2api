@@ -30,6 +30,10 @@ func (h *AccountHandler) GetOllamaCloudUsageSettings(c *gin.Context) {
 }
 
 func (h *AccountHandler) UpdateOllamaCloudUsageSettings(c *gin.Context) {
+	if err := service.RequireStationOwnerScope(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	if h.ollamaCloudUsage == nil {
 		response.ErrorFrom(c, service.ErrOllamaCloudUsageUnavailable)
 		return
@@ -142,6 +146,9 @@ func (h *AccountHandler) RefreshOllamaCloudUsage(c *gin.Context) {
 }
 
 func (h *AccountHandler) requireOllamaCloudUsage(c *gin.Context) bool {
+	if !requireAccountUsageScope(c) {
+		return false
+	}
 	if h != nil && h.ollamaCloudUsage != nil {
 		return true
 	}

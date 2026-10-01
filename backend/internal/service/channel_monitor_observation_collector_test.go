@@ -97,7 +97,7 @@ func TestChannelMonitorCollector_WriteFailurePreservesOrderedGapAndState(t *test
 	require.Nil(t, repo.sessions[len(repo.sessions)-1].LastIngestedAt)
 }
 
-func TestChannelMonitorCollector_ProgressDoesNotAdvancePastPendingEvents(t *testing.T) {
+func TestChannelMonitorCollector_ProgressTracksFlushedPrefixWithPendingEvents(t *testing.T) {
 	c := NewChannelMonitorCollector(&collectorObservationRepo{}, ChannelMonitorCollectorOptions{})
 	now := time.Now().UTC()
 	c.updateProgress(now, 0)
@@ -107,11 +107,13 @@ func TestChannelMonitorCollector_ProgressDoesNotAdvancePastPendingEvents(t *test
 	c.updateProgress(now.Add(time.Minute), 1)
 	require.Equal(t, int64(2), c.session.PendingEvents)
 	require.Equal(t, now, *c.session.DataThrough)
+	c.advanceDataThrough(now.Add(30 * time.Second))
+	require.Equal(t, now.Add(30*time.Second), *c.session.DataThrough)
 	<-c.queue
 	c.session.LastWriteError = "write_failed"
 	c.updateProgress(now.Add(2*time.Minute), 0)
 	require.Zero(t, c.session.PendingEvents)
-	require.Equal(t, now, *c.session.DataThrough)
+	require.Equal(t, now.Add(30*time.Second), *c.session.DataThrough)
 	c.session.LastWriteError = ""
 	c.updateProgress(now.Add(3*time.Minute), 0)
 	require.Equal(t, now.Add(3*time.Minute), *c.session.DataThrough)

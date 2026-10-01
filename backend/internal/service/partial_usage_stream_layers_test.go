@@ -31,7 +31,6 @@ func partialUsageReadErrorResponse(payload string) *http.Response {
 }
 
 func TestAntigravityStreamingReadErrorPreservesPartialUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityTestService(&config.Config{
 		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
 	})
@@ -67,7 +66,6 @@ func TestAntigravityStreamingReadErrorPreservesPartialUsage(t *testing.T) {
 }
 
 func TestAntigravityNonStreamingCollectorPreservesPartialUsageWithoutDelivery(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityTestService(&config.Config{
 		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
 	})
@@ -102,7 +100,6 @@ func TestAntigravityNonStreamingCollectorPreservesPartialUsageWithoutDelivery(t 
 }
 
 func TestGeminiCompatibilityStreamingReadErrorPreservesPartialUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := &GeminiMessagesCompatService{}
 	geminiPayload := `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":13,"candidatesTokenCount":4,"cachedContentTokenCount":3}}`
 
@@ -166,7 +163,6 @@ func TestCollectGeminiSSEReadErrorPreservesPartialUsage(t *testing.T) {
 }
 
 func TestAntigravityCompatibilityNonStreamingReadErrorPreservesPartialUsage(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, nil)
 	payload := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":2}}}\n\n"
 

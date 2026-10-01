@@ -25,6 +25,7 @@ import (
 type grokQuotaHandlerAccountRepo struct {
 	service.AccountRepository
 	account *service.Account
+	mu      sync.Mutex
 	updates map[int64]map[string]any
 }
 
@@ -36,11 +37,20 @@ func (r *grokQuotaHandlerAccountRepo) GetByID(_ context.Context, id int64) (*ser
 }
 
 func (r *grokQuotaHandlerAccountRepo) UpdateExtra(_ context.Context, id int64, updates map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.updates == nil {
 		r.updates = make(map[int64]map[string]any)
 	}
 	r.updates[id] = updates
 	return nil
+}
+
+func (r *grokQuotaHandlerAccountRepo) hasUpdate(id int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	updates, ok := r.updates[id]
+	return ok && updates != nil
 }
 
 type grokQuotaHandlerUpstream struct {
@@ -135,6 +145,7 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 		defer upstream.mu.Unlock()
 		return len(upstream.requests) == 4
 	}, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return repo.hasUpdate(42) }, time.Second, 10*time.Millisecond)
 	upstream.mu.Lock()
 	requests := append([]*http.Request(nil), upstream.requests...)
 	bodies := append([][]byte(nil), upstream.bodies...)
@@ -159,7 +170,7 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 	}
 	require.True(t, responsesProbeSeen)
 	require.True(t, modelsSyncSeen)
-	require.NotNil(t, repo.updates[42])
+	require.True(t, repo.hasUpdate(42))
 }
 
 func TestGrokOAuthHandlerResetQuotaReturnsUnsupported(t *testing.T) {

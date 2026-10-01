@@ -77,7 +77,7 @@ func newOllamaCloudUsageHandlerContext(method, target, body, id string) (*gin.Co
 	request := httptest.NewRequest(method, target, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = request
+	ctx.Request = request.WithContext(service.WithScope(request.Context(), service.AdminScope()))
 	if id != "" {
 		ctx.Params = gin.Params{{Key: "id", Value: id}}
 	}
@@ -139,6 +139,10 @@ func TestOllamaCloudUsageEncryptionKeyStateConsistentAcrossAccountResponses(t *t
 			handler := NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			handler.SetOllamaCloudUsageService(usageService)
 			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
+				c.Next()
+			})
 			router.GET("/accounts", handler.List)
 			router.GET("/accounts/:id", handler.GetByID)
 			router.GET("/accounts/:id/ollama-cloud-usage", handler.GetOllamaCloudUsage)
@@ -215,6 +219,10 @@ func TestOllamaCloudUsageSharedStateMatchesListDetailAndSpecialEndpointWithoutLi
 	handler := NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	handler.SetOllamaCloudUsageService(usageService)
 	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
+		c.Next()
+	})
 	router.GET("/accounts", handler.List)
 	router.GET("/accounts/:id", handler.GetByID)
 	router.GET("/accounts/:id/ollama-cloud-usage", handler.GetOllamaCloudUsage)

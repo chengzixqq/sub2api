@@ -19,6 +19,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/testutil/localredis"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
@@ -138,8 +139,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// Explicit local mode exercises PostgreSQL tests without Docker. It accepts
-// only a loopback test database; Redis tests still require the container harness.
+// Explicit local mode exercises integration tests without Docker. It accepts
+// only a loopback test database and, optionally, a dedicated local Redis DB.
 func runLocalDatabaseTests(ctx context.Context, m *testing.M, dsn string) int {
 	u, err := url.Parse(dsn)
 	if err != nil || u.Scheme != "postgres" ||
@@ -148,18 +149,40 @@ func runLocalDatabaseTests(ctx context.Context, m *testing.M, dsn string) int {
 		log.Print("SUB2API_TEST_POSTGRES_DSN must name a loopback sub2api_*_test database")
 		return 1
 	}
+	// Match the container harness regardless of the local PostgreSQL server's
+	// default timezone; timestamp comparisons must use the same UTC contract.
+	query := u.Query()
+	query.Set("TimeZone", "UTC")
+	u.RawQuery = query.Encode()
+	dsn = u.String()
 	integrationDB, err = openSQLWithRetry(ctx, dsn, 30*time.Second)
 	if err != nil {
 		log.Print(err)
 		return 1
 	}
-	defer integrationDB.Close()
+	defer func() { _ = integrationDB.Close() }()
 	if err := ApplyMigrations(ctx, integrationDB); err != nil {
 		log.Printf("local test migrations: %v", err)
 		return 1
 	}
 	integrationEntClient = dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, integrationDB)))
-	defer integrationEntClient.Close()
+	defer func() { _ = integrationEntClient.Close() }()
+	opts, err := localredis.OptionsFromEnv()
+	if err != nil {
+		log.Print(err)
+		return 1
+	}
+	if opts != nil {
+		integrationRedis = redisclient.NewClient(opts)
+		defer func() { _ = integrationRedis.Close() }()
+		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := integrationRedis.Ping(pingCtx).Err()
+		cancel()
+		if err != nil {
+			log.Printf("local Redis test connection: %v", err)
+			return 1
+		}
+	}
 	return m.Run()
 }
 
@@ -260,23 +283,9 @@ func testEntTx(t *testing.T) *dbent.Tx {
 	return tx
 }
 
-// testEntSQLTx 已弃用：不要在新测试中使用此函数。
-// 基于 *sql.Tx 创建的 ent client 在调用 client.Tx() 时会 panic。
-// 对于需要测试内部使用事务的代码，请使用 testEntClient。
-// 对于需要事务隔离的测试，请使用 testEntTx。
-//
-// Deprecated: Use testEntClient or testEntTx instead.
-func testEntSQLTx(t *testing.T) (*dbent.Client, *sql.Tx) {
-	t.Helper()
-
-	// 直接失败，避免旧测试误用导致的事务嵌套 panic。
-	t.Fatalf("testEntSQLTx 已弃用：请使用 testEntClient 或 testEntTx")
-	return nil, nil
-}
-
 func testRedis(t *testing.T) *redisclient.Client {
 	t.Helper()
-	require.NotNil(t, integrationRedis, "Redis tests require the Docker harness; unset SUB2API_TEST_POSTGRES_DSN")
+	require.NotNil(t, integrationRedis, "Redis tests require the Docker harness or SUB2API_TEST_REDIS_URL")
 
 	prefix := fmt.Sprintf(
 		"it:%s:%d:%d:",

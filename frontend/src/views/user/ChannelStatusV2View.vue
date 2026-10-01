@@ -19,7 +19,9 @@
         <span>{{ t(`channelMonitorV2.unified.${errorStatus === 403 ? 'accessDenied' : overview ? 'refreshFailed' : 'loadFailed'}`) }}</span>
         <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="refresh">{{ t('common.retry') }}</button>
       </div>
-      <div v-else-if="overview && overview.coverage.state !== 'complete'" role="status" class="flex flex-wrap items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
+      <MonitorOverviewHero v-if="overview" :eyebrow="t('channelMonitorV2.dashboard.eyebrow')" :title="t('channelMonitorV2.dashboard.title')" :subtitle="t('channelMonitorV2.dashboard.subtitle')" :stats="heroStats" />
+      <MonitorEvidenceStatus v-if="overview" :overview="overview" :stale="stale" />
+      <div v-if="overview && overview.coverage.state !== 'complete'" role="status" class="flex flex-wrap items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
         <span class="badge badge-warning">{{ t(`channelMonitorV2.observation.coverage.${overview.coverage.state}`) }}</span>
         <span v-for="reason in visibleGaps" :key="reason">{{ reason }}</span>
       </div>
@@ -33,8 +35,11 @@
         <FilterMultiSelect v-model="filter.models" :options="modelOptions" :label="t('channelMonitorV2.filters.model')" :all-label="t('channelMonitorV2.filters.allModels')" />
         <button v-if="hasFilters" type="button" class="btn btn-secondary btn-icon h-8 w-8" :title="t('channelMonitorV2.clearFilters')" :aria-label="t('channelMonitorV2.clearFilters')" @click="clearFilters"><Icon name="x" size="sm" /></button>
       </div>
-      <ObservationCards :overview="overview" :layout="layout" :admin="isAdmin" :loading="loading" :error="error" :stale="stale" @retry="refresh" @toggle-layout="layout = layout === 'cards' ? 'list' : 'cards'" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" />
-      <ObservationDetailDrawer :show="Boolean(detail)" :item="detail?.item || null" :model="detail?.model" :selection="detail?.slot || null" :coverage="overview?.coverage" :admin="isAdmin" :stale="stale" :filter="filter" :identity="identity" @close="detail = null" />
+      <MonitorViewSwitcher v-model="viewMode" :items="viewItems" :label="t('channelMonitorV2.dashboard.views.label')" />
+      <template v-if="overview && viewMode === 'matrix'"><MonitorHealthMatrix :items="overview.items" :coverage="overview.coverage" :source="overview.source" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" /></template>
+      <template v-else-if="overview && viewMode === 'trend'"><MonitorTrendPanel :items="overview.items" :coverage="overview.coverage" :source="overview.source" /></template>
+      <ObservationCards v-else :overview="overview" :layout="layout" :view="viewMode === 'cards' ? 'cards' : 'list'" :admin="isAdmin" :loading="loading" :error="error" :stale="stale" @retry="refresh" @toggle-layout="layout = layout === 'cards' ? 'list' : 'cards'" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" />
+      <ObservationDetailDrawer :show="Boolean(detail)" :item="detail?.item || null" :model="detail?.model" :selection="detail?.slot || null" :coverage="overview?.coverage" :source="overview?.source" :admin="isAdmin" :owner="isAdmin" :stale="stale" :filter="filter" :identity="identity" @close="detail = null" />
     </div>
   </AppLayout>
 </template>
@@ -49,6 +54,14 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import FilterMultiSelect from '@/features/channel-monitor-v2/FilterMultiSelect.vue'
 import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue'
 import ObservationDetailDrawer from '@/features/channel-monitor-v2/ObservationDetailDrawer.vue'
+import MonitorOverviewHero from '@/features/channel-monitor-v2/MonitorOverviewHero.vue'
+import MonitorViewSwitcher from '@/features/channel-monitor-v2/MonitorViewSwitcher.vue'
+import MonitorHealthMatrix from '@/features/channel-monitor-v2/MonitorHealthMatrix.vue'
+import MonitorTrendPanel from '@/features/channel-monitor-v2/MonitorTrendPanel.vue'
+import { monitorSourceLabel } from '@/features/channel-monitor-v2/monitorLabels'
+import MonitorEvidenceStatus from '@/features/channel-monitor-v2/MonitorEvidenceStatus.vue'
+import { summarizeMonitorTraffic } from '@/features/channel-monitor-v2/monitorSummary'
+import { formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
 import { observationPreferenceKey, type ObservationLayout } from '@/features/channel-monitor-v2/observationViewModel'
 import type { MonitorFilter, MonitorRange, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
@@ -71,10 +84,16 @@ const filter = ref<MonitorFilter>({
 const preview = ref(false)
 const { data: overview, loading, error, stale, errorStatus, load } = useObservationOverview(filter, isAdmin, ref(false), identity, preview)
 const layout = ref<ObservationLayout>('list')
+const viewMode = ref<'cards' | 'matrix' | 'trend'>('cards')
+const viewItems = computed(() => [
+  { value: 'cards', label: t('channelMonitorV2.dashboard.views.cards') },
+  { value: 'matrix', label: t('channelMonitorV2.dashboard.views.matrix') },
+  { value: 'trend', label: t('channelMonitorV2.dashboard.views.trend') },
+])
 const detail = ref<{ item: ObservationChannel; model?: string; slot: { start: string; bucket: ObservationBucket | null } | null } | null>(null)
 const selectedGroups = computed({ get: () => filter.value.groupIds.map(String), set: (values: string[]) => { filter.value.groupIds = values.map(Number).filter(value => Number.isInteger(value) && value > 0) } })
 const dimensions = computed(() => overview.value?.dimensions || { platforms: [], groups: [], models: [] })
-const platformOptions = computed(() => dimensions.value.platforms.map(item => ({ value: item.value, label: item.label })))
+const platformOptions = computed(() => dimensions.value.platforms.map(item => { const key = `channelMonitorV2.platforms.${item.value}`; return { value: item.value, label: te(key) ? t(key) : item.label } }))
 const platformMatches = (platform?: string) => !platform || !filter.value.platforms.length || filter.value.platforms.includes(platform)
 const groupOptions = computed(() => dimensions.value.groups.filter(item => platformMatches(item.platform)).map(item => ({ value: String(item.id), label: item.name || `#${item.id}` })))
 const modelOptions = computed(() => dimensions.value.models.filter(item => platformMatches(item.platform)).map(item => ({ value: item.value, label: item.label })))
@@ -89,6 +108,16 @@ const visibleGaps = computed(() => isAdmin.value ? (overview.value?.coverage.gap
   const key = `channelMonitorV2.unified.gaps.${reason}`
   return te(key) ? t(key) : reason
 }) : [])
+const heroStats = computed(() => {
+  const summary = summarizeMonitorTraffic(overview.value)
+  const sourceLabel = summary.sources.map(item => monitorSourceLabel(item.source, t, te)).join(' / ')
+  return [
+    { label: t('channelMonitorV2.dashboard.availableChannels'), value: `${summary.healthy}/${summary.total}`, tone: 'text-emerald-600 dark:text-emerald-400' },
+    { label: t('channelMonitorV2.dashboard.healthRate'), value: summary.healthRate == null ? '—' : formatMonitorPercent(summary.healthRate), detail: t('channelMonitorV2.dashboard.healthBasis') },
+    { label: t('channelMonitorV2.dashboard.medianChannelTtft'), value: summary.sources.map(item => formatMonitorMs(item.ttftP50)).join(' / ') || '—', detail: sourceLabel, tone: 'text-sky-600 dark:text-sky-400' },
+    { label: t('channelMonitorV2.dashboard.errorRate'), value: summary.sources.map(item => item.errorRate == null ? '—' : formatMonitorPercent(item.errorRate)).join(' / ') || '—', detail: t('channelMonitorV2.dashboard.errorBasis') + (sourceLabel ? ` · ${sourceLabel}` : ''), tone: 'text-red-600 dark:text-red-400' },
+  ]
+})
 const formatTime = (value: string) => new Date(value).toLocaleString(locale.value)
 function clearFilters() { filter.value = { ...filter.value, platforms: [], groupIds: [], models: [] } }
 function refresh() { return load(true, true) }

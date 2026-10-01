@@ -19,6 +19,12 @@ import (
 
 const compactObservationDedupRetention = 25 * time.Hour
 
+// A few events waiting for the next one-second flush are normal.  Treat a
+// collector as backlogged only after at least one complete write batch is
+// waiting; in_flight requests are intentionally excluded because they have
+// not produced observation events yet.
+const compactObservationBacklogThreshold int64 = 128
+
 type compactObservationRepository struct {
 	*channelMonitorObservationRepository
 }
@@ -465,7 +471,7 @@ func (r *compactObservationRepository) Heartbeat(ctx context.Context, s service.
 	}
 	_, err := r.db.ExecContext(ctx, `INSERT INTO channel_monitor_compact_writer_sessions(id,started_at,heartbeat_at,data_through,last_ingested_at,last_write_error,ended_at,in_flight,dropped_events,pending_events)
  VALUES($1,$2,$3::timestamptz,$9,$4,$5::boolean,$6,$7,$8,$10)
- ON CONFLICT(id) DO UPDATE SET heartbeat_at=EXCLUDED.heartbeat_at,data_through=CASE WHEN EXCLUDED.last_write_error OR EXCLUDED.pending_events>0 THEN channel_monitor_compact_writer_sessions.data_through ELSE COALESCE(EXCLUDED.data_through,channel_monitor_compact_writer_sessions.data_through) END,last_ingested_at=COALESCE(EXCLUDED.last_ingested_at,channel_monitor_compact_writer_sessions.last_ingested_at),last_write_error=EXCLUDED.last_write_error,ended_at=EXCLUDED.ended_at,in_flight=EXCLUDED.in_flight,dropped_events=EXCLUDED.dropped_events,pending_events=EXCLUDED.pending_events`, s.ID, s.StartedAt, s.HeartbeatAt, s.LastIngestedAt, s.LastWriteError != "", s.EndedAt, s.InFlight, s.DroppedEvents, through, s.PendingEvents)
+ ON CONFLICT(id) DO UPDATE SET heartbeat_at=EXCLUDED.heartbeat_at,data_through=CASE WHEN EXCLUDED.last_write_error THEN channel_monitor_compact_writer_sessions.data_through ELSE COALESCE(EXCLUDED.data_through,channel_monitor_compact_writer_sessions.data_through) END,last_ingested_at=COALESCE(EXCLUDED.last_ingested_at,channel_monitor_compact_writer_sessions.last_ingested_at),last_write_error=EXCLUDED.last_write_error,ended_at=EXCLUDED.ended_at,in_flight=EXCLUDED.in_flight,dropped_events=EXCLUDED.dropped_events,pending_events=EXCLUDED.pending_events`, s.ID, s.StartedAt, s.HeartbeatAt, s.LastIngestedAt, s.LastWriteError != "", s.EndedAt, s.InFlight, s.DroppedEvents, through, s.PendingEvents)
 	return err
 }
 
@@ -727,7 +733,7 @@ func compactObservationCoverage(ctx context.Context, tx *sql.Tx, f service.Chann
 	if failed > 0 {
 		c.State = "partial"
 		c.CollectorState = "write_failed"
-	} else if c.PendingEvents > 0 {
+	} else if c.PendingEvents >= compactObservationBacklogThreshold {
 		c.State = "partial"
 		c.CollectorState = "backlogged"
 		c.GapReasons = append(c.GapReasons, "collector_backlog")
@@ -817,7 +823,7 @@ func (r *compactObservationRepository) QuerySamples(ctx context.Context, f servi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var raw []byte
 		if err = rows.Scan(&raw); err != nil {
@@ -845,7 +851,7 @@ func (r *compactObservationRepository) ProbeActivity(ctx context.Context, groupI
 	defer func() { _ = tx.Rollback() }()
 	var started, latest sql.NullTime
 	var failed, gaps int64
-	err = tx.QueryRowContext(ctx, `SELECT MIN(started_at),COALESCE(SUM(CASE WHEN last_write_error OR pending_events>0 OR data_through IS NULL OR data_through<$1 THEN 1 ELSE 0 END),0) FROM channel_monitor_compact_writer_sessions WHERE ended_at IS NULL AND heartbeat_at>=$1`, now.Add(-45*time.Second)).Scan(&started, &failed)
+	err = tx.QueryRowContext(ctx, `SELECT MIN(started_at),COALESCE(SUM(CASE WHEN last_write_error OR pending_events>=$2 OR data_through IS NULL OR data_through<$1 THEN 1 ELSE 0 END),0) FROM channel_monitor_compact_writer_sessions WHERE ended_at IS NULL AND heartbeat_at>=$1`, now.Add(-45*time.Second), compactObservationBacklogThreshold).Scan(&started, &failed)
 	if err != nil {
 		return activity, err
 	}

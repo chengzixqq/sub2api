@@ -35,7 +35,7 @@ func (r *channelMonitorProbeRepository) ListTargets(ctx context.Context) ([]serv
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	items := []service.ChannelMonitorProbeTarget{}
 	for rows.Next() {
 		t, e := scanProbeTarget(rows)
@@ -78,7 +78,7 @@ func (r *channelMonitorProbeRepository) QuotaSummaries(ctx context.Context, grou
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
 		var missing bool
@@ -105,7 +105,7 @@ func (r *channelMonitorProbeRepository) Reserve(ctx context.Context, id int64, k
 	if err != nil {
 		return nil, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	// Global budget lock is always first: cross-target requests cannot overspend or deadlock.
 	day := now.UTC().Format("2006-01-02")
 	if _, err = tx.ExecContext(ctx, `INSERT INTO channel_monitor_probe_budgets(utc_day,target_id) VALUES($1,0),($1,$2) ON CONFLICT DO NOTHING`, day, id); err != nil {
@@ -182,7 +182,7 @@ func (r *channelMonitorProbeRepository) Complete(ctx context.Context, run *servi
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `UPDATE channel_monitor_probe_runs SET result=$2,completed_at=$3 WHERE id=$1 AND completed_at IS NULL`, run.ID, data, run.CompletedAt)
 	if err != nil {
 		return err
@@ -204,7 +204,7 @@ func (r *channelMonitorProbeRepository) Budget(ctx context.Context, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
 		var used int
@@ -232,7 +232,7 @@ func (r *channelMonitorProbeRepository) RecentRuns(ctx context.Context, groupIDs
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var data []byte
 		var item service.ChannelMonitorProbeRun
@@ -251,7 +251,7 @@ func (r *channelMonitorProbeRepository) QuotaAccounts(ctx context.Context) ([]in
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	ids := []int64{}
 	for rows.Next() {
 		var id int64
@@ -291,7 +291,7 @@ func (r *channelMonitorProbeRepository) ReadQuotas(ctx context.Context, ids []in
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
 		var raw []byte

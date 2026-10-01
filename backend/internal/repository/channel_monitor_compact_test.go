@@ -17,7 +17,7 @@ import (
 func TestCompactObservationConfig_UsesIndependentPolicy(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewChannelMonitorObservationRepository(db)
 	mock.ExpectQuery("SELECT version, config FROM channel_monitor_compact_config").WillReturnError(sql.ErrNoRows)
 	cfg, err := repo.GetConfig(context.Background())
@@ -135,7 +135,7 @@ func compactTestEvent() service.ChannelMonitorEvent {
 func TestCompactObservationStore_DuplicateDoesNotIncrementAggregates(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewChannelMonitorObservationRepository(db)
 	e := compactTestEvent()
 	mock.ExpectBegin()
@@ -149,7 +149,7 @@ func TestCompactObservationStore_DuplicateDoesNotIncrementAggregates(t *testing.
 func TestCompactObservationStore_AggregationFailureRollsBackDedup(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewChannelMonitorObservationRepository(db)
 	e := compactTestEvent()
 	mock.ExpectBegin()
@@ -165,7 +165,7 @@ func TestCompactObservationStore_AggregationFailureRollsBackDedup(t *testing.T) 
 func TestCompactObservationStore_CommittedBatchDoesNotWriteLegacyDetails(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repo := NewChannelMonitorObservationRepository(db)
 	e := compactTestEvent()
 	mock.ExpectBegin()
@@ -181,7 +181,7 @@ func TestCompactObservationStore_CommittedBatchDoesNotWriteLegacyDetails(t *test
 func TestCompactObservationCoverage_HealthyIdleUsesWriterProgress(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Now().UTC()
 	f := service.ChannelMonitorV2Filter{Start: now.Add(-24 * time.Hour), End: now.Truncate(time.Minute)}
 	mock.ExpectBegin()
@@ -203,7 +203,7 @@ func TestCompactObservationCoverage_HealthyIdleUsesWriterProgress(t *testing.T) 
 func TestCompactObservationQuery_EmptyScopeDoesNotReadFacts(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	now := time.Now().UTC()
 	f := service.ChannelMonitorV2Filter{Start: now.Truncate(time.Minute).Add(-24 * time.Hour), End: now.Truncate(time.Minute), Bucket: time.Minute, RestrictGroups: true}
 	mock.ExpectBegin()

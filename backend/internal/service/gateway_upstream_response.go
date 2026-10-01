@@ -375,8 +375,9 @@ func (s *GatewayService) readUpstreamErrorBody(resp *http.Response) ([]byte, err
 }
 
 func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestedModel ...string) (*ForwardResult, error) {
-	// Upstream returned a non-success HTTP status; count Ollama Cloud activity.
+	// Upstream returned a non-success HTTP status; count Ollama Cloud / OpenCode Go activity.
 	scheduleOllamaCloudUsageActivity(s.deferredService, account)
+	scheduleOpenCodeGoUsageActivity(s.deferredService, account)
 	body, readErr := s.readUpstreamErrorBody(resp)
 	if readErr != nil {
 		// 读取失败时 body 可能被截断，错误分类会基于不完整数据；记录日志以便排查，
@@ -386,9 +387,9 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 
 	// 调试日志：打印上游错误响应
-	logBody := redactUpstreamResponseBodyForClient(c, body)
+	logBody := s.upstreamErrorBodyForLog(c, body)
 	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -453,7 +454,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			logBody,
 		)
 	}
 
@@ -622,14 +623,14 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	})
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-		logBody := redactUpstreamResponseBodyForClient(c, respBody)
+		logBody := s.upstreamErrorBodyForLog(c, respBody)
 		logger.LegacyPrintf("service.gateway",
 			"Upstream error %d retries_exhausted (account=%d platform=%s type=%s): %s",
 			resp.StatusCode,
 			account.ID,
 			account.Platform,
 			account.Type,
-			truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+			logBody,
 		)
 	}
 
@@ -757,12 +758,16 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		streamInterval = time.Duration(s.cfg.Gateway.StreamDataIntervalTimeout) * time.Second
 	}
 	idleReader := newUpstreamIdleReader(resp.Body, streamInterval)
-	defer idleReader.Stop()
 	scanner := bufio.NewScanner(idleReader)
 	// 设置更大的buffer以处理长行
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
+	}
+	guard := newAnthropicSSEGuard(isNativeAnthropicResponse(account, resp))
+	maxFrameBytes := maxLineSize * 4
+	if maxFrameBytes < maxLineSize {
+		maxFrameBytes = maxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
@@ -774,7 +779,10 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	// 独立 goroutine 读取上游，避免读取阻塞导致超时/keepalive无法处理
 	events := make(chan scanEvent, 16)
 	done := make(chan struct{})
+	scannerDone := make(chan struct{})
 	sendEvent := func(ev scanEvent) bool {
+		idleReader.pause()
+		defer idleReader.resume()
 		select {
 		case events <- ev:
 			return true
@@ -783,6 +791,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 	}
 	go func(scanBuf *sseScannerBuf64K) {
+		defer close(scannerDone)
 		defer putSSEScannerBuf64K(scanBuf)
 		defer close(events)
 		for scanner.Scan() {
@@ -794,7 +803,8 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			_ = sendEvent(scanEvent{err: err})
 		}
 	}(scanBuf)
-	defer close(done)
+	lifecycle := newAnthropicStreamScannerLifecycle(resp.Body, idleReader, scannerDone, done)
+	defer lifecycle.stopAndWait()
 
 	// 下游 keepalive：防止代理/Cloudflare Tunnel 因连接空闲而断开
 	keepaliveInterval := time.Duration(0)
@@ -1077,6 +1087,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
+			if err := guard.observeLine(line, maxFrameBytes); err != nil {
+				if !clientDisconnected {
+					sendErrorEvent("invalid_upstream_sse", "upstream returned an invalid Anthropic SSE sequence")
+				}
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
+			}
 			trimmed := strings.TrimSpace(line)
 
 			if trimmed == "" {
@@ -1119,6 +1135,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 						}
 					}
 				}
+				if sawTerminalEvent {
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, nil
+				}
 				continue
 			}
 
@@ -1129,7 +1148,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				continue
 			}
 			if clientDisconnected {
-				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout")
+				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, fmt.Errorf("stream usage incomplete after timeout: %w", ErrUpstreamIdleTimeout)
 			}
 			logger.LegacyPrintf("service.gateway", "Stream data interval timeout: account=%d model=%s interval=%s", account.ID, originalModel, streamInterval)
 			// 处理流超时，可能标记账户为临时不可调度或错误状态
@@ -1137,7 +1156,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
 			sendErrorEvent("stream_timeout", fmt.Sprintf("upstream stream idle for %s", streamInterval))
-			return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout: %w (interval=%s)", ErrUpstreamIdleTimeout, streamInterval)
 
 		case <-keepaliveCh:
 			if clientDisconnected {

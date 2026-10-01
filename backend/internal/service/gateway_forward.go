@@ -104,6 +104,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
 	}
+	// Validate the mapped native model before mimicry can remove unsupported
+	// thinking or tool-choice settings, including the API-key passthrough path.
+	validationModel := parsed.Model
+	if account != nil && account.Type == AccountTypeAPIKey {
+		validationModel = account.GetMappedModel(validationModel)
+	}
+	if account != nil && account.Platform == PlatformAnthropic && !account.IsBedrock() && account.Type != AccountTypeServiceAccount {
+		if err := validateClaudeOpus55Request(parsed.Body.Bytes(), validationModel); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
+			return nil, err
+		}
+	}
 	// Resolve the effective Claude compatibility policy once for this request.
 	// Account-level overrides take precedence over the global policy and are
 	// reused by every retry attempt through gin.Context.
@@ -539,9 +551,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 											Kind:               "signature_retry_tools_request_error",
 											Message:            sanitizeUpstreamErrorMessage(retryErr2.Error()),
 										})
-										logger.LegacyPrintf("service.gateway", "Account %d: tool-downgrade signature retry failed: %v", account.ID, retryErr2)
+										logger.LegacyPrintf("service.gateway", "Account %d: tool-downgrade signature retry failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(retryErr2.Error())))
 									} else {
-										logger.LegacyPrintf("service.gateway", "Account %d: tool-downgrade signature retry build failed: %v", account.ID, buildErr2)
+										logger.LegacyPrintf("service.gateway", "Account %d: tool-downgrade signature retry build failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(buildErr2.Error())))
 									}
 								}
 							}
@@ -557,9 +569,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						if retryResp != nil && retryResp.Body != nil {
 							_ = retryResp.Body.Close()
 						}
-						logger.LegacyPrintf("service.gateway", "Account %d: signature error retry failed: %v", account.ID, retryErr)
+						logger.LegacyPrintf("service.gateway", "Account %d: signature error retry failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(retryErr.Error())))
 					} else {
-						logger.LegacyPrintf("service.gateway", "Account %d: signature error retry build request failed: %v", account.ID, buildErr)
+						logger.LegacyPrintf("service.gateway", "Account %d: signature error retry build request failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(buildErr.Error())))
 					}
 
 					// Retry failed: restore original response body and continue handling.
@@ -611,9 +623,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 							if budgetRetryResp != nil && budgetRetryResp.Body != nil {
 								_ = budgetRetryResp.Body.Close()
 							}
-							logger.LegacyPrintf("service.gateway", "Account %d: budget rectifier retry failed: %v", account.ID, retryErr)
+							logger.LegacyPrintf("service.gateway", "Account %d: budget rectifier retry failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(retryErr.Error())))
 						} else {
-							logger.LegacyPrintf("service.gateway", "Account %d: budget rectifier retry build failed: %v", account.ID, buildErr)
+							logger.LegacyPrintf("service.gateway", "Account %d: budget rectifier retry build failed: %v", account.ID, sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(buildErr.Error())))
 						}
 					}
 				}
@@ -693,9 +705,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 			// 调试日志：打印重试耗尽后的错误响应
-			logBody := redactUpstreamResponseBodyForClient(c, respBody)
+			logBody := s.upstreamErrorBodyForLog(c, respBody)
 			logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
+				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -731,9 +743,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		// 调试日志：打印上游错误响应
-		logBody := redactUpstreamResponseBodyForClient(c, respBody)
+		logBody := s.upstreamErrorBodyForLog(c, respBody)
 		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(logBody), 1000))
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -795,11 +807,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				})
 
 				if s.cfg.Gateway.LogUpstreamErrorBody {
-					logBody := redactUpstreamResponseBodyForClient(c, respBody)
+					logBody := s.upstreamErrorBodyForLog(c, respBody)
 					logger.LegacyPrintf("service.gateway",
 						"Account %d: 400 error, attempting failover: %s",
 						account.ID,
-						truncateForLog(logBody, s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes),
+						logBody,
 					)
 				} else {
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
@@ -875,11 +887,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					Detail:             upstreamDetail,
 				})
 
-				logBody := redactUpstreamResponseBodyForClient(c, []byte(sseErr.RawData))
+				logBody := s.upstreamErrorBodyForLog(c, []byte(sseErr.RawData))
 				logger.LegacyPrintf("service.gateway",
 					"[Forward] SSE error event in stream: Account=%d(%s) RequestID=%s Body=%s",
 					account.ID, account.Name, resp.Header.Get("x-request-id"),
-					truncateString(string(logBody), 1000),
+					logBody,
 				)
 
 				failoverErr := &UpstreamFailoverError{

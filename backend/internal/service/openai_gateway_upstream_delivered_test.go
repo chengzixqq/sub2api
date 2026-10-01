@@ -28,7 +28,6 @@ import (
 
 // newOpenAIUpstreamDeliveredSSEContext 复用本包既有的 flush recorder 夹具构造真实 *gin.Context。
 func newOpenAIUpstreamDeliveredSSEContext() (*gin.Context, *openAIResponseFlushRecorder) {
-	gin.SetMode(gin.TestMode)
 	recorder := newOpenAIResponseFlushRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -164,7 +163,6 @@ func TestOpenAIStreamingResponse_FailedEventOnlyDoesNotMarkUpstreamDelivered(t *
 // runOpenAIWSBridgeDeliveredTurn 复用 openai_ws_http_bridge_test.go 既有的 httpUpstreamRecorder
 // 夹具驱动真实的 proxyOpenAIWSHTTPBridgeTurn，返回 handler 侧持有的同一个 *gin.Context。
 func runOpenAIWSBridgeDeliveredTurn(sse string) *gin.Context {
-	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -376,7 +374,6 @@ func TestOpenAIRawChatStream_ErrorChunkOnlyDoesNotMarkUpstreamDelivered(t *testi
 
 // runOpenAIDeliveredImagesStream 驱动 handleOpenAIImagesStreamingResponse（API Key 图片叶子）。
 func runOpenAIDeliveredImagesStream(sse string) *gin.Context {
-	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 	resp := &http.Response{
@@ -414,7 +411,6 @@ func TestOpenAIImagesStream_ErrorFrameOnlyDoesNotMarkUpstreamDelivered(t *testin
 //
 //	（OAuth Responses 形状图片叶子）。
 func runOpenAIDeliveredImagesOAuthStream(sse string) *gin.Context {
-	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
 	resp := &http.Response{

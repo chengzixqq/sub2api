@@ -67,3 +67,23 @@ func TestUpstreamIdleReader_StopPreventsLateTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestUpstreamIdleReader_EventBackpressurePreservesRemainingDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := newUpstreamIdleReader(strings.NewReader("abc"), time.Second)
+		defer r.Stop()
+		started := time.Now()
+		_, err := r.Read(make([]byte, 1))
+		require.NoError(t, err)
+		time.Sleep(250 * time.Millisecond)
+		r.pause()
+		time.Sleep(2 * time.Second)
+		<-r.C()
+		require.False(t, r.Expired(), "a scanner delivering buffered events is not waiting for upstream bytes")
+		r.resume()
+		require.False(t, r.Expired())
+		<-r.C()
+		require.True(t, r.Expired(), "after backpressure ends, a genuinely idle upstream still expires")
+		require.Equal(t, 3*time.Second, time.Since(started), "only the two seconds spent delivering events should be excluded")
+	})
+}

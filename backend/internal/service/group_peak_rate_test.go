@@ -5,14 +5,7 @@ import (
 	"math"
 	"testing"
 	"time"
-
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
-
-func init() {
-	// 测试固定全局时区为 UTC，确保判定可复现。
-	_ = timezone.Init("UTC")
-}
 
 func newPeakGroup(enabled bool, start, end string, mult float64) *Group {
 	return &Group{

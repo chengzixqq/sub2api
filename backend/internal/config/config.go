@@ -96,6 +96,7 @@ type Config struct {
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
+	SimpleMode              SimpleModeConfig              `mapstructure:"simple_mode" yaml:"simple_mode"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
 	Timezone                string                        `mapstructure:"timezone"` // e.g. "Asia/Shanghai", "UTC"
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
@@ -104,6 +105,14 @@ type Config struct {
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
 	Plugins                 PluginConfig                  `mapstructure:"plugins"`
+
+	// Enforce only API-key spending windows in simple mode.
+	SimpleModeKeyRateLimitEnabled bool `mapstructure:"simple_mode_key_rate_limit_enabled" yaml:"simple_mode_key_rate_limit_enabled"`
+}
+
+// SimpleModeConfig controls startup behavior in simple mode.
+type SimpleModeConfig struct {
+	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
 }
 
 // PluginConfig 控制管理员手动上传的本地进程插件。
@@ -1014,6 +1023,9 @@ type GatewayConfig struct {
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
 	OpenAIProxyStreamCircuit GatewayOpenAIProxyStreamCircuitConfig `mapstructure:"openai_proxy_stream_circuit"`
+	// UpstreamHealth: shared HTTP transport quarantine for repeated
+	// transport failures. Disabled by default; it never reacts to ordinary 4xx.
+	UpstreamHealth GatewayUpstreamHealthConfig `mapstructure:"upstream_health"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
@@ -1174,6 +1186,16 @@ type GatewayOpenAIProxyStreamCircuitConfig struct {
 	WindowSeconds int `mapstructure:"window_seconds"`
 	// TTLSeconds: 代理隔离持续时间（秒）。
 	TTLSeconds int `mapstructure:"ttl_seconds"`
+}
+
+// GatewayUpstreamHealthConfig controls the optional shared HTTP health
+// quarantine. The state is keyed by account, upstream host, proxy and
+// transport profile so one unhealthy route does not evict a global pool.
+type GatewayUpstreamHealthConfig struct {
+	Enabled          bool `mapstructure:"enabled"`
+	FailureThreshold int  `mapstructure:"failure_threshold"`
+	WindowSeconds    int  `mapstructure:"window_seconds"`
+	TTLSeconds       int  `mapstructure:"ttl_seconds"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1992,6 +2014,8 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 
 func setDefaults() {
 	viper.SetDefault("run_mode", RunModeStandard)
+	viper.SetDefault("simple_mode.auto_create_default_groups", true)
+	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)
 
 	// Server
 	viper.SetDefault("server.host", "0.0.0.0")
@@ -2449,6 +2473,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.failure_threshold", 2)
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.window_seconds", 60)
 	viper.SetDefault("gateway.openai_proxy_stream_circuit.ttl_seconds", 600)
+	// Shared upstream health quarantine is deliberately opt-in.
+	viper.SetDefault("gateway.upstream_health.enabled", false)
+	viper.SetDefault("gateway.upstream_health.failure_threshold", 3)
+	viper.SetDefault("gateway.upstream_health.window_seconds", 60)
+	viper.SetDefault("gateway.upstream_health.ttl_seconds", 30)
 	// Grok free-tier local soft gate (scheduler-only; admin QueryQuota does not use this).
 	// Enabled by default because free detection requires an explicit free tier marker.
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_enabled", true)
@@ -3524,6 +3553,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIProxyStreamCircuit.TTLSeconds < 0 {
 		return fmt.Errorf("gateway.openai_proxy_stream_circuit.ttl_seconds must be non-negative")
+	}
+	if c.Gateway.UpstreamHealth.FailureThreshold < 0 {
+		return fmt.Errorf("gateway.upstream_health.failure_threshold must be non-negative")
+	}
+	if c.Gateway.UpstreamHealth.WindowSeconds < 0 {
+		return fmt.Errorf("gateway.upstream_health.window_seconds must be non-negative")
+	}
+	if c.Gateway.UpstreamHealth.TTLSeconds < 0 {
+		return fmt.Errorf("gateway.upstream_health.ttl_seconds must be non-negative")
 	}
 	weights := c.Gateway.OpenAIWS.SchedulerScoreWeights
 	for _, weight := range []float64{

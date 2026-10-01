@@ -15,7 +15,8 @@ func TestOpsRepositoryBatchInsertErrorLogs(t *testing.T) {
 	ctx := context.Background()
 	_, _ = integrationDB.ExecContext(ctx, "TRUNCATE ops_error_logs RESTART IDENTITY")
 
-	repo := NewOpsRepository(integrationDB).(*opsRepository)
+	repo, ok := NewOpsRepository(integrationDB).(*opsRepository)
+	require.True(t, ok)
 	now := time.Now().UTC()
 	inserted, err := repo.BatchInsertErrorLogs(ctx, []*service.OpsInsertErrorLogInput{
 		{

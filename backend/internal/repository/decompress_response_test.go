@@ -99,8 +99,8 @@ func TestDecompressResponseBodyInvalidZstdWarnsAndPreservesBody(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Equal(t, payload, body)
-	require.Equal(t, "zstd", resp.Header.Get("Content-Encoding"))
-	require.Equal(t, int64(len(payload)), resp.ContentLength)
+	require.Empty(t, resp.Header.Get("Content-Encoding"))
+	require.Equal(t, int64(-1), resp.ContentLength)
 	require.Contains(t, logOutput.String(), "msg=zstd_decompress_failed")
 	require.NoError(t, resp.Body.Close())
 }
@@ -122,8 +122,8 @@ func TestDecompressResponseBodyEmptyZstdWarnsAndPreservesBody(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	require.Empty(t, body)
-	require.Equal(t, "zstd", resp.Header.Get("Content-Encoding"))
-	require.Equal(t, int64(0), resp.ContentLength)
+	require.Empty(t, resp.Header.Get("Content-Encoding"))
+	require.Equal(t, int64(-1), resp.ContentLength)
 	require.Contains(t, logOutput.String(), "msg=zstd_decompress_failed")
 	require.NoError(t, resp.Body.Close())
 }

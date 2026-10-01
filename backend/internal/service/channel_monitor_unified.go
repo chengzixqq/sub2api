@@ -66,14 +66,15 @@ func observationCurrentStatus(facts []ChannelMonitorObservationFact, cfg Channel
 		return out
 	}
 	m, health := observationMetrics(recent, cfg, platform, group, model, 5*time.Minute, true)
-	if m.SampleState == "sufficient" {
+	switch m.SampleState {
+	case "sufficient":
 		out.State, out.Source, out.Reason = health.Reliability, "traffic", "recent_traffic"
 		if health.Latency == "warning" || health.Latency == "critical" {
 			if out.State == "healthy" {
 				out.State, out.Reason = "warning", "high_latency"
 			}
 		}
-	} else if m.SampleState == "insufficient" {
+	case "insufficient":
 		out.Reason = "insufficient_samples"
 	}
 	return out

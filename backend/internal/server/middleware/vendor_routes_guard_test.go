@@ -50,6 +50,10 @@ func TestVendorRoutesDenyStationOnlyEndpoints(t *testing.T) {
 		{"/api/v1/admin/risk", "GET"},
 		{"/api/v1/admin/channel-monitor-v2/config", "GET"},
 		{"/api/v1/admin/channel-monitor-v2/snapshot", "GET"},
+		{"/api/v1/admin/accounts/opencode-go-usage/settings", "PUT"},
+		{"/api/v1/admin/accounts/ollama-cloud-usage/settings", "PUT"},
+		{"/api/v1/admin/plugins", "GET"},
+		{"/api/v1/admin/affiliate/withdrawals", "GET"},
 		// 合规确认曾在此列，是错的：AdminComplianceGuard 对未确认者一律 423，
 		// 而本白名单挡住确认接口本身，vendor 会被两个中间件夹死。
 		// 现由 TestVendorComplianceSelfServiceReachable 断言其必须可达。

@@ -83,7 +83,6 @@ func fallbackNativeGatewayForTest(t *testing.T, upstream HTTPUpstream, cfg *conf
 }
 
 func TestManagedAnthropicAPIKeyPath_DoesNotTurnUpstream400IntoLocalFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	const upstreamJSON = `{"type":"error","error":{"type":"invalid_request_error","message":"thinking signature is invalid"},"request_id":"req_upstream"}`
 	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{

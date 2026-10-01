@@ -49,6 +49,7 @@ var vendorDeniedRoutes = []vendorRoute{
 	// 只拦写：GET 供账号编辑页读取当前值，对 vendor 无害。
 	{prefix: "/api/v1/admin/accounts/upstream-billing-probe/settings", methods: writeMethods, exact: true},
 	{prefix: "/api/v1/admin/accounts/ollama-cloud-usage/settings", methods: writeMethods, exact: true},
+	{prefix: "/api/v1/admin/accounts/opencode-go-usage/settings", methods: writeMethods, exact: true},
 
 	// 导入/导出与跨账号同步：整库级数据搬运，且 CRS 同步会按上游返回
 	// 批量建号，无法归属到发起方工作区。导出另有 step-up 2FA，但那道门

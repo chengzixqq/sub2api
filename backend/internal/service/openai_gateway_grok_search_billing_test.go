@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 )
 
 func TestForwardGrokResponses_PropagatesSearchCountFromJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"grok","input":"search something","tools":[{"type":"web_search"}],"stream":false}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -59,7 +57,6 @@ func TestForwardGrokResponses_PropagatesSearchCountFromJSON(t *testing.T) {
 }
 
 func TestForwardGrokResponses_PropagatesSearchCountFromSSE(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"grok","input":"search","tools":[{"type":"web_search"}],"stream":true}`)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -108,16 +105,7 @@ func TestGetSchedulableAccount_AppliesGrokFreeSoftGate(t *testing.T) {
 	usageRepo := &grokFreeQuotaUsageRepoStub{stats: map[int64]*usagestats.AccountStats{
 		account.ID: {Tokens: 480_000}, // above 95% of 500k
 	}}
-	// Clear shared gateway free-gate cache so this test is deterministic.
-	gatewayGrokFreeQuotaGateCache.Range(func(key, _ any) bool {
-		gatewayGrokFreeQuotaGateCache.Delete(key)
-		return true
-	})
-	if root, ok := freeQuotaRefreshInFlight.Load(&gatewayGrokFreeQuotaGateCache); ok {
-		if m, ok := root.(*sync.Map); ok {
-			m.Delete(account.ID)
-		}
-	}
+	isolateGrokFreeQuotaCache(t, &gatewayGrokFreeQuotaGateCache)
 	svc := &GatewayService{
 		cfg:          cfg,
 		accountRepo:  repo,
@@ -155,15 +143,7 @@ func TestOpenAIGetSchedulableAccount_AppliesGrokFreeSoftGate(t *testing.T) {
 	usageRepo := &grokFreeQuotaUsageRepoStub{stats: map[int64]*usagestats.AccountStats{
 		account.ID: {Tokens: 480_000},
 	}}
-	openaiGrokFreeQuotaGateCache.Range(func(key, _ any) bool {
-		openaiGrokFreeQuotaGateCache.Delete(key)
-		return true
-	})
-	if root, ok := freeQuotaRefreshInFlight.Load(&openaiGrokFreeQuotaGateCache); ok {
-		if m, ok := root.(*sync.Map); ok {
-			m.Delete(account.ID)
-		}
-	}
+	isolateGrokFreeQuotaCache(t, &openaiGrokFreeQuotaGateCache)
 	svc := &OpenAIGatewayService{
 		cfg:          cfg,
 		accountRepo:  repo,

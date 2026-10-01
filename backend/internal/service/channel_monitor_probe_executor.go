@@ -148,7 +148,7 @@ func (e *ChannelMonitorProbeExecutor) Execute(ctx context.Context, run *ChannelM
 		}
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, monitorResponseMaxBytes+1))
 	if err != nil || len(raw) > monitorResponseMaxBytes {
 		run.ErrorClass = "invalid_response"

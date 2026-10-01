@@ -13,7 +13,7 @@ type accountDetailsObservationRepo struct {
 	facts []ChannelMonitorAccountObservationFact
 }
 
-func (r accountDetailsObservationRepo) QueryAccounts(context.Context, ChannelMonitorV2Filter) ([]ChannelMonitorAccountObservationFact, error) {
+func (r *accountDetailsObservationRepo) QueryAccounts(context.Context, ChannelMonitorV2Filter) ([]ChannelMonitorAccountObservationFact, error) {
 	return r.facts, nil
 }
 

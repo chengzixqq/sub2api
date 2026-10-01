@@ -37,7 +37,6 @@ func (r *shadowSkipTestRepo) GetByIDScoped(ctx context.Context, id int64) (*Acco
 }
 
 func newShadowTestGinCtx() *gin.Context {
-	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/200/test", nil)

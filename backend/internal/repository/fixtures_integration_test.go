@@ -211,6 +211,9 @@ func mustCreateAccount(t *testing.T, client *dbent.Client, a *service.Account) *
 		SetSchedulable(a.Schedulable).
 		SetErrorMessage(a.ErrorMessage)
 
+	if a.WorkspaceID > 0 {
+		create.SetWorkspaceID(a.WorkspaceID)
+	}
 	if a.ProxyID != nil {
 		create.SetProxyID(*a.ProxyID)
 	}
@@ -252,6 +255,7 @@ func mustCreateAccount(t *testing.T, client *dbent.Client, a *service.Account) *
 	require.NoError(t, err, "create account")
 
 	a.ID = created.ID
+	a.WorkspaceID = created.WorkspaceID
 	a.CreatedAt = created.CreatedAt
 	a.UpdatedAt = created.UpdatedAt
 	return a
@@ -329,48 +333,6 @@ func mustCreateApiKey(t *testing.T, client *dbent.Client, k *service.APIKey) *se
 	k.CreatedAt = created.CreatedAt
 	k.UpdatedAt = created.UpdatedAt
 	return k
-}
-
-func mustCreateRedeemCode(t *testing.T, client *dbent.Client, c *service.RedeemCode) *service.RedeemCode {
-	t.Helper()
-	ctx := context.Background()
-
-	if c.Status == "" {
-		c.Status = service.StatusUnused
-	}
-	if c.Type == "" {
-		c.Type = service.RedeemTypeBalance
-	}
-	if c.Code == "" {
-		c.Code = "rc-" + time.Now().Format("150405.000000")
-	}
-
-	create := client.RedeemCode.Create().
-		SetCode(c.Code).
-		SetType(c.Type).
-		SetValue(c.Value).
-		SetStatus(c.Status).
-		SetNotes(c.Notes).
-		SetValidityDays(c.ValidityDays)
-	if c.UsedBy != nil {
-		create.SetUsedBy(*c.UsedBy)
-	}
-	if c.UsedAt != nil {
-		create.SetUsedAt(*c.UsedAt)
-	}
-	if c.GroupID != nil {
-		create.SetGroupID(*c.GroupID)
-	}
-	if !c.CreatedAt.IsZero() {
-		create.SetCreatedAt(c.CreatedAt)
-	}
-
-	created, err := create.Save(ctx)
-	require.NoError(t, err, "create redeem code")
-
-	c.ID = created.ID
-	c.CreatedAt = created.CreatedAt
-	return c
 }
 
 func mustCreateSubscription(t *testing.T, client *dbent.Client, s *service.UserSubscription) *service.UserSubscription {

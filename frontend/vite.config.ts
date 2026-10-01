@@ -57,6 +57,8 @@ function injectPublicSettings(backendUrl: string): Plugin {
     transformIndexHtml: {
       order: 'pre',
       async handler(html) {
+        // The fixture is intentionally network-isolated; do not inject live public settings.
+        if (html.includes('id="monitor-preview"')) return html
         try {
           const response = await fetch(`${backendUrl}/api/v1/settings/public`, {
             signal: AbortSignal.timeout(2000)

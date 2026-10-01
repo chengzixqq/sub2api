@@ -163,6 +163,25 @@ func (c *ChannelMonitorCollector) updateProgress(now time.Time, batchLength int)
 	}
 }
 
+// advanceDataThrough records the newest completed event that has been
+// durably written.  The collector may still have newer events waiting in its
+// queue, but the successfully flushed prefix is valid coverage and should not
+// be hidden behind that queue.  This also keeps long-running requests (which
+// increase in_flight without producing events) from looking like a writer
+// backlog.
+func (c *ChannelMonitorCollector) advanceDataThrough(through time.Time) {
+	if c == nil || through.IsZero() {
+		return
+	}
+	through = through.UTC()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.session.DataThrough == nil || through.After(*c.session.DataThrough) {
+		copy := through
+		c.session.DataThrough = &copy
+	}
+}
+
 func (c *ChannelMonitorCollector) run() {
 	defer close(c.done)
 	flushTimer := time.NewTicker(c.options.FlushInterval)
@@ -214,6 +233,15 @@ func (c *ChannelMonitorCollector) run() {
 			now := time.Now().UTC()
 			c.session.LastIngestedAt = &now
 			c.session.LastWriteError = ""
+			// DataThrough is event time, not wall-clock ingest time.  Advance it
+			// for the flushed prefix even when newer events remain queued.
+			var through time.Time
+			for _, event := range batch {
+				if event.CompletedAt.After(through) {
+					through = event.CompletedAt
+				}
+			}
+			c.advanceDataThrough(through)
 		}
 		for i := range batch {
 			batch[i] = ChannelMonitorEvent{}
