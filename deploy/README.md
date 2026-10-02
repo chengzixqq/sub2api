@@ -217,9 +217,8 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 # Restart Sub2API only
 docker compose -f docker-compose.local.yml restart sub2api
 
-# Update to latest version
-docker compose -f docker-compose.local.yml pull
-docker compose -f docker-compose.local.yml up -d
+# Upgrade with preflight, backups, health checks, and image rollback
+./upgrade-compose.sh ghcr.io/your-owner/sub2api:0.2.11 ../backups
 
 # Remove all data (caution!)
 docker compose -f docker-compose.local.yml down
@@ -241,13 +240,31 @@ docker compose logs -f sub2api
 # Restart Sub2API only
 docker compose restart sub2api
 
-# Update to latest version
-docker compose pull
-docker compose up -d
+# Upgrade with preflight, backups, health checks, and image rollback
+./upgrade-compose.sh ghcr.io/your-owner/sub2api:0.2.11 ../backups
 
 # Remove all data (caution!)
 docker compose down -v
 ```
+
+Run `upgrade-compose.sh` from the deployment directory. It requires Docker
+Compose v2, Python 3, and `sha256sum`. The script checks the current app,
+PostgreSQL, and Redis; pins one pulled candidate image for migration preflight
+and startup; then saves the Compose inputs, effective configuration, `.env`,
+application data, a validated PostgreSQL dump, a Redis RDB snapshot, and the
+previous image under the backup root. A healthy upgrade records the selected
+image in `.env` so later Compose operations keep using that release.
+
+The app is recreated in place, so requests can be interrupted while it starts.
+If candidate health or dependency checks fail, the script restores the previous
+application image and records the recovery bundle path. It pins that local
+rollback image in `.env`, so later Compose operations keep the recovered version
+even when the prior configuration used a mutable tag such as `latest`. Keep the
+rollback image until you explicitly select another version. Image rollback does
+not reverse database changes; restore PostgreSQL and Redis from the bundle only
+after reviewing the failure and stopping writes. The `/health` container probe
+plus database and Redis checks are operational checks, not billing or API
+acceptance; run those before treating the release as production-ready.
 
 ### Environment Variables
 

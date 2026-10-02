@@ -90,12 +90,20 @@ func (r *usageLogRepository) GetAPIKeyUsageTrendWithFilters(ctx context.Context,
 }
 
 // GetUserUsageTrend returns usage trend data grouped by user and date
-func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]UserUsageTrendPoint, error) {
-	return r.GetUserUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, UsageLogFilters{})
+func (r *usageLogRepository) GetUserUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string) (results []UserUsageTrendPoint, err error) {
+	return r.getUserUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, metric, UsageLogFilters{})
 }
 
 func (r *usageLogRepository) GetUserUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, filters UsageLogFilters) (results []UserUsageTrendPoint, err error) {
+	return r.getUserUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, "tokens", filters)
+}
+
+func (r *usageLogRepository) getUserUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string, filters UsageLogFilters) (results []UserUsageTrendPoint, err error) {
 	dateFormat := safeDateFormat(granularity)
+	rankExpr := "SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)"
+	if metric == "actual_cost" {
+		rankExpr = "SUM(actual_cost)"
+	}
 
 	args := []any{startTime, endTime, limit}
 	where, args := usageRankingWhere(ctx, filters, args)
@@ -104,7 +112,7 @@ func (r *usageLogRepository) GetUserUsageTrendWithFilters(ctx context.Context, s
 			SELECT user_id
 			FROM scoped
 			GROUP BY user_id
-			ORDER BY SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) DESC
+			ORDER BY %s DESC, user_id ASC
 			LIMIT $3
 		)
 		SELECT
@@ -122,7 +130,7 @@ func (r *usageLogRepository) GetUserUsageTrendWithFilters(ctx context.Context, s
 		WHERE u.user_id IN (SELECT user_id FROM top_users)
 		GROUP BY date, u.user_id, us.email, us.username
 		ORDER BY date ASC, tokens DESC
-	`, where, dateFormat)
+	`, where, rankExpr, dateFormat)
 
 	query, args = usageQueryTimezone(ctx, query, args)
 	rows, err := r.sql.QueryContext(ctx, query, args...)

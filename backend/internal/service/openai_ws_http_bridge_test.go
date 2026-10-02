@@ -1170,6 +1170,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnBareErrorFollowedByCompletedUsesCompleted(t 
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurnStagesMetadataAndRelaysKeepaliveBeforeCapacityFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	preamble := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp_shed"}}`,
 		"",
@@ -1287,6 +1288,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnDoesNotReplayCapacityAfterSemanticOutput(t *
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurnKeepaliveWriteFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
 		name      string
 		writeErr  error
@@ -1347,6 +1349,7 @@ func TestProxyOpenAIWSHTTPBridgeTurnKeepaliveWriteFailure(t *testing.T) {
 }
 
 func TestProxyOpenAIWSHTTPBridgeTurnDisconnectedBeforeOutputDoesNotFailOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
 		name         string
 		tail         string

@@ -13,7 +13,7 @@ func (s *DashboardService) GetUserUsageTrendWithFilters(ctx context.Context, sta
 	}); ok {
 		return repo.GetUserUsageTrendWithFilters(ctx, start, end, granularity, limit, filters)
 	}
-	return s.GetUserUsageTrend(ctx, start, end, granularity, limit)
+	return s.GetUserUsageTrend(ctx, start, end, granularity, limit, "tokens")
 }
 func (s *DashboardService) GetAPIKeyUsageTrendWithFilters(ctx context.Context, start, end time.Time, granularity string, limit int, filters usagestats.UsageLogFilters) ([]usagestats.APIKeyUsageTrendPoint, error) {
 	if repo, ok := s.usageRepo.(interface {

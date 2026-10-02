@@ -41,6 +41,7 @@ func openCodeMappedTestAccount() *Account {
 }
 
 func TestOpenCodeGatewayAppliesMappedModelOnAllIngresses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
 		name         string

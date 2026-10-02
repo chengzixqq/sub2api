@@ -212,6 +212,25 @@ func TestCodexDirectImagesStreaming(t *testing.T) {
 	}
 }
 
+func TestCodexDirectImagesStreamingPreservesWebPFormat(t *testing.T) {
+	body := []byte(`{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":"data:image/png;base64,AA=="}],"stream":true,"response_format":"url"}`)
+	c, rec := newOpenAIImagesTestContext(t, body)
+	c.Request.URL.Path = "/v1/images/edits"
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("data: {\"type\":\"image_generation.completed\",\"model\":\"gpt-image-2-codex\",\"b64_json\":%q,\"output_format\":\"webp\",\"usage\":{\"input_tokens\":10,\"output_tokens\":20}}\n\n", openAIImagesTestPNGBase64))),
+	}}
+	svc := newOpenAIImagesTestService(upstream)
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+	result, err := svc.ForwardImages(context.Background(), c, directImagesTestAccount(), body, parsed, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.ImageCount)
+	require.Contains(t, rec.Body.String(), "data:image/webp;base64,"+openAIImagesTestPNGBase64)
+}
+
 func TestCodexDirectImagesEmptyOrInvalidResponseFails(t *testing.T) {
 	for _, body := range []string{`{"data":[]}`, `{"data":[{"b64_json":""}]}`, `{"data":[{"b64_json":"aGVsbG8="}]}`, `{"data":[{"b64_json":"not-base64"}]}`, `{}`, `{"error":{"message":"overloaded","type":"server_error"}}`, `not json`} {
 		_, err := parseCodexDirectImagesResponse([]byte(body))

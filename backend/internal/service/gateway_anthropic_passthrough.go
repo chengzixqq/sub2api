@@ -458,6 +458,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	account.ApplyHeaderOverrides(req.Header)
 	// Strict remains authoritative over account-level header overrides.
 	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
+	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 
 	return req, body, nil
 }

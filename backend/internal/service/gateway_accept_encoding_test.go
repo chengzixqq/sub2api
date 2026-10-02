@@ -15,6 +15,7 @@ import (
 )
 
 func TestGatewayService_AcceptEncodingOnWire(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	for _, protocol := range []struct {
 		name  string
 		major int

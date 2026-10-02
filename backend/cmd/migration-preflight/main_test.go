@@ -73,12 +73,34 @@ func TestWriteJSONReport_IncludesVerdictAndStableEmptyArrays(t *testing.T) {
 	}
 	var output bytes.Buffer
 
-	require.NoError(t, writeJSONReport(&output, report))
+	require.NoError(t, writeJSONReport(&output, report, false))
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(output.Bytes(), &decoded))
 	require.Equal(t, true, decoded["valid"])
 	require.Equal(t, []any{}, decoded["missing"])
 	require.Equal(t, []any{}, decoded["extra"])
+}
+
+func TestPreflightValid_RejectsPendingMigrationsWhenRequired(t *testing.T) {
+	report := repository.MigrationPreflightReport{Pending: []string{"002_next.sql"}}
+	require.True(t, preflightValid(report, false))
+	require.False(t, preflightValid(report, true))
+}
+
+func TestWriteJSONReport_UsesReleaseGateVerdict(t *testing.T) {
+	report := repository.MigrationPreflightReport{
+		Pending:            []string{"002_next.sql"},
+		Missing:            []string{},
+		Extra:              []repository.AppliedMigration{},
+		Checksums:          []repository.MigrationChecksumResult{},
+		ChecksumMismatches: []repository.MigrationChecksumResult{},
+	}
+	var output bytes.Buffer
+
+	require.NoError(t, writeJSONReport(&output, report, true))
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(output.Bytes(), &decoded))
+	require.Equal(t, false, decoded["valid"])
 }
 
 func TestRun_HelpExitsSuccessfullyWithoutLoadingConfig(t *testing.T) {

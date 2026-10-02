@@ -33,6 +33,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	configFile := flags.String("config", "", "config.yaml path (defaults to CONFIG_FILE or normal application lookup)")
 	jsonOutput := flags.Bool("json", false, "write the complete report as JSON")
+	requireNoPending := flags.Bool("require-no-pending", false, "fail when any migration is pending")
 	timeout := flags.Duration("timeout", defaultLimit, "database preflight timeout")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -95,14 +96,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *jsonOutput {
-		if err := writeJSONReport(stdout, report); err != nil {
+		if err := writeJSONReport(stdout, report, *requireNoPending); err != nil {
 			fmt.Fprintf(stderr, "migration preflight: write report: %v\n", err)
 			return exitError
 		}
 	} else {
-		writeHumanReport(stdout, report)
+		writeHumanReport(stdout, report, *requireNoPending)
 	}
-	if !report.Valid() {
+	if !preflightValid(report, *requireNoPending) {
 		return exitUnsafe
 	}
 	return exitOK
@@ -140,12 +141,16 @@ func runDatabasePreflight(ctx context.Context, db *sql.DB) (repository.Migration
 	return report, nil
 }
 
-func writeJSONReport(w io.Writer, report repository.MigrationPreflightReport) error {
+func preflightValid(report repository.MigrationPreflightReport, requireNoPending bool) bool {
+	return report.Valid() && (!requireNoPending || len(report.Pending) == 0)
+}
+
+func writeJSONReport(w io.Writer, report repository.MigrationPreflightReport, requireNoPending bool) error {
 	payload := struct {
 		Valid bool `json:"valid"`
 		repository.MigrationPreflightReport
 	}{
-		Valid:                    report.Valid(),
+		Valid:                    preflightValid(report, requireNoPending),
 		MigrationPreflightReport: report,
 	}
 	encoder := json.NewEncoder(w)
@@ -153,15 +158,16 @@ func writeJSONReport(w io.Writer, report repository.MigrationPreflightReport) er
 	return encoder.Encode(payload)
 }
 
-func writeHumanReport(w io.Writer, report repository.MigrationPreflightReport) {
+func writeHumanReport(w io.Writer, report repository.MigrationPreflightReport, requireNoPending bool) {
 	status := "PASS"
-	if !report.Valid() {
+	if !preflightValid(report, requireNoPending) {
 		status = "FAIL"
 	}
 	fmt.Fprintf(
 		w,
-		"status=%s embedded=%d applied=%d pending=%d missing=%d extra=%d checksum_mismatches=%d\n",
+		"status=%s require_no_pending=%t embedded=%d applied=%d pending=%d missing=%d extra=%d checksum_mismatches=%d\n",
 		status,
+		requireNoPending,
 		report.EmbeddedCount,
 		report.AppliedCount,
 		len(report.Pending),

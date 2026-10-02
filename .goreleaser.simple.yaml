@@ -25,6 +25,16 @@ builds:
       - -X main.Commit={{.Commit}}
       - -X main.Date={{.Date}}
       - -X main.BuildType=release
+  - id: migration-preflight
+    dir: backend
+    main: ./cmd/migration-preflight
+    binary: migration-preflight
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
 
 # 跳过 archives
 archives: []

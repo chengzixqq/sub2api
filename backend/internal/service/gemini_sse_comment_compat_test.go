@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,6 +34,7 @@ func TestGeminiClientRejectsSSEComments(t *testing.T) {
 }
 
 func TestDownstreamRejectsSSECommentsReadsBothHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	c, _ := newAntigravityCompatContext(http.MethodPost, "/v1beta/models/gemini-3.8-flash:streamGenerateContent", nil)
 	require.False(t, downstreamRejectsSSEComments(c))
 
@@ -50,6 +52,7 @@ func TestDownstreamRejectsSSECommentsReadsBothHeaders(t *testing.T) {
 // 返回写给下游的全部字节。用来观察空闲期间网关是否发了 ":\n\n" 心跳。
 func runAntigravityGeminiStreamWithIdle(t *testing.T, userAgent string, idle time.Duration) string {
 	t.Helper()
+	gin.SetMode(gin.TestMode)
 	svc := newAntigravityCompatService(
 		config.GatewayConfig{MaxLineSize: defaultMaxLineSize, StreamKeepaliveInterval: 1},
 		nil,

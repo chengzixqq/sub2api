@@ -134,7 +134,6 @@ const tomorrow = () => {
   d.setDate(d.getDate() + 1)
   return formatDateToString(d)
 }
-
 const maximumDay = ref(tomorrow())
 const maximumDate = computed(() => {
   const maxDate = maximumDay.value

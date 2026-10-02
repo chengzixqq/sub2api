@@ -77,8 +77,9 @@ const (
 	defaultOpenAIHTTP2FallbackErrorThreshold = 2
 	defaultOpenAIHTTP2FallbackWindow         = 60 * time.Second
 	defaultOpenAIHTTP2FallbackTTL            = 10 * time.Minute
-	openAIHTTP2ReadIdleTimeout               = 15 * time.Second
-	openAIHTTP2PingTimeout                   = 15 * time.Second
+	// OpenAI 保留原有的探测与应答期限，避免中转站的延迟 PING 应答被长流策略提前判死。
+	openAIHTTP2ReadIdleTimeout = 15 * time.Second
+	openAIHTTP2PingTimeout     = 15 * time.Second
 	// 长流 HTTP/2 连接健康探测：池化连接被代理/NAT
 	// 静默掐断会成为“死连接”（两端都以为存活），请求落上去会挂到 TCP 重传超时
 	// （分钟级）。Go 的 http2.Transport 默认 ReadIdleTimeout=0（不发健康 PING），
@@ -273,7 +274,7 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	client = httpClientWithGrokAccessDeniedFallback(client)
 	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
 	req, finishTiming := service.TraceGatewayUpstream(req)
-	resp, err := servertiming.Do(client, req)
+	resp, err := doUpstreamRequest(client, req)
 	finishTiming(resp, err)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -293,10 +294,8 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	releaseRequest = false
 	s.recordOpenAIHTTP2Success(profile, entry.protocolMode, entry.proxyKey)
 
-	// 如果上游返回了压缩内容，解压后再交给业务层
-	decompressResponseBody(resp)
+	// doUpstreamRequest already binds cancellation and decompresses content.
 	resp.Body = s.wrapUpstreamHealthBody(resp.Body, healthKey, resp.StatusCode)
-
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
 	resp.Body = wrapTrackedBody(resp.Body, func() {
@@ -375,7 +374,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	client = httpClientWithGrokAccessDeniedFallback(client)
 	client = service.ObserveChannelMonitorHTTPClient(client, req, accountID)
 	req, finishTiming := service.TraceGatewayUpstream(req)
-	resp, err := servertiming.Do(client, req)
+	resp, err := doUpstreamRequest(client, req)
 	finishTiming(resp, err)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -392,15 +391,64 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	// Close can cancel the network read before waiting for that read to finish.
 	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancelRequest}
 	releaseRequest = false
-	decompressResponseBody(resp)
+	// doUpstreamRequest already decompressed the response body.
 	resp.Body = s.wrapUpstreamHealthBody(resp.Body, healthKey, resp.StatusCode)
-
 	resp.Body = wrapTrackedBody(resp.Body, func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	})
 
 	return resp, nil
+}
+
+// doUpstreamRequest owns cancellation for one attempt, without cancelling the
+// caller's context (which may be detached for billing or reused for retries).
+func doUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(req.Context())
+	resp, err := servertiming.Do(client, req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return resp, err
+	}
+	decompressResponseBody(resp)
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+	err    error
+	readMu sync.Mutex
+	closed bool
+}
+
+func (b *cancelOnCloseBody) Read(p []byte) (int, error) {
+	b.readMu.Lock()
+	defer b.readMu.Unlock()
+	if b.closed {
+		return 0, http.ErrBodyReadAfterClose
+	}
+	return b.ReadCloser.Read(p)
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	b.once.Do(func() {
+		// Cancel before closing, including before closing a decompressor. In Go
+		// 1.27 an early HTTP/1 close concurrent with Read can otherwise leave an
+		// EOF waiter on a reused connection and stall subsequent responses.
+		// Fully consumed responses have already released their transport request,
+		// so cancelling here preserves normal keep-alive reuse.
+		b.cancel()
+		// Wait for an active read to observe cancellation before touching the
+		// body or decompressor. Do not hold readMu while cancelling the request.
+		b.readMu.Lock()
+		defer b.readMu.Unlock()
+		b.closed = true
+		b.err = b.ReadCloser.Close()
+	})
+	return b.err
 }
 
 // httpClientForUpstreamRequest 按请求上下文的标记派生客户端：禁用重定向，或对重定向的每一跳做主机校验。
@@ -1793,45 +1841,6 @@ type trackedBody struct {
 	once          sync.Once
 	onClose       func() // 关闭时的回调函数
 	closeErr      error
-}
-
-// cancelOnCloseBody binds a request-local context to the response body. The
-// HTTP/1 transport may still have a read in flight when a streaming caller
-// closes a body. Cancelling first makes that read stop before the connection
-// can be reused by another request.
-type cancelOnCloseBody struct {
-	io.ReadCloser
-	cancel   context.CancelFunc
-	once     sync.Once
-	closeErr error
-	readMu   sync.Mutex
-	closed   bool
-}
-
-func (b *cancelOnCloseBody) Read(p []byte) (int, error) {
-	b.readMu.Lock()
-	defer b.readMu.Unlock()
-	if b.closed {
-		return 0, http.ErrBodyReadAfterClose
-	}
-	return b.ReadCloser.Read(p)
-}
-
-func (b *cancelOnCloseBody) Close() error {
-	b.once.Do(func() {
-		if b.cancel != nil {
-			b.cancel()
-		}
-		// The request context interrupts the network read first. Wait for it
-		// before closing the HTTP/1 body, as required by the transport EOF path.
-		b.readMu.Lock()
-		defer b.readMu.Unlock()
-		b.closed = true
-		if b.ReadCloser != nil {
-			b.closeErr = b.ReadCloser.Close()
-		}
-	})
-	return b.closeErr
 }
 
 // Close 关闭响应体并执行回调。

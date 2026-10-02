@@ -43,6 +43,7 @@ func (r *openAIWSPreemptCloseRecorder) Close(code coderws.StatusCode, reason str
 }
 
 func TestOpenAIWSIngressSessionPreemptionSendsCloseFrameBeforeCancel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	firstMessage := []byte(`{"type":"response.create","input":"hello"}`)
@@ -81,6 +82,7 @@ func TestOpenAIWSIngressSessionPreemptionSendsCloseFrameBeforeCancel(t *testing.
 }
 
 func TestOpenAIWSIngressSessionPreemptionCancelsAfterCloseGrace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	firstMessage := []byte(`{"type":"response.create","input":"hello"}`)
@@ -208,6 +210,7 @@ func TestOpenAIWSSessionPreemptContextEligibilityAndLocalCancellation(t *testing
 }
 
 func TestOpenAIWSIngressSessionPreemptionSurvivesNestedForwardCleanup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	groupID := int64(7)
 	newContext := func() *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -245,6 +248,7 @@ func TestOpenAIWSIngressSessionPreemptionSurvivesNestedForwardCleanup(t *testing
 }
 
 func TestOpenAIWSIngressSessionPreemptionRespectsResolvedMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	groupID := int64(7)
 	newContext := func() *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -316,6 +320,7 @@ func TestOpenAIWSSessionPreemptRemoteClaimAndStaleReleaseAreAtomic(t *testing.T)
 }
 
 func TestOpenAIWSHTTPBridgeSessionPreemptionEligibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name          string
 		routerEnabled bool
@@ -392,6 +397,7 @@ func newOpenAIWSPreemptCodexContext(apiKeyID int64, threadID string) *gin.Contex
 }
 
 func TestOpenAIWSIngressSessionPreemptionIsolatesCodexThreads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	firstMessage := []byte(`{"type":"response.create","input":"hello"}`)
@@ -436,6 +442,7 @@ func newOpenAIWSPreemptCodexKindContext(apiKeyID int64, threadID, requestKind st
 }
 
 func TestOpenAIWSIngressSessionPreemptionKeepsDetachedRequestsApart(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	turnMessage := []byte(`{"type":"response.create","input":"hello"}`)
@@ -482,6 +489,7 @@ func TestOpenAIWSIngressSessionPreemptionKeepsDetachedRequestsApart(t *testing.T
 }
 
 func TestOpenAIWSIngressSessionPreemptionSkipsContentOnlyIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	groupID := int64(7)
 	newContext := func() *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -503,6 +511,7 @@ func TestOpenAIWSIngressSessionPreemptionSkipsContentOnlyIdentity(t *testing.T) 
 }
 
 func TestOpenAIWSIngressSessionPreemptionClaimsRemoteOwnerByExecutionScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	stub := &openAIWSSessionPreemptCacheStub{}
 	svc := &OpenAIGatewayService{cache: stub}
 	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}

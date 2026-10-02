@@ -1220,6 +1220,7 @@ func largeRawChatCompletionsBody() []byte {
 }
 
 func TestForwardAsRawChatCompletions_RestoresMappedResponseModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
 	for _, stream := range []bool{false, true} {
 		for _, mapped := range []bool{false, true} {
 			for _, returned := range []string{"zhipu/glm-5.3", "glm-5.3-alias"} {

@@ -333,7 +333,18 @@ func (h *DashboardHandler) GetUserUsageTrend(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	trend, hit, err := h.getUserUsageTrendCached(queryContext(c), startTime, endTime, granularity, limit, filters.usageFilters())
+	metric := c.DefaultQuery("metric", "tokens")
+	if metric != "tokens" && metric != "actual_cost" {
+		metric = "tokens"
+	}
+	usageFilters := filters.usageFilters()
+	var trend []usagestats.UserUsageTrendPoint
+	var hit bool
+	if usageFilters.UserID != 0 || usageFilters.APIKeyID != 0 || usageFilters.AccountID != 0 || usageFilters.GroupID != 0 || usageFilters.Model != "" || usageFilters.BillingMode != "" || usageFilters.RequestID != "" || usageFilters.RequestType != nil || usageFilters.Stream != nil || usageFilters.NativeCompactionV2 != nil || usageFilters.BillingType != nil || usageFilters.UpstreamModelMismatch != nil {
+		trend, hit, err = h.getUserUsageTrendCachedWithFilters(queryContext(c), startTime, endTime, granularity, limit, usageFilters)
+	} else {
+		trend, hit, err = h.getUserUsageTrendCached(queryContext(c), startTime, endTime, granularity, limit, metric)
+	}
 	if err != nil {
 		response.Error(c, 500, "Failed to get user usage trend")
 		return

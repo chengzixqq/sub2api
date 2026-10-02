@@ -70,9 +70,9 @@ describe('PlatformTypeBadge ChatGPT plan tiers', () => {
   })
 
   it('falls back to the raw value for unknown plans', () => {
-    const wrapper = mountPlan('openai', 'enterprise')
+    const wrapper = mountPlan('openai', 'future_sku')
 
-    expect(wrapper.text()).toContain('enterprise')
+    expect(wrapper.text()).toContain('future_sku')
     expect(wrapper.html()).not.toContain('bg-violet-100')
     expect(wrapper.html()).not.toContain('bg-indigo-100')
   })

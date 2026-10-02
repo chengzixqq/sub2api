@@ -1,4 +1,4 @@
-.PHONY: wire build build-embed test-unit test-integration test-e2e test-cover-integration
+.PHONY: wire build build-embed test-unit test-integration test-e2e test-cover-integration test-upgrade-compose
 
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
@@ -34,6 +34,9 @@ test-cover-integration:
 	@go tool cover -func=coverage.out | tail -1
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "覆盖率报告已生成: coverage.html"
+
+test-upgrade-compose:
+	@bash tests/upgrade-compose-test.sh
 
 clean-coverage:
 	@rm -f coverage.out coverage.html

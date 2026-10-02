@@ -92,8 +92,8 @@ def generate_config(args):
     else:
         # Artifacts are supplied through the OSS extra_files mechanism. No build
         # is repeated on the publishing runner, and release templates stay intact.
-        data['before'] = {'hooks': []}
         data['builds'] = [{'id': 'sub2api', 'skip': True}]
+        data['before'] = {'hooks': []}
         data['archives'] = []
         extra = [{'glob': 'release-input/sub2api_*.tar.gz'}, {'glob': 'release-input/sub2api_*.zip'}]
         if args.simple:
@@ -147,7 +147,14 @@ def contexts(args):
                 raise ValueError('archive must contain one regular sub2api binary')
             with archive.extractfile(members[0]) as source, (dest / 'sub2api').open('wb') as output:
                 shutil.copyfileobj(source, output)
+            preflight = [member for member in archive.getmembers()
+                         if member.name in ('migration-preflight', './migration-preflight')]
+            if len(preflight) != 1 or not preflight[0].isfile():
+                raise ValueError('archive must contain one regular migration-preflight binary')
+            with archive.extractfile(preflight[0]) as source, (dest / 'migration-preflight').open('wb') as output:
+                shutil.copyfileobj(source, output)
         (dest / 'sub2api').chmod(0o755)
+        (dest / 'migration-preflight').chmod(0o755)
         shutil.copy2('Dockerfile.goreleaser', dest / 'Dockerfile')
         (dest / 'deploy').mkdir(exist_ok=True)
         shutil.copy2('deploy/docker-entrypoint.sh', dest / 'deploy/docker-entrypoint.sh')

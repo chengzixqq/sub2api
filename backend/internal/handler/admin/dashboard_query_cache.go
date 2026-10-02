@@ -17,6 +17,14 @@ var (
 	dashboardAPIKeysTrendCache = newSnapshotCache(30 * time.Second)
 )
 
+type dashboardEntityTrendCacheKey struct {
+	StartTime   string `json:"start_time"`
+	EndTime     string `json:"end_time"`
+	Granularity string `json:"granularity"`
+	Limit       int    `json:"limit"`
+	Metric      string `json:"metric,omitempty"`
+}
+
 func cacheStatusValue(hit bool) string {
 	if hit {
 		return "hit"
@@ -96,7 +104,22 @@ func (h *DashboardHandler) getAPIKeyUsageTrendCached(ctx context.Context, startT
 	})
 }
 
-func (h *DashboardHandler) getUserUsageTrendCached(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, complete ...usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, bool, error) {
+func (h *DashboardHandler) getUserUsageTrendCached(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string) ([]usagestats.UserUsageTrendPoint, bool, error) {
+	key := mustMarshalDashboardCacheKey(dashboardEntityTrendCacheKey{
+		StartTime: startTime.UTC().Format(time.RFC3339), EndTime: endTime.UTC().Format(time.RFC3339),
+		Granularity: granularity, Limit: limit, Metric: metric,
+	})
+	entry, hit, err := dashboardUsersTrendCache.GetOrLoadContext(ctx, key, func(work context.Context) (any, error) {
+		return h.dashboardService.GetUserUsageTrend(work, startTime, endTime, granularity, limit, metric)
+	})
+	if err != nil {
+		return nil, hit, err
+	}
+	trend, err := snapshotPayloadAs[[]usagestats.UserUsageTrendPoint](entry.Payload)
+	return trend, hit, err
+}
+
+func (h *DashboardHandler) getUserUsageTrendCachedWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, complete ...usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, bool, error) {
 	filters := usagestats.UsageLogFilters{}
 	if len(complete) > 0 {
 		filters = complete[0]

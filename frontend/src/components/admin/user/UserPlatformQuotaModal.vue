@@ -131,7 +131,6 @@ const { t } = useI18n()
 const appStore = useAppStore()
 
 const PLATFORMS = CONCRETE_PLATFORM_OPTIONS.map((option) => option.value) as PlatformQuotaPlatform[]
-
 interface QuotaRow {
   platform: PlatformQuotaPlatform
   daily_limit_usd: number | null

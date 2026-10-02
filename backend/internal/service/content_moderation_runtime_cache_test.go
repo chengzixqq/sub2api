@@ -297,7 +297,6 @@ func TestContentModerationRuntimeSnapshotRefreshFailureKeepsStaleConfig(t *testi
 		_, calls := repo.calls()
 		return calls >= 2 && svc.runtimeRefreshRetryAt.Load() > 0
 	}, time.Second, time.Millisecond)
-
 	decision, err = svc.Check(context.Background(), input)
 	require.NoError(t, err)
 	require.True(t, decision.Blocked)

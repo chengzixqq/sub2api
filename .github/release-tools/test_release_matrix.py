@@ -40,10 +40,11 @@ class ReleaseMatrixTest(unittest.TestCase):
             archive = directory / name
             if target['goos'] == 'linux':
                 with tarfile.open(archive, 'w:gz') as out:
-                    info = tarfile.TarInfo('sub2api')
-                    info.size = 7
-                    info.mode = 0o755
-                    out.addfile(info, io.BytesIO(b'fixture'))
+                    for binary in ('sub2api', 'migration-preflight'):
+                        info = tarfile.TarInfo(binary)
+                        info.size = 7
+                        info.mode = 0o755
+                        out.addfile(info, io.BytesIO(b'fixture'))
             else:
                 archive.write_bytes(b'fixture archive')
             metadata = {'version': '9.8.7', 'sha': 'a' * 40, 'target': target,
@@ -119,7 +120,11 @@ class ReleaseMatrixTest(unittest.TestCase):
         for arch in ('amd64', 'arm64'):
             binary = Path('contexts') / arch / 'sub2api'
             self.assertEqual(binary.read_bytes(), b'fixture')
-            self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+            preflight = Path('contexts') / arch / 'migration-preflight'
+            self.assertEqual(preflight.read_bytes(), b'fixture')
+            if os.name != 'nt':
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                self.assertEqual(preflight.stat().st_mode & 0o777, 0o755)
 
     def test_plan_requires_a_tag_for_publication(self):
         args = argparse.Namespace(ref='main', dry_run=False, simple=False)
