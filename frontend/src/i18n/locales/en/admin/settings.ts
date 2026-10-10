@@ -784,6 +784,7 @@ export default {
         helpImagePlaceholder: 'Upload or enter image URL',
         helpTextPlaceholder: 'Enter help text...',
         providerEasypay: 'EasyPay',
+        providerJupitong: 'JuFuTong',
         providerAlipay: 'Alipay (Direct)',
         providerWxpay: 'WeChat Pay (Direct)',
         providerStripe: 'Stripe',

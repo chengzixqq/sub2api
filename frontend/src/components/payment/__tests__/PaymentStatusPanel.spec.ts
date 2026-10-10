@@ -101,7 +101,8 @@ describe('PaymentStatusPanel', () => {
   })
 
   it('shows reopen button in QR mode when payUrl is also available', async () => {
-    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+    const popup = { closed: false } as Window
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup)
 
     const wrapper = mount(PaymentStatusPanel, {
       props: {
@@ -125,9 +126,10 @@ describe('PaymentStatusPanel', () => {
     await wrapper.get('button.btn.btn-secondary.text-sm').trigger('click')
     expect(openSpy).toHaveBeenCalledWith(
       'https://pay.example.com/session/42',
-      'paymentPopup',
+      'paymentPopup_42',
       expect.any(String),
     )
+    expect(wrapper.emitted('popup-opened')).toEqual([[popup]])
 
     openSpy.mockRestore()
   })

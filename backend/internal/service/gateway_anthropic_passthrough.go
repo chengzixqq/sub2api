@@ -165,40 +165,46 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		// only thinking rectifier in passthrough; no pre-filter is applied.
 		if resp.StatusCode == http.StatusBadRequest && claudePolicy.ThinkingSignatureRetryEnabled {
 			respBody, readErr := s.readUpstreamErrorBody(resp)
-			if readErr == nil && s.shouldRectifySignatureError(ctx, account, respBody, input.RequestModel) {
+			if readErr == nil && s.shouldRectifySignatureError(ctx, c, account, respBody, input.Body, input.RequestModel) {
 				_ = resp.Body.Close()
 				filteredBody := FilterThinkingBlocksForRetry(input.Body, input.RequestModel)
-				retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
-				retryReq, retryWireBody, buildErr := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(retryCtx, c, account, filteredBody, token)
-				releaseRetryCtx()
-				if buildErr == nil {
-					retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-					if retryErr == nil && retryResp != nil {
-						if retryResp.StatusCode < 400 {
-							resp = retryResp
-							input.Body = retryWireBody
-							if input.Parsed != nil {
-								if err := input.Parsed.ReplaceBody(retryWireBody); err != nil {
-									_ = retryResp.Body.Close()
-									return nil, err
+				if !bytes.Equal(filteredBody, input.Body) {
+					retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+					retryReq, retryWireBody, buildErr := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(retryCtx, c, account, filteredBody, token)
+					releaseRetryCtx()
+					if buildErr == nil {
+						retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+						if retryErr == nil && retryResp != nil {
+							if retryResp.StatusCode < 400 {
+								resp = retryResp
+								input.Body = retryWireBody
+								if input.Parsed != nil {
+									if err := input.Parsed.ReplaceBody(retryWireBody); err != nil {
+										_ = retryResp.Body.Close()
+										return nil, err
+									}
 								}
+								logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: signature retry succeeded", account.ID)
+							} else {
+								retryRespBody, _ := s.readUpstreamErrorBody(retryResp)
+								if retryResp.Body != nil {
+									_ = retryResp.Body.Close()
+								}
+								resp = &http.Response{StatusCode: retryResp.StatusCode, Header: retryResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(retryRespBody))}
 							}
-							logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: signature retry succeeded", account.ID)
 						} else {
-							retryRespBody, _ := s.readUpstreamErrorBody(retryResp)
-							if retryResp.Body != nil {
+							if retryResp != nil && retryResp.Body != nil {
 								_ = retryResp.Body.Close()
 							}
-							resp = &http.Response{StatusCode: retryResp.StatusCode, Header: retryResp.Header.Clone(), Body: io.NopCloser(bytes.NewReader(retryRespBody))}
+							resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
 						}
 					} else {
-						if retryResp != nil && retryResp.Body != nil {
-							_ = retryResp.Body.Close()
-						}
 						resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
 					}
 				} else {
-					resp = &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(bytes.NewReader(respBody)), Header: make(http.Header)}
+					// No safe body rewrite is available. Preserve the original
+					// upstream response instead of replaying an identical request.
+					resp.Body = io.NopCloser(bytes.NewReader(respBody))
 				}
 			} else if readErr == nil {
 				// The replacement is only an in-memory replay. Release the transport

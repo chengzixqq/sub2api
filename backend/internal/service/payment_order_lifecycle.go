@@ -180,19 +180,8 @@ func (s *PaymentService) checkPaidWithOptions(ctx context.Context, o *dbent.Paym
 			}
 			resp = retriedResp
 		}
-		notificationTradeNo := o.PaymentTradeNo
-		if upstreamTradeNo := strings.TrimSpace(resp.TradeNo); paymentOrderShouldPersistUpstreamTradeNo(queryRef, upstreamTradeNo, notificationTradeNo) {
-			if _, updateErr := s.entClient.PaymentOrder.Update().
-				Where(paymentorder.IDEQ(o.ID)).
-				SetPaymentTradeNo(upstreamTradeNo).
-				Save(ctx); updateErr != nil {
-				slog.Error("persist upstream trade no during checkPaid failed", "orderID", o.ID, "tradeNo", upstreamTradeNo, "error", updateErr)
-			} else {
-				o.PaymentTradeNo = upstreamTradeNo
-			}
-			notificationTradeNo = upstreamTradeNo
-		}
-		if err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{TradeNo: notificationTradeNo, OrderID: o.OutTradeNo, Amount: resp.Amount, Status: payment.ProviderStatusSuccess, Metadata: resp.Metadata}, prov.ProviderKey()); err != nil {
+		notificationTradeNo := strings.TrimSpace(resp.TradeNo)
+		if err := s.handlePaymentNotification(ctx, &payment.PaymentNotification{TradeNo: notificationTradeNo, OrderID: o.OutTradeNo, Amount: resp.Amount, Status: payment.ProviderStatusSuccess, Metadata: resp.Metadata}, prov.ProviderKey(), resp); err != nil {
 			slog.Error("fulfillment failed during checkPaid", "orderID", o.ID, "error", err)
 			// Still return already_paid — order was paid, fulfillment can be retried
 		}
@@ -248,7 +237,7 @@ func paymentOrderQueryReference(order *dbent.PaymentOrder, prov payment.Provider
 	}
 
 	switch payment.GetBasePaymentType(providerKey) {
-	case payment.TypeAlipay, payment.TypeEasyPay, payment.TypeWxpay:
+	case payment.TypeAlipay, payment.TypeEasyPay, payment.TypeWxpay, payment.TypeJupitong:
 		return strings.TrimSpace(order.OutTradeNo)
 	default:
 		if tradeNo := strings.TrimSpace(order.PaymentTradeNo); tradeNo != "" {
@@ -256,20 +245,6 @@ func paymentOrderQueryReference(order *dbent.PaymentOrder, prov payment.Provider
 		}
 		return strings.TrimSpace(order.OutTradeNo)
 	}
-}
-
-func paymentOrderShouldPersistUpstreamTradeNo(queryRef, upstreamTradeNo, currentTradeNo string) bool {
-	upstreamTradeNo = strings.TrimSpace(upstreamTradeNo)
-	if upstreamTradeNo == "" {
-		return false
-	}
-	if strings.EqualFold(upstreamTradeNo, strings.TrimSpace(currentTradeNo)) {
-		return false
-	}
-	if strings.EqualFold(upstreamTradeNo, strings.TrimSpace(queryRef)) {
-		return false
-	}
-	return true
 }
 
 // VerifyOrderByOutTradeNo actively queries the upstream provider to check
@@ -399,7 +374,8 @@ func (s *PaymentService) ExpireTimedOutOrders(ctx context.Context) (int, error) 
 }
 
 // getOrderProvider creates a provider using the order's original instance config.
-// Falls back to registry lookup if instance ID is missing (legacy orders).
+// A legacy registry fallback requires a recorded provider key; payment type alone
+// cannot identify which gateway originally created the order.
 func (s *PaymentService) getOrderProvider(ctx context.Context, o *dbent.PaymentOrder) (payment.Provider, error) {
 	inst, err := s.getOrderProviderInstance(ctx, o)
 	if err != nil {
@@ -411,15 +387,15 @@ func (s *PaymentService) getOrderProvider(ctx context.Context, o *dbent.PaymentO
 	if !paymentOrderAllowsRegistryFallback(o) {
 		return nil, fmt.Errorf("order %d provider instance is unresolved", o.ID)
 	}
-	providerKey := paymentOrderFallbackProviderKey(s.registry, o)
+	s.EnsureProviders(ctx)
+	providerKey := paymentOrderFallbackProviderKey(o)
 	if providerKey == "" {
 		return nil, fmt.Errorf("order %d provider fallback key is missing", o.ID)
 	}
 	if !s.webhookRegistryFallbackAllowed(ctx, providerKey) {
 		return nil, fmt.Errorf("order %d provider fallback is ambiguous for %s", o.ID, providerKey)
 	}
-	s.EnsureProviders(ctx)
-	return s.registry.GetProvider(o.PaymentType)
+	return s.registry.GetProviderByKey(providerKey)
 }
 
 func paymentOrderAllowsRegistryFallback(order *dbent.PaymentOrder) bool {
@@ -432,22 +408,14 @@ func paymentOrderAllowsRegistryFallback(order *dbent.PaymentOrder) bool {
 	if strings.TrimSpace(psStringValue(order.ProviderInstanceID)) != "" {
 		return false
 	}
-	if strings.TrimSpace(psStringValue(order.ProviderKey)) != "" {
-		return false
-	}
-	return true
+	return strings.TrimSpace(psStringValue(order.ProviderKey)) != ""
 }
 
-func paymentOrderFallbackProviderKey(registry *payment.Registry, order *dbent.PaymentOrder) string {
+func paymentOrderFallbackProviderKey(order *dbent.PaymentOrder) string {
 	if order == nil {
 		return ""
 	}
-	if registry != nil {
-		if key := strings.TrimSpace(registry.GetProviderKey(payment.PaymentType(order.PaymentType))); key != "" {
-			return key
-		}
-	}
-	return strings.TrimSpace(payment.GetBasePaymentType(strings.TrimSpace(order.PaymentType)))
+	return strings.TrimSpace(psStringValue(order.ProviderKey))
 }
 
 func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {

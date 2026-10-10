@@ -4,6 +4,7 @@ import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 import { formatPaymentAmount } from '@/components/payment/currency'
 import AmountInput from '@/components/payment/AmountInput.vue'
+import PaymentStatusPanel from '@/components/payment/PaymentStatusPanel.vue'
 import SubscriptionPlanCard from '@/components/payment/SubscriptionPlanCard.vue'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
@@ -26,6 +27,7 @@ const showWarning = vi.hoisted(() => vi.fn())
 const getCheckoutInfo = vi.hoisted(() => vi.fn())
 const bridgeInvoke = vi.hoisted(() => vi.fn())
 const translate = vi.hoisted(() => vi.fn((key: string) => key))
+const deviceState = vi.hoisted(() => ({ mobile: true }))
 // Public settings live in a reactive holder so tests can flip feature flags after mount
 // and exercise the watchers that react to them.
 const appStoreState = vi.hoisted(() => ({
@@ -103,7 +105,7 @@ vi.mock('@/api/payment', () => ({
 }))
 
 vi.mock('@/utils/device', () => ({
-  isMobileDevice: () => true,
+  isMobileDevice: () => deviceState.mobile,
 }))
 
 function checkoutInfoFixture(overrides: Partial<CheckoutInfoResponse> = {}) {
@@ -580,6 +582,140 @@ describe('PaymentView payment recovery', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="method-selector"]').text()).toBe('ldc')
+  })
+})
+
+describe('PaymentView external payment popup', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+    deviceState.mobile = false
+    routeState.path = '/purchase'
+    routeState.query = {}
+    routerReplace.mockReset().mockResolvedValue(undefined)
+    routerPush.mockReset().mockResolvedValue(undefined)
+    routerResolve.mockClear()
+    createOrder.mockReset()
+    refreshUser.mockReset()
+    fetchActiveSubscriptions.mockReset().mockResolvedValue(undefined)
+    getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoWithPlansFixture())
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    deviceState.mobile = true
+    vi.restoreAllMocks()
+  })
+
+  async function startPopupOrder(popup: Window) {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup)
+    const wrapper = await mountSubscriptionConfirm()
+    createOrder.mockResolvedValue({
+      order_id: 42,
+      amount: 128,
+      pay_amount: 128,
+      fee_rate: 0,
+      expires_at: '2099-01-01T00:10:00.000Z',
+      payment_type: 'wxpay',
+      payment_mode: 'popup',
+      pay_url: 'https://pay.example.com/session/42',
+      out_trade_no: 'sub2_popup_42',
+    })
+    const subscribeButton = wrapper.findAll('button').find(button => button.text().includes('payment.createOrder'))
+    expect(subscribeButton).toBeDefined()
+    await subscribeButton!.trigger('click')
+    await flushPromises()
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://pay.example.com/session/42',
+      'paymentPopup_42',
+      expect.any(String),
+    )
+    expect(wrapper.findComponent(PaymentStatusPanel).exists()).toBe(true)
+    return wrapper
+  }
+
+  it('closes the popup for the paid order before navigating to the result page', async () => {
+    const close = vi.fn()
+    const wrapper = await startPopupOrder({ closed: false, close } as unknown as Window)
+
+    expect(close).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('success')
+    await flushPromises()
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: { order_id: '42', out_trade_no: 'sub2_popup_42' },
+    })
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(routerPush.mock.invocationCallOrder[0])
+  })
+
+  it('keeps the popup open while the order is pending', async () => {
+    const close = vi.fn()
+    const wrapper = await startPopupOrder({ closed: false, close } as unknown as Window)
+
+    expect(wrapper.findComponent(PaymentStatusPanel).props('orderId')).toBe(42)
+    expect(close).not.toHaveBeenCalled()
+    expect(routerPush).not.toHaveBeenCalled()
+  })
+
+  it('closes the reopened popup for this order instead of the previous handle', async () => {
+    const firstClose = vi.fn()
+    const reopenedClose = vi.fn()
+    const wrapper = await startPopupOrder({ closed: false, close: firstClose } as unknown as Window)
+    const reopenedPopup = { closed: false, close: reopenedClose } as unknown as Window
+
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('popup-opened', reopenedPopup)
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('success')
+    await flushPromises()
+
+    expect(reopenedClose).toHaveBeenCalledOnce()
+    expect(firstClose).not.toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: { order_id: '42', out_trade_no: 'sub2_popup_42' },
+    })
+  })
+
+  it('still navigates when closing the popup throws', async () => {
+    const close = vi.fn(() => { throw new Error('window inaccessible') })
+    const wrapper = await startPopupOrder({ closed: false, close } as unknown as Window)
+
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('success')
+    await flushPromises()
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: { order_id: '42', out_trade_no: 'sub2_popup_42' },
+    })
+  })
+
+  it('still navigates when the popup was already closed', async () => {
+    const close = vi.fn()
+    const popup = { closed: false, close }
+    const wrapper = await startPopupOrder(popup as unknown as Window)
+    popup.closed = true
+
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('success')
+    await flushPromises()
+
+    expect(close).not.toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: { order_id: '42', out_trade_no: 'sub2_popup_42' },
+    })
+  })
+
+  it('closes the popup when the local order is cancelled', async () => {
+    const close = vi.fn()
+    const wrapper = await startPopupOrder({ closed: false, close } as unknown as Window)
+
+    wrapper.findComponent(PaymentStatusPanel).vm.$emit('settled', 'cancelled')
+    await flushPromises()
+
+    expect(close).toHaveBeenCalledOnce()
+    expect(routerPush).not.toHaveBeenCalled()
   })
 })
 

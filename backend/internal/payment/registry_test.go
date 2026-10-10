@@ -168,7 +168,7 @@ func TestRegistrySupportedTypesEmpty(t *testing.T) {
 	}
 }
 
-func TestRegistryOverwriteExisting(t *testing.T) {
+func TestRegistrySharedPaymentTypeRequiresProviderKey(t *testing.T) {
 	t.Parallel()
 	r := NewRegistry()
 
@@ -185,12 +185,17 @@ func TestRegistryOverwriteExisting(t *testing.T) {
 	r.Register(p1)
 	r.Register(p2)
 
-	got, err := r.GetProvider(TypeAlipay)
-	if err != nil {
-		t.Fatalf("GetProvider error: %v", err)
+	if _, err := r.GetProvider(TypeAlipay); err != ErrProviderNotFound {
+		t.Fatalf("GetProvider shared type error = %v, want ErrProviderNotFound", err)
 	}
-	if got.Name() != "NewPay" {
-		t.Fatalf("expected overwritten provider, got %q", got.Name())
+	if key := r.GetProviderKey(TypeAlipay); key != "" {
+		t.Fatalf("ambiguous GetProviderKey = %q, want empty", key)
+	}
+	for key, want := range map[string]string{"old": "OldPay", "new": "NewPay"} {
+		got, err := r.GetProviderByKey(key)
+		if err != nil || got.Name() != want {
+			t.Fatalf("GetProviderByKey(%q) = %v, %v, want %q", key, got, err, want)
+		}
 	}
 }
 

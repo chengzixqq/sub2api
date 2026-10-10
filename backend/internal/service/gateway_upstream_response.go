@@ -105,15 +105,22 @@ func sseEventIndex(event map[string]any) (int, bool) {
 // mappedModel 用于按 thinking 协议族分流：passback-required (DeepSeek/Kimi/GLM 等) 上游
 // 的 400 不是签名缺失问题，retry 任何 thinking 变形都会破坏「原样回传」契约——直接透传
 // 错误给客户端。详见 thinking_protocol.go。
-func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, account *Account, respBody []byte, mappedModel string) bool {
+func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, c *gin.Context, account *Account, respBody, requestBody []byte, mappedModel string) bool {
 	if !ShouldRectifyThinkingSignatureError(mappedModel) {
+		return false
+	}
+	// A signature-related error is only eligible for thinking rectification when
+	// the request actually carries a thinking payload. This prevents unrelated
+	// upstream errors containing the word "signature" from being replayed with
+	// a different body and potentially turning a real 400 into a success.
+	if !hasThinkingPayloadForRetry(requestBody) {
 		return false
 	}
 	if s == nil || s.settingService == nil || account == nil {
 		return false
 	}
 	if s.settingService != nil {
-		customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
+		customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
 		if !customization.ThinkingSignatureRetryEnabled {
 			return false
 		}
@@ -134,6 +141,63 @@ func (s *GatewayService) shouldRectifySignatureError(ctx context.Context, accoun
 	}
 	// OAuth/SetupToken/Upstream/Bedrock 等：保持原有行为（内置模式 + 原开关）
 	return s.isThinkingBlockSignatureError(respBody) && s.settingService.IsSignatureRectifierEnabled(ctx)
+}
+
+func hasThinkingPayloadForRetry(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	if gjson.GetBytes(body, "thinking").Exists() {
+		return true
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, message gjson.Result) bool {
+		content := message.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			typ := strings.ToLower(strings.TrimSpace(block.Get("type").String()))
+			if typ == "thinking" || typ == "redacted_thinking" {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
+}
+
+func hasSignatureSensitivePayloadForRetry(body []byte) bool {
+	if hasThinkingPayloadForRetry(body) {
+		return true
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, message gjson.Result) bool {
+		content := message.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			typ := strings.ToLower(strings.TrimSpace(block.Get("type").String()))
+			if typ == "tool_use" || typ == "tool_result" {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
 }
 
 // isSignatureErrorPattern 仅做模式匹配，不检查开关。
@@ -227,6 +291,12 @@ func (s *GatewayService) shouldFailoverOn400(respBody []byte) bool {
 	// 默认保守：无法识别则不切换。
 	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
 	if msg == "" {
+		return false
+	}
+	// Signature validation failures describe the request itself. Retrying another
+	// account can hide the upstream 400 and make a forged or empty signature look
+	// accepted to the client.
+	if strings.Contains(msg, "signature") {
 		return false
 	}
 

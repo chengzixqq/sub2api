@@ -895,7 +895,7 @@ func (s *SettingService) SetRectifierSettings(ctx context.Context, settings *Rec
 func (s *SettingService) IsSignatureRectifierEnabled(ctx context.Context) bool {
 	settings, err := s.GetRectifierSettings(ctx)
 	if err != nil {
-		return true // fail-open: 查询失败时默认启用
+		return false
 	}
 	return settings.Enabled && settings.ThinkingSignatureEnabled
 }

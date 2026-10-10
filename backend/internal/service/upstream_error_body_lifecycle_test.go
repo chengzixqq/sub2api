@@ -20,7 +20,9 @@ import (
 func TestAnthropicPassthroughNonSignature400ClosesTransportBody(t *testing.T) {
 	original := &observedAnthropicStreamBody{ReadCloser: io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens exceeds maximum"}}`))}
 	upstream := &fallbackSequenceUpstream{responses: []*http.Response{{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: original}}}
-	svc := fallbackNativeGatewayForTest(t, upstream, nil)
+	settings := DefaultClaudeCustomizationSettings()
+	settings.ThinkingSignatureRetryEnabled = true
+	svc := fallbackNativeGatewayForTestWithPolicy(t, upstream, nil, settings)
 	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-fable-5","max_tokens":200000,"messages":[{"role":"user","content":"hello"}]}`)), PlatformAnthropic)
 	require.NoError(t, err)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

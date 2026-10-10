@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -224,5 +225,89 @@ func TestEasyPayCreatePaymentKeepsUpstreamAbsoluteAndOpaqueValues(t *testing.T) 
 	}
 	if resp.QRCode != deepLink {
 		t.Fatalf("QRCode = %q, want %q unchanged", resp.QRCode, deepLink)
+	}
+}
+
+func TestNewEasyPayRejectsNonLoopbackHTTPAPIBase(t *testing.T) {
+	t.Parallel()
+
+	baseConfig := map[string]string{
+		"pid":       "pid-1",
+		"pkey":      "pkey-1",
+		"notifyUrl": "https://example.com/notify",
+		"returnUrl": "https://example.com/return",
+	}
+
+	for _, tt := range []struct {
+		name    string
+		apiBase string
+		wantErr bool
+	}{
+		{name: "remote http", apiBase: "http://pay.example.com", wantErr: true},
+		{name: "loopback http", apiBase: "http://127.0.0.1:18080", wantErr: false},
+		{name: "localhost http", apiBase: "http://localhost:18080", wantErr: false},
+		{name: "https", apiBase: "https://pay.example.com", wantErr: false},
+		{name: "missing scheme", apiBase: "pay.example.com", wantErr: true},
+		{name: "query", apiBase: "https://pay.example.com?insecure=1", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := make(map[string]string, len(baseConfig)+1)
+			for key, value := range baseConfig {
+				config[key] = value
+			}
+			config["apiBase"] = tt.apiBase
+			_, err := NewEasyPay("test-instance", config)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NewEasyPay(%q) error = %v, wantErr=%v", tt.apiBase, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEasyPayPostRejectsCrossOriginRedirect(t *testing.T) {
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":1,"trade_no":"FOREIGN"}`))
+	}))
+	defer foreign.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/mapi.php", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	provider, _ := newEasyPayMapiStub(t, "", `{"code":1,"trade_no":"unused"}`)
+	provider.config["apiBase"] = redirector.URL
+	// Simulate a caller supplying a default client: postRaw must still replace
+	// its redirect policy before sending merchant credentials.
+	provider.httpClient = &http.Client{}
+	_, err := provider.CreatePayment(context.Background(), payment.CreatePaymentRequest{
+		OrderID: "redirect-test", Amount: "1.00", PaymentType: payment.TypeWxpay, Subject: "redirect",
+	})
+	if err == nil || (!strings.Contains(err.Error(), "redirect crossed configured origin") && !strings.Contains(err.Error(), "stopped after 10 redirects")) {
+		t.Fatalf("CreatePayment error = %v, want cross-origin redirect rejection", err)
+	}
+}
+
+func TestEasyPayPostDoesNotFollowSameOriginRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mapi.php" {
+			http.Redirect(w, r, "/other", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":1,"trade_no":"SHOULD_NOT_BE_USED"}`))
+	}))
+	defer server.Close()
+	provider, err := NewEasyPay("test-instance", map[string]string{
+		"pid": "pid-1", "pkey": "pkey-1", "apiBase": server.URL,
+		"notifyUrl": "https://example.com/notify", "returnUrl": "https://example.com/return",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.CreatePayment(context.Background(), payment.CreatePaymentRequest{
+		OrderID: "same-origin-redirect", Amount: "1.00", PaymentType: payment.TypeWxpay, Subject: "redirect",
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP status 302") {
+		t.Fatalf("CreatePayment error = %v, want original redirect response to be rejected", err)
 	}
 }

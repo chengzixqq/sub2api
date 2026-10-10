@@ -439,7 +439,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if readErr == nil {
 				_ = resp.Body.Close()
 
-				if claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
+				if claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, c, account, respBody, body, reqModel) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 						ProxyID:            opsUpstreamProxyID(account),
 						ProxyName:          opsUpstreamProxyName(account),
@@ -482,6 +482,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					//    also downgrade tool_use/tool_result blocks to text.
 
 					filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
+					if bytes.Equal(filteredBody, body) {
+						resp.Body = io.NopCloser(bytes.NewReader(respBody))
+						break
+					}
 					retryCtx, releaseRetryCtx := detachStreamUpstreamContext(ctx, reqStream)
 					retryReq, retryWireBody, buildErr := s.buildUpstreamRequest(retryCtx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					releaseRetryCtx()

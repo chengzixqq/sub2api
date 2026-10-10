@@ -29,6 +29,7 @@
             @done="onPaymentDone"
             @success="onPaymentSuccess"
             @settled="onPaymentSettled"
+            @popup-opened="onPaymentPopupOpened"
           />
         </template>
         <!-- Tab content (select phase) -->
@@ -413,6 +414,24 @@ async function invokeWechatJsapiPayment(payload: Record<string, unknown>): Promi
 }
 
 const paymentState = ref<PaymentRecoverySnapshot>(emptyPaymentState())
+let paymentPopup: { orderId: number; window: Window } | null = null
+
+function onPaymentPopupOpened(popup: Window) {
+  if (paymentState.value.orderId > 0) {
+    paymentPopup = { orderId: paymentState.value.orderId, window: popup }
+  }
+}
+
+function closePaymentPopup(orderId: number) {
+  if (!paymentPopup || paymentPopup.orderId !== orderId) return
+  const popup = paymentPopup.window
+  paymentPopup = null
+  try {
+    if (!popup.closed) popup.close()
+  } catch {
+    // A browser may refuse to close a window that it no longer considers script-owned.
+  }
+}
 
 function persistRecoverySnapshot(snapshot: PaymentRecoverySnapshot) {
   if (typeof window === 'undefined' || !snapshot.orderId) return
@@ -425,6 +444,7 @@ function removeRecoverySnapshot() {
 }
 
 function resetPayment() {
+  closePaymentPopup(paymentState.value.orderId)
   paymentPhase.value = 'select'
   paymentState.value = emptyPaymentState()
   removeRecoverySnapshot()
@@ -495,6 +515,7 @@ function onPaymentDone() {
 
 async function onPaymentSuccess() {
   const completedPayment = { ...paymentState.value }
+  closePaymentPopup(completedPayment.orderId)
   removeRecoverySnapshot()
   authStore.refreshUser()
   if (paymentState.value.orderType === 'subscription') {
@@ -503,7 +524,8 @@ async function onPaymentSuccess() {
   await redirectToPaymentResult(completedPayment)
 }
 
-function onPaymentSettled() {
+function onPaymentSettled(outcome: 'success' | 'cancelled' | 'expired') {
+  if (outcome !== 'success') closePaymentPopup(paymentState.value.orderId)
   removeRecoverySnapshot()
 }
 
@@ -815,9 +837,11 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
 
     const result = await paymentStore.createOrder(payload) as CreateOrderResult & { resume_token?: string }
     const openWindow = (url: string) => {
-      const win = window.open(url, 'paymentPopup', getPaymentPopupFeatures())
+      const win = window.open(url, `paymentPopup_${result.order_id}`, getPaymentPopupFeatures())
       if (!win || win.closed) {
         window.location.href = url
+      } else {
+        onPaymentPopupOpened(win)
       }
     }
     const visibleMethod = normalizeVisibleMethod(requestType) || requestType

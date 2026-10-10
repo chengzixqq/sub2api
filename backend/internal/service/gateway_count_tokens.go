@@ -194,26 +194,28 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if s.settingService != nil {
 		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
 	}
-	if resp.StatusCode == 400 && claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
+	if resp.StatusCode == 400 && claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, c, account, respBody, body, reqModel) {
 		logger.LegacyPrintf("service.gateway", "Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
 
 		filteredBody := FilterThinkingBlocksForRetry(body, reqModel)
-		retryReq, retryWireBody, buildErr := s.buildCountTokensRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode)
-		if buildErr == nil {
-			retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-			if retryErr == nil {
-				if retryResp.StatusCode < 400 {
-					// count_tokens 签名重试成功后记录最终 wire body，错误响应仍保留原 body 便于后续处理。
-					acceptedWireBody = retryWireBody
-				}
-				resp = retryResp
-				respBody, err = ReadUpstreamResponseBody(resp.Body, s.cfg, c, countTokensTooLarge)
-				_ = resp.Body.Close()
-				if err != nil {
-					if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
-						s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
+		if !bytes.Equal(filteredBody, body) {
+			retryReq, retryWireBody, buildErr := s.buildCountTokensRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode)
+			if buildErr == nil {
+				retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+				if retryErr == nil {
+					if retryResp.StatusCode < 400 {
+						// count_tokens 签名重试成功后记录最终 wire body，错误响应仍保留原 body 便于后续处理。
+						acceptedWireBody = retryWireBody
 					}
-					return err
+					resp = retryResp
+					respBody, err = ReadUpstreamResponseBody(resp.Body, s.cfg, c, countTokensTooLarge)
+					_ = resp.Body.Close()
+					if err != nil {
+						if !errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+							s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
+						}
+						return err
+					}
 				}
 			}
 		}

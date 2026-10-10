@@ -7,6 +7,8 @@ import type { ProviderInstance } from '@/types/payment'
 
 const messages: Record<string, string> = {
   'admin.settings.payment.providerConfig': 'Credentials',
+  'admin.settings.payment.refundEnabled': 'Refund enabled',
+  'admin.settings.payment.allowUserRefund': 'User refund enabled',
   'admin.settings.payment.easypayCustomMethods': 'Custom EasyPay methods',
   'admin.settings.payment.easypayCustomMethodsHint': 'Add provider-specific EasyPay type values.',
   'admin.settings.payment.addCustomMethod': 'Add method',
@@ -61,6 +63,7 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
       editing: options.editing ?? null,
       allKeyOptions: [
         { value: 'easypay', label: 'EasyPay' },
+        { value: 'jupitong', label: 'JuFuTong' },
         { value: 'alipay', label: 'Alipay' },
         { value: 'wxpay', label: 'WeChat Pay' },
         { value: 'stripe', label: 'Stripe' },
@@ -68,6 +71,7 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
       ],
       enabledKeyOptions: [
         { value: 'easypay', label: 'EasyPay' },
+        { value: 'jupitong', label: 'JuFuTong' },
         { value: 'alipay', label: 'Alipay' },
         { value: 'wxpay', label: 'WeChat Pay' },
         { value: 'airwallex', label: 'Airwallex' },
@@ -88,7 +92,8 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
           template: '<div />',
         },
         ToggleSwitch: {
-          template: '<div />',
+          props: ['label'],
+          template: '<span>{{ label }}</span>',
         },
       },
     },
@@ -96,6 +101,60 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
 }
 
 describe('PaymentProviderDialog callback URLs', () => {
+  it('requires PID and PKey when creating a JuFuTong provider', async () => {
+    const wrapper = mountDialog()
+    ;(wrapper.vm as unknown as { reset: (key: string) => void }).reset('jupitong')
+    await nextTick()
+
+    await wrapper.find('input[type="text"]').setValue('JuFuTong')
+    await wrapper.find('form').trigger('submit.prevent')
+    expect(wrapper.emitted('save')).toBeUndefined()
+
+    const pidInput = wrapper.findAll('input[type="text"]').find(input => input.classes().includes('input') && input.element !== wrapper.find('input[type="text"]').element)
+    if (!pidInput) throw new Error('PID input not found')
+    await pidInput.setValue('merchant-1')
+    await wrapper.find('form').trigger('submit.prevent')
+    expect(wrapper.emitted('save')).toBeUndefined()
+
+    await wrapper.find('input[type="password"]').setValue('secret-1')
+    await wrapper.find('form').trigger('submit.prevent')
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string> }
+    expect(payload.config.pid).toBe('merchant-1')
+    expect(payload.config.pkey).toBe('secret-1')
+  })
+
+  it('uses the dedicated JuFuTong callback and keeps refunds disabled', async () => {
+    const provider = providerFactory({
+      provider_key: 'jupitong',
+      name: 'JuFuTong',
+      config: { pid: 'merchant-1', apiBase: 'https://untrusted.example.com', extra: 'legacy' },
+      supported_types: ['alipay', 'wxpay'],
+      refund_enabled: true,
+      allow_user_refund: true,
+    })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+
+    expect(wrapper.text()).not.toContain('apiBase')
+    expect(wrapper.text()).not.toContain('Refund enabled')
+    expect(wrapper.text()).not.toContain('User refund enabled')
+    expect(wrapper.findAll('input[type="text"]').some(input => (input.element as HTMLInputElement).value === 'https://untrusted.example.com')).toBe(false)
+    await wrapper.find('form').trigger('submit.prevent')
+
+    const payload = wrapper.emitted('save')?.[0]?.[0] as {
+      config: Record<string, string>
+      refund_enabled: boolean
+      allow_user_refund: boolean
+    }
+    expect(payload.config.notifyUrl).toBe(window.location.origin + '/api/v1/payment/webhook/jupitong')
+    expect(payload.config.returnUrl).toBe(window.location.origin + '/payment/result')
+    expect(payload.config.apiBase).toBeUndefined()
+    expect(payload.config.extra).toBeUndefined()
+    expect(payload.refund_enabled).toBe(false)
+    expect(payload.allow_user_refund).toBe(false)
+  })
+
   it.each([
     ['https://notify.example.com/', 'https://return.example.com///', 'https://notify.example.com', 'https://return.example.com'],
     [' https://notify.example.com/sub/ ', ' https://return.example.com/site/ ', 'https://notify.example.com/sub', 'https://return.example.com/site'],

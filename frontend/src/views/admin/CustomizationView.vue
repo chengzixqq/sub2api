@@ -130,7 +130,7 @@ const toggleGroups = [
 ] as const
 const form = reactive<ClaudeCustomizationSettings>({
   preset: 'magic', fallback_policy: 'native_passthrough', thinking_prefilter_enabled: false,
-  thinking_signature_retry_enabled: true, thinking_tool_downgrade_retry_enabled: true,
+  thinking_signature_retry_enabled: false, thinking_tool_downgrade_retry_enabled: false,
   beta_policy_mode: 'capability_aware', unknown_beta_action: 'pass_on_native_only',
   fingerprint_unification: true, metadata_passthrough: true, url_redaction_enabled: true,
 })

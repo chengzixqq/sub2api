@@ -779,6 +779,7 @@ export default {
         helpImagePlaceholder: '上传或输入图片链接',
         helpTextPlaceholder: '输入帮助说明文本...',
         providerEasypay: '易支付',
+        providerJupitong: '聚付通',
         providerAlipay: '支付宝官方',
         providerWxpay: '微信官方',
         providerStripe: 'Stripe',

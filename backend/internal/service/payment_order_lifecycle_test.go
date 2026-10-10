@@ -183,6 +183,7 @@ func TestVerifyOrderByOutTradeNoBackfillsTradeNoFromPaidQuery(t *testing.T) {
 		SetRechargeCode("CHECKPAID-UPSTREAM-TRADE-NO").
 		SetOutTradeNo("sub2_checkpaid_trade_no_missing").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -248,6 +249,7 @@ func TestVerifyOrderByOutTradeNoBackfillsTradeNoFromPaidQuery(t *testing.T) {
 
 	got, err := svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
 	require.NoError(t, err)
+	require.Equal(t, 1, provider.queryCalls)
 	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
 	require.Equal(t, OrderStatusCompleted, got.Status)
 	require.Equal(t, "upstream-trade-123", got.PaymentTradeNo)
@@ -284,6 +286,7 @@ func TestVerifyOrderByOutTradeNoRetriesZeroAmountPaidQueryOnce(t *testing.T) {
 		SetRechargeCode("CHECKPAID-UPSTREAM-RETRY").
 		SetOutTradeNo("sub2_checkpaid_retry_zero_amount").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -382,6 +385,7 @@ func TestVerifyOrderByOutTradeNoRejectsPaidQueryWithZeroAmount(t *testing.T) {
 		SetRechargeCode("CHECKPAID-ZERO-AMOUNT").
 		SetOutTradeNo("sub2_checkpaid_zero_amount").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -474,6 +478,7 @@ func TestVerifyOrderByOutTradeNoDoesNotCancelUnpaidUpstreamOrder(t *testing.T) {
 		SetRechargeCode("CHECKPAID-PENDING").
 		SetOutTradeNo("sub2_checkpaid_pending").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -531,6 +536,7 @@ func TestCancelOrderStillClosesUnpaidUpstreamOrder(t *testing.T) {
 		SetRechargeCode("CANCEL-PENDING").
 		SetOutTradeNo("sub2_cancel_pending").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -588,6 +594,7 @@ func TestReconcilePendingPaymentOrdersBackfillsPaidOrder(t *testing.T) {
 		SetRechargeCode("WXPAY-RECONCILE").
 		SetOutTradeNo("sub2_wxpay_reconcile").
 		SetPaymentType(payment.TypeWxpay).
+		SetProviderKey(payment.TypeWxpay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -690,6 +697,7 @@ func TestReconcilePendingPaymentOrdersQueriesAlipayOrder(t *testing.T) {
 		SetRechargeCode("ALIPAY-RECONCILE").
 		SetOutTradeNo("sub2_alipay_reconcile").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -743,6 +751,7 @@ func TestVerifyOrderByOutTradeNoUsesOutTradeNoWhenPaymentTradeNoAlreadyExistsFor
 		SetRechargeCode("CHECKPAID-EXISTING-TRADE-NO").
 		SetOutTradeNo("sub2_checkpaid_use_out_trade_no").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("upstream-trade-existing").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).
@@ -812,21 +821,31 @@ func TestVerifyOrderByOutTradeNoUsesOutTradeNoWhenPaymentTradeNoAlreadyExistsFor
 	require.Equal(t, "upstream-trade-existing", got.PaymentTradeNo)
 }
 
-func TestPaymentOrderAllowsRegistryFallbackOnlyForLegacyOrdersWithoutPinnedProviderState(t *testing.T) {
+func TestPaymentOrderAllowsRegistryFallbackOnlyWithRecordedProviderKey(t *testing.T) {
 	t.Parallel()
 
-	require.True(t, paymentOrderAllowsRegistryFallback(&dbent.PaymentOrder{
+	require.False(t, paymentOrderAllowsRegistryFallback(&dbent.PaymentOrder{
 		PaymentType: payment.TypeAlipay,
 	}))
+
+	providerKey := payment.TypeEasyPay
+	legacyOrder := &dbent.PaymentOrder{
+		PaymentType: payment.TypeAlipay,
+		ProviderKey: &providerKey,
+	}
+	require.True(t, paymentOrderAllowsRegistryFallback(legacyOrder))
+	require.Equal(t, payment.TypeEasyPay, paymentOrderFallbackProviderKey(legacyOrder))
 
 	instanceID := "12"
 	require.False(t, paymentOrderAllowsRegistryFallback(&dbent.PaymentOrder{
 		PaymentType:        payment.TypeAlipay,
+		ProviderKey:        &providerKey,
 		ProviderInstanceID: &instanceID,
 	}))
 
 	require.False(t, paymentOrderAllowsRegistryFallback(&dbent.PaymentOrder{
 		PaymentType: payment.TypeAlipay,
+		ProviderKey: &providerKey,
 		ProviderSnapshot: map[string]any{
 			"schema_version":       2,
 			"provider_instance_id": "12",

@@ -254,7 +254,7 @@ const props = defineProps<{
 
 type PaymentOutcome = 'success' | 'cancelled' | 'expired'
 
-const emit = defineEmits<{ done: []; success: []; settled: [outcome: PaymentOutcome] }>()
+const emit = defineEmits<{ done: []; success: []; settled: [outcome: PaymentOutcome]; 'popup-opened': [popup: Window] }>()
 
 const i18n = useI18n()
 const { t } = i18n
@@ -345,9 +345,11 @@ function isSuccessStatus(status: string | null | undefined): boolean {
 
 function reopenPopup() {
   if (props.payUrl) {
-    const win = window.open(props.payUrl, 'paymentPopup', getPaymentPopupFeatures())
+    const win = window.open(props.payUrl, `paymentPopup_${props.orderId}`, getPaymentPopupFeatures())
     if (!win || win.closed) {
       window.location.href = props.payUrl
+    } else {
+      emit('popup-opened', win)
     }
   }
 }

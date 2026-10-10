@@ -7,14 +7,18 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -58,12 +62,64 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	for k, v := range config {
 		cfg[k] = v
 	}
-	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
+	apiBase, err := validateEasyPayAPIBase(cfg["apiBase"])
+	if err != nil {
+		return nil, err
+	}
+	cfg["apiBase"] = apiBase
 	return &EasyPay{
 		instanceID: instanceID,
 		config:     cfg,
-		httpClient: &http.Client{Timeout: easypayHTTPTimeout},
+		httpClient: newEasyPayHTTPClient(apiBase),
 	}, nil
+}
+
+func newEasyPayHTTPClient(apiBase string) *http.Client {
+	origin := easyPayOrigin(apiBase)
+	return &http.Client{
+		Timeout: easypayHTTPTimeout,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if easyPayOrigin(req.URL.String()) != origin {
+				return fmt.Errorf("easypay redirect crossed configured origin")
+			}
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func easyPayOrigin(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host)
+}
+
+// validateEasyPayAPIBase prevents a cleartext provider endpoint from becoming
+// an authoritative source for paid status. Loopback HTTP remains available
+// for deterministic local tests and development; non-loopback deployments
+// must use HTTPS.
+func validateEasyPayAPIBase(apiBase string) (string, error) {
+	base := strings.TrimSpace(apiBase)
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", errors.New("easypay apiBase must be an absolute HTTPS URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("easypay apiBase must not contain userinfo, query, or fragment")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+	case "http":
+		host := strings.ToLower(parsed.Hostname())
+		ip := net.ParseIP(host)
+		if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return "", errors.New("easypay apiBase must use HTTPS outside loopback")
+		}
+	default:
+		return "", errors.New("easypay apiBase must use HTTPS")
+	}
+	return normalizeEasyPayAPIBase(base), nil
 }
 
 func normalizeEasyPayAPIBase(apiBase string) string {
@@ -150,6 +206,9 @@ func (e *EasyPay) createRedirectPayment(req payment.CreatePaymentRequest) (*paym
 	if req.IsMobile {
 		params["device"] = deviceMobile
 	}
+	if err := validateEasyPayLegacySignParams(params); err != nil {
+		return nil, err
+	}
 	params["sign"] = easyPaySign(params, e.config["pkey"])
 	params["sign_type"] = signTypeMD5
 
@@ -176,6 +235,9 @@ func (e *EasyPay) createAPIPayment(ctx context.Context, req payment.CreatePaymen
 	}
 	if req.IsMobile {
 		params["device"] = deviceMobile
+	}
+	if err := validateEasyPayLegacySignParams(params); err != nil {
+		return nil, err
 	}
 	params["sign"] = easyPaySign(params, e.config["pkey"])
 	params["sign_type"] = signTypeMD5
@@ -262,6 +324,15 @@ func (e *EasyPay) resolveURLs(req payment.CreatePaymentRequest) (string, string)
 	if returnURL == "" {
 		returnURL = e.config["returnUrl"]
 	}
+	// EasyPay's legacy signature joins decoded values with '&'. The result
+	// page can recover the order from the browser's payment snapshot, while
+	// query parameters here would make the outbound signature ambiguous.
+	if parsed, err := url.Parse(returnURL); err == nil && parsed.IsAbs() && parsed.Host != "" {
+		parsed.RawQuery = ""
+		parsed.ForceQuery = false
+		parsed.Fragment = ""
+		returnURL = parsed.String()
+	}
 	return notifyURL, returnURL
 }
 
@@ -301,6 +372,9 @@ func (e *EasyPay) upstreamPaymentType(paymentType string) string {
 }
 
 func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
+	if strings.TrimSpace(tradeNo) == "" {
+		return nil, errors.New("easypay query missing order identifier")
+	}
 	params := map[string]string{
 		"act": "order", "pid": e.config["pid"],
 		"key": e.config["pkey"], "out_trade_no": tradeNo,
@@ -310,10 +384,12 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		return nil, fmt.Errorf("easypay query: %w", err)
 	}
 	type easyPayQueryData struct {
-		TradeStatus *string `json:"trade_status"`
-		Status      *int    `json:"status"`
-		Money       *string `json:"money"`
-		TradeNo     *string `json:"trade_no"`
+		TradeStatus *string          `json:"trade_status"`
+		Status      *int             `json:"status"`
+		Money       *string          `json:"money"`
+		TradeNo     *string          `json:"trade_no"`
+		OutTradeNo  *string          `json:"out_trade_no"`
+		PID         *json.RawMessage `json:"pid"`
 	}
 	var resp struct {
 		Code        int              `json:"code"`
@@ -322,10 +398,40 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		Status      *int             `json:"status"`
 		Money       *string          `json:"money"`
 		TradeNo     *string          `json:"trade_no"`
+		OutTradeNo  *string          `json:"out_trade_no"`
+		PID         *json.RawMessage `json:"pid"`
 		Data        easyPayQueryData `json:"data"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("easypay parse query: %w", err)
+	}
+	if resp.Code != easypayCodeSuccess {
+		return nil, fmt.Errorf("easypay query rejected: code %d: %s", resp.Code, resp.Msg)
+	}
+	returnedOrderNo := resp.OutTradeNo
+	if returnedOrderNo == nil {
+		returnedOrderNo = resp.Data.OutTradeNo
+	}
+	metadata := map[string]string{}
+	if returnedOrderNo != nil {
+		if *returnedOrderNo != tradeNo {
+			return nil, fmt.Errorf("easypay query returned mismatched out_trade_no")
+		}
+		metadata["out_trade_no"] = *returnedOrderNo
+	}
+	returnedPID := resp.PID
+	if returnedPID == nil {
+		returnedPID = resp.Data.PID
+	}
+	if returnedPID != nil {
+		pid, err := parseEasyPayQueryPID(*returnedPID)
+		if err != nil {
+			return nil, fmt.Errorf("easypay query returned invalid pid: %w", err)
+		}
+		if pid != e.config["pid"] {
+			return nil, fmt.Errorf("easypay query returned mismatched pid")
+		}
+		metadata["pid"] = pid
 	}
 	status := payment.ProviderStatusPending
 	if resp.TradeStatus != nil {
@@ -350,7 +456,7 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	} else if resp.Data.Money != nil {
 		money = *resp.Data.Money
 	}
-	responseTradeNo := tradeNo
+	responseTradeNo := ""
 	if resp.TradeNo != nil {
 		if *resp.TradeNo != "" {
 			responseTradeNo = *resp.TradeNo
@@ -358,14 +464,39 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	} else if resp.Data.TradeNo != nil && *resp.Data.TradeNo != "" {
 		responseTradeNo = *resp.Data.TradeNo
 	}
+	if status == payment.ProviderStatusPaid && strings.TrimSpace(responseTradeNo) == "" {
+		return nil, fmt.Errorf("easypay paid query missing upstream trade_no")
+	}
+	if status == payment.ProviderStatusPaid && (returnedOrderNo == nil || returnedPID == nil) {
+		return nil, fmt.Errorf("easypay paid query missing upstream out_trade_no or pid")
+	}
 
 	amount, _ := strconv.ParseFloat(money, 64)
 	return &payment.QueryOrderResponse{
 		TradeNo:  responseTradeNo,
 		Status:   status,
 		Amount:   amount,
-		Metadata: e.MerchantIdentityMetadata(),
+		Metadata: metadata,
 	}, nil
+}
+
+func parseEasyPayQueryPID(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("empty pid")
+	}
+	if raw[0] == '"' {
+		var pid string
+		if err := json.Unmarshal(raw, &pid); err != nil {
+			return "", err
+		}
+		return pid, nil
+	}
+	for _, digit := range raw {
+		if digit < '0' || digit > '9' {
+			return "", errors.New("pid must be a string or decimal integer")
+		}
+	}
+	return string(raw), nil
 }
 
 func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[string]string) (*payment.PaymentNotification, error) {
@@ -373,23 +504,53 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 	if err != nil {
 		return nil, fmt.Errorf("parse notify: %w", err)
 	}
+	for key, entries := range values {
+		if len(entries) != 1 {
+			return nil, fmt.Errorf("duplicate notify parameter: %s", key)
+		}
+	}
 	// url.ParseQuery already decodes values — no additional decode needed.
 	params := make(map[string]string)
 	for k := range values {
 		params[k] = values.Get(k)
 	}
+	if err := validateEasyPayLegacySignParams(params); err != nil {
+		return nil, err
+	}
 	sign := params["sign"]
 	if sign == "" {
 		return nil, fmt.Errorf("missing sign")
 	}
+	if signType := strings.TrimSpace(params["sign_type"]); !strings.EqualFold(signType, signTypeMD5) {
+		return nil, fmt.Errorf("unsupported sign type: %s", signType)
+	}
+	if pid := strings.TrimSpace(params["pid"]); pid == "" || pid != strings.TrimSpace(e.config["pid"]) {
+		return nil, fmt.Errorf("merchant pid mismatch")
+	}
 	if !easyPayVerifySign(params, e.config["pkey"], sign) {
 		return nil, fmt.Errorf("invalid signature")
+	}
+	for _, field := range []string{"out_trade_no", "trade_status"} {
+		if strings.TrimSpace(params[field]) == "" {
+			return nil, fmt.Errorf("missing notify parameter: %s", field)
+		}
 	}
 	status := payment.ProviderStatusFailed
 	if params["trade_status"] == tradeStatusSuccess {
 		status = payment.ProviderStatusSuccess
+		for _, field := range []string{"trade_no", "money"} {
+			if strings.TrimSpace(params[field]) == "" {
+				return nil, fmt.Errorf("missing notify parameter: %s", field)
+			}
+		}
 	}
-	amount, _ := strconv.ParseFloat(params["money"], 64)
+	var amount float64
+	if params["money"] != "" {
+		amount, err = strconv.ParseFloat(params["money"], 64)
+		if err != nil || !isFinitePositive(amount) {
+			return nil, fmt.Errorf("invalid notify amount")
+		}
+	}
 
 	metadata := e.MerchantIdentityMetadata()
 	if pid := strings.TrimSpace(params["pid"]); pid != "" {
@@ -402,6 +563,10 @@ func (e *EasyPay) VerifyNotification(_ context.Context, rawBody string, _ map[st
 		TradeNo: params["trade_no"], OrderID: params["out_trade_no"],
 		Amount: amount, Status: status, RawData: rawBody, Metadata: metadata,
 	}, nil
+}
+
+func isFinitePositive(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
@@ -547,29 +712,63 @@ func (e *EasyPay) resolveCID(paymentType string) string {
 }
 
 func (e *EasyPay) post(ctx context.Context, endpoint string, params map[string]string) ([]byte, error) {
-	body, _, err := e.postRaw(ctx, endpoint, params)
-	return body, err
+	body, status, err := e.postRaw(ctx, endpoint, params)
+	if err != nil {
+		return nil, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("easypay upstream returned HTTP status %d", status)
+	}
+	return body, nil
 }
 
 func (e *EasyPay) postRaw(ctx context.Context, endpoint string, params map[string]string) ([]byte, int, error) {
+	apiBase, err := validateEasyPayAPIBase(e.config["apiBase"])
+	if err != nil {
+		return nil, 0, err
+	}
+	origin := easyPayOrigin(apiBase)
+	target, err := url.Parse(endpoint)
+	if err != nil || target.Scheme == "" || target.Host == "" || target.User != nil {
+		return nil, 0, errors.New("easypay endpoint must be an absolute URL without userinfo")
+	}
+	if easyPayOrigin(target.String()) != origin {
+		return nil, 0, errors.New("easypay endpoint origin does not match configured apiBase")
+	}
 	form := url.Values{}
 	for k, v := range params {
 		form.Set(k, v)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := e.httpClient
 	if client == nil {
-		client = &http.Client{Timeout: easypayHTTPTimeout}
+		client = newEasyPayHTTPClient(apiBase)
 	}
-	resp, err := client.Do(req)
+	// Do not let a caller-provided client re-enable redirects for requests that
+	// carry the merchant key. Keep its transport and proxy settings, but force
+	// the same-origin, no-follow policy for this request.
+	clientCopy := *client
+	clientCopy.CheckRedirect = func(next *http.Request, _ []*http.Request) error {
+		if easyPayOrigin(next.URL.String()) != origin {
+			return fmt.Errorf("easypay redirect crossed configured origin")
+		}
+		return http.ErrUseLastResponse
+	}
+	if clientCopy.Timeout == 0 {
+		clientCopy.Timeout = easypayHTTPTimeout
+	}
+	resp, err := clientCopy.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.Request == nil || easyPayOrigin(resp.Request.URL.String()) != origin {
+		return nil, resp.StatusCode, errors.New("easypay response origin does not match configured apiBase")
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEasypayResponseSize))
 	if err != nil {
 		return nil, resp.StatusCode, err
@@ -598,6 +797,24 @@ func easyPaySign(params map[string]string, pkey string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+// Legacy EasyPay signatures concatenate decoded values without escaping.
+// Delimiters or controls would make that representation ambiguous.
+func validateEasyPayLegacySignParams(params map[string]string) error {
+	for key, value := range params {
+		if key == "sign" || key == "sign_type" || value == "" {
+			continue
+		}
+		if strings.ContainsAny(key, "&=") || strings.ContainsAny(value, "&=") ||
+			strings.IndexFunc(key, unicode.IsControl) >= 0 || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("unsafe easypay legacy signing parameter: %s", key)
+		}
+	}
+	return nil
+}
+
 func easyPayVerifySign(params map[string]string, pkey string, sign string) bool {
+	if validateEasyPayLegacySignParams(params) != nil {
+		return false
+	}
 	return hmac.Equal([]byte(easyPaySign(params, pkey)), []byte(sign))
 }

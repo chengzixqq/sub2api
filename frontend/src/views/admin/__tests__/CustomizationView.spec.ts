@@ -104,6 +104,18 @@ describe('CustomizationView native settings UI', () => {
     wrapper.unmount()
   })
 
+  it('switches from magic to custom when enabling signature retries', async () => {
+    getSettings.mockResolvedValueOnce({ global: { ...policy, preset: 'magic' } })
+    const wrapper = renderView()
+    await flushPromises()
+    const toggle = wrapper.findAllComponents(Toggle).find((item) => item.attributes('aria-label').includes('thinking_signature_retry_enabled'))!
+    await toggle.trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(updateSettings).toHaveBeenCalledWith({ ...policy, preset: 'custom', thinking_signature_retry_enabled: true })
+    wrapper.unmount()
+  })
+
   it('applies presets through the existing endpoint and locks competing changes', async () => {
     let finish!: (value: unknown) => void
     applyPreset.mockReturnValue(new Promise((resolve) => { finish = resolve }))

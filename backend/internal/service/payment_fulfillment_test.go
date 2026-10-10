@@ -681,8 +681,8 @@ func TestValidateProviderNotificationMetadataRejectsStripeCurrencyMismatch(t *te
 func TestPaymentAmountToleranceForThreeDecimalCurrency(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, amountToleranceCNY, paymentAmountToleranceForCurrency("CNY"))
-	assert.Equal(t, amountToleranceCNY, paymentAmountToleranceForCurrency("JPY"))
+	assert.InDelta(t, 0.005, paymentAmountToleranceForCurrency("CNY"), 1e-12)
+	assert.InDelta(t, 0.5, paymentAmountToleranceForCurrency("JPY"), 1e-12)
 	assert.InDelta(t, 0.0005, paymentAmountToleranceForCurrency("KWD"), 1e-12)
 }
 

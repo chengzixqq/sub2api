@@ -22,11 +22,12 @@ Sub2API has a built-in payment system that enables user self-service top-up with
 | Provider | Payment Methods | Description |
 |----------|----------------|-------------|
 | **EasyPay** | Alipay, WeChat Pay | Third-party aggregation via EasyPay protocol |
+| **JuFuTong** | Alipay, WeChat Pay | Separate integration with the fixed `spay.huiyiy.cn` gateway; not an EasyPay instance |
 | **Alipay (Direct)** | Desktop QR code, mobile Alipay redirect | Direct integration with Alipay Open Platform, returning desktop QR codes and mobile WAP/app launch links |
 | **WeChat Pay (Direct)** | Native QR, H5, MP/JSAPI Pay | Direct integration with WeChat Pay APIv3 with environment-aware routing |
 | **Stripe** | Card, Alipay, WeChat Pay, Link, etc. | International payments, multi-currency support |
 
-> Alipay/WeChat Pay direct and EasyPay can both exist as backend provider instances, but the frontend always exposes only two visible buttons: `Alipay` and `WeChat Pay`. Admins choose exactly one source for each visible method: direct or EasyPay. Direct channels connect to payment APIs directly with lower fees; EasyPay aggregates through third-party platforms with easier setup.
+> Alipay/WeChat Pay direct, EasyPay, and JuFuTong can coexist as backend provider instances, but the frontend still exposes the same `Alipay` and `WeChat Pay` buttons. Admins choose exactly one source for each visible method: direct, EasyPay, or JuFuTong.
 
 > **EasyPay Provider Recommendations**: Both options below are third-party aggregators compatible with the EasyPay protocol. Pick based on the funding channel and settlement currency you need:
 >
@@ -69,8 +70,8 @@ Configure the following in Admin Dashboard **Settings → Payment Settings**:
 
 The current payment UX keeps the frontend method list unified and does not expose provider brands directly:
 
-- **Alipay**: when enabled, this button must be routed to either `Alipay (Direct)` or `EasyPay Alipay`
-- **WeChat Pay**: when enabled, this button must be routed to either `WeChat Pay (Direct)` or `EasyPay WeChat`
+- **Alipay**: when enabled, route this button to `Alipay (Direct)`, `EasyPay Alipay`, or `JuFuTong Alipay`
+- **WeChat Pay**: when enabled, route this button to `WeChat Pay (Direct)`, `EasyPay WeChat`, or `JuFuTong WeChat Pay`
 - Each visible method can route to only one source at a time
 - If a visible method is enabled without a selected source, the frontend will not expose that method
 
@@ -120,6 +121,17 @@ Compatible with any payment service that implements the EasyPay protocol.
 | **Alipay Channel ID** | Specify Alipay channel (optional) | No |
 | **WeChat Channel ID** | Specify WeChat channel (optional) | No |
 
+### JuFuTong
+
+JuFuTong uses its own signed protocol and a fixed official gateway at `https://spay.huiyiy.cn`; it is not configured as EasyPay. Obtain the credentials from the JuFuTong merchant console. There is no editable API Base URL or channel ID.
+
+| Parameter | Description | Required |
+|-----------|-------------|----------|
+| **PID** | JuFuTong merchant ID | Yes |
+| **PKey** | JuFuTong merchant secret; stored as a sensitive credential | Yes |
+
+Supported upstream types are Alipay and WeChat Pay. Refunds are unavailable for this integration, so the provider's refund controls remain disabled. Keep the global recharge switch off until callback verification, order reconciliation, and deployment checks pass.
+
 ### Alipay (Direct)
 
 Direct integration with Alipay Open Platform. Mobile flows return an Alipay WAP/app redirect URL. Desktop flows prefer Face-to-Face Precreate QR payloads; if the merchant has not enabled that product, the provider falls back to Computer Website Pay and also returns the cashier URL so the frontend can render a QR code or open the hosted checkout page directly.
@@ -163,7 +175,7 @@ You can create **multiple instances** of the same provider type for load balanci
 - **Multi-instance load balancing** — Distribute orders via round-robin or least-amount strategy
 - **Independent limits** — Each instance can have its own min/max amount and daily limit
 - **Independent toggle** — Enable/disable individual instances without affecting others
-- **Refund control** — Enable or disable refunds per instance
+- **Refund control** — Enable or disable refunds per supported instance; JuFuTong does not support refunds
 - **Payment methods** — Each instance can support a subset of payment methods
 - **Ordering** — Drag to reorder instances
 
@@ -192,11 +204,12 @@ When adding a provider, the system auto-generates callback URLs from your site d
 | Provider | Callback Path |
 |----------|-------------|
 | **EasyPay** | `https://your-domain.com/api/v1/payment/webhook/easypay` |
+| **JuFuTong** | `https://your-domain.com/api/v1/payment/webhook/jupitong` |
 | **Alipay (Direct)** | `https://your-domain.com/api/v1/payment/webhook/alipay` |
 | **WeChat Pay (Direct)** | `https://your-domain.com/api/v1/payment/webhook/wxpay` |
 | **Stripe** | `https://your-domain.com/api/v1/payment/webhook/stripe` |
 
-> Replace `your-domain.com` with your actual domain. For EasyPay / Alipay / WeChat Pay, the callback URL is auto-filled when adding the provider — no manual configuration needed.
+> Replace `your-domain.com` with your actual domain. For EasyPay / JuFuTong / Alipay / WeChat Pay, the callback URL is auto-filled when adding the provider — no manual configuration needed.
 
 ### Stripe Webhook Setup
 

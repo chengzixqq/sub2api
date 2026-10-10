@@ -1950,6 +1950,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			wantErr: "gateway.stream_data_interval_timeout",
 		},
 		{
+			name:    "gateway stream data interval upper bound",
+			mutate:  func(c *Config) { c.Gateway.StreamDataIntervalTimeout = 601 },
+			wantErr: "gateway.stream_data_interval_timeout must be 0 or between 30-600 seconds",
+		},
+		{
 			name:    "gateway stream data interval negative",
 			mutate:  func(c *Config) { c.Gateway.StreamDataIntervalTimeout = -1 },
 			wantErr: "gateway.stream_data_interval_timeout must be non-negative",
@@ -2183,6 +2188,14 @@ func TestValidateConfigErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateStreamDataIntervalTimeoutAllows600Seconds(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.Gateway.StreamDataIntervalTimeout = 600
+	require.NoError(t, cfg.Validate())
 }
 
 func TestValidateConfig_OpenAIWSRules(t *testing.T) {

@@ -84,25 +84,12 @@ func (s *PaymentService) getRefundOrderProviderInstance(ctx context.Context, o *
 func (s *PaymentService) resolveUniqueLegacyOrderProviderInstance(ctx context.Context, o *dbent.PaymentOrder) (*dbent.PaymentProviderInstance, error) {
 	paymentType := payment.GetBasePaymentType(strings.TrimSpace(o.PaymentType))
 	providerKey := strings.TrimSpace(psStringValue(o.ProviderKey))
-	if providerKey != "" {
-		instances, err := s.entClient.PaymentProviderInstance.Query().
-			Where(paymentproviderinstance.ProviderKeyEQ(providerKey)).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		matched := psFilterLegacyOrderProviderInstances(paymentType, instances)
-		if len(matched) == 1 {
-			return matched[0], nil
-		}
-		return nil, nil
-	}
-
-	if paymentType == "" {
+	if providerKey == "" {
 		return nil, nil
 	}
 
 	instances, err := s.entClient.PaymentProviderInstance.Query().
+		Where(paymentproviderinstance.ProviderKeyEQ(providerKey)).
 		All(ctx)
 	if err != nil {
 		return nil, err

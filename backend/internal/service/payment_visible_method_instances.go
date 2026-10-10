@@ -48,6 +48,13 @@ func enabledVisibleMethodsForProvider(providerKey, supportedTypes string) []stri
 		for _, supportedType := range splitTypes(supportedTypes) {
 			addMethod(supportedType)
 		}
+	case payment.TypeJupitong:
+		for _, supportedType := range splitTypes(supportedTypes) {
+			method := NormalizeVisibleMethod(supportedType)
+			if method == payment.TypeAlipay || method == payment.TypeWxpay {
+				addMethod(method)
+			}
+		}
 	}
 
 	methods := make([]string, 0, len(methodSet))
@@ -145,7 +152,7 @@ func (s *PaymentConfigService) validateVisibleMethodEnablementConflicts(
 	supportedTypes string,
 	enabled bool,
 ) error {
-	// Visible methods are selected by configured source (official/easypay),
+	// Visible methods are selected by configured provider source,
 	// so multiple enabled providers can intentionally claim the same user-facing
 	// method. Order creation and limits will route through the configured source.
 	_, _, _, _, _ = ctx, excludeID, providerKey, supportedTypes, enabled
@@ -200,7 +207,10 @@ func (s *PaymentConfigService) resolveVisibleMethodProviderKey(
 			return "", err
 		}
 		if providerKey == "" {
-			return "", nil
+			return "", infraerrors.BadRequest(
+				"INVALID_PAYMENT_VISIBLE_METHOD_SOURCE",
+				fmt.Sprintf("%s source is required when multiple providers are enabled", method),
+			)
 		}
 		selected := selectVisibleMethodInstanceByProviderKey(matching, providerKey)
 		if selected == nil {
@@ -240,10 +250,7 @@ func (s *PaymentConfigService) resolveEnabledVisibleMethodInstance(
 		return nil, err
 	}
 	if providerKey == "" {
-		if len(matching) == 0 {
-			return nil, nil
-		}
-		return &dbent.PaymentProviderInstance{ProviderKey: ""}, nil
+		return nil, nil
 	}
 	return selectVisibleMethodInstanceByProviderKey(matching, providerKey), nil
 }

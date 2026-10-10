@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -20,10 +21,11 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		wantStatus  string
 		wantTradeNo string
 		wantAmount  float64
+		wantErr     bool
 	}{
 		{
 			name:        "top level trade success is paid",
-			body:        `{"code":1,"trade_status":"TRADE_SUCCESS","status":0,"money":"12.34","trade_no":"gateway-123"}`,
+			body:        `{"code":1,"pid":"pid-1","out_trade_no":"order-123","trade_status":"TRADE_SUCCESS","status":0,"money":"12.34","trade_no":"gateway-123"}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: "gateway-123",
 			wantAmount:  12.34,
@@ -39,42 +41,42 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			name:        "empty trade status with paid numeric status stays pending",
 			body:        `{"code":1,"trade_status":"","status":1,"money":"12.34"}`,
 			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
+			wantTradeNo: "",
 			wantAmount:  12.34,
 		},
 		{
 			name:        "nested data trade success is paid",
-			body:        `{"code":1,"data":{"trade_status":"TRADE_SUCCESS","status":0,"money":"9.99","trade_no":"data-456"}}`,
+			body:        `{"code":1,"data":{"pid":"pid-1","out_trade_no":"order-123","trade_status":"TRADE_SUCCESS","status":0,"money":"9.99","trade_no":"data-456"}}`,
 			wantStatus:  payment.ProviderStatusPaid,
 			wantTradeNo: "data-456",
 			wantAmount:  9.99,
 		},
 		{
 			name:        "legacy numeric paid status remains compatible",
-			body:        `{"code":1,"status":1,"money":"3.21"}`,
+			body:        `{"code":1,"pid":"pid-1","out_trade_no":"order-123","status":1,"money":"3.21","trade_no":"gateway-789"}`,
 			wantStatus:  payment.ProviderStatusPaid,
-			wantTradeNo: orderID,
+			wantTradeNo: "gateway-789",
 			wantAmount:  3.21,
 		},
 		{
 			name:        "legacy numeric non paid status is pending",
 			body:        `{"code":1,"status":0,"money":"3.21"}`,
 			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
+			wantTradeNo: "",
 			wantAmount:  3.21,
 		},
 		{
-			name:        "query failure with missing status is pending",
-			body:        `{"code":0,"msg":"订单不存在"}`,
-			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
-		},
-		{
 			name:        "missing fields are pending",
-			body:        `{}`,
+			body:        `{"code":1}`,
 			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
+			wantTradeNo: "",
 		},
+		{name: "query rejection cannot report paid", body: `{"code":0,"status":1,"trade_no":"gateway-1","pid":"pid-1","out_trade_no":"order-123"}`, wantErr: true},
+		{name: "paid query requires real trade number", body: `{"code":1,"status":1,"pid":"pid-1","out_trade_no":"order-123","money":"3.21"}`, wantErr: true},
+		{name: "paid query requires order ID", body: `{"code":1,"status":1,"pid":"pid-1","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
+		{name: "paid query requires merchant ID", body: `{"code":1,"status":1,"out_trade_no":"order-123","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
+		{name: "wrong order ID rejected", body: `{"code":1,"status":1,"pid":"pid-1","out_trade_no":"order-456","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
+		{name: "wrong merchant ID rejected", body: `{"code":1,"status":1,"pid":"pid-2","out_trade_no":"order-123","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -104,6 +106,12 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 
 			provider := newTestEasyPay(t, server.URL)
 			resp, err := provider.QueryOrder(context.Background(), orderID)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("QueryOrder accepted invalid response: %+v", resp)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("QueryOrder returned error: %v", err)
 			}
@@ -116,6 +124,9 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			if resp.Amount != tt.wantAmount {
 				t.Fatalf("amount = %v, want %v", resp.Amount, tt.wantAmount)
 			}
+			if resp.Status == payment.ProviderStatusPaid && (resp.Metadata["pid"] != "pid-1" || resp.Metadata["out_trade_no"] != orderID) {
+				t.Fatalf("paid metadata = %v, want upstream pid/order", resp.Metadata)
+			}
 			for key, want := range map[string]string{
 				"act":          "order",
 				"pid":          "pid-1",
@@ -127,5 +138,84 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEasyPayQueryOrderRejectsSuccessfulBodyOnHTTPError(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":1,"status":1,"pid":"pid-1","out_trade_no":"order-123","trade_no":"gateway-1","money":"3.21"}`))
+	}))
+	defer server.Close()
+
+	provider := newTestEasyPay(t, server.URL)
+	resp, err := provider.QueryOrder(context.Background(), "order-123")
+	if err == nil {
+		t.Fatalf("QueryOrder accepted an HTTP error response: %+v", resp)
+	}
+	if !strings.Contains(err.Error(), "HTTP status 502") {
+		t.Fatalf("QueryOrder error = %v, want HTTP status 502", err)
+	}
+}
+
+func TestEasyPayQueryOrderNumericPID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "top level integer", body: `{"code":1,"pid":123456,"out_trade_no":"order-123","status":1,"money":"1.00","trade_no":"gateway-1"}`},
+		{name: "nested integer", body: `{"code":1,"data":{"pid":123456,"out_trade_no":"order-123","status":1,"money":"1.00","trade_no":"gateway-1"}}`},
+		{name: "quoted integer", body: `{"code":1,"pid":"123456","out_trade_no":"order-123","status":1,"money":"1.00","trade_no":"gateway-1"}`},
+		{name: "wrong integer", body: `{"code":1,"pid":123457,"out_trade_no":"order-123","status":1,"money":"1.00","trade_no":"gateway-1"}`, wantErr: true},
+		{name: "fractional number", body: `{"code":1,"pid":123456.0,"out_trade_no":"order-123","status":1,"money":"1.00","trade_no":"gateway-1"}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			provider := newTestEasyPay(t, server.URL)
+			provider.config["pid"] = "123456"
+			resp, err := provider.QueryOrder(context.Background(), "order-123")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("QueryOrder accepted invalid pid: %+v", resp)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("QueryOrder returned error: %v", err)
+			}
+			if resp.Status != payment.ProviderStatusPaid || resp.Metadata["pid"] != "123456" || resp.Metadata["out_trade_no"] != "order-123" {
+				t.Fatalf("QueryOrder response = %+v, want paid order with matching pid", resp)
+			}
+		})
+	}
+}
+
+func TestEasyPayQueryOrderRejectsBlankTradeNoBeforeRequest(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	provider := newTestEasyPay(t, server.URL)
+	if _, err := provider.QueryOrder(context.Background(), "  "); err == nil {
+		t.Fatal("QueryOrder accepted a blank trade number")
+	}
+	if called {
+		t.Fatal("QueryOrder issued a request for a blank trade number")
 	}
 }

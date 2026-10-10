@@ -55,6 +55,15 @@ func TestEnabledVisibleMethodsForEasyPayIncludesCustomSupportedTypes(t *testing.
 	}
 }
 
+func TestEnabledVisibleMethodsForJupitongOnlySupportsOfficialMethods(t *testing.T) {
+	t.Parallel()
+	got := enabledVisibleMethodsForProvider(payment.TypeJupitong, "alipay,wxpay,usdt_trc20")
+	want := []string{"alipay", "wxpay"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("jupitong visible methods = %v, want %v", got, want)
+	}
+}
+
 func TestNormalizePaymentSource(t *testing.T) {
 	t.Parallel()
 
@@ -160,6 +169,26 @@ func TestBuildPaymentReturnURL(t *testing.T) {
 	}
 	if query.Get("status") != "success" {
 		t.Fatalf("status = %q", query.Get("status"))
+	}
+}
+
+func TestBuildPaymentReturnURLOverwritesReservedQueryFields(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildPaymentReturnURL("https://example.com/payment/result?from=checkout&order_id=attacker&out_trade_no=attacker&resume_token=attacker&status=failed", 42, "sub2_42", "resume-token")
+	if err != nil {
+		t.Fatalf("buildPaymentReturnURL returned error: %v", err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("url.Parse returned error: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("from") != "checkout" {
+		t.Fatalf("unrelated query = %q", query.Get("from"))
+	}
+	if query.Get("order_id") != "42" || query.Get("out_trade_no") != "sub2_42" || query.Get("resume_token") != "resume-token" || query.Get("status") != "success" {
+		t.Fatalf("reserved query fields were not overwritten: %v", query)
 	}
 }
 
@@ -453,8 +482,10 @@ func TestNormalizeVisibleMethodSource(t *testing.T) {
 	}{
 		{name: "alipay official alias", method: payment.TypeAlipay, input: "alipay", want: VisibleMethodSourceOfficialAlipay},
 		{name: "alipay easypay alias", method: payment.TypeAlipay, input: "easypay", want: VisibleMethodSourceEasyPayAlipay},
+		{name: "alipay jupitong alias", method: payment.TypeAlipay, input: "jupitong", want: VisibleMethodSourceJupitongAlipay},
 		{name: "wxpay official alias", method: payment.TypeWxpay, input: "wxpay", want: VisibleMethodSourceOfficialWechat},
 		{name: "wxpay easypay alias", method: payment.TypeWxpay, input: "easypay", want: VisibleMethodSourceEasyPayWechat},
+		{name: "wxpay jupitong alias", method: payment.TypeWxpay, input: "jupitong", want: VisibleMethodSourceJupitongWechat},
 		{name: "unsupported source", method: payment.TypeWxpay, input: "stripe", want: ""},
 	}
 
@@ -480,8 +511,10 @@ func TestVisibleMethodProviderKeyForSource(t *testing.T) {
 	}{
 		{name: "official alipay", method: payment.TypeAlipay, source: VisibleMethodSourceOfficialAlipay, want: payment.TypeAlipay, ok: true},
 		{name: "easypay alipay", method: payment.TypeAlipay, source: VisibleMethodSourceEasyPayAlipay, want: payment.TypeEasyPay, ok: true},
+		{name: "jupitong alipay", method: payment.TypeAlipay, source: VisibleMethodSourceJupitongAlipay, want: payment.TypeJupitong, ok: true},
 		{name: "official wechat", method: payment.TypeWxpay, source: VisibleMethodSourceOfficialWechat, want: payment.TypeWxpay, ok: true},
 		{name: "easypay wechat", method: payment.TypeWxpay, source: VisibleMethodSourceEasyPayWechat, want: payment.TypeEasyPay, ok: true},
+		{name: "jupitong wechat", method: payment.TypeWxpay, source: VisibleMethodSourceJupitongWechat, want: payment.TypeJupitong, ok: true},
 		{name: "mismatched method and source", method: payment.TypeAlipay, source: VisibleMethodSourceOfficialWechat, want: "", ok: false},
 	}
 
@@ -562,6 +595,16 @@ func TestVisibleMethodLoadBalancerUsesConfiguredSourceWhenMultipleProvidersEnabl
 			wantProvider:  payment.TypeEasyPay,
 		},
 		{
+			name:          "alipay uses jupitong source",
+			method:        payment.TypeAlipay,
+			officialName:  "Official Alipay",
+			officialTypes: "alipay",
+			easyPayName:   "EasyPay Alipay",
+			easyPayTypes:  "alipay",
+			sourceSetting: VisibleMethodSourceJupitongAlipay,
+			wantProvider:  payment.TypeJupitong,
+		},
+		{
 			name:          "wxpay uses official source",
 			method:        payment.TypeWxpay,
 			officialName:  "Official WeChat",
@@ -580,6 +623,16 @@ func TestVisibleMethodLoadBalancerUsesConfiguredSourceWhenMultipleProvidersEnabl
 			easyPayTypes:  "wxpay",
 			sourceSetting: VisibleMethodSourceEasyPayWechat,
 			wantProvider:  payment.TypeEasyPay,
+		},
+		{
+			name:          "wxpay uses jupitong source",
+			method:        payment.TypeWxpay,
+			officialName:  "Official WeChat",
+			officialTypes: "wxpay",
+			easyPayName:   "EasyPay WeChat",
+			easyPayTypes:  "wxpay",
+			sourceSetting: VisibleMethodSourceJupitongWechat,
+			wantProvider:  payment.TypeJupitong,
 		},
 	}
 
@@ -618,6 +671,17 @@ func TestVisibleMethodLoadBalancerUsesConfiguredSourceWhenMultipleProvidersEnabl
 			if err != nil {
 				t.Fatalf("create easypay provider: %v", err)
 			}
+			_, err = client.PaymentProviderInstance.Create().
+				SetProviderKey(payment.TypeJupitong).
+				SetName("Jupitong").
+				SetConfig("{}").
+				SetSupportedTypes(tt.easyPayTypes).
+				SetEnabled(true).
+				SetSortOrder(3).
+				Save(ctx)
+			if err != nil {
+				t.Fatalf("create jupitong provider: %v", err)
+			}
 
 			inner := &captureLoadBalancer{}
 			configService := &PaymentConfigService{
@@ -641,7 +705,7 @@ func TestVisibleMethodLoadBalancerUsesConfiguredSourceWhenMultipleProvidersEnabl
 	}
 }
 
-func TestVisibleMethodLoadBalancerPreservesLegacyCrossProviderRoutingWhenSourceMissing(t *testing.T) {
+func TestVisibleMethodLoadBalancerRejectsCrossProviderRoutingWhenSourceMissing(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -683,14 +747,11 @@ func TestVisibleMethodLoadBalancerPreservesLegacyCrossProviderRoutingWhenSourceM
 	lb := newVisibleMethodLoadBalancer(inner, configService)
 
 	_, err = lb.SelectInstance(ctx, "", payment.TypeAlipay, payment.StrategyRoundRobin, 9.9)
-	if err != nil {
-		t.Fatalf("SelectInstance returned error: %v", err)
+	if infraerrors.Reason(err) != "INVALID_PAYMENT_VISIBLE_METHOD_SOURCE" {
+		t.Fatalf("Reason(err) = %q, want INVALID_PAYMENT_VISIBLE_METHOD_SOURCE", infraerrors.Reason(err))
 	}
-	if inner.lastProviderKey != "" {
-		t.Fatalf("lastProviderKey = %q, want legacy cross-provider empty key", inner.lastProviderKey)
-	}
-	if inner.lastPaymentType != payment.TypeAlipay {
-		t.Fatalf("lastPaymentType = %q, want %q", inner.lastPaymentType, payment.TypeAlipay)
+	if inner.lastPaymentType != "" {
+		t.Fatalf("inner load balancer should not be called, got payment type %q", inner.lastPaymentType)
 	}
 }
 

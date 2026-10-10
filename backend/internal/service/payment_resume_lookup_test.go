@@ -224,6 +224,7 @@ func TestGetPublicOrderByResumeTokenChecksUpstreamForPendingOrder(t *testing.T) 
 		SetRechargeCode("RESUME-PENDING").
 		SetOutTradeNo("sub2_resume_lookup_pending").
 		SetPaymentType(payment.TypeAlipay).
+		SetProviderKey(payment.TypeAlipay).
 		SetPaymentTradeNo("trade-pending").
 		SetOrderType(payment.OrderTypeBalance).
 		SetStatus(OrderStatusPending).

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   PAYMENT_CURRENCY_OPTIONS,
   PROVIDER_CONFIG_FIELDS,
+  PROVIDER_SUPPORTED_TYPES,
+  PROVIDER_CALLBACK_PATHS,
   isBuiltInAlipayMethod,
   isBuiltInWxpayMethod,
   parseEasyPayCustomMethods,
@@ -45,6 +47,20 @@ describe('PROVIDER_CONFIG_FIELDS.airwallex', () => {
 
   it('explains that apiBase must match the Airwallex key environment', () => {
     expect(findField('airwallex', 'apiBase')?.hintKey).toBe('admin.settings.payment.field_airwallexApiBaseHint')
+  })
+})
+
+describe('JuFuTong provider configuration', () => {
+  it('uses only merchant credentials and a dedicated callback path', () => {
+    expect(PROVIDER_SUPPORTED_TYPES.jupitong).toEqual(['alipay', 'wxpay'])
+    expect(PROVIDER_CONFIG_FIELDS.jupitong).toEqual([
+      { key: 'pid', label: 'PID', sensitive: false },
+      { key: 'pkey', label: 'PKey', sensitive: true },
+    ])
+    expect(PROVIDER_CALLBACK_PATHS.jupitong).toEqual({
+      notifyUrl: '/api/v1/payment/webhook/jupitong',
+      returnUrl: '/payment/result',
+    })
   })
 })
 

@@ -361,6 +361,56 @@ func TestCreateProviderInstanceAllowsVisibleMethodProvidersFromDifferentSources(
 	require.NoError(t, err)
 }
 
+func TestJupitongProviderInstanceRejectsRefundFlags(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	svc := &PaymentConfigService{entClient: client}
+	config := map[string]string{
+		"pid": "merchant-1", "pkey": "test-key",
+		"notifyUrl": "https://merchant.example.com/payment/webhook/jupitong",
+	}
+
+	for _, tc := range []struct {
+		name            string
+		refundEnabled   bool
+		allowUserRefund bool
+	}{
+		{name: "provider refund", refundEnabled: true},
+		{name: "user refund", allowUserRefund: true},
+	} {
+		t.Run("create "+tc.name, func(t *testing.T) {
+			_, err := svc.CreateProviderInstance(ctx, CreateProviderInstanceRequest{
+				ProviderKey: payment.TypeJupitong, Name: tc.name, Config: config,
+				SupportedTypes: []string{payment.TypeAlipay}, RefundEnabled: tc.refundEnabled,
+				AllowUserRefund: tc.allowUserRefund,
+			})
+			require.Equal(t, "VALIDATION_ERROR", infraerrors.Reason(err))
+		})
+	}
+
+	instance, err := svc.CreateProviderInstance(ctx, CreateProviderInstanceRequest{
+		ProviderKey: payment.TypeJupitong, Name: "no refunds", Config: config,
+		SupportedTypes: []string{payment.TypeAlipay},
+	})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		request UpdateProviderInstanceRequest
+	}{
+		{name: "provider refund", request: UpdateProviderInstanceRequest{RefundEnabled: boolPtrValue(true)}},
+		{name: "user refund", request: UpdateProviderInstanceRequest{AllowUserRefund: boolPtrValue(true)}},
+	} {
+		t.Run("update "+tc.name, func(t *testing.T) {
+			_, err := svc.UpdateProviderInstance(ctx, instance.ID, tc.request)
+			require.Equal(t, "VALIDATION_ERROR", infraerrors.Reason(err))
+			saved, err := client.PaymentProviderInstance.Get(ctx, instance.ID)
+			require.NoError(t, err)
+			require.False(t, saved.RefundEnabled)
+			require.False(t, saved.AllowUserRefund)
+		})
+	}
+}
+
 func TestUpdateProviderInstanceAllowsEnablingVisibleMethodProviderFromDifferentSource(t *testing.T) {
 	t.Parallel()
 

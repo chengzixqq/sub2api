@@ -3,10 +3,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -62,6 +64,13 @@ func TestWriteSuccessResponse(t *testing.T) {
 			wantBody:        "success",
 		},
 		{
+			name:            "jupitong returns plain text success",
+			providerKey:     payment.TypeJupitong,
+			wantCode:        http.StatusOK,
+			wantContentType: "text/plain",
+			wantBody:        "success",
+		},
+		{
 			name:            "alipay returns plain text success",
 			providerKey:     "alipay",
 			wantCode:        http.StatusOK,
@@ -97,6 +106,43 @@ func TestWriteSuccessResponse(t *testing.T) {
 				assert.Equal(t, tt.wantBody, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestExtractOutTradeNoWithContentType_JupitongMultipart(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range map[string]string{
+		"pid": "20880001", "out_trade_no": "sub2_jpt_456", "subject": "Recharge; name=not-a-field",
+	} {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contentType := writer.FormDataContentType()
+
+	if got := extractOutTradeNoWithContentType(body.String(), payment.TypeJupitong, contentType); got != "sub2_jpt_456" {
+		t.Fatalf("multipart out_trade_no = %q, want %q", got, "sub2_jpt_456")
+	}
+	if got := extractOutTradeNoWithContentType(body.String(), payment.TypeJupitong, "application/json"); got != "" {
+		t.Fatalf("unsupported content type yielded order ID %q", got)
+	}
+
+	var duplicate bytes.Buffer
+	writer = multipart.NewWriter(&duplicate)
+	for _, value := range []string{"sub2_jpt_456", "sub2_jpt_other"} {
+		if err := writer.WriteField("out_trade_no", value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := extractOutTradeNoWithContentType(duplicate.String(), payment.TypeJupitong, writer.FormDataContentType()); got != "" {
+		t.Fatalf("duplicate multipart order IDs yielded %q", got)
 	}
 }
 
@@ -147,6 +193,24 @@ func TestWebhookConstants(t *testing.T) {
 	})
 }
 
+func TestJupitongWebhookRejectsDuplicateContentTypeHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/payment/webhook/jupitong", nil)
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Content-Type", "multipart/form-data; boundary=test")
+	require.Len(t, req.Header.Values("Content-Type"), 2)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	(&PaymentWebhookHandler{}).handleNotify(c, payment.TypeJupitong)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Equal(t, "verify failed", w.Body.String())
+}
+
 func TestExtractOutTradeNo(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -159,6 +223,24 @@ func TestExtractOutTradeNo(t *testing.T) {
 			providerKey: "easypay",
 			rawBody:     "out_trade_no=sub2_123&trade_status=TRADE_SUCCESS",
 			want:        "sub2_123",
+		},
+		{
+			name:        "jupitong form payload",
+			providerKey: payment.TypeJupitong,
+			rawBody:     "out_trade_no=sub2_jpt_123&trade_status=TRADE_SUCCESS",
+			want:        "sub2_jpt_123",
+		},
+		{
+			name:        "jupitong raw semicolon separators",
+			providerKey: payment.TypeJupitong,
+			rawBody:     "pid=20880001;out_trade_no=sub2_jpt_124;subject=Recharge%3Bbatch",
+			want:        "sub2_jpt_124",
+		},
+		{
+			name:        "jupitong semicolon and spaces",
+			providerKey: payment.TypeJupitong,
+			rawBody:     "pid=20880001;  out_trade_no=sub2_jpt_125; subject=Recharge%3Bbatch",
+			want:        "sub2_jpt_125",
 		},
 		{
 			name:        "alipay query payload",

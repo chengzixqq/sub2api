@@ -41,10 +41,9 @@ const (
 	// payment_config_service.go alongside other payment configuration defaults.
 	paymentGraceMinutes = 5
 
-	defaultPageSize    = 20
-	maxPageSize        = 100
-	topUsersLimit      = 10
-	amountToleranceCNY = 0.01
+	defaultPageSize = 20
+	maxPageSize     = 100
+	topUsersLimit   = 10
 
 	orderIDPrefix = "sub2_"
 )

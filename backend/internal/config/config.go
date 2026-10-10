@@ -3440,8 +3440,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")
 	}
 	if c.Gateway.StreamDataIntervalTimeout != 0 &&
-		(c.Gateway.StreamDataIntervalTimeout < 30 || c.Gateway.StreamDataIntervalTimeout > 300) {
-		return fmt.Errorf("gateway.stream_data_interval_timeout must be 0 or between 30-300 seconds")
+		(c.Gateway.StreamDataIntervalTimeout < 30 || c.Gateway.StreamDataIntervalTimeout > 600) {
+		return fmt.Errorf("gateway.stream_data_interval_timeout must be 0 or between 30-600 seconds")
 	}
 	if c.Gateway.StreamKeepaliveInterval < 0 {
 		return fmt.Errorf("gateway.stream_keepalive_interval must be non-negative")

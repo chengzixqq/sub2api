@@ -325,6 +325,7 @@ func TestBuildVisibleMethodSourceAvailability(t *testing.T) {
 		{ProviderKey: payment.TypeAlipay, SupportedTypes: "alipay"},
 		{ProviderKey: payment.TypeEasyPay, SupportedTypes: "wxpay_direct, alipay"},
 		{ProviderKey: payment.TypeWxpay, SupportedTypes: "wxpay_direct"},
+		{ProviderKey: payment.TypeJupitong, SupportedTypes: "alipay,wxpay"},
 	}
 
 	got := buildVisibleMethodSourceAvailability(instances)
@@ -339,6 +340,9 @@ func TestBuildVisibleMethodSourceAvailability(t *testing.T) {
 	}
 	if !got[VisibleMethodSourceEasyPayWechat] {
 		t.Fatalf("expected %q to be available", VisibleMethodSourceEasyPayWechat)
+	}
+	if !got[VisibleMethodSourceJupitongAlipay] || !got[VisibleMethodSourceJupitongWechat] {
+		t.Fatalf("expected jupitong sources to be available: %v", got)
 	}
 }
 

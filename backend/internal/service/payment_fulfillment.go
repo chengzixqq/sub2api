@@ -37,6 +37,14 @@ type paymentFulfillmentLease struct {
 // --- Payment Notification & Fulfillment ---
 
 func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payment.PaymentNotification, pk string) error {
+	return s.handlePaymentNotification(ctx, n, pk, nil)
+}
+
+// handlePaymentNotification optionally accepts an upstream query result that
+// was already obtained for this exact order. Reconciliation uses that result
+// so fulfillment does not issue a second identical provider query; webhook
+// callers pass nil and retain the independent upstream verification.
+func (s *PaymentService) handlePaymentNotification(ctx context.Context, n *payment.PaymentNotification, pk string, verified *payment.QueryOrderResponse) error {
 	if n.Status != payment.NotificationStatusSuccess {
 		return nil
 	}
@@ -46,14 +54,14 @@ func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payme
 		// Fallback only for true legacy "sub2_N" DB-ID payloads when the
 		// current out_trade_no lookup genuinely did not find an order.
 		if oid, ok := parseLegacyPaymentOrderID(n.OrderID, err); ok {
-			return s.confirmPayment(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata)
+			return s.confirmPaymentWithUpstream(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata, verified)
 		}
 		if dbent.IsNotFound(err) {
 			return fmt.Errorf("%w: out_trade_no=%s", ErrOrderNotFound, n.OrderID)
 		}
 		return fmt.Errorf("lookup order failed for out_trade_no %s: %w", n.OrderID, err)
 	}
-	return s.confirmPayment(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata)
+	return s.confirmPaymentWithUpstream(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata, verified)
 }
 
 func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
@@ -76,6 +84,10 @@ func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 }
 
 func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string) error {
+	return s.confirmPaymentWithUpstream(ctx, oid, tradeNo, paid, pk, metadata, nil)
+}
+
+func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string, verified *payment.QueryOrderResponse) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		slog.Error("order not found", "orderID", oid)
@@ -113,14 +125,100 @@ func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo 
 		s.writeAuditLog(ctx, o.ID, "PAYMENT_AMOUNT_MISMATCH", pk, map[string]any{"expected": o.PayAmount, "paid": paid, "tradeNo": tradeNo})
 		return fmt.Errorf("amount mismatch: expected %s, got %s", strconv.FormatFloat(o.PayAmount, 'f', -1, 64), strconv.FormatFloat(paid, 'f', -1, 64))
 	}
+
+	// A signed notification is only a hint. Before changing a pending order to
+	// PAID, ask the provider bound to this exact order for the authoritative
+	// state and amount. This prevents a forged callback from creating balance
+	// without a real upstream transaction.
+	if paymentOrderRequiresUpstreamVerification(o.Status) {
+		upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, verified, pk, tradeNo)
+		if err != nil {
+			return err
+		}
+		tradeNo = strings.TrimSpace(upstream.TradeNo)
+		paid = upstream.Amount
+		pk = providerKey
+	}
 	return s.toPaid(ctx, o, tradeNo, paid, pk)
+}
+
+func (s *PaymentService) verifyPaidUpstreamOrder(ctx context.Context, o *dbent.PaymentOrder, upstream *payment.QueryOrderResponse, providerKey, tradeNo string) (*payment.QueryOrderResponse, string, error) {
+	providerKey = strings.TrimSpace(providerKey)
+	if upstream == nil {
+		prov, providerErr := s.getOrderProvider(ctx, o)
+		if providerErr != nil || prov == nil {
+			if providerErr == nil {
+				providerErr = errors.New("provider unavailable")
+			}
+			s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_QUERY_FAILED", providerKey, map[string]any{"detail": providerErr.Error(), "tradeNo": tradeNo})
+			return nil, "", fmt.Errorf("payment upstream provider unavailable: %w", providerErr)
+		}
+		providerKey = strings.TrimSpace(prov.ProviderKey())
+		queryRef := paymentOrderQueryReference(o, prov)
+		if queryRef == "" {
+			return nil, "", fmt.Errorf("payment upstream query reference is missing")
+		}
+		var queryErr error
+		upstream, queryErr = prov.QueryOrder(ctx, queryRef)
+		if queryErr != nil {
+			s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_QUERY_FAILED", providerKey, map[string]any{"detail": queryErr.Error(), "queryRef": queryRef, "tradeNo": tradeNo})
+			return nil, "", fmt.Errorf("payment upstream query failed: %w", queryErr)
+		}
+	}
+	if upstream == nil || upstream.Status != payment.ProviderStatusPaid || !isValidProviderAmount(upstream.Amount) {
+		status := ""
+		if upstream != nil {
+			status = upstream.Status
+		}
+		s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_NOT_PAID", providerKey, map[string]any{"status": status, "tradeNo": tradeNo})
+		return nil, "", fmt.Errorf("payment upstream order is not paid")
+	}
+	if math.Abs(upstream.Amount-o.PayAmount) > paymentAmountToleranceForCurrency(PaymentOrderCurrency(o)) {
+		s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_AMOUNT_MISMATCH", providerKey, map[string]any{"expected": o.PayAmount, "paid": upstream.Amount})
+		return nil, "", fmt.Errorf("upstream amount mismatch: expected %s, got %s", strconv.FormatFloat(o.PayAmount, 'f', -1, 64), strconv.FormatFloat(upstream.Amount, 'f', -1, 64))
+	}
+	if err := validateUpstreamOrderIdentity(o, providerKey, upstream.Metadata); err != nil {
+		s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_ORDER_MISMATCH", providerKey, map[string]any{"detail": err.Error()})
+		return nil, "", err
+	}
+	if err := validateProviderNotificationMetadata(o, providerKey, upstream.Metadata); err != nil {
+		return nil, "", fmt.Errorf("upstream provider metadata mismatch: %w", err)
+	}
+	upstreamTradeNo := strings.TrimSpace(upstream.TradeNo)
+	if upstreamTradeNo == "" {
+		return nil, "", fmt.Errorf("payment upstream transaction id is missing")
+	}
+	// Some providers return the local order ID at creation; only a distinct
+	// saved transaction ID can be compared with the later paid query.
+	if storedTradeNo := strings.TrimSpace(o.PaymentTradeNo); storedTradeNo != "" && storedTradeNo != strings.TrimSpace(o.OutTradeNo) && storedTradeNo != upstreamTradeNo {
+		s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_TRADE_MISMATCH", providerKey, map[string]any{"stored": storedTradeNo, "queried": upstreamTradeNo})
+		return nil, "", fmt.Errorf("upstream transaction id mismatch")
+	}
+	return upstream, providerKey, nil
+}
+
+func validateUpstreamOrderIdentity(order *dbent.PaymentOrder, providerKey string, metadata map[string]string) error {
+	upstreamOrderID := strings.TrimSpace(metadata["out_trade_no"])
+	if (providerKey == payment.TypeEasyPay || providerKey == "jupitong") && upstreamOrderID == "" {
+		return fmt.Errorf("upstream order ID is missing for %s", providerKey)
+	}
+	if upstreamOrderID != "" && upstreamOrderID != strings.TrimSpace(order.OutTradeNo) {
+		return fmt.Errorf("upstream order ID mismatch")
+	}
+	return nil
+}
+
+func paymentOrderRequiresUpstreamVerification(status string) bool {
+	if status == OrderStatusCompleted || psIsRefundStatus(status) {
+		return false
+	}
+	// Every state that can still be fulfilled or recovered must be backed by
+	// an authoritative upstream query. Unknown states fail closed as well.
+	return true
 }
 
 func paymentAmountToleranceForCurrency(currency string) float64 {
 	minorUnit := payment.CurrencyMinorUnit(currency)
-	if minorUnit <= 2 {
-		return amountToleranceCNY
-	}
 	return math.Pow10(-minorUnit) / 2
 }
 
@@ -881,6 +979,26 @@ func (s *PaymentService) RetryFulfillment(ctx context.Context, oid int64) error 
 	}
 	if o.Status != OrderStatusFailed && o.Status != OrderStatusPaid && o.Status != OrderStatusRecharging {
 		return infraerrors.BadRequest("INVALID_STATUS", "only paid, failed, and recoverable recharging orders can retry")
+	}
+	if o.Status == OrderStatusRecharging && o.UpdatedAt.After(time.Now().Add(-paymentFulfillmentLeaseDuration)) {
+		return infraerrors.Conflict("CONFLICT", "order is being processed")
+	}
+	upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, nil, "", o.PaymentTradeNo)
+	if err != nil {
+		return err
+	}
+	if storedTradeNo := strings.TrimSpace(o.PaymentTradeNo); storedTradeNo != "" && storedTradeNo != strings.TrimSpace(upstream.TradeNo) {
+		s.writeAuditLog(ctx, oid, "PAYMENT_UPSTREAM_TRADE_MISMATCH", providerKey, map[string]any{"storedTradeNo": storedTradeNo, "upstreamTradeNo": upstream.TradeNo})
+		return fmt.Errorf("upstream transaction id mismatch")
+	}
+	if strings.TrimSpace(o.PaymentTradeNo) == "" {
+		updated, err := s.entClient.PaymentOrder.Update().Where(paymentorder.IDEQ(oid), paymentorder.PaymentTradeNoEQ("")).SetPaymentTradeNo(strings.TrimSpace(upstream.TradeNo)).Save(ctx)
+		if err != nil {
+			return fmt.Errorf("store verified upstream transaction id: %w", err)
+		}
+		if updated != 1 {
+			return infraerrors.Conflict("CONFLICT", "payment transaction changed during retry")
+		}
 	}
 	s.writeAuditLog(ctx, oid, "RECHARGE_RETRY", "admin", map[string]any{"detail": "admin manual retry"})
 	return s.executeFulfillment(ctx, oid)

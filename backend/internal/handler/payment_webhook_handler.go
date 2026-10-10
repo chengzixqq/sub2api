@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	providerimpl "github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -43,6 +44,11 @@ func (h *PaymentWebhookHandler) EasyPayNotify(c *gin.Context) {
 	h.handleNotify(c, payment.TypeEasyPay)
 }
 
+// JupitongNotify handles official JuFuTong payment notifications.
+func (h *PaymentWebhookHandler) JupitongNotify(c *gin.Context) {
+	h.handleNotify(c, payment.TypeJupitong)
+}
+
 // AlipayNotify handles Alipay payment notifications.
 // POST /api/v1/payment/webhook/alipay
 func (h *PaymentWebhookHandler) AlipayNotify(c *gin.Context) {
@@ -69,6 +75,12 @@ func (h *PaymentWebhookHandler) AirwallexWebhook(c *gin.Context) {
 
 // handleNotify is the shared logic for all provider webhook handlers.
 func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string) {
+	if providerKey == payment.TypeJupitong && len(c.Request.Header.Values("Content-Type")) > 1 {
+		slog.Warn("[Payment Webhook] duplicate content type header", "provider", providerKey)
+		c.String(http.StatusBadRequest, "verify failed")
+		return
+	}
+
 	var rawBody string
 	if c.Request.Method == http.MethodGet {
 		// GET callbacks (e.g. EasyPay) pass params as URL query string
@@ -85,12 +97,12 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 
 	// Extract out_trade_no to look up the order's specific provider instance.
 	// This is needed when multiple instances of the same provider exist (e.g. multiple EasyPay accounts).
-	outTradeNo := extractOutTradeNo(rawBody, providerKey)
+	outTradeNo := extractOutTradeNoWithContentType(rawBody, providerKey, c.GetHeader("Content-Type"))
 
 	providers, err := h.paymentService.GetWebhookProviders(c.Request.Context(), providerKey, outTradeNo)
 	if err != nil {
 		slog.Warn("[Payment Webhook] provider not found", "provider", providerKey, "outTradeNo", outTradeNo, "error", err)
-		if providerKey == payment.TypeWxpay {
+		if providerKey == payment.TypeWxpay || providerKey == payment.TypeJupitong {
 			c.String(http.StatusBadRequest, "verify failed")
 			return
 		}
@@ -147,7 +159,17 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 // extractOutTradeNo parses the webhook body to find the out_trade_no.
 // This allows looking up the correct provider instance before verification.
 func extractOutTradeNo(rawBody, providerKey string) string {
+	return extractOutTradeNoWithContentType(rawBody, providerKey, "")
+}
+
+func extractOutTradeNoWithContentType(rawBody, providerKey, contentType string) string {
 	switch providerKey {
+	case payment.TypeJupitong:
+		params, err := providerimpl.ParseJupitongNotification(rawBody, contentType)
+		if err != nil || len(params["out_trade_no"]) != 1 {
+			return ""
+		}
+		return params.Get("out_trade_no")
 	case payment.TypeEasyPay, payment.TypeAlipay:
 		values, err := url.ParseQuery(rawBody)
 		if err == nil {

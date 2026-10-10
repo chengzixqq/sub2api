@@ -64,11 +64,15 @@ func fallbackNativeAccountForTest(passthrough bool) *Account {
 }
 
 func fallbackNativeGatewayForTest(t *testing.T, upstream HTTPUpstream, cfg *config.Config) *GatewayService {
+	return fallbackNativeGatewayForTestWithPolicy(t, upstream, cfg, DefaultClaudeCustomizationSettings())
+}
+
+func fallbackNativeGatewayForTestWithPolicy(t *testing.T, upstream HTTPUpstream, cfg *config.Config, settings ClaudeCustomizationSettings) *GatewayService {
 	t.Helper()
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	settings := DefaultClaudeCustomizationSettings()
+	settings.Preset = ClaudePresetCustom
 	raw, err := json.Marshal(settings)
 	require.NoError(t, err)
 	repo := &fallbackPolicySettingRepo{values: map[string]string{SettingKeyClaudeCustomization: string(raw)}}
@@ -128,6 +132,70 @@ func TestManagedAnthropicAPIKeyPath_DoesNotTurnUpstream400IntoLocalFailover(t *t
 	require.JSONEq(t, upstreamJSON, rec.Body.String())
 }
 
+func TestHasThinkingPayloadForRetryRequiresStructuredThinking(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "user text mentioning thinking is not a block",
+			body: `{"messages":[{"role":"user","content":"{\"type\":\"thinking\"}"}]}`,
+		},
+		{
+			name: "thinking block",
+			body: `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"work","signature":"bad"}]}]}`,
+			want: true,
+		},
+		{
+			name: "redacted thinking block",
+			body: `{"messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"}]}]}`,
+			want: true,
+		},
+		{
+			name: "top level thinking configuration",
+			body: `{"thinking":{"type":"enabled"},"messages":[{"role":"user","content":"hello"}]}`,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, hasThinkingPayloadForRetry([]byte(tt.body)))
+		})
+	}
+}
+
+func TestNativeAnthropicAPIKeyPaths_DoNotRetrySignatureWithoutThinkingPayload(t *testing.T) {
+	const signatureError = `{"type":"error","error":{"type":"invalid_request_error","message":"signature is invalid"}}`
+	for _, passthrough := range []bool{false, true} {
+		passthrough := passthrough
+		t.Run(fmt.Sprintf("automatic_passthrough_%t", passthrough), func(t *testing.T) {
+			upstream := &fallbackSequenceUpstream{responses: []*http.Response{{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(signatureError)),
+			}}}
+			settings := DefaultClaudeCustomizationSettings()
+			settings.ThinkingSignatureRetryEnabled = true
+			svc := fallbackNativeGatewayForTestWithPolicy(t, upstream, nil, settings)
+			body := []byte(`{"model":"claude-opus-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+			result, err := svc.Forward(context.Background(), c, fallbackNativeAccountForTest(passthrough), parsed)
+			require.Nil(t, result)
+			require.Error(t, err)
+			require.Equal(t, 1, upstream.calls)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.JSONEq(t, signatureError, rec.Body.String())
+		})
+	}
+}
+
 func TestNativeAnthropicAPIKeyPaths_PreserveValidThinkingWithoutRetry(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		passthrough := passthrough
@@ -170,7 +238,9 @@ func TestNativeAnthropicAPIKeyPaths_SignatureRetryPreservesUpstreamFallbackContr
 				{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(signatureError))},
 				{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(upstreamJSON))},
 			}}
-			svc := fallbackNativeGatewayForTest(t, upstream, nil)
+			settings := DefaultClaudeCustomizationSettings()
+			settings.ThinkingSignatureRetryEnabled = true
+			svc := fallbackNativeGatewayForTestWithPolicy(t, upstream, nil, settings)
 			body := []byte(`{"model":"claude-fable-5","max_tokens":200000,"fallbacks":["claude-opus-5"],"fallback_credit_token":"credit-token","thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior","signature":"bad-signature"},{"type":"text","text":"prior answer"}]},{"role":"user","content":"continue"}]}`)
 			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
 			require.NoError(t, err)
@@ -193,13 +263,42 @@ func TestNativeAnthropicAPIKeyPaths_SignatureRetryPreservesUpstreamFallbackContr
 	}
 }
 
+func TestNativeAnthropicAPIKeyPaths_DefaultSignaturePolicyPreservesUpstream400(t *testing.T) {
+	const signatureError = `{"type":"error","error":{"type":"invalid_request_error","message":"thinking signature is invalid"}}`
+	for _, passthrough := range []bool{false, true} {
+		passthrough := passthrough
+		t.Run(fmt.Sprintf("automatic_passthrough_%t", passthrough), func(t *testing.T) {
+			upstream := &fallbackSequenceUpstream{responses: []*http.Response{
+				{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(signatureError))},
+				{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"type":"message","model":"claude-opus-5","usage":{}}`))},
+			}}
+			svc := fallbackNativeGatewayForTest(t, upstream, nil)
+			body := []byte(`{"model":"claude-fable-5","thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior","signature":"bad-signature"}]}]}`)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+			result, err := svc.Forward(context.Background(), c, fallbackNativeAccountForTest(passthrough), parsed)
+			require.Nil(t, result)
+			require.Error(t, err)
+			require.Equal(t, 1, upstream.calls)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.JSONEq(t, signatureError, rec.Body.String())
+		})
+	}
+}
+
 func TestNativeAnthropicAPIKeyPath_AccountOverrideDisablesSignatureRetry(t *testing.T) {
 	const signatureError = `{"type":"error","error":{"type":"invalid_request_error","message":"thinking signature is invalid"}}`
 	upstream := &fallbackSequenceUpstream{responses: []*http.Response{
 		{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(signatureError))},
 		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"type":"message","model":"claude-opus-5","usage":{}}`))},
 	}}
-	svc := fallbackNativeGatewayForTest(t, upstream, nil)
+	settings := DefaultClaudeCustomizationSettings()
+	settings.ThinkingSignatureRetryEnabled = true
+	svc := fallbackNativeGatewayForTestWithPolicy(t, upstream, nil, settings)
 	account := fallbackNativeAccountForTest(true)
 	account.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{
 		"thinking_signature_retry_enabled": false,

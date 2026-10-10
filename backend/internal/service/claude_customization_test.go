@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -56,7 +57,15 @@ func TestClaudeCustomization_DefaultsToMagicPreset(t *testing.T) {
 	require.Equal(t, ClaudePresetMagic, got.Preset)
 	require.Equal(t, ClaudeFallbackNativePassthrough, got.FallbackPolicy)
 	require.False(t, got.ThinkingPrefilterEnabled)
-	require.True(t, got.ThinkingSignatureRetryEnabled)
+	require.False(t, got.ThinkingSignatureRetryEnabled)
+	require.False(t, got.ThinkingToolDowngradeRetryEnabled)
+}
+
+func TestSignatureRectifierDisabledWhenSettingsReadFails(t *testing.T) {
+	repo := &claudeCustomizationRepoStub{getErr: errors.New("settings unavailable")}
+	svc := NewSettingService(repo, &config.Config{})
+
+	require.False(t, svc.IsSignatureRectifierEnabled(context.Background()))
 }
 
 func TestClaudeCustomization_OfficialPresetMaterializesStrictValues(t *testing.T) {
@@ -92,6 +101,62 @@ func TestClaudeCustomization_AccountOverridesHavePrecedence(t *testing.T) {
 	require.Len(t, overrides, 2)
 }
 
+func TestClaudeCustomization_AccountOverrideStillAppliesWhenGlobalSettingsFail(t *testing.T) {
+	tests := []struct {
+		name    string
+		global  string
+		getErr  error
+		wantErr string
+	}{
+		{
+			name:    "repository error",
+			getErr:  errors.New("settings unavailable"),
+			wantErr: "settings unavailable",
+		},
+		{
+			name:    "malformed json",
+			global:  `{"preset":`,
+			wantErr: "decode claude customization",
+		},
+		{
+			name:    "invalid enum",
+			global:  `{"preset":"invalid"}`,
+			wantErr: "invalid preset",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &claudeCustomizationRepoStub{value: tt.global, getErr: tt.getErr}
+			svc := NewSettingService(repo, &config.Config{})
+			account := &Account{ID: 77, Extra: map[string]any{
+				AccountClaudeCustomizationExtraKey: map[string]any{
+					"thinking_signature_retry_enabled": false,
+				},
+			}}
+
+			got, overrides, err := svc.ResolveClaudeCustomization(context.Background(), account)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
+			require.False(t, got.ThinkingSignatureRetryEnabled)
+			require.Equal(t, map[string]any{"thinking_signature_retry_enabled": false}, overrides)
+		})
+	}
+}
+
+func TestClaudeCustomization_RequestUsesAccountOverrideWhenGlobalSettingsFail(t *testing.T) {
+	repo := &claudeCustomizationRepoStub{getErr: errors.New("settings unavailable")}
+	svc := NewSettingService(repo, &config.Config{})
+	account := &Account{ID: 78, Extra: map[string]any{
+		AccountClaudeCustomizationExtraKey: map[string]any{
+			"thinking_signature_retry_enabled": false,
+		},
+	}}
+
+	got := svc.ResolveClaudeCustomizationForRequest(context.Background(), nil, account)
+	require.False(t, got.ThinkingSignatureRetryEnabled)
+}
+
 func TestClaudeCustomization_RequestKeepsGlobalPolicyWhenAccountOverridesAreMalformed(t *testing.T) {
 	repo := &claudeCustomizationRepoStub{}
 	global := DefaultClaudeCustomizationSettings()
@@ -108,6 +173,34 @@ func TestClaudeCustomization_RequestKeepsGlobalPolicyWhenAccountOverridesAreMalf
 
 	got := svc.ResolveClaudeCustomizationForRequest(context.Background(), nil, account)
 	require.Equal(t, ClaudeFallbackStrict, got.FallbackPolicy)
+}
+
+func TestShouldRectifySignatureError_ReusesRequestPolicy(t *testing.T) {
+	global := DefaultClaudeCustomizationSettings()
+	global.Preset = ClaudePresetCustom
+	global.ThinkingSignatureRetryEnabled = true
+	raw, err := json.Marshal(global)
+	require.NoError(t, err)
+	repo := &claudeCustomizationRepoStub{value: string(raw)}
+	settingService := NewSettingService(repo, &config.Config{})
+	gateway := &GatewayService{settingService: settingService}
+	account := &Account{ID: 79, Type: AccountTypeAPIKey}
+	requestBody := []byte(`{"thinking":{"type":"enabled"},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior","signature":"bad"}]}]}`)
+	responseBody := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"thinking signature is invalid"}}`)
+	c, _ := gin.CreateTestContext(nil)
+
+	// Cache the request policy as the gateway does before the first upstream call.
+	require.True(t, settingService.ResolveClaudeCustomizationForRequest(context.Background(), c, account).ThinkingSignatureRetryEnabled)
+
+	// A later settings read would disable retries, but the in-flight request must
+	// keep the policy that was resolved at its entry point.
+	disabled := global
+	disabled.ThinkingSignatureRetryEnabled = false
+	disabledRaw, err := json.Marshal(disabled)
+	require.NoError(t, err)
+	repo.value = string(disabledRaw)
+
+	require.True(t, gateway.shouldRectifySignatureError(context.Background(), c, account, responseBody, requestBody, "claude-sonnet-4-5"))
 }
 
 func TestClaudeCustomization_RequestCacheIsScopedToAccount(t *testing.T) {

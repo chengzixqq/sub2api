@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -71,8 +72,8 @@ func DefaultClaudeCustomizationSettings() ClaudeCustomizationSettings {
 		Preset:                            ClaudePresetMagic,
 		FallbackPolicy:                    ClaudeFallbackNativePassthrough,
 		ThinkingPrefilterEnabled:          false,
-		ThinkingSignatureRetryEnabled:     true,
-		ThinkingToolDowngradeRetryEnabled: true,
+		ThinkingSignatureRetryEnabled:     false,
+		ThinkingToolDowngradeRetryEnabled: false,
 		BetaPolicyMode:                    ClaudeBetaCapabilityAware,
 		UnknownBetaAction:                 ClaudeUnknownBetaNativeOnly,
 		FingerprintUnification:            true,
@@ -201,27 +202,24 @@ func (s *SettingService) SetClaudeCustomizationSettings(ctx context.Context, cfg
 // Only known high-risk compatibility fields are accepted; unknown keys are
 // ignored so old/new nodes can share the same accounts.extra payload safely.
 func (s *SettingService) ResolveClaudeCustomization(ctx context.Context, account *Account) (ClaudeCustomizationSettings, map[string]any, error) {
-	global, err := s.GetClaudeCustomizationSettings(ctx)
-	if err != nil {
-		return global, nil, err
-	}
+	global, globalErr := s.GetClaudeCustomizationSettings(ctx)
 	overrides := map[string]any{}
 	if account == nil || account.Extra == nil {
-		return global, overrides, nil
+		return global, overrides, globalErr
 	}
 	raw, ok := account.Extra[AccountClaudeCustomizationExtraKey]
 	if !ok || raw == nil {
-		return global, overrides, nil
+		return global, overrides, globalErr
 	}
 	bytes, err := json.Marshal(raw)
 	if err != nil {
-		return global, nil, err
+		return global, nil, errors.Join(globalErr, err)
 	}
 	if err := json.Unmarshal(bytes, &overrides); err != nil {
-		return global, nil, fmt.Errorf("decode account claude customization: %w", err)
+		return global, nil, errors.Join(globalErr, fmt.Errorf("decode account claude customization: %w", err))
 	}
 	applyClaudeCustomizationOverrides(&global, overrides)
-	return global, overrides, nil
+	return global, overrides, globalErr
 }
 
 // ResolveClaudeCustomizationForRequest resolves the effective Claude policy

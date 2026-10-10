@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/stretchr/testify/require"
 )
@@ -162,6 +163,27 @@ func TestBuildPaymentOrderProviderSnapshot_IncludesEasyPayMerchantIdentity(t *te
 
 	require.Equal(t, "easypay-merchant-66", snapshot["merchant_id"])
 	require.NotContains(t, snapshot, "pkey")
+}
+
+func TestBuildPaymentOrderProviderSnapshot_IncludesJupitongMerchantIdentity(t *testing.T) {
+	t.Parallel()
+
+	snapshot := buildPaymentOrderProviderSnapshot(&payment.InstanceSelection{
+		InstanceID:  "67",
+		ProviderKey: payment.TypeJupitong,
+		Config: map[string]string{
+			"pid":  "jupitong-merchant-67",
+			"pkey": "secret",
+		},
+	}, CreateOrderRequest{PaymentType: payment.TypeAlipay})
+
+	require.Equal(t, "jupitong-merchant-67", snapshot["merchant_id"])
+	require.NotContains(t, snapshot, "pkey")
+
+	order := &dbent.PaymentOrder{ProviderSnapshot: snapshot}
+	require.NoError(t, validateProviderSnapshotMetadata(order, payment.TypeJupitong, map[string]string{"pid": "jupitong-merchant-67"}))
+	require.ErrorContains(t, validateProviderSnapshotMetadata(order, payment.TypeJupitong, map[string]string{"pid": "other"}), "pid mismatch")
+	require.ErrorContains(t, validateProviderSnapshotMetadata(order, payment.TypeJupitong, nil), "pid missing")
 }
 
 func TestBuildPaymentOrderProviderSnapshot_IncludesProviderCurrency(t *testing.T) {

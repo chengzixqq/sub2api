@@ -29,9 +29,12 @@ import (
 //	          └─ 失败 → 设置模型限流 + 清除粘性绑定 → 切换账号
 func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, isStickySession bool) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if s.settingService != nil {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
 	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
-		policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
-		c.Set(redactUpstreamURLContextKey, policy.URLRedactionEnabled)
+		c.Set(redactUpstreamURLContextKey, claudePolicy.URLRedactionEnabled)
 	}
 	// 上游透传账号直接转发，不走 OAuth token 刷新
 	if account.Type == AccountTypeUpstream {
@@ -148,7 +151,12 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		// 优先检测 thinking block 的 signature 相关错误（400）并重试一次：
 		// Antigravity /v1internal 链路在部分场景会对 thought/thinking signature 做严格校验，
 		// 当历史消息携带的 signature 不合法时会直接 400；去除 thinking 后可继续完成请求。
-		if resp.StatusCode == http.StatusBadRequest && isSignatureRelatedError(respBody) && s.settingService.IsSignatureRectifierEnabled(ctx) {
+		signatureRectifierEnabled := s.settingService != nil && s.settingService.IsSignatureRectifierEnabled(ctx)
+		if resp.StatusCode == http.StatusBadRequest &&
+			isSignatureRelatedError(respBody) &&
+			hasSignatureSensitivePayloadForRetry(body) &&
+			claudePolicy.ThinkingSignatureRetryEnabled &&
+			signatureRectifierEnabled {
 			upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			logBody, maxBytes := s.getLogConfig()
@@ -178,7 +186,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				{name: "thinking+tools", strip: stripSignatureSensitiveBlocksFromClaudeRequest},
 			}
 
-			for _, stage := range retryStages {
+			for stageIndex, stage := range retryStages {
+				if stageIndex > 0 && !claudePolicy.ThinkingToolDowngradeRetryEnabled {
+					break
+				}
 				retryClaudeReq := claudeReq
 				retryClaudeReq.Messages = append([]antigravity.ClaudeMessage(nil), claudeReq.Messages...)
 

@@ -107,10 +107,10 @@ func TestGetOrderProviderInstanceResolvesUniqueLegacyProviderKey(t *testing.T) {
 	require.Equal(t, inst.ID, got.ID)
 }
 
-func TestGetOrderProviderInstanceResolvesUniqueLegacyPaymentType(t *testing.T) {
+func TestGetOrderProviderInstanceDoesNotInferLegacyPaymentType(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
-	inst, err := client.PaymentProviderInstance.Create().
+	_, err := client.PaymentProviderInstance.Create().
 		SetProviderKey(payment.TypeWxpay).
 		SetName("wxpay-a").
 		SetConfig("{}").
@@ -130,8 +130,61 @@ func TestGetOrderProviderInstanceResolvesUniqueLegacyPaymentType(t *testing.T) {
 
 	got, err := svc.getOrderProviderInstance(ctx, order)
 	require.NoError(t, err)
-	require.NotNil(t, got)
-	require.Equal(t, inst.ID, got.ID)
+	require.Nil(t, got)
+}
+
+func TestUnboundLegacyOrderCannotUseSoleJupitongInstanceToCredit(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	_, err := client.PaymentProviderInstance.Create().
+		SetProviderKey(payment.TypeJupitong).
+		SetName("sole-current-jupitong").
+		SetConfig("{}").
+		SetSupportedTypes("alipay,wxpay").
+		SetEnabled(true).
+		Save(ctx)
+	require.NoError(t, err)
+	user, err := client.User.Create().
+		SetEmail("unbound-legacy@example.com").
+		SetPasswordHash("hash").
+		SetUsername("unbound-legacy").
+		Save(ctx)
+	require.NoError(t, err)
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(88).
+		SetPayAmount(88).
+		SetFeeRate(0).
+		SetRechargeCode("UNBOUND-LEGACY").
+		SetOutTradeNo("unbound_legacy_order").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusPending).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	registry := payment.NewRegistry()
+	registry.Register(webhookProviderTestDouble{key: payment.TypeJupitong, types: []payment.PaymentType{payment.TypeAlipay, payment.TypeWxpay}})
+	svc := &PaymentService{entClient: client, registry: registry, providersLoaded: true}
+	_, err = svc.getOrderProvider(ctx, order)
+	require.ErrorContains(t, err, "provider instance is unresolved")
+	_, err = svc.GetWebhookProviders(ctx, payment.TypeJupitong, order.OutTradeNo)
+	require.ErrorContains(t, err, "no recorded provider binding")
+	err = svc.HandlePaymentNotification(ctx, &payment.PaymentNotification{
+		OrderID: order.OutTradeNo, TradeNo: "forged-trade", Amount: 88,
+		Status: payment.NotificationStatusSuccess,
+	}, payment.TypeJupitong)
+	require.ErrorContains(t, err, "provider instance is unresolved")
+	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusPending, reloaded.Status)
+	require.Empty(t, reloaded.PaymentTradeNo)
 }
 
 func TestGetOrderProviderInstanceLeavesAmbiguousLegacyOrderUnresolved(t *testing.T) {
@@ -440,6 +493,41 @@ func TestGetWebhookProviderRejectsRegistryFallbackForPinnedOrder(t *testing.T) {
 	_, err = svc.GetWebhookProviders(ctx, payment.TypeWxpay, "sub2_test_pinned_order")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "provider instance")
+}
+
+func TestGetWebhookProviderRejectsCrossProviderRoute(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	user, err := client.User.Create().
+		SetEmail("cross-provider-webhook@example.com").
+		SetPasswordHash("hash").
+		SetUsername("cross-provider-webhook").
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(10).
+		SetPayAmount(10).
+		SetFeeRate(0).
+		SetRechargeCode("TEST-RECHARGE").
+		SetOutTradeNo("cross_provider_order").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("").
+		SetProviderKey(payment.TypeEasyPay).
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusPending).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	svc := &PaymentService{entClient: client, registry: payment.NewRegistry(), providersLoaded: true}
+	_, err = svc.GetWebhookProviders(ctx, payment.TypeJupitong, "cross_provider_order")
+	require.ErrorContains(t, err, "differs from order provider")
 }
 
 func TestGetWebhookProviderUsesProviderSnapshotBeforeWxpayFallback(t *testing.T) {

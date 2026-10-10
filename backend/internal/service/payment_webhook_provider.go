@@ -33,10 +33,19 @@ func (s *PaymentService) GetWebhookProviders(ctx context.Context, providerKey, o
 	if outTradeNo != "" {
 		order, err := s.entClient.PaymentOrder.Query().Where(paymentorder.OutTradeNo(outTradeNo)).Only(ctx)
 		if err == nil {
+			if !psHasPinnedProviderInstance(order) && strings.TrimSpace(psStringValue(order.ProviderKey)) == "" {
+				return nil, fmt.Errorf("order %d has no recorded provider binding", order.ID)
+			}
+			if pinnedKey := strings.TrimSpace(psStringValue(order.ProviderKey)); pinnedKey != "" && pinnedKey != providerKey {
+				return nil, fmt.Errorf("webhook provider %s differs from order provider %s", providerKey, pinnedKey)
+			}
 			if psHasPinnedProviderInstance(order) {
 				prov, err := s.getPinnedOrderProvider(ctx, order)
 				if err != nil {
 					return nil, err
+				}
+				if prov.ProviderKey() != providerKey {
+					return nil, fmt.Errorf("webhook provider %s differs from pinned provider %s", providerKey, prov.ProviderKey())
 				}
 				return []payment.Provider{prov}, nil
 			}
@@ -48,6 +57,9 @@ func (s *PaymentService) GetWebhookProviders(ctx context.Context, providerKey, o
 				prov, err := s.createProviderFromInstance(ctx, inst)
 				if err != nil {
 					return nil, err
+				}
+				if prov.ProviderKey() != providerKey {
+					return nil, fmt.Errorf("webhook provider %s differs from order provider %s", providerKey, prov.ProviderKey())
 				}
 				return []payment.Provider{prov}, nil
 			}

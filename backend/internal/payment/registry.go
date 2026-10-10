@@ -10,6 +10,8 @@ import (
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[PaymentType]Provider
+	byKey     map[string]Provider
+	ambiguous map[PaymentType]bool
 }
 
 // ErrProviderNotFound is returned when a requested payment provider is not registered.
@@ -19,15 +21,22 @@ var ErrProviderNotFound = infraerrors.NotFound("PROVIDER_NOT_FOUND", "payment pr
 func NewRegistry() *Registry {
 	return &Registry{
 		providers: make(map[PaymentType]Provider),
+		byKey:     make(map[string]Provider),
+		ambiguous: make(map[PaymentType]bool),
 	}
 }
 
-// Register adds a provider for each of its supported payment types.
-// If a type was previously registered, it is overwritten.
+// Register adds a provider by key and visible payment type. A visible type
+// shared by different provider keys cannot be resolved without order binding.
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.byKey[p.ProviderKey()] = p
 	for _, t := range p.SupportedTypes() {
+		if previous, exists := r.providers[t]; exists && previous.ProviderKey() != p.ProviderKey() {
+			r.ambiguous[t] = true
+			continue
+		}
 		r.providers[t] = p
 	}
 }
@@ -37,20 +46,18 @@ func (r *Registry) GetProvider(t PaymentType) (Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providers[t]
-	if !ok {
+	if !ok || r.ambiguous[t] {
 		return nil, ErrProviderNotFound
 	}
 	return p, nil
 }
 
-// GetProviderByKey returns the first provider whose ProviderKey matches the given key.
+// GetProviderByKey returns the provider registered under the given key.
 func (r *Registry) GetProviderByKey(key string) (Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, p := range r.providers {
-		if p.ProviderKey() == key {
-			return p, nil
-		}
+	if p, ok := r.byKey[key]; ok {
+		return p, nil
 	}
 	return nil, ErrProviderNotFound
 }
@@ -60,7 +67,7 @@ func (r *Registry) GetProviderKey(t PaymentType) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providers[t]
-	if !ok {
+	if !ok || r.ambiguous[t] {
 		return ""
 	}
 	return p.ProviderKey()
@@ -82,4 +89,6 @@ func (r *Registry) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.providers = make(map[PaymentType]Provider)
+	r.byKey = make(map[string]Provider)
+	r.ambiguous = make(map[PaymentType]bool)
 }

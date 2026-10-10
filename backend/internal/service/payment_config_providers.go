@@ -112,6 +112,7 @@ var pendingOrderStatuses = []string{
 // stripe publishableKey) are returned in plaintext by the admin GET API.
 var providerSensitiveConfigFields = map[string]map[string]struct{}{
 	payment.TypeEasyPay:   {"pkey": {}},
+	payment.TypeJupitong:  {"pkey": {}},
 	payment.TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}},
 	payment.TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}},
 	payment.TypeStripe:    {"secretkey": {}, "webhooksecret": {}},
@@ -124,6 +125,7 @@ var providerSensitiveConfigFields = map[string]map[string]struct{}{
 // webhook/refund verification.
 var providerPendingOrderProtectedConfigFields = map[string]map[string]struct{}{
 	payment.TypeEasyPay:   {"pkey": {}, "pid": {}},
+	payment.TypeJupitong:  {"pkey": {}, "pid": {}, "apibase": {}, "signtype": {}},
 	payment.TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}, "appid": {}},
 	payment.TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}, "appid": {}, "mpappid": {}, "mchid": {}, "publickeyid": {}, "certserial": {}},
 	payment.TypeStripe:    {"secretkey": {}, "webhooksecret": {}, "currency": {}},
@@ -178,7 +180,7 @@ func (s *PaymentConfigService) countPendingOrdersByPlan(ctx context.Context, pla
 }
 
 var validProviderKeys = map[string]bool{
-	payment.TypeEasyPay: true, payment.TypeAlipay: true, payment.TypeWxpay: true, payment.TypeStripe: true, payment.TypeAirwallex: true,
+	payment.TypeEasyPay: true, payment.TypeJupitong: true, payment.TypeAlipay: true, payment.TypeWxpay: true, payment.TypeStripe: true, payment.TypeAirwallex: true,
 }
 
 func (s *PaymentConfigService) CreateProviderInstance(ctx context.Context, req CreateProviderInstanceRequest) (*dbent.PaymentProviderInstance, error) {
@@ -189,6 +191,14 @@ func (s *PaymentConfigService) CreateProviderInstance(ctx context.Context, req C
 	if req.ProviderKey == payment.TypeEasyPay {
 		if err := validateEasyPayCustomMethods(req.Config, typesStr); err != nil {
 			return nil, err
+		}
+	}
+	if req.ProviderKey == payment.TypeJupitong {
+		if err := validateJupitongSupportedTypes(typesStr); err != nil {
+			return nil, err
+		}
+		if req.RefundEnabled || req.AllowUserRefund {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", "jupitong refunds are not supported")
 		}
 	}
 	if err := s.validateVisibleMethodEnablementConflicts(ctx, 0, req.ProviderKey, typesStr, req.Enabled); err != nil {
@@ -220,6 +230,15 @@ func validateProviderRequest(providerKey, name, supportedTypes string) error {
 		return infraerrors.BadRequest("VALIDATION_ERROR", fmt.Sprintf("invalid provider key: %s", providerKey))
 	}
 	// supported_types can be empty (provider accepts no payment types until configured)
+	return nil
+}
+
+func validateJupitongSupportedTypes(supportedTypes string) error {
+	for _, method := range splitTypes(supportedTypes) {
+		if method != payment.TypeAlipay && method != payment.TypeWxpay {
+			return infraerrors.BadRequest("VALIDATION_ERROR", "jupitong supports alipay and wxpay only")
+		}
+	}
 	return nil
 }
 
@@ -357,6 +376,14 @@ func (s *PaymentConfigService) UpdateProviderInstance(ctx context.Context, id in
 	if current.ProviderKey == payment.TypeEasyPay {
 		if err := validateEasyPayCustomMethods(configToValidate, nextSupportedTypes); err != nil {
 			return nil, err
+		}
+	}
+	if current.ProviderKey == payment.TypeJupitong {
+		if err := validateJupitongSupportedTypes(nextSupportedTypes); err != nil {
+			return nil, err
+		}
+		if (req.RefundEnabled != nil && *req.RefundEnabled) || (req.AllowUserRefund != nil && *req.AllowUserRefund) {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", "jupitong refunds are not supported")
 		}
 	}
 	// Validate merged config when the instance will end up enabled.
