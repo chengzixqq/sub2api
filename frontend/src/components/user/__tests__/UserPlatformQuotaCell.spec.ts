@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 
 // t() 回显 key，便于断言文案键
 vi.mock('vue-i18n', async () => {
@@ -12,6 +13,7 @@ vi.mock('vue-i18n', async () => {
 
 import UserPlatformQuotaCell from '../UserPlatformQuotaCell.vue'
 import type { PlatformQuotaItem } from '@/api/admin/users'
+import { BUILTIN_PLATFORM_CATALOG, listPlatformIds, resetPlatformCatalog, setPlatformCatalog } from '@/constants/platformCatalog'
 
 function item(over: Partial<PlatformQuotaItem> & { platform: PlatformQuotaItem['platform'] }): PlatformQuotaItem {
   return {
@@ -20,6 +22,10 @@ function item(over: Partial<PlatformQuotaItem> & { platform: PlatformQuotaItem['
     ...over,
   } as PlatformQuotaItem
 }
+
+afterEach(() => {
+  resetPlatformCatalog()
+})
 
 describe('UserPlatformQuotaCell', () => {
   it('quotas 为 undefined 时渲染加载占位 …', () => {
@@ -57,12 +63,13 @@ describe('UserPlatformQuotaCell', () => {
     expect(html).toContain('90.5/2000')
   })
 
-  it('多平台按完整平台目录顺序，仅展示有限额的', () => {
+  it('多平台按完整目录顺序展示 OpenCode 和 TypeSafe，且仅展示有限额的平台', () => {
     const w = mount(UserPlatformQuotaCell, {
       props: {
         quotas: [
           item({ platform: 'gemini', monthly_limit_usd: 50 }),
           item({ platform: 'opencode_go', daily_limit_usd: 20 }),
+          item({ platform: 'typesafe', daily_limit_usd: 5 }),
           item({ platform: 'anthropic', daily_limit_usd: 10 }),
           item({ platform: 'openai', daily_usage_usd: 9 }),
         ],
@@ -71,6 +78,46 @@ describe('UserPlatformQuotaCell', () => {
     const text = w.text()
     expect(text.indexOf('anthropic')).toBeLessThan(text.indexOf('gemini'))
     expect(text.indexOf('gemini')).toBeLessThan(text.indexOf('opencode_go'))
+    expect(text.indexOf('opencode_go')).toBeLessThan(text.indexOf('typesafe'))
     expect(text).not.toContain('openai')
+  })
+
+  it('全目录平台的零限额均视为已配置，未知平台排在最后', () => {
+    const platforms = listPlatformIds()
+    const w = mount(UserPlatformQuotaCell, {
+      props: {
+        quotas: [
+          item({ platform: 'unknown_provider', daily_limit_usd: 0 }),
+          ...platforms.slice().reverse().map(platform => item({ platform, daily_limit_usd: 0 })),
+        ],
+      },
+    })
+    expect(w.findAll('.font-mono').map(row => row.text())).toEqual([...platforms, 'unknown_provider'])
+    expect(w.text()).toContain('0/0')
+    expect(w.text()).toContain('0/—')
+    w.unmount()
+  })
+
+  it('目录新增平台后更新展示顺序，并保持未登记平台在最后', async () => {
+    const w = mount(UserPlatformQuotaCell, {
+      props: {
+        quotas: [
+          item({ platform: 'unknown_provider', daily_limit_usd: 1 }),
+          item({ platform: 'new_provider', daily_limit_usd: 1 }),
+          item({ platform: 'anthropic', daily_limit_usd: 1 }),
+        ],
+      },
+    })
+    expect(w.findAll('.font-mono')[0].text()).toBe('anthropic')
+    setPlatformCatalog({
+      ...BUILTIN_PLATFORM_CATALOG,
+      platforms: [
+        { id: 'new_provider', display_name: 'New Provider', gateway: 'openai', cn_provider: false },
+        ...BUILTIN_PLATFORM_CATALOG.platforms,
+      ],
+    })
+    await nextTick()
+    expect(w.findAll('.font-mono').map(row => row.text())).toEqual(['new_provider', 'anthropic', 'unknown_provider'])
+    w.unmount()
   })
 })

@@ -16,6 +16,21 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type ForwardClaudeOption func(*forwardClaudeOptions)
+
+type forwardClaudeOptions struct {
+	groupID     int64
+	sessionHash string
+}
+
+// WithForwardClaudeSession preserves the caller's sticky binding for rate-limit cleanup.
+func WithForwardClaudeSession(groupID int64, sessionHash string) ForwardClaudeOption {
+	return func(opts *forwardClaudeOptions) {
+		opts.groupID = groupID
+		opts.sessionHash = sessionHash
+	}
+}
+
 // Forward 转发 Claude 协议请求（Claude → Gemini 转换）
 //
 // 限流处理流程:
@@ -27,8 +42,14 @@ import (
 //	      └─ retryDelay <  7s → 等待后重试 1 次
 //	          ├─ 成功 → 正常返回
 //	          └─ 失败 → 设置模型限流 + 清除粘性绑定 → 切换账号
-func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, isStickySession bool) (*ForwardResult, error) {
+func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, isStickySession bool, options ...ForwardClaudeOption) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	forwardOpts := forwardClaudeOptions{}
+	for _, apply := range options {
+		if apply != nil {
+			apply(&forwardOpts)
+		}
+	}
 	claudePolicy := DefaultClaudeCustomizationSettings()
 	if s.settingService != nil {
 		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
@@ -125,8 +146,8 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		handleError:     s.handleUpstreamError,
 		requestedModel:  originalModel,
 		isStickySession: isStickySession, // Forward 由上层判断粘性会话
-		groupID:         0,               // Forward 方法没有 groupID，由上层处理粘性会话清除
-		sessionHash:     "",              // Forward 方法没有 sessionHash，由上层处理粘性会话清除
+		groupID:         forwardOpts.groupID,
+		sessionHash:     forwardOpts.sessionHash,
 	})
 	if err != nil {
 		// 检查是否是账号切换信号，转换为 UpstreamFailoverError 让 Handler 切换账号
@@ -219,8 +240,8 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					handleError:     s.handleUpstreamError,
 					requestedModel:  originalModel,
 					isStickySession: isStickySession,
-					groupID:         0,  // Forward 方法没有 groupID，由上层处理粘性会话清除
-					sessionHash:     "", // Forward 方法没有 sessionHash，由上层处理粘性会话清除
+					groupID:         forwardOpts.groupID,
+					sessionHash:     forwardOpts.sessionHash,
 				})
 				if retryErr != nil {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -347,8 +368,8 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 							handleError:     s.handleUpstreamError,
 							requestedModel:  originalModel,
 							isStickySession: isStickySession,
-							groupID:         0,
-							sessionHash:     "",
+							groupID:         forwardOpts.groupID,
+							sessionHash:     forwardOpts.sessionHash,
 						})
 						if retryErr == nil {
 							retryResp := retryResult.resp
@@ -404,7 +425,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 				}
 			}
 
-			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
 
 			// 精确匹配服务端配置类 400 错误，触发同账号重试 + failover
 			if resp.StatusCode == http.StatusBadRequest {

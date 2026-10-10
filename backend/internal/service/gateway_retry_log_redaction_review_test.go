@@ -95,6 +95,7 @@ func TestClaudeRetryTransportLogsRespectURLRedaction(t *testing.T) {
 			account := fallbackNativeAccountForTest(false)
 			account.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{
 				"url_redaction_enabled":                 true,
+				"thinking_signature_retry_enabled":      true,
 				"thinking_tool_downgrade_retry_enabled": true,
 			}
 			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior","signature":"bad-signature"},{"type":"tool_use","id":"tool-1","name":"lookup","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"result"}]}]}`)

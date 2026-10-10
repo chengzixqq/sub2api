@@ -156,12 +156,8 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 	writeSuccessResponse(c, resolvedProviderKey)
 }
 
-// extractOutTradeNo parses the webhook body to find the out_trade_no.
+// extractOutTradeNoWithContentType parses the webhook body to find the out_trade_no.
 // This allows looking up the correct provider instance before verification.
-func extractOutTradeNo(rawBody, providerKey string) string {
-	return extractOutTradeNoWithContentType(rawBody, providerKey, "")
-}
-
 func extractOutTradeNoWithContentType(rawBody, providerKey, contentType string) string {
 	switch providerKey {
 	case payment.TypeJupitong:

@@ -71,11 +71,11 @@ func legacyEasyPaySigningText(params map[string]string) string {
 	var b strings.Builder
 	for i, k := range keys {
 		if i > 0 {
-			b.WriteByte('&')
+			_ = b.WriteByte('&')
 		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(params[k])
+		_, _ = b.WriteString(k)
+		_ = b.WriteByte('=')
+		_, _ = b.WriteString(params[k])
 	}
 	return b.String()
 }

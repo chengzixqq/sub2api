@@ -83,10 +83,6 @@ func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 	return oid, true
 }
 
-func (s *PaymentService) confirmPayment(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string) error {
-	return s.confirmPaymentWithUpstream(ctx, oid, tradeNo, paid, pk, metadata, nil)
-}
-
 func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string, verified *payment.QueryOrderResponse) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
@@ -839,7 +835,10 @@ func affiliateRebateBaseAmount(o *dbent.PaymentOrder) float64 {
 		return 0
 	}
 	switch o.OrderType {
-	case payment.OrderTypeBalance, payment.OrderTypeSubscription:
+	case payment.OrderTypeBalance:
+		// 返利只按实充部分计算，赠送额度不参与
+		return paymentOrderAmountWithoutBonus(o)
+	case payment.OrderTypeSubscription:
 		return o.Amount
 	default:
 		return 0

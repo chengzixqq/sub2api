@@ -444,7 +444,7 @@ func validJupitongFieldName(name string) bool {
 		return false
 	}
 	for _, char := range name {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_') {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
 			return false
 		}
 	}
@@ -534,7 +534,7 @@ func (j *Jupitong) post(ctx context.Context, path string, params map[string]stri
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
 	}
@@ -571,7 +571,7 @@ func jupitongSign(params map[string]string, key string) (string, error) {
 			return "", errors.New("empty signing parameter name")
 		}
 		for _, char := range name {
-			if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_') {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
 				return "", fmt.Errorf("invalid signing parameter name: %s", name)
 			}
 		}

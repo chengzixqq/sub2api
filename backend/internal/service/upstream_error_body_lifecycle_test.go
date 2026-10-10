@@ -79,7 +79,9 @@ func TestAnthropicPassthroughSignatureRetryUsesRetryError(t *testing.T) {
 		{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(firstError))},
 		{StatusCode: 400, Header: http.Header{"Content-Type": []string{"application/json"}, "X-Request-Id": []string{"retry"}}, Body: io.NopCloser(strings.NewReader(retryError))},
 	}}
-	svc := fallbackNativeGatewayForTest(t, upstream, nil)
+	settings := DefaultClaudeCustomizationSettings()
+	settings.ThinkingSignatureRetryEnabled = true
+	svc := fallbackNativeGatewayForTestWithPolicy(t, upstream, nil, settings)
 	parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(`{"model":"claude-fable-5","max_tokens":200000,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"prior","signature":"bad"}]},{"role":"user","content":"hello"}]}`)), PlatformAnthropic)
 	require.NoError(t, err)
 	rec := httptest.NewRecorder()

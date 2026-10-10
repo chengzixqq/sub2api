@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
 
 // t() 回显 key；带参数时附上 JSON，便于断言计数
 vi.mock('vue-i18n', async () => {
@@ -16,6 +17,7 @@ vi.mock('vue-i18n', async () => {
 import UserDashboardStats from '../UserDashboardStats.vue'
 import type { UserDashboardStats as UserStatsType, PlatformDashboardStats } from '@/api/usage'
 import type { PlatformQuotaItem } from '@/types'
+import { BUILTIN_PLATFORM_CATALOG, listPlatformIds, resetPlatformCatalog, setPlatformCatalog } from '@/constants/platformCatalog'
 
 function makeStats(over: Partial<UserStatsType> = {}): UserStatsType {
   return {
@@ -81,6 +83,10 @@ function cardPlatforms(w: VueWrapper): string[] {
   return w.findAll('[data-testid="platform-card"]').map((c) => c.attributes('data-platform') ?? '')
 }
 
+afterEach(() => {
+  resetPlatformCatalog()
+})
+
 describe('UserDashboardStats 按平台拆分', () => {
   it('只有用量的平台才产生卡片；三档全空的限额记录不产生卡片', () => {
     const w = mountStats(
@@ -131,6 +137,50 @@ describe('UserDashboardStats 按平台拆分', () => {
     expect(cardPlatforms(w)).toEqual(['anthropic', 'kimi', 'opencode_go'])
     expect(w.text()).toContain('Kimi')
     expect(w.text()).toContain('OpenCode')
+  })
+
+  it('TypeSafe 使用 Jev 标签并位于未知平台之前', () => {
+    const w = mountStats(
+      makeStats({ total_actual_cost: 0.5, today_actual_cost: 0, by_platform: [usage('unknown_provider', 0.3), usage('typesafe', 0.2)] })
+    )
+    expect(cardPlatforms(w)).toEqual(['typesafe', 'unknown_provider'])
+    expect(w.text()).toContain('TypeSafe / Jev')
+  })
+
+  it('完整目录平台按目录顺序展示并保留新旧平台标签', () => {
+    const platforms = listPlatformIds()
+    const w = mountStats(makeStats({
+      total_actual_cost: platforms.length,
+      today_actual_cost: platforms.length,
+      by_platform: platforms.slice().reverse().map(platform => usage(platform, 1)),
+    }))
+    expect(cardPlatforms(w)).toEqual(platforms)
+    expect(w.text()).toContain('OpenCode')
+    expect(w.text()).toContain('TypeSafe / Jev')
+    expect(w.text()).toContain('Command Code')
+    expect(w.text()).toContain('Cline')
+    w.unmount()
+  })
+
+  it('动态目录更新平台顺序和标签，未知平台仍按名称排在最后', async () => {
+    const w = mountStats(makeStats({
+      total_actual_cost: 4,
+      today_actual_cost: 4,
+      by_platform: [usage('z_unknown', 1), usage('new_provider', 1), usage('anthropic', 1), usage('a_unknown', 1)],
+    }))
+    expect(cardPlatforms(w)).toEqual(['anthropic', 'a_unknown', 'new_provider', 'z_unknown'])
+    setPlatformCatalog({
+      ...BUILTIN_PLATFORM_CATALOG,
+      platforms: [
+        { id: 'new_provider', display_name: 'New Provider', gateway: 'openai', cn_provider: false },
+        ...BUILTIN_PLATFORM_CATALOG.platforms,
+      ],
+    })
+    await nextTick()
+    expect(cardPlatforms(w)).toEqual(['new_provider', 'anthropic', 'a_unknown', 'z_unknown'])
+    expect(w.text()).toContain('New Provider')
+    expect(w.text()).toContain('Claude')
+    w.unmount()
   })
 
   it('总值大于各平台之和时追加"其他"卡片，且不计入平台计数', () => {

@@ -43,7 +43,7 @@ func (h *GatewayHandler) MonitorModelCatalogue(ctx context.Context, group *servi
 	}
 	var models []string
 	if group.Platform == service.PlatformComposite {
-		models = h.compositeAvailableModels(ctx, &group.ID)
+		models = h.compositeAvailableModels(ctx, &group.ID, "", true)
 	} else {
 		models = h.gatewayService.GetAvailableModels(ctx, &group.ID, group.Platform)
 	}

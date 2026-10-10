@@ -119,10 +119,9 @@ import { ref, reactive, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
-import { PLATFORM_QUOTA_PLATFORMS } from '@/api/admin/users'
+import { platformQuotaPlatforms } from '@/api/admin/users'
 import type { AdminUser, PlatformQuotaItem, PlatformQuotaPlatform, PlatformQuotaWindow } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
-import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
 
 const props = defineProps<{ show: boolean; user: AdminUser | null }>()
 const emit = defineEmits(['close', 'success'])
@@ -130,7 +129,6 @@ const emit = defineEmits(['close', 'success'])
 const { t } = useI18n()
 const appStore = useAppStore()
 
-const PLATFORMS = CONCRETE_PLATFORM_OPTIONS.map((option) => option.value) as PlatformQuotaPlatform[]
 interface QuotaRow {
   platform: PlatformQuotaPlatform
   daily_limit_usd: number | null
@@ -177,7 +175,7 @@ function emptyRow(p: PlatformQuotaPlatform): QuotaRow {
 function normalize(items: PlatformQuotaItem[]): QuotaRow[] {
   const byPlatform = new Map<PlatformQuotaPlatform, PlatformQuotaItem>()
   for (const it of items) byPlatform.set(it.platform, it)
-  return PLATFORM_QUOTA_PLATFORMS.map((p) => {
+  return platformQuotaPlatforms().map((p) => {
     const it = byPlatform.get(p)
     if (!it) return emptyRow(p)
     return {
@@ -206,7 +204,7 @@ async function load() {
     savedConfigured.value = configuredPlatforms(data.platform_quotas || [])
   } catch {
     appStore.showError(t('admin.users.platformQuota.loadFailed'))
-    quotas.value = PLATFORMS.map(emptyRow)
+    quotas.value = platformQuotaPlatforms().map(emptyRow)
     savedConfigured.value = new Set()
   } finally {
     loading.value = false

@@ -377,7 +377,8 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('image_generation')
     expect(configToml).not.toContain('supports_websockets')
     expect(configToml).not.toContain('responses_websockets_v2')
-    expect(configToml).toContain('[features]\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('goals = true')
     expect(configToml).not.toContain('model_reasoning_effort = "xhigh"')
     expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).toContain('auth.json')
@@ -517,7 +518,9 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('env_key')
     expect(configToml).not.toContain('image_generation')
     expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\nresponses_websockets_v2 = true\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('responses_websockets_v2 = true')
+    expect(features).toContain('goals = true')
     expect(codeBlocks).toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).toContain('auth.json')
   })
@@ -563,7 +566,9 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('env_key')
     expect(configToml).not.toContain('image_generation')
     expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\nresponses_websockets_v2 = true\ngoals = true')
+    const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
+    expect(features).toContain('responses_websockets_v2 = true')
+    expect(features).toContain('goals = true')
     expect(codeBlocks).not.toContain('{\n  "OPENAI_API_KEY": "sk-test"\n}')
     expect(wrapper.text()).not.toContain('auth.json')
   })
@@ -776,7 +781,7 @@ describe('UseKeyModal', () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => manifest
+      text: async () => JSON.stringify(manifest)
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -806,21 +811,34 @@ describe('UseKeyModal', () => {
     await codexTab!.trigger('click')
     await nextTick()
 
+    const remoteConfig = wrapper.findAll('pre code')
+      .map((code) => code.text())
+      .find((content) => content.includes('[model_providers.sub2api]'))
+    expect(remoteConfig).toContain('model_catalog_url = "https://example.com/v1/models"')
+    expect(remoteConfig).toContain('api_key_model_discovery = true')
+    expect(remoteConfig).toContain('env_key = "SUB2API_API_KEY"')
+    expect(remoteConfig).not.toContain('model_catalog_json')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('file')
     const unixConfig = wrapper.findAll('pre code')
       .map((code) => code.text())
       .find((content) => content.includes('[model_providers.sub2api]'))
     expect(unixConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
     expect(unixConfig).toContain('env_key = "SUB2API_API_KEY"')
+    expect(unixConfig).not.toContain('model_catalog_url')
+    expect(unixConfig).not.toContain('api_key_model_discovery')
 
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://example.com/v1/models?client_version=0.147.0',
+      'https://example.com/v1/models?client_version=0.158.0',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer sk-composite-test' })
       })
     )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
       .toContain('keys.useKeyModal.codexModelCatalog.download')
 
@@ -829,6 +847,8 @@ describe('UseKeyModal', () => {
       .find((content) => content.includes('[model_providers.sub2api]'))
     expect(loadedUnixConfig).toContain('model = "claude-opus-4-8"')
     expect(loadedUnixConfig).toContain('review_model = "claude-opus-4-8"')
+    expect(loadedUnixConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+    expect(loadedUnixConfig).not.toContain('model_catalog_url')
     expect(loadedUnixConfig).not.toContain('model = "gpt-5.5"')
 
     const downloadButton = wrapper.findAll('button').find((button) =>
@@ -848,9 +868,10 @@ describe('UseKeyModal', () => {
     const windowsConfig = wrapper.findAll('pre code')
       .map((code) => code.text())
       .find((content) => content.includes('[model_providers.sub2api]'))
-    expect(windowsConfig).toContain(
-      'model_catalog_json = "%userprofile%\\\\.codex\\\\codex-models.json"'
-    )
+    expect(windowsConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+    expect(windowsConfig).not.toContain('%userprofile%')
+    expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
+      .toContain('%userprofile%\\.codex\\codex-models.json')
   })
 
   it.each(['anthropic', 'gemini', 'antigravity', 'kimi', 'zhipu', 'minimax'] as const)(
@@ -886,24 +907,37 @@ describe('UseKeyModal', () => {
       const config = wrapper.findAll('pre code')
         .map((code) => code.text())
         .find((content) => content.includes('[model_providers.sub2api]'))
-      expect(config).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+      expect(config).toContain('model_catalog_url = "https://example.com/v1/models"')
+      expect(config).toContain('api_key_model_discovery = true')
+      expect(config).not.toContain('model_catalog_json')
       expect(config).toContain('base_url = "https://example.com/v1"')
       expect(config).toContain('wire_api = "responses"')
+
+      await wrapper.get('[data-testid="codex-model-catalog-mode"]').setValue('file')
+      const fileConfig = wrapper.findAll('pre code')
+        .map((code) => code.text())
+        .find((content) => content.includes('[model_providers.sub2api]'))
+      expect(fileConfig).toContain('model_catalog_json = "~/.codex/codex-models.json"')
+      expect(fileConfig).not.toContain('model_catalog_url')
+      expect(fileConfig).not.toContain('api_key_model_discovery')
+      expect(fileConfig).toContain('base_url = "https://example.com/v1"')
+      expect(fileConfig).toContain('wire_api = "responses"')
     }
   )
 
   // Scenario: the platform-preferred model remains selected when the downloaded catalog contains it.
   it('keeps the preferred Composite default when it exists in the catalog', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         models: [
           { slug: 'claude-opus-4-8' },
           { slug: 'gpt-5.5' }
         ]
       })
-    }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(UseKeyModal, {
       props: {
@@ -932,6 +966,9 @@ describe('UseKeyModal', () => {
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
 
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
+      .toContain('keys.useKeyModal.codexModelCatalog.download')
     const config = wrapper.findAll('pre code')
       .map((code) => code.text())
       .find((content) => content.includes('[model_providers.sub2api]'))
@@ -939,20 +976,21 @@ describe('UseKeyModal', () => {
     expect(config).toContain('review_model = "gpt-5.5"')
   })
 
-  it('derives OpenAI Codex reasoning effort from the selected catalog descriptor', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+  it.each(['none', 'high'] as const)('derives OpenAI Codex %s reasoning effort from the selected catalog descriptor', async (effort) => {
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         models: [
           {
             slug: 'glm-5.3',
-            default_reasoning_level: 'none',
-            supported_reasoning_levels: [{ effort: 'none' }]
+            default_reasoning_level: effort,
+            supported_reasoning_levels: [{ effort }]
           }
         ]
       })
-    }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
 
     const wrapper = mount(UseKeyModal, {
       props: {
@@ -976,10 +1014,18 @@ describe('UseKeyModal', () => {
     await wrapper.get('[data-testid="codex-model-catalog-fetch"]').trigger('click')
     await flushPromises()
 
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="codex-model-catalog"]').text())
+      .toContain('keys.useKeyModal.codexModelCatalog.download')
     const configToml = wrapper.findAll('pre code')
       .map((code) => code.text())
       .find((content) => content.includes('model_provider = "OpenAI"'))
     expect(configToml).toContain('model = "glm-5.3"')
-    expect(configToml).not.toContain('model_reasoning_effort')
+    expect(configToml).toContain('review_model = "glm-5.3"')
+    if (effort === 'none') {
+      expect(configToml).not.toContain('model_reasoning_effort')
+    } else {
+      expect(configToml).toContain('model_reasoning_effort = "high"')
+    }
   })
 })

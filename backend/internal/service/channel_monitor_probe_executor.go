@@ -240,7 +240,7 @@ func (e *ChannelMonitorProbeExecutor) auditUsage(run *ChannelMonitorProbeRun, mo
 
 func monitorProbeAdapter(a *Account, protocol, model string) (providerAdapter, string, bool) {
 	if a.IsOpenCodeGo() {
-		upstream := a.ResolveOpenCodeGoUpstreamProtocol(model)
+		upstream := a.resolveModelRoutedProtocol(model)
 		want := map[string]string{"anthropic": APIProtocolAnthropic, "openai_chat": APIProtocolChatCompletions, "openai_responses": APIProtocolResponses}[protocol]
 		if upstream != want {
 			return providerAdapter{}, "", false

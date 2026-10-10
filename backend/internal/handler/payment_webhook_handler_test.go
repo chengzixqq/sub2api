@@ -211,7 +211,7 @@ func TestJupitongWebhookRejectsDuplicateContentTypeHeaders(t *testing.T) {
 	assert.Equal(t, "verify failed", w.Body.String())
 }
 
-func TestExtractOutTradeNo(t *testing.T) {
+func TestExtractOutTradeNoWithContentType_EmptyContentType(t *testing.T) {
 	tests := []struct {
 		name        string
 		providerKey string
@@ -264,7 +264,7 @@ func TestExtractOutTradeNo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, extractOutTradeNo(tt.rawBody, tt.providerKey))
+			assert.Equal(t, tt.want, extractOutTradeNoWithContentType(tt.rawBody, tt.providerKey, ""))
 		})
 	}
 }
