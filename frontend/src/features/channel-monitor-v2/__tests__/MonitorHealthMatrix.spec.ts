@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import MonitorHealthMatrix from '../MonitorHealthMatrix.vue'
+import Select from '@/components/common/Select.vue'
 import { getMonitorPreviewScenario } from '../monitorPreview'
 
 vi.mock('vue-i18n', async importOriginal => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, te: () => false, locale: { value: 'en' } }) }))
@@ -17,6 +18,8 @@ describe('monitor traffic matrix', () => {
       { ...original, model: 'critical', health: { reliability: 'healthy', latency: 'critical' } },
     ]
     const wrapper = mount(MonitorHealthMatrix, { props: { items: overview.items, coverage: overview.coverage } })
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', 'model')
+    await wrapper.vm.$nextTick()
     const row = wrapper.findAll('tbody tr')[0]
     const cells = row.findAll('td button')
     expect(cells.map(cell => cell.attributes('aria-label'))).toEqual(expect.arrayContaining([
@@ -32,10 +35,23 @@ describe('monitor traffic matrix', () => {
     const overview = getMonitorPreviewScenario('normal').overview!
     overview.items[0].buckets.forEach(bucket => { bucket.bucket_start = bucket.bucket_start.replace('.000Z', 'Z') })
     const wrapper = mount(MonitorHealthMatrix, { props: { items: overview.items, coverage: overview.coverage } })
-    await wrapper.get('select').setValue('time')
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('time')
     const first = wrapper.findAll('tbody tr')[0].findAll('td button')[0]
     expect(first.attributes('aria-label')).not.toContain('states.missing')
     await first.trigger('click')
+    expect(wrapper.emitted('bucket')?.[0]?.[1]).toEqual(expect.objectContaining({ bucket: expect.any(Object) }))
+    wrapper.unmount()
+  })
+
+  it('uses model cells when time coverage is absent, then defaults to time when coverage arrives', async () => {
+    const overview = getMonitorPreviewScenario('normal').overview!
+    const wrapper = mount(MonitorHealthMatrix, { props: { items: overview.items } })
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('model')
+    await wrapper.findAll('tbody tr')[0].get('td button').trigger('click')
+    expect(wrapper.emitted('model')?.[0]?.[1]).toBe(overview.items[0].models[0].model)
+    await wrapper.setProps({ coverage: overview.coverage })
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('time')
+    await wrapper.findAll('tbody tr')[0].get('td button').trigger('click')
     expect(wrapper.emitted('bucket')?.[0]?.[1]).toEqual(expect.objectContaining({ bucket: expect.any(Object) }))
     wrapper.unmount()
   })

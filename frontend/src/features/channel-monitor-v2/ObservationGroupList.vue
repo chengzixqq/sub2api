@@ -4,7 +4,7 @@
       <div class="grid grid-cols-[minmax(0,1fr)_32px] items-start gap-x-5 gap-y-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,1.2fr)_140px_32px]">
         <div class="min-w-0">
           <div class="flex items-start gap-2">
-            <PlatformIcon :platform="platform(item.platform)" size="sm" class="mt-1 shrink-0" />
+            <ProviderIcon :provider="item.platform" :size="20" class="mt-1 shrink-0" />
             <div class="min-w-0">
               <button type="button" class="break-words text-left text-sm font-semibold text-gray-900 hover:text-primary-600 dark:text-gray-100" @click="emit('detail', item)">{{ item.group_name }}</button>
               <p class="mt-1 text-xs text-gray-500">{{ platformLabel(item.platform) }}<span v-if="item.rate_multiplier != null" class="ml-2 text-primary-600 dark:text-primary-400">{{ t('channelMonitorV2.observation.multiplier', { value: item.rate_multiplier }) }}</span></p>
@@ -35,7 +35,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
 import type { ObservationBucket, ObservationChannel, ObservationOverview } from '@/api/channelMonitorV2'
 import ObservationCurrentStatus from './ObservationCurrentStatus.vue'
@@ -45,7 +45,6 @@ withDefaults(defineProps<{ items: ObservationChannel[]; coverage: ObservationOve
 const emit = defineEmits<{ detail: [item: ObservationChannel]; model: [item: ObservationChannel, model: string]; bucket: [item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, te } = useI18n()
 const expanded = ref(new Set<number>())
-const platform = (value: string) => GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.value
 const platformLabel = (value: string) => { const key = `channelMonitorV2.platforms.${value}`; return te(key) ? t(key) : GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.label || value }
 function toggle(id: number) {
   const next = new Set(expanded.value)

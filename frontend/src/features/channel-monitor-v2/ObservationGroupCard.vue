@@ -1,7 +1,7 @@
 <template>
-  <article class="observation-group-card flex h-full min-w-0 flex-col" :class="[motionClass, { 'card-comfortable': preferences.density === 'comfortable' }]" :data-group-id="item.group_id">
+  <article class="observation-group-card flex min-w-0 flex-col" :class="[motionClass, { 'card-comfortable': preferences.density === 'comfortable' }]" :data-group-id="item.group_id">
     <header class="flex items-start gap-3">
-      <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(item.platform)"><PlatformIcon :platform="platform" size="md" /></span>
+      <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(item.platform)"><ProviderIcon :provider="item.platform" :size="22" /></span>
       <div class="min-w-0 flex-1">
         <h3><button type="button" class="card-channel-name break-words text-left text-base font-semibold leading-6 tracking-tight text-slate-800 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-100" @click="$emit('detail', item)">{{ item.group_name }}</button></h3>
         <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500 dark:text-gray-400">
@@ -43,7 +43,7 @@
       <div class="border-t border-gray-100 pt-2 dark:border-dark-700"><p class="text-gray-400">{{ text('最近异常分类', 'Recent error categories') }}</p><p class="mt-1 break-words text-gray-600 dark:text-gray-300">{{ recentErrorLabel }}</p></div>
     </section>
 
-    <footer class="mt-auto pt-3">
+    <footer class="pt-3">
       <button type="button" class="card-model-toggle flex w-full items-center justify-between gap-2 rounded-lg py-1 text-xs font-medium text-slate-500 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:text-primary-400" :aria-expanded="expanded" :aria-controls="modelsId" @click="toggleExpanded">
         <span>{{ t('channelMonitorV2.observation.models', { count: item.models.length }) }}</span><Icon name="chevronRight" size="xs" class="card-model-chevron" :class="expanded ? 'rotate-90' : ''" />
       </button>
@@ -72,7 +72,7 @@ import { useMonitorMotion, useMonitorPreferences } from './useMonitorPreferences
 import { monitorCategoryLabel, monitorSourceLabel } from './monitorLabels'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
 import { platformBadgeClass } from '@/utils/platformColors'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
@@ -86,7 +86,6 @@ const props = withDefaults(defineProps<{ item: ObservationChannel; coverage: Obs
 defineEmits<{ detail: [item: ObservationChannel]; bucket: [item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, te, locale } = useI18n()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
-const platform = computed(() => GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.value)
 const platformLabel = computed(() => { const key = `channelMonitorV2.platforms.${props.item.platform}`; return te(key) ? t(key) : GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.label || props.item.platform })
 const metrics = computed(() => props.item.traffic || props.item.metrics)
 const historyBarCount = computed(() => observationTimeline([], props.coverage).length)

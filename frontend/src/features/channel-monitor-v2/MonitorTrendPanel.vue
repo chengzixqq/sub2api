@@ -5,9 +5,7 @@
         <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ text('渠道趋势', 'Channel trend') }}</h3>
         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ text('逐渠道查看历史；缺失数据保留断点，不合并不同来源。', 'Channel history; missing data remains a gap. Sources are never combined.') }}</p>
       </div>
-      <select v-if="items.length" v-model="selectedKey" class="input !w-auto max-w-full !py-1.5 text-xs" :aria-label="text('选择渠道', 'Choose channel')">
-        <option v-for="item in items" :key="key(item)" :value="key(item)">{{ item.group_name }} · {{ platformLabel(item.platform) }}</option>
-      </select>
+      <Select v-if="items.length" v-model="selectedKey" class="w-full min-w-0 sm:w-64" :options="channelOptions" :aria-label="text('选择渠道', 'Choose channel')" :dropdown-class="motionClass" />
     </header>
     <p v-if="!selected" class="py-16 text-center text-sm text-gray-500">{{ text('当前筛选范围没有趋势数据', 'No trend data for these filters') }}</p>
     <template v-else>
@@ -29,16 +27,20 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from 'chart.js'
 import { Line } from 'vue-chartjs'
+import Select from '@/components/common/Select.vue'
 import type { ObservationChannel, ObservationMetrics, ObservationOverview } from '@/api/channelMonitorV2'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
 import { observationTimeline } from './observationViewModel'
 import { monitorSourceLabel } from './monitorLabels'
+import { useMonitorMotion } from './useMonitorPreferences'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 const props = defineProps<{ items: ObservationChannel[]; coverage?: ObservationOverview['coverage']; source?: ObservationOverview['source'] }>()
 const { t, te, locale } = useI18n()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const platformLabel = (value: string) => { const key = `channelMonitorV2.platforms.${value}`; return te(key) ? t(key) : value }
 const key = (item: ObservationChannel) => `${item.platform}:${item.group_id}`
+const motionClass = useMonitorMotion()
+const channelOptions = computed(() => props.items.map(item => ({ value: key(item), label: `${item.group_name} · ${platformLabel(item.platform)}` })))
 const selectedKey = ref('')
 watch(() => props.items, items => { if (!items.some(item => key(item) === selectedKey.value)) selectedKey.value = items[0] ? key(items[0]) : '' }, { immediate: true })
 const selected = computed(() => props.items.find(item => key(item) === selectedKey.value))

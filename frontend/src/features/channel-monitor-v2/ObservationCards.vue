@@ -13,7 +13,7 @@
       <div v-if="activeLayout === 'cards'" class="space-y-7">
         <section v-for="section in sections" :key="section.platform" class="space-y-4" :aria-label="platformLabel(section.platform)">
           <header class="flex items-center gap-3 px-1">
-            <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(section.platform)"><PlatformIcon :platform="platformValue(section.platform)" size="sm" /></span>
+            <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(section.platform)"><ProviderIcon :provider="section.platform" :size="20" /></span>
             <h2 class="text-lg font-semibold tracking-tight text-slate-800 dark:text-gray-100">{{ platformLabel(section.platform) }}</h2>
             <span class="rounded-lg border border-white/80 bg-white/70 px-2 py-0.5 text-xs tabular-nums text-slate-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">{{ section.items.length }}</span>
           </header>
@@ -33,7 +33,7 @@ import { computed } from 'vue'
 import { useMonitorPreferences } from './useMonitorPreferences'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
-import PlatformIcon from '@/components/common/PlatformIcon.vue'
+import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
 import { platformBadgeClass } from '@/utils/platformColors'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
 import type { ObservationBucket, ObservationChannel, ObservationOverview } from '@/api/channelMonitorV2'
@@ -45,7 +45,6 @@ const props = withDefaults(defineProps<{ overview: ObservationOverview | null; l
 const emit = defineEmits<{ toggleLayout: []; detail: [item: ObservationChannel]; model: [item: ObservationChannel, model: string]; bucket: [item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }]; retry: [] }>()
 const { t, te } = useI18n()
 const preferences = useMonitorPreferences()
-const platformValue = (value: string) => GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.value
 const platformLabel = (value: string) => {
   const key = `channelMonitorV2.platforms.${value}`
   return te(key) ? t(key) : GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.label || value
@@ -58,7 +57,7 @@ function handleBucket(item: ObservationChannel, slot: { start: string; bucket: O
 
 <style scoped>
 .observation-cards { container-type: inline-size; }
-.observation-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.observation-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 20px; }
 @container (min-width: 720px) {
   .observation-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
