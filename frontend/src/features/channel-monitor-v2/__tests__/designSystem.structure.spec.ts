@@ -19,8 +19,11 @@ describe('channel-monitor-v2 design system structure', () => {
     expect(src).toContain('page-header')
     expect(src).toContain('page-title')
     expect(src).toContain('btn btn-secondary')
-    expect(src).toContain('class="tab')
-    expect(src).toContain('tab-active')
+    expect(src).toContain('<MonitorRangeSelector v-model="filter.range"')
+    const rangeSelector = read('features/channel-monitor-v2/MonitorRangeSelector.vue')
+    expect(rangeSelector).toContain('class="tab')
+    expect(rangeSelector).toContain('tab-active')
+    expect(read('views/dev/MonitorPreviewView.vue')).toContain('<MonitorRangeSelector v-model="selectedRange"')
     expect(src).toContain('badge badge-warning')
     // Compact single-row toolbar
     expect(src).toContain('monitor-toolbar')

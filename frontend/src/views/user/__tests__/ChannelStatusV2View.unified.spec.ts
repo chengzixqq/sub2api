@@ -42,6 +42,22 @@ describe('unified channel monitor page', () => {
   })
   afterEach(() => vi.useRealTimers())
 
+  it.each(['user', 'vendor', 'admin'])('keeps all four range buttons visible and requests the selected window for %s', async role => {
+    stores.auth.user.role = role
+    const wrapper = mountView()
+    await flushPromises()
+    const buttons = wrapper.findAll('[data-testid="monitor-range-selector"] button')
+    expect(buttons).toHaveLength(4)
+    for (const [index, range] of ['90m', '24h', '7d', '30d'].entries()) {
+      await buttons[index]!.trigger('click')
+      await flushPromises()
+      expect(buttons[index]!.attributes('aria-pressed')).toBe('true')
+      expect(api.getObservationOverview.mock.lastCall![0].range).toBe(range)
+      expect(api.getObservationOverview.mock.lastCall![1]).toBe(role === 'admin')
+    }
+    wrapper.unmount()
+  })
+
   it('restores history preferences independently across user workspaces and page reloads', async () => {
     stores.auth.user.role = 'user'
     const auth = reactive(stores.auth)

@@ -27,9 +27,7 @@
       </div>
       <div class="monitor-toolbar flex flex-wrap items-center gap-2" :class="{ 'rounded-2xl border border-slate-100 bg-white/90 p-3 dark:border-dark-700 dark:bg-dark-800': viewMode === 'cards' }">
         <label v-if="isAdmin" class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input v-model="preview" type="checkbox" class="checkbox" />{{ t('channelMonitorV2.unified.preview') }}</label>
-        <div class="tabs inline-flex w-auto shrink-0" role="group" :aria-label="t('channelMonitorV2.timeRange')">
-          <button v-for="range in ranges" :key="range" type="button" class="tab !px-3 !py-2 text-xs" :class="filter.range === range ? 'tab-active' : ''" :aria-pressed="filter.range === range" @click="filter.range = range">{{ t(`channelMonitorV2.ranges.${range}`) }}</button>
-        </div>
+        <MonitorRangeSelector v-model="filter.range" />
         <FilterMultiSelect v-model="filter.platforms" :options="platformOptions" :label="t('channelMonitorV2.filters.platform')" :all-label="t('channelMonitorV2.filters.allPlatforms')" />
         <FilterMultiSelect v-model="selectedGroups" :options="groupOptions" :label="t('channelMonitorV2.filters.group')" :all-label="t('channelMonitorV2.filters.allGroups')" />
         <FilterMultiSelect v-model="filter.models" :options="modelOptions" :label="t('channelMonitorV2.filters.model')" :all-label="t('channelMonitorV2.filters.allModels')" />
@@ -59,6 +57,7 @@ import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue
 import ObservationDetailDrawer from '@/features/channel-monitor-v2/ObservationDetailDrawer.vue'
 import MonitorOverviewHero from '@/features/channel-monitor-v2/MonitorOverviewHero.vue'
 import MonitorViewSwitcher from '@/features/channel-monitor-v2/MonitorViewSwitcher.vue'
+import MonitorRangeSelector from '@/features/channel-monitor-v2/MonitorRangeSelector.vue'
 import MonitorHealthMatrix from '@/features/channel-monitor-v2/MonitorHealthMatrix.vue'
 import MonitorTrendPanel from '@/features/channel-monitor-v2/MonitorTrendPanel.vue'
 import { monitorSourceLabel } from '@/features/channel-monitor-v2/monitorLabels'

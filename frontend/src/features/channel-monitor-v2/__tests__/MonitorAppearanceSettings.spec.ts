@@ -12,6 +12,20 @@ const mountSettings = (identity = ref('user:1:workspace:1')) => mount(defineComp
 const saved = (identity = 'user:1:workspace:1') => JSON.parse(localStorage.getItem(identity + ':presentation') || 'null')
 
 describe('history settings UI', () => {
+  it('uses the selected preview range rather than forcing the draft to 24h', async () => {
+    const range = ref<'90m' | '7d'>('7d')
+    const wrapper = mount(defineComponent({ setup() { provideMonitorPreferences(ref('preview')); return () => h(MonitorAppearanceSettings, { preview: true, range: range.value }) } }))
+    wrapper.getComponent('[data-testid="pref-history-mode"]').vm.$emit('update:modelValue', 'interval')
+    await flushPromises()
+    await wrapper.get('[data-testid="pref-history-minutes"]').setValue('30')
+    expect(wrapper.text()).toContain('this range requests: 60')
+    range.value = '90m'
+    await flushPromises()
+    expect(wrapper.text()).toContain('this range requests: 30')
+    expect(saved('preview')).toBeNull()
+    wrapper.unmount()
+  })
+
   it('uses Sub Select and valid explicit apply, with unchanged drafts and truthful loaded intervals', async () => {
     const wrapper = mountSettings()
     const mode = wrapper.getComponent('[data-testid="pref-history-mode"]')

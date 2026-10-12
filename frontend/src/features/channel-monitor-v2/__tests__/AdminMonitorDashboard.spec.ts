@@ -79,6 +79,22 @@ describe('admin monitor dashboard', () => {
     wrapper.unmount()
   })
 
+  it('uses the parent-controlled preview range without fetching live data', async () => {
+    const wrapper = shallowMount(AdminMonitorDashboard, { props: { preview: true, previewRange: '7d', previewOverview: snapshot() } })
+    await flushPromises()
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('7d')
+    expect(wrapper.getComponent(Select).props('disabled')).toBe(false)
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', '30d')
+    await flushPromises()
+    expect(wrapper.emitted('update:previewRange')).toEqual([['30d']])
+    await wrapper.setProps({ previewRange: '90m' })
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('90m')
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('filter').range).toBe('90m')
+    expect(api.getObservationOverview).not.toHaveBeenCalled()
+    expect(api.getErrors).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it.each(['account', 'workspace'] as const)('resets active view, range and filters across %s changes with equal defaults', async identityPart => {
     const wrapper = shallowMount(AdminMonitorDashboard)
     await flushPromises()

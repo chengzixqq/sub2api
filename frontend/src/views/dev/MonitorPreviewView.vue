@@ -51,7 +51,10 @@
         </div>
       </header>
 
-      <MonitorAppearanceSettings preview range="24h" :bucket-seconds="overview?.coverage.bucket_seconds" />
+      <div v-if="role === 'user' || !overview" class="monitor-toolbar flex flex-wrap items-center gap-2 rounded-2xl border border-slate-100 bg-white/90 p-3 dark:border-dark-700 dark:bg-dark-800">
+        <MonitorRangeSelector v-model="selectedRange" />
+      </div>
+      <MonitorAppearanceSettings preview :range="selectedRange" :bucket-seconds="overview?.coverage.bucket_seconds" />
       <div class="flex justify-end"><button type="button" class="btn btn-primary" data-testid="preview-settings" @click="showSettings = true">{{ locale.startsWith('zh') ? '配置参数验收' : 'Preview configuration' }}</button></div>
       <AdminMonitorSettingsDrawer :show="showSettings" preview @close="showSettings = false" />
       <div :key="role + ':' + scenarioId" class="preview-content space-y-5">
@@ -63,7 +66,7 @@
           <span class="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500" /> {{ t('channelMonitorV2.preview.loading') }}
         </section>
 
-        <AdminMonitorDashboard v-if="overview && role === 'admin'" :key="scenarioId" :preview-overview="overview" preview />
+        <AdminMonitorDashboard v-if="overview && role === 'admin'" :key="scenarioId" :preview-overview="overview" v-model:preview-range="selectedRange" preview />
         <template v-else-if="overview">
           <MonitorOverviewHero
             v-if="view !== 'cards'"
@@ -107,7 +110,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { MonitorFilter, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
+import type { MonitorFilter, MonitorRange, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
 import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
 import AdminMonitorSettingsDrawer from '@/features/channel-monitor-v2/AdminMonitorSettingsDrawer.vue'
 import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
@@ -119,6 +122,7 @@ import MonitorHealthMatrix from '@/features/channel-monitor-v2/MonitorHealthMatr
 import MonitorOverviewHero from '@/features/channel-monitor-v2/MonitorOverviewHero.vue'
 import MonitorTrendPanel from '@/features/channel-monitor-v2/MonitorTrendPanel.vue'
 import MonitorViewSwitcher from '@/features/channel-monitor-v2/MonitorViewSwitcher.vue'
+import MonitorRangeSelector from '@/features/channel-monitor-v2/MonitorRangeSelector.vue'
 import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue'
 import ObservationDetailDrawer from '@/features/channel-monitor-v2/ObservationDetailDrawer.vue'
 import { summarizeMonitorTraffic } from '@/features/channel-monitor-v2/monitorSummary'
@@ -129,7 +133,9 @@ const { t, te, locale } = useI18n()
 const scenarioId = ref<MonitorPreviewScenarioId>('card-gallery')
 const role = ref<MonitorPreviewRole>('user')
 const preferences = provideMonitorPreferences(computed(() => 'monitor-preview:' + role.value))
-const history = computed(() => resolveMonitorHistory('24h', preferences.value))
+const selectedRange = ref<MonitorRange>(preferences.value.defaultRange)
+watch(() => preferences.value.defaultRange, value => { selectedRange.value = value })
+const history = computed(() => resolveMonitorHistory(selectedRange.value, preferences.value))
 const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const showSettings = ref(false)
 const view = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)
@@ -143,7 +149,7 @@ function toggleTheme() {
 }
 onMounted(() => { darkTheme.value = document.documentElement.classList.contains('dark') })
 const scenario = computed(() => {
-  const result = getMonitorPreviewScenario(scenarioId.value, role.value, history.value.mode === 'auto' ? undefined : history.value.bucketMinutes)
+  const result = getMonitorPreviewScenario(scenarioId.value, role.value, history.value.mode === 'auto' ? undefined : history.value.bucketMinutes, selectedRange.value)
   for (const item of result.overview?.items || []) {
     const key = `channelMonitorV2.preview.channelNames.${item.group_id}`
     if (te(key)) item.group_name = t(key)
@@ -170,12 +176,14 @@ const scenarioDescription = (id: MonitorPreviewScenarioId) => t(`channelMonitorV
 const gapLabel = (reason: string) => { const key = `channelMonitorV2.unified.gaps.${reason}`; return te(key) ? t(key) : reason.split('_').join(' ') }
 const percent = (value: number | null) => value == null ? '—' : `${Math.round(value * 100)}%`
 const latency = (value: number | null) => value == null ? '—' : value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`
-const detailFilter = computed<MonitorFilter>(() => ({ range: '24h', platforms: [], groupIds: [], models: [], ...history.value.params }))
+const detailFilter = computed<MonitorFilter>(() => ({ range: selectedRange.value, platforms: [], groupIds: [], models: [], ...history.value.params }))
 const detail = ref<{ item: ObservationChannel; model?: string; slot: { start: string; bucket: ObservationBucket | null } | null } | null>(null)
 function openDetail(item: ObservationChannel) { detail.value = { item, slot: null } }
 function openModel(item: ObservationChannel, model: string) { detail.value = { item, model, slot: null } }
 function openBucket(item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }) { detail.value = { item, slot } }
 watch([scenarioId, role], () => { detail.value = null; showSettings.value = false; view.value = preferences.value.defaultView; layout.value = 'cards' }, { flush: 'sync' })
+watch(role, () => { selectedRange.value = preferences.value.defaultRange }, { flush: 'sync' })
+watch(selectedRange, () => { detail.value = null }, { flush: 'sync' })
 watch(() => JSON.stringify(history.value.params), () => { detail.value = null }, { flush: 'sync' })
 const heroStats = computed(() => {
   const summary = summarizeMonitorTraffic(overview.value)

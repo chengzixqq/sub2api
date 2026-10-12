@@ -4,8 +4,8 @@
 
     <div class="monitor-toolbar flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-800">
       <label class="sr-only" :for="rangeId">{{ t('channelMonitorV2.timeRange') }}</label>
-      <Select :dropdown-class="motionClass" :id="rangeId" v-model="filter.range" class="min-w-32" :options="rangeOptions" :searchable="false" :disabled="previewMode" :aria-label="t('channelMonitorV2.timeRange')" :aria-describedby="previewMode ? rangeId + '-hint' : undefined" />
-      <span v-if="previewMode" :id="rangeId + '-hint'" class="text-xs text-gray-500">{{ text('预览固定 24 小时数据', 'Preview uses a fixed 24h fixture window') }}</span>
+      <Select :dropdown-class="motionClass" :id="rangeId" v-model="filter.range" class="min-w-32" :options="rangeOptions" :searchable="false" :disabled="previewMode && !previewRange" :aria-label="t('channelMonitorV2.timeRange')" :aria-describedby="previewMode && !previewRange ? rangeId + '-hint' : undefined" />
+      <span v-if="previewMode && !previewRange" :id="rangeId + '-hint'" class="text-xs text-gray-500">{{ text('预览固定 24 小时数据', 'Preview uses a fixed 24h fixture window') }}</span>
       <FilterMultiSelect v-model="filter.platforms" compact :label="t('channelMonitorV2.filters.platform')" :all-label="t('channelMonitorV2.filters.allPlatforms')" :options="platformOptions" />
       <FilterMultiSelect v-model="selectedGroups" compact :label="t('channelMonitorV2.filters.group')" :all-label="t('channelMonitorV2.filters.allGroups')" :options="groupOptions" />
       <FilterMultiSelect v-model="filter.models" compact :label="t('channelMonitorV2.filters.model')" :all-label="t('channelMonitorV2.filters.allModels')" :options="modelOptions" />
@@ -70,8 +70,8 @@ import MonitorOverviewHero from './MonitorOverviewHero.vue'
 import MonitorTrendPanel from './MonitorTrendPanel.vue'
 import MonitorViewSwitcher from './MonitorViewSwitcher.vue'
 
-const props = withDefaults(defineProps<{ filter?: MonitorFilter; previewOverview?: ObservationOverview | null; preview?: boolean }>(), { previewOverview: null, preview: false })
-const emit = defineEmits<{ detail: [item: ObservationChannel] }>()
+const props = withDefaults(defineProps<{ filter?: MonitorFilter; previewOverview?: ObservationOverview | null; preview?: boolean; previewRange?: MonitorRange }>(), { previewOverview: null, preview: false })
+const emit = defineEmits<{ detail: [item: ObservationChannel]; 'update:previewRange': [range: MonitorRange] }>()
 const { t, te, locale } = useI18n()
 const auth = useAuthStore()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
@@ -82,7 +82,9 @@ const identity = computed(() => ['admin-monitor', auth.user?.id ?? 'anonymous', 
 const preferences = provideMonitorPreferences(identity)
 const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const previewMode = computed(() => props.preview || Boolean(props.previewOverview))
-const filter = ref<MonitorFilter>({ range: previewMode.value ? '24h' : props.filter?.range ?? preferences.value.defaultRange, platforms: [...(props.filter?.platforms || [])], groupIds: [...(props.filter?.groupIds || [])], models: [...(props.filter?.models || [])] })
+const filter = ref<MonitorFilter>({ range: previewMode.value ? props.previewRange ?? '24h' : props.filter?.range ?? preferences.value.defaultRange, platforms: [...(props.filter?.platforms || [])], groupIds: [...(props.filter?.groupIds || [])], models: [...(props.filter?.models || [])] })
+watch(() => props.previewRange, value => { if (previewMode.value && value) filter.value.range = value })
+watch(() => filter.value.range, value => { if (previewMode.value && props.previewRange && value !== props.previewRange) emit('update:previewRange', value) })
 useMonitorHistoryFilter(filter, preferences)
 const { data, loading, error, stale, load, cancel } = useObservationOverview(filter, ref(true), ref(false), identity)
 const overview = computed(() => {
@@ -96,7 +98,7 @@ watch(() => preferences.value.defaultView, value => { view.value = value === 'tr
 watch(() => preferences.value.defaultRange, value => { if (!previewMode.value) filter.value.range = value })
 watch(identity, () => {
   view.value = preferences.value.defaultView === 'trend' ? 'advanced' : preferences.value.defaultView
-  filter.value = { range: previewMode.value ? '24h' : preferences.value.defaultRange, platforms: [], groupIds: [], models: [] }
+  filter.value = { range: previewMode.value ? props.previewRange ?? '24h' : preferences.value.defaultRange, platforms: [], groupIds: [], models: [] }
 }, { flush: 'sync' })
 const viewItems = computed(() => [{ value: 'cards', label: text('卡片', 'Cards') }, { value: 'matrix', label: text('矩阵', 'Matrix') }, { value: 'advanced', label: text('高级大屏', 'Advanced') }])
 const selectedGroups = computed<string[]>({ get: () => filter.value.groupIds.map(String), set: values => { filter.value.groupIds = values.map(Number).filter(value => Number.isInteger(value) && value > 0) } })

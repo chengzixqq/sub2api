@@ -1,5 +1,6 @@
 import type {
   MonitorDimensions,
+  MonitorRange,
   ObservationBucket,
   ObservationChannel,
   ObservationHealth,
@@ -7,6 +8,7 @@ import type {
   ObservationModel,
   ObservationOverview,
 } from '@/api/channelMonitorV2'
+import { MONITOR_RANGE_MINUTES, resolveMonitorHistory } from './monitorHistoryPreferences'
 
 /**
  * Local-only monitoring fixtures. They deliberately model the response
@@ -49,9 +51,9 @@ function iso(value: number): string {
   return new Date(value).toISOString()
 }
 
-function windowTimes() {
+function windowTimes(range: MonitorRange = '24h') {
   const end = Math.floor(SNAPSHOT_AT / HOUR) * HOUR
-  return { start: end - 24 * HOUR, end }
+  return { start: end - MONITOR_RANGE_MINUTES[range] * 60000, end }
 }
 
 function latency(p50: number | null, p95 = p50 == null ? null : Math.round(p50 * 1.75)): ObservationMetrics['ttft'] {
@@ -87,16 +89,17 @@ function health(reliability: ObservationHealth['reliability'] = 'healthy', laten
   return { reliability, latency: latencyState }
 }
 
-function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false, count = 6, bucketMinutes = 24 * 60 / count, observed?: Array<{ start: number; end: number }>): ObservationBucket[] {
-  const { start, end } = windowTimes()
+function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false, count = 6, bucketMinutes = 24 * 60 / count, observed?: Array<{ start: number; end: number }>, timeWindow?: ReturnType<typeof windowTimes>): ObservationBucket[] {
+  const { start, end } = timeWindow || windowTimes()
   const step = bucketMinutes * 60 * 1000
-  const slots: Array<{ start: number; minutes: number; weight: number }> = []
+  const slots: Array<{ start: number; sampleStart: number; sampleEnd: number; minutes: number; weight: number }> = []
   for (let at = Math.floor(start / step) * step, index = 0; at < end; at += step, index++) {
     if (withGap && index === 2) continue
     const from = Math.max(start, at)
     const to = Math.min(end, at + step)
-    const weight = observed ? observed.reduce((sum, span) => sum + Math.max(0, Math.min(to, span.end) - Math.max(from, span.start)), 0) : to - from
-    if (weight > 0) slots.push({ start: at, minutes: (to - from) / 60000, weight })
+    const spans = observed ? observed.map(span => ({ start: Math.max(from, span.start), end: Math.min(to, span.end) })).filter(span => span.end > span.start) : [{ start: from, end: to }]
+    const weight = spans.reduce((sum, span) => sum + span.end - span.start, 0)
+    if (weight > 0) slots.push({ start: at, sampleStart: timeWindow ? Math.min(...spans.map(span => span.start)) : from, sampleEnd: timeWindow ? Math.max(...spans.map(span => span.end)) : to, minutes: (to - from) / 60000, weight })
   }
   // These are fictional event samples, not resampled production percentiles.
   // Allocate whole samples by observed time; preserve gaps and all event totals.
@@ -108,6 +111,17 @@ function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth
     const distribute = (total: number) => Math.floor(total * through / totalWeight) - Math.floor(total * before / totalWeight)
     const bucketStart = iso(slot.start)
     const successes = distribute(value.success_requests ?? 0)
+    // In explicit range fixtures, latency/retry samples belong to successful
+    // events. Independent rounding followed by min() would silently lose them.
+    const distributeSuccesses = (total: number) => {
+      const population = value.success_requests ?? 0
+      if (!population) return 0
+      const eligible = Math.min(total, population)
+      const successfulBefore = Math.floor(population * before / totalWeight)
+      return Math.floor(eligible * (successfulBefore + successes) / population) - Math.floor(eligible * successfulBefore / population)
+    }
+    const ttftSamples = timeWindow ? distributeSuccesses(value.ttft.sample_count) : Math.min(successes, distribute(value.ttft.sample_count))
+    const durationSamples = timeWindow ? distributeSuccesses(value.duration.sample_count) : Math.min(successes, distribute(value.duration.sample_count))
     const categories = value.error_categories ? Object.fromEntries(Object.entries(value.error_categories).map(([category, count]) => [category, distribute(count)])) : undefined
     const errors = categories ? Object.values(categories).reduce((total, count) => total + count, 0) : distribute(value.channel_errors ?? 0)
     const clients = distribute(value.client_errors ?? 0)
@@ -116,8 +130,8 @@ function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth
     const reliability = successes + errors ? successes / (successes + errors) : null
     return {
       bucket_start: bucketStart,
-      sample_start: iso(Math.max(start, slot.start)),
-      sample_end: iso(Math.min(end, slot.start + step)),
+      sample_start: iso(slot.sampleStart),
+      sample_end: iso(slot.sampleEnd),
       metrics: metrics({
         ...value,
         request_count: requestCount,
@@ -130,15 +144,15 @@ function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth
         success_rate: requestCount ? successes / requestCount : null,
         rpm: requestCount / slot.minutes,
         tpm: requestCount * 820 / slot.minutes,
-        attempt_count: distribute(value.attempt_count ?? 0),
-        retry_recovered_requests: distribute(value.retry_recovered_requests ?? 0),
-        ttft: { ...value.ttft, sample_count: Math.min(successes, distribute(value.ttft.sample_count)) },
-        duration: { ...value.duration, sample_count: Math.min(successes, distribute(value.duration.sample_count)) },
+        attempt_count: timeWindow ? requestCount + distribute(Math.max(0, (value.attempt_count ?? 0) - (value.request_count ?? 0))) : distribute(value.attempt_count ?? 0),
+        retry_recovered_requests: timeWindow ? distributeSuccesses(value.retry_recovered_requests ?? 0) : distribute(value.retry_recovered_requests ?? 0),
+        ttft: { ...value.ttft, sample_count: ttftSamples },
+        duration: { ...value.duration, sample_count: durationSamples },
         error_categories: categories,
       }),
       health: {
         reliability: successes + errors >= MINIMUM_SAMPLE && reliability != null ? reliability >= 0.99 ? 'healthy' : reliability >= 0.95 ? 'warning' : 'critical' : 'unknown',
-        latency: Math.min(successes, distribute(value.ttft.sample_count)) >= MINIMUM_SAMPLE ? bucketHealth.latency : 'unknown',
+        latency: ttftSamples >= MINIMUM_SAMPLE ? bucketHealth.latency : 'unknown',
       },
     }
   })
@@ -327,10 +341,60 @@ function redactMetrics(value: ObservationMetrics): void {
   value.duration.sample_count = 0
 }
 
-export function getMonitorPreviewScenario(id: MonitorPreviewScenarioId, role: MonitorPreviewRole = 'admin', bucketMinutes?: number): MonitorPreviewScenario {
+/**
+ * Each explicit range is an independent fictional event window. Template totals
+ * are allocated as whole samples over that window, with template gaps preserved
+ * at their relative positions. This is not a projection of historical live data.
+ */
+function rebuildRange(value: ObservationOverview, range: MonitorRange, bucketMinutes?: number): void {
+  const target = windowTimes(range)
+  const sourceStart = Date.parse(value.coverage.requested_start)
+  const sourceEnd = Date.parse(value.coverage.requested_end || value.coverage.data_through)
+  const sourceStep = value.coverage.bucket_seconds * 1000
+  const minutes = MONITOR_RANGE_MINUTES[range]
+  const duration = target.end - target.start
+  const moveTime = (at: number) => target.start + (at - sourceStart) * duration / (sourceEnd - sourceStart)
+  const interval = resolveMonitorHistory(range, {
+    historyMode: bucketMinutes === undefined ? 'auto' : 'interval',
+    historyBucketMinutes: bucketMinutes ?? 5,
+    historyBarCount: 60,
+  }).bucketMinutes
+  const setRates = (metrics: ObservationMetrics) => {
+    metrics.rpm = (metrics.request_count ?? 0) / minutes
+    metrics.tpm = (metrics.request_count ?? 0) * 820 / minutes
+  }
+  const replace = (row: ObservationChannel | ObservationModel) => {
+    const observed = row.buckets.map(bucket => ({
+      start: moveTime(Date.parse(bucket.sample_start || bucket.bucket_start)),
+      end: moveTime(Date.parse(bucket.sample_end || iso(Date.parse(bucket.bucket_start) + sourceStep))),
+    }))
+    setRates(row.metrics)
+    if (row.traffic) setRates(row.traffic)
+    row.buckets = bucketSeries(row.metrics, row.health, false, 6, interval, observed, target)
+  }
+  for (const item of value.items) {
+    replace(item)
+    item.models.forEach(replace)
+  }
+  const boundaries = value.items.flatMap(item => [item, ...item.models]).flatMap(row => row.buckets)
+  value.coverage = {
+    ...value.coverage,
+    requested_start: iso(target.start),
+    requested_end: iso(target.end),
+    coverage_start: iso(boundaries.length ? Math.min(...boundaries.map(bucket => Date.parse(bucket.sample_start!))) : target.start),
+    data_through: iso(boundaries.length ? Math.max(...boundaries.map(bucket => Date.parse(bucket.sample_end!))) : target.end),
+    bucket_seconds: interval * 60,
+  }
+  value.dimensions = dimensions(value.items)
+}
+
+export function getMonitorPreviewScenario(id: MonitorPreviewScenarioId, role: MonitorPreviewRole = 'admin', bucketMinutes?: number, range?: MonitorRange): MonitorPreviewScenario {
   const scenario = MONITOR_PREVIEW_SCENARIOS.find(item => item.id === id) || MONITOR_PREVIEW_SCENARIOS.find(item => item.id === 'normal')!
   const copy = JSON.parse(JSON.stringify(scenario)) as MonitorPreviewScenario
-  if (copy.overview && bucketMinutes !== undefined && Number.isInteger(bucketMinutes) && bucketMinutes >= 1 && bucketMinutes <= WINDOW_MINUTES) {
+  if (copy.overview && range !== undefined) {
+    rebuildRange(copy.overview, range, bucketMinutes)
+    copy.description = `Fictional ${range} event samples for ${copy.label}; no live data or API requests.`
+  } else if (copy.overview && bucketMinutes !== undefined && Number.isInteger(bucketMinutes) && bucketMinutes >= 1 && bucketMinutes <= WINDOW_MINUTES) {
     const sourceStep = copy.overview.coverage.bucket_seconds * 1000
     const replaceBuckets = (item: ObservationChannel | ObservationModel) => {
       const observed = item.buckets.map(bucket => ({ start: Date.parse(bucket.bucket_start), end: Date.parse(bucket.bucket_start) + sourceStep }))

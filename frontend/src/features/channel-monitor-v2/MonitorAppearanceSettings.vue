@@ -37,7 +37,7 @@
       <label class="inline-flex items-center gap-2"><input v-model="preferences.autoRefresh" type="checkbox" class="checkbox" data-testid="pref-auto-refresh" />{{ text('自动刷新（使用站点周期）', 'Auto-refresh using site interval') }}</label>
       <button type="button" class="text-primary-600 hover:underline" @click="preferences = { ...DEFAULT_MONITOR_PREFERENCES }">{{ text('恢复显示默认值', 'Reset display preferences') }}</button>
     </div>
-    <p v-if="preview" class="mt-3 text-xs text-amber-700 dark:text-amber-300">{{ text('验收页采用固定时间范围的示例数据；默认时间范围和自动刷新将在真实页面生效。', 'The preview uses a fixed fixture window. Default range and auto-refresh take effect on live pages.') }}</p>
+    <p v-if="preview" class="mt-3 text-xs text-amber-700 dark:text-amber-300">{{ text('验收页按所选时间范围生成示例数据，不请求线上数据；自动刷新仅在真实页面生效。', 'The preview generates fixtures for the selected range without live requests. Auto-refresh only runs on live pages.') }}</p>
   </details>
 </template>
 <script setup lang="ts">
@@ -67,7 +67,7 @@ const historyError = computed(() => historyDraft.mode === 'interval' && !isHisto
   ? text('请输入 1–43200 之间的整数分钟。', 'Enter an integer from 1 to 43200 minutes.')
   : historyDraft.mode === 'count' && !isHistoryBarCount(historyDraft.count)
     ? text('请输入 1–720 之间的整数条数。', 'Enter an integer bar count from 1 to 720.') : '')
-const draftResolution = computed(() => resolveMonitorHistory(props.preview ? '24h' : props.range || preferences.value.defaultRange, {
+const draftResolution = computed(() => resolveMonitorHistory(props.range || preferences.value.defaultRange, {
   historyMode: historyDraft.mode,
   historyBucketMinutes: isHistoryBucketMinutes(historyDraft.minutes) ? historyDraft.minutes : preferences.value.historyBucketMinutes,
   historyBarCount: isHistoryBarCount(historyDraft.count) ? historyDraft.count : preferences.value.historyBarCount,

@@ -29,12 +29,74 @@ afterEach(() => {
 function mountPreview() {
   wrapper = shallowMount(MonitorPreviewView, {
     attachTo: document.body,
-    global: { stubs: { Select: false, teleport: false }, renderStubDefaultSlot: true },
+    global: { stubs: { Select: false, MonitorRangeSelector: false, teleport: false }, renderStubDefaultSlot: true },
   })
   return wrapper
 }
 
 describe('monitor preview project-native controls', () => {
+  it('shows all four time ranges for users and changes the actual preview window', async () => {
+    const preview = mountPreview()
+    const ranges = preview.findAll('[data-testid="monitor-range-selector"] button')
+    expect(ranges).toHaveLength(4)
+    for (const [index, minutes] of [90, 1440, 10080, 43200].entries()) {
+      await ranges[index]!.trigger('click')
+      expect(ranges[index]!.attributes('aria-pressed')).toBe('true')
+      const coverage = preview.getComponent(ObservationCards).props('overview').coverage
+      expect((Date.parse(coverage.requested_end) - Date.parse(coverage.requested_start)) / 60000).toBe(minutes)
+      expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe(['90m', '24h', '7d', '30d'][index])
+    }
+  })
+
+  it.each(['empty', 'loading', 'error'])('keeps the range selector usable in the %s state', async id => {
+    const preview = mountPreview()
+    preview.getComponent(Select).vm.$emit('update:modelValue', id)
+    await nextTick()
+    const ranges = preview.findAll('[data-testid="monitor-range-selector"] button')
+    expect(ranges).toHaveLength(4)
+    await ranges[0]!.trigger('click')
+    expect(ranges[0]!.attributes('aria-pressed')).toBe('true')
+    expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe('90m')
+  })
+
+  it.each(['empty', 'loading', 'error'])('keeps the admin preview range accessible in the %s state', async id => {
+    const preview = mountPreview()
+    await preview.findAll('[role="group"] button')[0]!.trigger('click')
+    preview.getComponent(Select).vm.$emit('update:modelValue', id)
+    await nextTick()
+    const ranges = preview.findAll('[data-testid="monitor-range-selector"] button')
+    expect(ranges).toHaveLength(4)
+    await ranges[3]!.trigger('click')
+    expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe('30d')
+  })
+
+  it('closes old details on range changes and restores each role default', async () => {
+    localStorage.setItem('monitor-preview:user:presentation', JSON.stringify({ defaultRange: '7d', historyMode: 'interval', historyBucketMinutes: 30 }))
+    localStorage.setItem('monitor-preview:admin:presentation', JSON.stringify({ defaultRange: '90m' }))
+    const preview = mountPreview()
+    expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe('7d')
+    expect(preview.getComponent(ObservationCards).props('overview').coverage.bucket_seconds).toBe(3600)
+    const cards = preview.getComponent(ObservationCards)
+    const item = cards.props('overview').items[0]
+    cards.vm.$emit('bucket', item, { start: item.buckets[0].bucket_start, bucket: item.buckets[0] })
+    await nextTick()
+    expect(preview.getComponent(ObservationDetailDrawer).props('show')).toBe(true)
+    await preview.get('[data-testid="monitor-range-selector"] button').trigger('click')
+    expect(preview.getComponent(ObservationDetailDrawer).props('show')).toBe(false)
+    expect(preview.getComponent(ObservationDetailDrawer).props('filter')).toMatchObject({ range: '90m', bucket_minutes: 30 })
+    const roleButtons = preview.findAll('[role="group"] button')
+    await roleButtons[0]!.trigger('click')
+    expect(preview.getComponent(AdminMonitorDashboard).props('previewRange')).toBe('90m')
+    preview.getComponent(AdminMonitorDashboard).vm.$emit('update:previewRange', '30d')
+    await nextTick()
+    expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe('30d')
+    const coverage = preview.getComponent(AdminMonitorDashboard).props('previewOverview').coverage
+    expect((Date.parse(coverage.requested_end) - Date.parse(coverage.requested_start)) / 86400000).toBe(30)
+    await roleButtons[1]!.trigger('click')
+    expect(preview.getComponent(MonitorAppearanceSettings).props('range')).toBe('7d')
+    expect(JSON.parse(localStorage.getItem('monitor-preview:user:presentation')!).historyBucketMinutes).toBe(30)
+  })
+
   it('uses the existing Sub Select menu and keeps scenario selection in sync', async () => {
     const preview = mountPreview()
     const select = preview.getComponent(Select)
@@ -50,7 +112,7 @@ describe('monitor preview project-native controls', () => {
     await nextTick()
     expect(select.props('modelValue')).toBe('high-latency')
     expect(select.get('button').attributes('aria-expanded')).toBe('false')
-    expect(preview.getComponent(ObservationCards).props('overview')).toEqual(getMonitorPreviewScenario('high-latency', 'user').overview)
+    expect(preview.getComponent(ObservationCards).props('overview')).toEqual(getMonitorPreviewScenario('high-latency', 'user', undefined, '24h').overview)
     expect(preview.findAll('[role="listitem"]').find(button => button.text().includes('scenarios.high-latency.label'))?.attributes('aria-pressed')).toBe('true')
   })
 
@@ -80,12 +142,12 @@ describe('monitor preview project-native controls', () => {
     await nextTick()
     const roleButtons = preview.findAll('[role="group"] button')
     await roleButtons[0]!.trigger('click')
-    expect(preview.getComponent(AdminMonitorDashboard).props('previewOverview')).toEqual(getMonitorPreviewScenario('card-gallery', 'admin').overview)
+    expect(preview.getComponent(AdminMonitorDashboard).props('previewOverview')).toEqual(getMonitorPreviewScenario('card-gallery', 'admin', undefined, '24h').overview)
     expect(preview.findComponent(ObservationCards).exists()).toBe(false)
     await roleButtons[1]!.trigger('click')
     expect(preview.findComponent(AdminMonitorDashboard).exists()).toBe(false)
     expect(preview.getComponent(MonitorViewSwitcher).props('modelValue')).toBe('cards')
-    expect(preview.getComponent(ObservationCards).props('overview')).toEqual(getMonitorPreviewScenario('card-gallery', 'user').overview)
+    expect(preview.getComponent(ObservationCards).props('overview')).toEqual(getMonitorPreviewScenario('card-gallery', 'user', undefined, '24h').overview)
     expect(preview.getComponent(ObservationCards).props('layout')).toBe('cards')
     expect(preview.getComponent(ObservationDetailDrawer).props('show')).toBe(false)
   })
