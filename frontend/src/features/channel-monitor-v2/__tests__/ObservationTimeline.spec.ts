@@ -30,7 +30,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
 
 describe('ObservationTimeline', () => {
   it('fits the full 24h window in one bounded timeline rather than clipping early buckets', () => {
-    const wrapper = mount(ObservationTimeline, { props: {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } }, props: {
       coverage: { state: 'complete', requested_start: '2026-09-15T00:00:00Z', requested_end: '2026-09-16T00:00:00Z', data_through: '2026-09-16T00:00:00Z', bucket_seconds: 300 } as never,
       buckets: [],
     } })
@@ -38,7 +38,7 @@ describe('ObservationTimeline', () => {
     expect(wrapper.get('[data-testid="observation-timeline"]').attributes('style')).toContain('repeat(288, minmax(0, 1fr))')
   })
   it('shows the selected period details on mouse hover and removes them on leave', async () => {
-    const wrapper = mount(ObservationTimeline, {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } },
       props: {
         admin: true,
         coverage: {
@@ -74,7 +74,7 @@ describe('ObservationTimeline', () => {
   })
 
   it('shows the full bucket interval and non-sensitive metrics to regular users', async () => {
-    const wrapper = mount(ObservationTimeline, {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } },
       props: {
         coverage: {
           state: 'complete',
@@ -114,7 +114,7 @@ describe('ObservationTimeline', () => {
   })
 
   it('keeps a focused block tooltip available for keyboard users', async () => {
-    const wrapper = mount(ObservationTimeline, {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } },
       props: {
         coverage: {
           state: 'complete',
@@ -136,7 +136,7 @@ describe('ObservationTimeline', () => {
   })
 
   it('clips a partially overlapping first bucket to the requested interval', async () => {
-    const wrapper = mount(ObservationTimeline, {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } },
       props: {
         coverage: {
           state: 'complete',

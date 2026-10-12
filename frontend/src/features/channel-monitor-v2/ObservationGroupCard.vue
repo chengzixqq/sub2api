@@ -1,10 +1,10 @@
 <template>
   <article class="observation-group-card flex h-full min-w-0 flex-col" :data-group-id="item.group_id">
     <header class="flex items-start gap-3">
-      <span class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" :class="platformBadgeClass(item.platform)"><PlatformIcon :platform="platform" size="md" /></span>
+      <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(item.platform)"><PlatformIcon :platform="platform" size="md" /></span>
       <div class="min-w-0 flex-1">
-        <h3><button type="button" class="card-channel-name break-words text-left text-lg font-semibold leading-6 tracking-tight text-slate-800 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-100" @click="$emit('detail', item)">{{ item.group_name }}</button></h3>
-        <div class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500 dark:text-gray-400">
+        <h3><button type="button" class="card-channel-name break-words text-left text-base font-semibold leading-6 tracking-tight text-slate-800 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-100" @click="$emit('detail', item)">{{ item.group_name }}</button></h3>
+        <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500 dark:text-gray-400">
           <span class="rounded-md px-1.5 py-0.5 font-medium" :class="platformBadgeClass(item.platform)">{{ platformLabel }}</span>
           <span v-if="item.rate_multiplier != null" class="font-medium tabular-nums text-primary-600 dark:text-primary-400">{{ t('channelMonitorV2.observation.multiplier', { value: item.rate_multiplier }) }}</span>
           <span v-else>{{ t('channelMonitorV2.observation.priceUnavailable') }}</span>
@@ -13,13 +13,13 @@
       <ObservationCurrentStatus class="max-w-[100px] shrink-0" compact :status="item.current_status" :stale="stale" />
     </header>
 
-    <div class="mb-3 mt-6 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-gray-400">
+    <div class="mb-2.5 mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-gray-400">
       <span class="inline-flex items-center gap-1.5"><span class="h-1.5 w-1.5 rounded-full bg-slate-300 dark:bg-dark-500" />{{ t('channelMonitorV2.unified.traffic') }}</span>
       <ObservationStatus :metrics="metrics" :health="item.health" :coverage="coverage" />
     </div>
     <ObservationMetrics variant="card" :metrics="metrics" :health="item.health" :unavailable="coverage.state === 'unavailable'" />
 
-    <section class="mt-5">
+    <section class="mt-4">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-gray-400">
         <span>{{ t('channelMonitorV2.observation.history') }} · {{ t('channelMonitorV2.unified.historyInterval', { minutes: Math.round(coverage.bucket_seconds / 60) }) }}</span>
         <span v-if="admin && (item.source || source)" class="text-[10px]">{{ monitorSourceLabel(item.source || source, t, te) }}</span>
@@ -27,7 +27,7 @@
       <ObservationTimeline variant="card" :buckets="item.buckets" :coverage="coverage" :admin="admin" @select="$emit('bucket', item, $event)" />
     </section>
 
-    <dl class="mt-5 grid grid-cols-2 gap-4 border-t border-slate-100 pt-4 text-xs dark:border-dark-700">
+    <dl class="mt-4 grid grid-cols-2 gap-4 border-t border-slate-100 pt-3 text-xs dark:border-dark-700">
       <div class="min-w-0"><dt class="text-slate-500 dark:text-gray-400">{{ t('channelMonitorV2.unified.probe') }}</dt><dd class="mt-1.5 flex items-center gap-1.5 font-medium text-slate-700 dark:text-gray-200"><span aria-hidden="true" class="h-1.5 w-1.5 rounded-full" :class="statusDot(item.probe?.status)" />{{ statusLabel(item.probe?.status) }}</dd></div>
       <div class="min-w-0"><dt class="text-slate-500 dark:text-gray-400">{{ t('channelMonitorV2.unified.quota') }}</dt><dd class="mt-1.5 flex items-center gap-1.5 font-medium text-slate-700 dark:text-gray-200"><span aria-hidden="true" class="h-1.5 w-1.5 rounded-full" :class="statusDot(item.quota?.status)" />{{ statusLabel(item.quota?.status) }}</dd></div>
     </dl>
@@ -43,11 +43,14 @@
       <div class="border-t border-gray-100 pt-2 dark:border-dark-700"><p class="text-gray-400">{{ text('最近异常分类', 'Recent error categories') }}</p><p class="mt-1 break-words text-gray-600 dark:text-gray-300">{{ recentErrorLabel }}</p></div>
     </section>
 
-    <footer class="mt-auto pt-5">
-      <button type="button" class="flex w-full items-center justify-between gap-2 rounded-lg py-1 text-xs font-medium text-slate-500 transition-colors hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:text-primary-400" :aria-expanded="expanded" @click="toggleExpanded">
-        <span>{{ t('channelMonitorV2.observation.models', { count: item.models.length }) }}</span><Icon name="chevronRight" size="xs" :class="expanded ? 'rotate-90' : ''" />
+    <footer class="mt-auto pt-3">
+      <button type="button" class="card-model-toggle flex w-full items-center justify-between gap-2 rounded-lg py-1 text-xs font-medium text-slate-500 hover:text-primary-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary-500 dark:text-gray-400 dark:hover:text-primary-400" :aria-expanded="expanded" :aria-controls="modelsId" @click="toggleExpanded">
+        <span>{{ t('channelMonitorV2.observation.models', { count: item.models.length }) }}</span><Icon name="chevronRight" size="xs" class="card-model-chevron" :class="expanded ? 'rotate-90' : ''" />
       </button>
-      <div v-if="expanded" class="mt-3 border-t border-slate-100 pt-3 dark:border-dark-700">
+      <Transition name="card-models">
+      <div v-if="expanded" :id="modelsId" class="card-models-panel">
+      <div class="min-h-0 overflow-hidden">
+      <div class="mt-3 border-t border-slate-100 pt-3 dark:border-dark-700">
         <p class="mb-2 text-xs font-semibold text-gray-400">{{ t('channelMonitorV2.observation.modelDetails') }}</p>
         <div v-if="item.models.length" class="space-y-2">
           <div v-for="model in item.models" :key="model.model" class="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5 text-xs dark:bg-dark-900/40">
@@ -57,11 +60,14 @@
         </div>
         <p v-else class="text-xs text-gray-400">{{ t('channelMonitorV2.observation.noModels') }}</p>
       </div>
+      </div>
+      </div>
+      </Transition>
     </footer>
   </article>
 </template>
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, getCurrentInstance, ref } from 'vue'
 import { monitorCategoryLabel, monitorSourceLabel } from './monitorLabels'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
@@ -100,6 +106,7 @@ const recentErrorLabel = computed(() => {
   return metrics.value.channel_errors === 0 ? text('已观测流量无渠道错误', 'No observed channel errors') : text('暂无分类，不能推断为零错误', 'No classification; zero errors cannot be inferred')
 })
 const expanded = ref(false)
+const modelsId = `card-models-${getCurrentInstance()?.uid}`
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
 const statusLabel = (value?: string) => {
   const key = `channelMonitorV2.unified.states.${value || 'unknown'}`
@@ -113,27 +120,37 @@ function toggleExpanded() {
 
 <style scoped>
 .observation-group-card {
-  padding: 24px;
+  padding: 20px;
   border: 1px solid rgba(226, 232, 240, .65);
-  border-radius: 28px;
+  border-radius: 24px;
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 10px 32px -20px rgba(33, 77, 76, .22);
-  transition: border-color .2s ease, box-shadow .2s ease;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms cubic-bezier(.2, .8, .2, 1);
 }
-.observation-group-card:hover {
-  border-color: rgba(148, 163, 184, .5);
-  box-shadow: 0 12px 36px -20px rgba(33, 77, 76, .32);
+@media (hover: hover) and (pointer: fine) {
+  .observation-group-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(148, 163, 184, .5);
+    box-shadow: 0 12px 36px -20px rgba(33, 77, 76, .32);
+  }
 }
+.card-channel-name, .card-model-toggle { transition: color 160ms ease, background-color 160ms ease, transform 160ms ease; }
+.card-channel-name:active, .card-model-toggle:active { transform: scale(.98); }
+.card-model-toggle:hover { background-color: rgb(148 163 184 / .07); }
+.card-model-chevron { transition: transform 200ms cubic-bezier(.2, .8, .2, 1); }
+.card-models-panel { display: grid; grid-template-rows: 1fr; }
+.card-models-enter-active, .card-models-leave-active { transition: grid-template-rows 200ms ease, opacity 160ms ease; }
+.card-models-enter-from, .card-models-leave-to { grid-template-rows: 0fr; opacity: 0; }
 :global(.dark .observation-group-card) {
   background: #18222f;
   border-color: #2b394a;
   box-shadow: none;
 }
 @media (max-width: 480px) {
-  .observation-group-card { padding: 20px; border-radius: 24px; }
-  .card-channel-name { font-size: 16px; }
+  .observation-group-card { padding: 18px; border-radius: 22px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .observation-group-card { transition: none; }
+  .observation-group-card, .card-channel-name, .card-model-toggle, .card-model-chevron, .card-models-panel { transition: none; }
+  .observation-group-card:hover, .card-channel-name:active, .card-model-toggle:active { transform: none; }
 }
 </style>

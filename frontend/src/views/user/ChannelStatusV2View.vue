@@ -36,9 +36,11 @@
         <button v-if="hasFilters" type="button" class="btn btn-secondary btn-icon h-8 w-8" :title="t('channelMonitorV2.clearFilters')" :aria-label="t('channelMonitorV2.clearFilters')" @click="clearFilters"><Icon name="x" size="sm" /></button>
       </div>
       <MonitorViewSwitcher v-model="viewMode" :items="viewItems" :label="t('channelMonitorV2.dashboard.views.label')" />
+      <div :key="viewMode" class="monitor-view-panel min-w-0">
       <template v-if="overview && viewMode === 'matrix'"><MonitorHealthMatrix :items="overview.items" :coverage="overview.coverage" :source="overview.source" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" /></template>
       <template v-else-if="overview && viewMode === 'trend'"><MonitorTrendPanel :items="overview.items" :coverage="overview.coverage" :source="overview.source" /></template>
       <ObservationCards v-else :overview="overview" :layout="layout" :view="viewMode === 'cards' ? 'cards' : 'list'" :admin="isAdmin" :loading="loading" :error="error" :stale="stale" @retry="refresh" @toggle-layout="layout = layout === 'cards' ? 'list' : 'cards'" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" />
+      </div>
       <ObservationDetailDrawer :show="Boolean(detail)" :item="detail?.item || null" :model="detail?.model" :selection="detail?.slot || null" :coverage="overview?.coverage" :source="overview?.source" :admin="isAdmin" :owner="isAdmin" :stale="stale" :filter="filter" :identity="identity" @close="detail = null" />
     </div>
   </AppLayout>
@@ -172,5 +174,14 @@ onBeforeUnmount(() => {
   pointer-events: none;
   inset: -24px -16px 0;
   background: radial-gradient(ellipse 75% 600px at 45% 150px, rgba(16, 185, 129, .055), transparent);
+}
+/* Enter only: replaced views are removed immediately, including privileged data. */
+.monitor-view-panel { animation: monitor-view-reveal 200ms ease-out; }
+@keyframes monitor-view-reveal {
+  from { opacity: .3; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monitor-view-panel { animation: none; }
 }
 </style>

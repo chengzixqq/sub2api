@@ -9,7 +9,8 @@
         <span>{{ t('channelMonitorV2.unified.historyInterval', { minutes: Math.round(overview.coverage.bucket_seconds / 60) }) }}</span>
         <button v-if="!view" type="button" class="btn btn-secondary btn-icon h-8 w-8" :title="t(`channelMonitorV2.observation.layout.${activeLayout === 'cards' ? 'list' : 'cards'}`)" :aria-label="t(`channelMonitorV2.observation.layout.${activeLayout === 'cards' ? 'list' : 'cards'}`)" @click="$emit('toggleLayout')"><Icon :name="activeLayout === 'cards' ? 'menu' : 'grid'" size="sm" /></button>
       </div>
-      <div v-if="activeLayout === 'cards'" class="space-y-9">
+      <div :key="activeLayout" class="observation-layout-reveal">
+      <div v-if="activeLayout === 'cards'" class="space-y-7">
         <section v-for="section in sections" :key="section.platform" class="space-y-4" :aria-label="platformLabel(section.platform)">
           <header class="flex items-center gap-3 px-1">
             <span class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(section.platform)"><PlatformIcon :platform="platformValue(section.platform)" size="sm" /></span>
@@ -22,6 +23,7 @@
         </section>
       </div>
       <ObservationGroupList v-else :items="orderedItems" :coverage="overview.coverage" :admin="admin" :stale="stale" @detail="emit('detail', $event)" @model="(item, model) => emit('model', item, model)" @bucket="handleBucket" />
+      </div>
       <div v-if="sections.length === 0" class="py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.observation.empty') }}</div>
     </template>
   </section>
@@ -54,11 +56,16 @@ function handleBucket(item: ObservationChannel, slot: { start: string; bucket: O
 
 <style scoped>
 .observation-cards { container-type: inline-size; }
-.observation-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+.observation-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 @container (min-width: 720px) {
   .observation-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @container (min-width: 1160px) {
-  .observation-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .observation-card-grid { grid-template-columns: repeat(3, minmax(0, 440px)); }
+}
+.observation-layout-reveal { animation: observation-layout-in 180ms ease-out; }
+@keyframes observation-layout-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .observation-layout-reveal { animation: none; }
 }
 </style>

@@ -1,7 +1,10 @@
 <template>
   <Teleport to="body">
+    <!-- A context change destroys any leaving snapshot before privileged content can linger. -->
+    <div :key="drawerContext" class="contents">
+    <Transition name="monitor-detail" @before-leave="deactivatePanel" @before-enter="activatePanel">
     <div v-if="show && item" class="fixed inset-0 z-50 bg-black/30" @click.self="emit('close')">
-      <aside ref="panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" class="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-white shadow-xl outline-none dark:bg-dark-900">
+      <aside ref="panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" class="monitor-detail-panel absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-white shadow-xl outline-none dark:bg-dark-900">
         <header class="flex items-start justify-between gap-3 border-b border-gray-200 p-5 dark:border-dark-700">
           <div class="min-w-0">
             <h2 :id="titleId" class="break-words text-base font-semibold text-gray-900 dark:text-gray-100">{{ item.group_name }}</h2>
@@ -10,10 +13,11 @@
           </div>
           <button type="button" class="btn btn-secondary btn-icon h-8 w-8 shrink-0" :aria-label="t('common.close')" @click="emit('close')"><Icon name="x" size="sm" /></button>
         </header>
-        <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
-          <nav v-if="admin" class="flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800" :aria-label="t('channelMonitorV2.detail.sections')">
-            <button v-for="tab in adminTabs" :key="tab.value" :data-testid="`detail-tab-${tab.value}`" :aria-pressed="detailTab === tab.value" type="button" class="rounded-lg px-3 py-1.5 text-xs font-medium" :class="detailTab === tab.value ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white' : 'text-gray-500 dark:text-gray-400'" @click="detailTab = tab.value">{{ tab.label }}</button>
+        <div class="min-h-0 flex-1 overflow-y-auto p-5">
+          <nav v-if="admin" class="mb-5 flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800" :aria-label="t('channelMonitorV2.detail.sections')">
+            <button v-for="tab in adminTabs" :key="tab.value" :data-testid="`detail-tab-${tab.value}`" :aria-pressed="detailTab === tab.value" type="button" class="monitor-detail-tab rounded-lg px-3 py-1.5 text-xs font-medium" :class="detailTab === tab.value ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white' : 'text-gray-500 dark:text-gray-400'" @click="detailTab = tab.value">{{ tab.label }}</button>
           </nav>
+          <div :key="detailTab" class="monitor-detail-content space-y-6">
           <template v-if="!admin || detailTab === 'overview'">
             <ObservationCurrentStatus :status="selectedModel ? selectedModel.current_status : item.current_status" :stale="stale" />
             <section>
@@ -78,8 +82,11 @@
               <ol class="divide-y divide-gray-100 text-xs dark:divide-dark-700"><li v-for="(sample, index) in accounts.samples" :key="index" class="space-y-1 py-3"><p class="flex flex-wrap justify-between gap-2"><span class="break-all font-medium">{{ sample.model }}</span><time class="text-gray-500">{{ formatTime(sample.completed_at) }}</time></p><p class="text-gray-500">{{ monitorOutcomeLabel(sample.outcome, t, te) }} · {{ sample.http_status }}<span v-if="sample.error_category"> · {{ categoryLabel(sample.error_category) }}</span><span v-if="sample.account_id"> · #{{ sample.account_id }}</span></p></li></ol>
             </template>
           </section>
+          </div>
         </div>
       </aside>
+    </div>
+    </Transition>
     </div>
   </Teleport>
 </template>
@@ -98,6 +105,7 @@ const { t, te, locale } = useI18n()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const panel = ref<HTMLElement | null>(null)
 const titleId = `monitor-detail-${getCurrentInstance()?.uid}`
+const drawerContext = computed(() => JSON.stringify([props.identity, props.admin, props.owner]))
 const accounts = shallowRef<MonitorAccountDetail | null>(null)
 const accountLoading = ref(false)
 const accountError = ref(false)
@@ -154,13 +162,21 @@ async function loadAccounts() {
 }
 watch(() => [props.show, props.admin, props.owner, props.preview, props.identity, props.item?.group_id, props.item?.platform, props.model, JSON.stringify(props.filter)], () => { void loadAccounts() }, { immediate: true, flush: 'sync' })
 watch(() => props.show, show => { if (show) detailTab.value = 'overview' })
-watch(() => props.show, async (show) => {
+watch(() => [props.show, drawerContext.value] as const, async ([show]) => {
   if (show) {
-    previousFocus = document.activeElement as HTMLElement | null
+    previousFocus ||= document.activeElement as HTMLElement | null
     await nextTick()
-    panel.value?.focus()
+    if (props.show) panel.value?.focus()
   } else { previousFocus?.focus(); previousFocus = null }
 }, { immediate: true })
+function deactivatePanel(element: Element) {
+  element.setAttribute('inert', '')
+  element.setAttribute('aria-hidden', 'true')
+}
+function activatePanel(element: Element) {
+  element.removeAttribute('inert')
+  element.removeAttribute('aria-hidden')
+}
 function keydown(event: KeyboardEvent) {
   if (!props.show) return
   if (event.key === 'Escape') { event.preventDefault(); emit('close'); return }
@@ -174,3 +190,34 @@ function keydown(event: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', keydown))
 onBeforeUnmount(() => { controller?.abort(); document.removeEventListener('keydown', keydown); previousFocus?.focus() })
 </script>
+
+
+<style scoped>
+.monitor-detail-enter-active,
+.monitor-detail-leave-active { transition: opacity 180ms ease; }
+.monitor-detail-enter-active .monitor-detail-panel,
+.monitor-detail-leave-active .monitor-detail-panel { transition: transform 180ms cubic-bezier(.2, .7, .2, 1); }
+.monitor-detail-enter-from,
+.monitor-detail-leave-to { opacity: 0; }
+.monitor-detail-enter-from .monitor-detail-panel,
+.monitor-detail-leave-to .monitor-detail-panel { transform: translateX(32px); }
+.monitor-detail-leave-active { pointer-events: none; }
+.monitor-detail-content { animation: monitor-detail-reveal 180ms ease-out; }
+.monitor-detail-tab { transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+.monitor-detail-tab:active { transform: scale(.97); }
+@keyframes monitor-detail-reveal {
+  from { opacity: .3; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monitor-detail-enter-active,
+  .monitor-detail-leave-active,
+  .monitor-detail-enter-active .monitor-detail-panel,
+  .monitor-detail-leave-active .monitor-detail-panel,
+  .monitor-detail-tab { transition: none; }
+  .monitor-detail-content { animation: none; }
+  .monitor-detail-enter-from .monitor-detail-panel,
+  .monitor-detail-leave-to .monitor-detail-panel,
+  .monitor-detail-tab:active { transform: none; }
+}
+</style>

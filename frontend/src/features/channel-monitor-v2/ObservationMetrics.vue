@@ -1,8 +1,8 @@
 <template>
-  <dl class="grid grid-cols-3" :class="variant === 'card' ? 'card-metrics gap-2.5' : 'divide-x divide-gray-100 dark:divide-dark-700'">
-    <div v-for="metric in values" :key="metric.key" class="min-w-0" :class="variant === 'card' ? 'card-metric-cell rounded-2xl border border-gray-100 bg-gray-50/80 py-3.5 dark:border-dark-700 dark:bg-dark-900/40' : 'px-3 first:pl-0 last:pr-0'">
-      <dt class="text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t(`channelMonitorV2.observation.${metric.key}`) }}</dt>
-      <dd class="mt-1 break-words font-semibold tabular-nums" :class="[variant === 'card' ? 'card-metric-value font-mono leading-8' : 'text-lg', metric.tone]">{{ metric.value }}</dd>
+  <dl class="grid grid-cols-3" :class="variant === 'card' ? 'card-metrics gap-2' : 'divide-x divide-gray-100 dark:divide-dark-700'">
+    <div v-for="metric in values" :key="metric.key" class="min-w-0" :class="variant === 'card' ? 'card-metric-cell rounded-xl border border-gray-100 bg-gray-50/80 py-2.5 dark:border-dark-700 dark:bg-dark-900/40' : 'px-3 first:pl-0 last:pr-0'">
+      <dt class="text-xs text-gray-500 dark:text-gray-400" :class="variant === 'card' ? 'leading-4' : 'leading-5'">{{ t(`channelMonitorV2.observation.${metric.key}`) }}</dt>
+      <dd class="mt-1 break-words font-semibold tabular-nums" :class="[variant === 'card' ? 'card-metric-value font-mono leading-6' : 'text-lg', metric.tone]">{{ metric.value }}</dd>
       <dd v-if="metric.detail" class="mt-1 break-words text-[11px] tabular-nums text-gray-400">{{ metric.detail }}</dd>
     </div>
   </dl>
@@ -29,5 +29,5 @@ const values = computed(() => {
 <style scoped>
 .card-metrics { container-type: inline-size; }
 .card-metric-cell { padding-inline: clamp(8px, 2.7cqi, 12px); }
-.card-metric-value { font-size: clamp(18px, 5.8cqi, 22px); }
+.card-metric-value { font-size: clamp(17px, 5.4cqi, 20px); }
 </style>

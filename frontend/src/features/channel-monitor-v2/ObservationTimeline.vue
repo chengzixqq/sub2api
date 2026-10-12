@@ -1,35 +1,42 @@
 <template>
-  <div class="relative min-w-0" @mouseleave="clearTooltip">
+  <div class="relative min-w-0" @mouseleave="leaveTimeline" @keydown.esc.stop="clearTooltip">
     <div data-testid="observation-timeline" class="grid min-h-8 w-full py-1" :style="{ gridTemplateColumns: `repeat(${Math.max(1, slots.length)}, minmax(0, 1fr))`, gap: slots.length <= 60 ? variant === 'card' ? '4px' : '2px' : '0' }" :aria-label="t('channelMonitorV2.observation.history')">
       <button
         v-for="slot in slots" :key="slot.start" type="button"
-        class="min-w-0 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
-        :class="[variant === 'card' ? 'h-7 rounded-[5px]' : 'h-6 first:rounded-l-sm last:rounded-r-sm', bucketClass(slot.bucket)]"
+        class="timeline-segment min-w-0 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+        :class="[variant === 'card' ? 'h-6 rounded-[5px]' : 'h-6 first:rounded-l-sm last:rounded-r-sm', bucketClass(slot.bucket)]"
         :aria-describedby="tooltip?.slotStart === slot.start ? tooltipId : undefined"
-        :aria-label="tooltipLabel(slot.start, slot.bucket)" :title="tooltipLabel(slot.start, slot.bucket)"
-        @mouseenter="showTooltip($event, slot)" @focus="showTooltip($event, slot)"
-        @mousemove="moveTooltip($event, slot)"
-        @mouseleave="clearTooltip" @blur="clearTooltip"
-        @click="$emit('select', slot)"
+        :aria-label="tooltipLabel(slot.start, slot.bucket)"
+        @mouseenter="activateTooltip($event, slot, 'hover')" @focus="activateTooltip($event, slot, 'focus')"
+        @mouseleave="leaveTimeline" @blur="blurTooltip"
+        @click="clearTooltip(); $emit('select', slot)"
       />
     </div>
-    <div
-      v-if="tooltip"
-      :id="tooltipId"
-      role="tooltip"
-      class="pointer-events-none fixed z-[100] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 rounded-lg bg-dark-900 px-2.5 py-1.5 text-[11px] leading-4 text-white shadow-lg"
-      :class="tooltip.above ? '-translate-y-full' : ''"
-      :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
-    >
-      {{ tooltipText }}
-    </div>
+    <Teleport to="body">
+      <div :key="admin ? 'admin' : 'user'" class="contents">
+      <Transition name="timeline-tooltip">
+        <div
+          v-if="tooltip"
+          :id="tooltipId"
+          role="tooltip"
+          class="timeline-tooltip pointer-events-none fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] -translate-x-1/2"
+          :class="tooltip.above ? 'is-above -translate-y-full' : 'is-below'"
+          :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px`, '--tooltip-arrow': `${tooltip.arrow}px` }"
+        >
+          <div class="timeline-tooltip-bubble relative rounded-lg bg-dark-900 px-3 py-2 text-[11px] font-medium leading-4 text-white shadow-lg">
+            {{ tooltipText }}
+          </div>
+        </div>
+      </Transition>
+      </div>
+    </Teleport>
     <div class="mt-1 flex justify-between gap-2 text-[10px] tabular-nums text-gray-400">
       <span>{{ time(coverage.requested_start) }}</span><span>{{ time(coverage.requested_end || coverage.data_through) }}</span>
     </div>
   </div>
 </template>
 <script setup lang="ts">
-import { computed, getCurrentInstance, ref, watch } from 'vue'
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
@@ -40,10 +47,13 @@ const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
 let fallbackTimelineId = 0
 const tooltipId = `observation-timeline-tooltip-${getCurrentInstance()?.uid ?? ++fallbackTimelineId}`
-const tooltip = ref<{ slotStart: string; left: number; top: number; above: boolean } | null>(null)
+type ActiveSlot = { target: HTMLElement; start: string }
+let hoveredSlot: ActiveSlot | null = null
+let focusedSlot: ActiveSlot | null = null
+const tooltip = ref<{ slotStart: string; left: number; top: number; above: boolean; arrow: number } | null>(null)
+const lastSlotStart = ref('')
 const tooltipText = computed(() => {
-  if (!tooltip.value) return ''
-  const slot = slots.value.find((candidate) => candidate.start === tooltip.value?.slotStart)
+  const slot = slots.value.find((candidate) => candidate.start === lastSlotStart.value)
   return slot ? tooltipLabel(slot.start, slot.bucket) : ''
 })
 watch(slots, (next) => {
@@ -88,19 +98,80 @@ function tooltipLabel(start: string, bucket: ObservationBucket | null) {
   if (!props.admin) return details
   return `${details} · ${t('channelMonitorV2.observation.requests')} ${m.request_count ?? 0} · ${t('channelMonitorV2.observation.errors')} ${m.channel_errors ?? 0} · ${t('channelMonitorV2.observation.attempts')} ${m.attempt_count ?? 0}`
 }
-function showTooltip(event: MouseEvent | FocusEvent, slot: { start: string; bucket: ObservationBucket | null }) {
+function showTooltip({ target, start }: ActiveSlot) {
+  const rect = target.getBoundingClientRect()
+  // Anchor to the untransformed track so the lifted segment cannot move the popup.
+  const track = target.parentElement?.getBoundingClientRect() || rect
+  const above = track.top > 110 || track.bottom + 110 > window.innerHeight
+  const width = Math.min(320, Math.max(24, window.innerWidth - 24))
+  const anchor = rect.left + rect.width / 2
+  const center = Math.min(window.innerWidth - width / 2 - 12, Math.max(width / 2 + 12, anchor))
+  lastSlotStart.value = start
+  tooltip.value = { slotStart: start, left: center, top: above ? track.top - 10 : track.bottom + 10, above, arrow: Math.min(width - 12, Math.max(12, anchor - center + width / 2)) }
+}
+function activateTooltip(event: MouseEvent | FocusEvent, slot: { start: string }, kind: 'hover' | 'focus') {
   const target = event.currentTarget as HTMLElement | null
   if (!target) return
-  const rect = target.getBoundingClientRect()
-  const above = rect.top > 96 || rect.bottom + 96 > window.innerHeight
-  const halfWidth = Math.min(160, Math.max(12, (window.innerWidth - 24) / 2))
-  const center = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2))
-  tooltip.value = { slotStart: slot.start, left: center, top: above ? rect.top - 8 : rect.bottom + 8, above }
+  const active = { target, start: slot.start }
+  if (kind === 'hover') hoveredSlot = active
+  else focusedSlot = active
+  showTooltip(active)
 }
-function moveTooltip(event: MouseEvent, slot: { start: string; bucket: ObservationBucket | null }) {
-  if (tooltip.value?.slotStart === slot.start) showTooltip(event, slot)
+function leaveTimeline() {
+  hoveredSlot = null
+  if (focusedSlot) showTooltip(focusedSlot)
+  else tooltip.value = null
+}
+function blurTooltip() {
+  focusedSlot = null
+  if (hoveredSlot) showTooltip(hoveredSlot)
+  else tooltip.value = null
 }
 function clearTooltip() {
+  hoveredSlot = null
+  focusedSlot = null
   tooltip.value = null
 }
+onMounted(() => {
+  window.addEventListener('scroll', clearTooltip, true)
+  window.addEventListener('resize', clearTooltip)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('scroll', clearTooltip, true)
+  window.removeEventListener('resize', clearTooltip)
+})
 </script>
+
+<style scoped>
+.timeline-segment {
+  cursor: crosshair;
+  transform-origin: center bottom;
+  transition: transform 160ms cubic-bezier(.2, .8, .2, 1), filter 160ms ease, box-shadow 160ms ease;
+}
+.timeline-segment:focus-visible { transform: translateY(-2px) scaleY(1.18); filter: brightness(1.08); }
+@media (hover: hover) and (pointer: fine) {
+  .timeline-segment:hover { position: relative; z-index: 1; transform: translateY(-2px) scaleY(1.18); filter: brightness(1.08); box-shadow: 0 4px 10px -4px rgb(15 23 42 / .45); }
+}
+.timeline-segment:active { transform: scaleY(1.04); }
+.timeline-tooltip-bubble::after {
+  content: '';
+  position: absolute;
+  left: var(--tooltip-arrow);
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  transform: translateX(-50%) rotate(45deg);
+}
+.is-above .timeline-tooltip-bubble::after { bottom: -4px; }
+.is-below .timeline-tooltip-bubble::after { top: -4px; }
+.timeline-tooltip-enter-active, .timeline-tooltip-leave-active { transition: opacity 160ms ease; }
+.timeline-tooltip-enter-active .timeline-tooltip-bubble, .timeline-tooltip-leave-active .timeline-tooltip-bubble { transition: transform 160ms cubic-bezier(.2, .8, .2, 1); }
+.timeline-tooltip-enter-from, .timeline-tooltip-leave-to { opacity: 0; }
+.timeline-tooltip-enter-from .timeline-tooltip-bubble, .timeline-tooltip-leave-to .timeline-tooltip-bubble { transform: translateY(4px) scale(.97); }
+.is-below.timeline-tooltip-enter-from .timeline-tooltip-bubble, .is-below.timeline-tooltip-leave-to .timeline-tooltip-bubble { transform: translateY(-4px) scale(.97); }
+@media (prefers-reduced-motion: reduce) {
+  .timeline-segment, .timeline-tooltip, .timeline-tooltip-bubble { transition: none !important; }
+  .timeline-tooltip .timeline-tooltip-bubble { transform: none !important; }
+  .timeline-segment:hover, .timeline-segment:focus-visible, .timeline-segment:active { transform: none; }
+}
+</style>

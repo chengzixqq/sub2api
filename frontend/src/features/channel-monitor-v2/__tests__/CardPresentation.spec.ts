@@ -30,7 +30,7 @@ function channel(id: number, platform = 'openai'): ObservationChannel {
     buckets: [{ bucket_start: coverage.requested_start, metrics, health }],
   }
 }
-const global = { stubs: { Icon: true, PlatformIcon: true } }
+const global = { stubs: { teleport: true, Icon: true, PlatformIcon: true } }
 const metricKeys = (wrapper: ReturnType<typeof mount>) => wrapper.findAll('dt').map(node => node.text().split('.').at(-1))
 
 describe('monitor card presentation contracts', () => {
