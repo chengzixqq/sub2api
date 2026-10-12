@@ -943,7 +943,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 	bucketExpr := "MIN(m.bucket_start)"
 	group := "m.platform,m.group_id,g.name,m.model"
 	if byBucket {
-		if bucketSeconds > 0 {
+		if bucketSeconds > 0 && filter.Bucket == time.Duration(bucketSeconds)*time.Second {
 			bucketExpr = "m.bucket_start"
 			group = bucketExpr + "," + group
 		} else {
@@ -983,7 +983,7 @@ func (r *channelMonitorV2Repository) loadHistograms(ctx context.Context, filter 
 	bucketExpr := "MIN(h.bucket_start)"
 	group := "h.platform,h.group_id,h.model,h.user_id,h.metric,h.upper_bound_ms"
 	if byBucket {
-		if bucketSeconds > 0 {
+		if bucketSeconds > 0 && filter.Bucket == time.Duration(bucketSeconds)*time.Second {
 			bucketExpr = "h.bucket_start"
 			group = bucketExpr + "," + group
 		} else {
@@ -1076,6 +1076,17 @@ func (r *channelMonitorV2Repository) loadCoverage(ctx context.Context, filter se
 	if !wm.DataThrough.IsZero() && wm.DataThrough.Before(through) {
 		through = wm.DataThrough
 	}
+	// Custom long-window buckets read retained hourly samples. Do not include a
+	// whole storage hour that extends beyond the requested historical endpoint,
+	// and report the unavailable leading fraction rather than inventing it.
+	if filter.RollupBucket > time.Minute {
+		aligned := service.ChannelMonitorObservationBucketStart(coverageStart, filter.RollupBucket)
+		if aligned.Before(coverageStart) {
+			aligned = aligned.Add(filter.RollupBucket)
+		}
+		coverageStart = aligned
+		through = service.ChannelMonitorObservationBucketStart(through, filter.RollupBucket)
+	}
 	computedAt := wm.LastSuccessfulAt
 	lag := int64(0)
 	if !through.IsZero() {
@@ -1113,6 +1124,9 @@ func channelMonitorV2HistoryCoverageComplete(coverageStart, filterStart time.Tim
 
 func channelMonitorV2FixedBucketSeconds(filter service.ChannelMonitorV2Filter) int {
 	seconds := int(filter.Bucket.Seconds())
+	if filter.RollupBucket > 0 {
+		seconds = int(filter.RollupBucket.Seconds())
+	}
 	switch seconds {
 	case 300, 3600, 43200, 86400:
 		return seconds
@@ -1160,6 +1174,16 @@ func channelMonitorV2WhereWithRollup(filter service.ChannelMonitorV2Filter, cfg 
 }
 
 func channelMonitorV2Where(filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, alias string) (string, []any) {
+	// Keep storage edges safe even if a caller did not first apply loadCoverage.
+	// Never use an hourly rollup extending past a frozen historical endpoint.
+	if filter.RollupBucket > time.Minute {
+		start := service.ChannelMonitorObservationBucketStart(filter.Start, filter.RollupBucket)
+		if start.Before(filter.Start) {
+			start = start.Add(filter.RollupBucket)
+		}
+		filter.Start = start
+		filter.End = service.ChannelMonitorObservationBucketStart(filter.End, filter.RollupBucket)
+	}
 	conditions := []string{alias + ".bucket_start >= $1", alias + ".bucket_start < $2"}
 	args := []any{filter.Start, filter.End}
 	platforms := channelMonitorV2EnabledPlatforms(cfg)
@@ -1441,7 +1465,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCounts(
 	where, args, bucketSeconds := channelMonitorV2WhereWithRollup(filter, cfg, "e")
 	bucketExpr := "e.bucket_start"
 	groupBy := "e.bucket_start, e.platform, e.model"
-	if filter.Bucket > 0 && bucketSeconds == 0 {
+	if filter.Bucket > 0 && (bucketSeconds == 0 || filter.Bucket != time.Duration(bucketSeconds)*time.Second) {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
 		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
@@ -1537,7 +1561,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCountsByMatrixKey(
 	where, args, bucketSeconds := channelMonitorV2WhereWithRollup(filter, cfg, "e")
 	bucketExpr := "e.bucket_start"
 	groupSQL := "e.bucket_start, e.platform, e.group_id, e.model"
-	if filter.Bucket > 0 && bucketSeconds == 0 {
+	if filter.Bucket > 0 && (bucketSeconds == 0 || filter.Bucket != time.Duration(bucketSeconds)*time.Second) {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
 		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")

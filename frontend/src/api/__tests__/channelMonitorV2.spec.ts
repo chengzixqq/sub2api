@@ -5,6 +5,23 @@ import { getMatrix, getObservationOverview, getMonitorAccountDetail, runProbeTar
 afterEach(() => vi.restoreAllMocks())
 
 describe('channel monitor V2 query serialization', () => {
+  it.each([false, true])('sends exactly one history override to the overview endpoint (admin=%s)', async admin => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: {} })
+    const filter = { range: '24h' as const, platforms: [], groupIds: [], models: [] }
+    await getObservationOverview({ ...filter, bucket_minutes: 30 }, admin)
+    let query = repeatedArrayParamsSerializer(get.mock.calls.at(-1)![1]?.params)
+    expect(query).toContain('bucket_minutes=30')
+    expect(query).not.toContain('bucket_count')
+    await getObservationOverview({ ...filter, bucket_count: 60 }, admin)
+    query = repeatedArrayParamsSerializer(get.mock.calls.at(-1)![1]?.params)
+    expect(query).toContain('bucket_count=60')
+    expect(query).not.toContain('bucket_minutes')
+    await getObservationOverview(filter, admin)
+    query = repeatedArrayParamsSerializer(get.mock.calls.at(-1)![1]?.params)
+    expect(query).not.toContain('bucket_')
+    await getMatrix({ ...filter, bucket_count: 60 }, 'platform_group', admin)
+    expect(repeatedArrayParamsSerializer(get.mock.calls.at(-1)![1]?.params)).not.toContain('bucket_')
+  })
   it('keeps unclassified legacy attempts separate from channel errors in the response contract', () => {
     const metrics: ObservationMetrics = {
       channel_errors: 0,

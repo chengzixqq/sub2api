@@ -2,13 +2,39 @@ import { effectScope, ref } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { useObservationOverview } from '../useObservationOverview'
-import type { ObservationOverview } from '@/api/channelMonitorV2'
+import type { MonitorFilter, ObservationOverview } from '@/api/channelMonitorV2'
 
 const api = vi.hoisted(() => ({ getObservationOverview: vi.fn() }))
 vi.mock('@/api/channelMonitorV2', () => api)
 const snapshot = (range: string) => ({ source: 'terminal_v1', contract_version: 2, coverage: { requested_start: range }, items: [] }) as unknown as ObservationOverview
 
 describe('observation request lifetime', () => {
+  it('freezes history overrides and invalidates stale snapshots and in-flight replies on grain changes', async () => {
+    api.getObservationOverview.mockClear().mockResolvedValueOnce(snapshot('five-minutes'))
+    const filter = ref<MonitorFilter>({ range: '24h', platforms: [], groupIds: [], models: [], bucket_minutes: 5 })
+    const scope = effectScope()
+    const state = scope.run(() => useObservationOverview(filter, ref(false), ref(false)))!
+    await state.load()
+    expect(state.data.value?.coverage.requested_start).toBe('five-minutes')
+    let finish!: (value: ObservationOverview) => void
+    api.getObservationOverview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const old = state.load()
+    const frozen = api.getObservationOverview.mock.lastCall![0]
+    const signal = api.getObservationOverview.mock.lastCall![2]
+    filter.value = { ...filter.value, bucket_minutes: undefined, bucket_count: 48 }
+    expect(signal.aborted).toBe(true)
+    expect(state.data.value).toBeNull()
+    expect(frozen.bucket_minutes).toBe(5)
+    expect(frozen.bucket_count).toBeUndefined()
+    api.getObservationOverview.mockResolvedValueOnce(snapshot('thirty-minutes'))
+    await state.load()
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_count).toBe(48)
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_minutes).toBeUndefined()
+    finish(snapshot('obsolete'))
+    await old
+    expect(state.data.value?.coverage.requested_start).toBe('thirty-minutes')
+    scope.stop()
+  })
 	it('reloads with the administrator projection when the role becomes available', async () => {
 		api.getObservationOverview.mockResolvedValue(snapshot('admin'))
 		const filter = ref({ range: '24h' as const, platforms: [] as string[], groupIds: [] as number[], models: [] as string[] })

@@ -38,6 +38,8 @@ type ObservationHealth struct {
 
 type ObservationBucket struct {
 	BucketStart time.Time          `json:"bucket_start"`
+	SampleStart *time.Time         `json:"sample_start,omitempty"`
+	SampleEnd   *time.Time         `json:"sample_end,omitempty"`
 	Metrics     ObservationMetrics `json:"metrics"`
 	Health      ObservationHealth  `json:"health"`
 }
@@ -386,6 +388,9 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 	if coverage.UnsupportedProtocols == nil {
 		coverage.UnsupportedProtocols = []string{}
 	}
+	if f.RollupBucket > 0 && snapshot.QueryStart.After(coverage.CoverageStart) {
+		coverage.CoverageStart = snapshot.QueryStart
+	}
 	if coverage.SourceStartedAt != nil && coverage.SourceStartedAt.After(coverage.CoverageStart) {
 		coverage.CoverageStart = *coverage.SourceStartedAt
 		if coverage.State == "complete" {
@@ -430,6 +435,9 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 		facts := byGroup[id]
 		m, h, buckets := observationSeries(facts, *policy, g.Platform, id, "", f, admin)
 		row := ObservationChannel{Source: "compact", Platform: g.Platform, GroupID: id, GroupName: g.Name, Metrics: m, Traffic: m, Health: h, Buckets: buckets, Models: []ObservationModel{}}
+		if f.RollupBucket > 0 {
+			annotateObservationSampleWindows(row.Buckets, f, snapshot.QueryStart, snapshot.QueryEnd)
+		}
 		if admin {
 			rate := g.RateMultiplier * g.PeakMultiplierAt(time.Now())
 			row.RateMultiplier = &rate
@@ -445,6 +453,9 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 		}
 		for model, mfacts := range models {
 			mm, mh, mb := observationSeries(mfacts, *policy, g.Platform, id, model, f, admin)
+			if f.RollupBucket > 0 {
+				annotateObservationSampleWindows(mb, f, snapshot.QueryStart, snapshot.QueryEnd)
+			}
 			row.Models = append(row.Models, ObservationModel{Model: model, Metrics: mm, Health: mh, Buckets: mb})
 		}
 		sort.Slice(row.Models, func(i, j int) bool { return row.Models[i].Model < row.Models[j].Model })
@@ -507,14 +518,14 @@ func observationSeries(facts []ChannelMonitorObservationFact, cfg ChannelMonitor
 	byBucket := map[time.Time]*ChannelMonitorObservationFact{}
 	for _, fact := range facts {
 		total.Add(fact)
-		start := fact.BucketStart.UTC().Truncate(f.Bucket)
+		start := ChannelMonitorObservationBucketStart(fact.BucketStart, f.Bucket)
 		if byBucket[start] == nil {
 			byBucket[start] = &ChannelMonitorObservationFact{}
 		}
 		byBucket[start].Add(fact)
 	}
 	buckets := []ObservationBucket{}
-	for start := f.Start.UTC().Truncate(f.Bucket); start.Before(f.End); start = start.Add(f.Bucket) {
+	for start := ChannelMonitorObservationBucketStart(f.Start, f.Bucket); start.Before(f.End); start = start.Add(f.Bucket) {
 		fact := byBucket[start]
 		if fact == nil {
 			fact = &ChannelMonitorObservationFact{}
@@ -525,6 +536,20 @@ func observationSeries(facts []ChannelMonitorObservationFact, cfg ChannelMonitor
 	}
 	m, h := observationMetrics(total, cfg, platform, group, model, f.End.Sub(f.Start), admin)
 	return m, h, buckets
+}
+
+func annotateObservationSampleWindows(buckets []ObservationBucket, f ChannelMonitorV2Filter, includedStart, includedEnd time.Time) {
+	if includedStart.IsZero() || includedEnd.IsZero() {
+		return
+	}
+	for i := range buckets {
+		start := maxTime(maxTime(buckets[i].BucketStart, f.Start), includedStart)
+		end := minTime(minTime(buckets[i].BucketStart.Add(f.Bucket), f.End), includedEnd)
+		if end.After(start) {
+			buckets[i].SampleStart = &start
+			buckets[i].SampleEnd = &end
+		}
+	}
 }
 func observationHasID(ids []int64, id int64) bool {
 	for _, v := range ids {

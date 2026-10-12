@@ -35,7 +35,7 @@
         <FilterMultiSelect v-model="filter.models" :options="modelOptions" :label="t('channelMonitorV2.filters.model')" :all-label="t('channelMonitorV2.filters.allModels')" />
         <button v-if="hasFilters" type="button" class="btn btn-secondary btn-icon h-8 w-8" :title="t('channelMonitorV2.clearFilters')" :aria-label="t('channelMonitorV2.clearFilters')" @click="clearFilters"><Icon name="x" size="sm" /></button>
       </div>
-      <MonitorAppearanceSettings />
+      <MonitorAppearanceSettings :range="filter.range" :bucket-seconds="overview?.coverage.bucket_seconds" />
       <MonitorViewSwitcher v-model="viewMode" :items="viewItems" :label="t('channelMonitorV2.dashboard.views.label')" />
       <div :key="viewMode" class="monitor-view-panel min-w-0">
       <template v-if="overview && viewMode === 'matrix'"><MonitorHealthMatrix :items="overview.items" :coverage="overview.coverage" :source="overview.source" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" /></template>
@@ -68,6 +68,7 @@ import { formatMonitorMs, formatMonitorPercent } from '@/features/channel-monito
 import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
 import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
 import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
+import { useMonitorHistoryFilter } from '@/features/channel-monitor-v2/useMonitorHistoryFilter'
 import { useMonitorPolling } from '@/features/channel-monitor-v2/useMonitorPolling'
 import { observationPreferenceKey } from '@/features/channel-monitor-v2/observationViewModel'
 import type { MonitorFilter, MonitorRange, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
@@ -89,6 +90,7 @@ const filter = ref<MonitorFilter>({
   groupIds: csv(route.query.group).map(Number).filter(value => Number.isInteger(value) && value > 0),
   models: csv(route.query.model),
 })
+useMonitorHistoryFilter(filter, preferences)
 const preview = ref(false)
 const { data: overview, loading, error, stale, errorStatus, load } = useObservationOverview(filter, isAdmin, ref(false), identity, preview)
 const viewMode = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)

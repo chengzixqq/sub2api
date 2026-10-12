@@ -25,6 +25,33 @@ describe('admin monitor dashboard', () => {
   beforeEach(() => { localStorage.clear(); api.getObservationOverview.mockReset().mockResolvedValue(snapshot()); api.getErrors.mockReset().mockResolvedValue({ items: [] }); auth.isOwner = true; auth.user.id = 1; auth.user.role = 'admin'; auth.workspace = null })
   afterEach(() => localStorage.clear())
 
+  it('loads saved history preferences, aligns ranges and carries the same query to detail', async () => {
+    localStorage.setItem('admin-monitor:1:admin:owner:presentation', JSON.stringify({ historyMode: 'interval', historyBucketMinutes: 35 }))
+    const wrapper = shallowMount(AdminMonitorDashboard)
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ range: '24h', bucket_minutes: 35 })
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('filter').bucket_minutes).toBe(35)
+    wrapper.getComponent(ObservationCards).vm.$emit('detail', item('compact', 1))
+    await flushPromises()
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('show')).toBe(true)
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', '7d')
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ range: '7d', bucket_minutes: 60 })
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('filter').bucket_minutes).toBe(60)
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('show')).toBe(false)
+    expect(JSON.parse(localStorage.getItem('admin-monitor:1:admin:owner:presentation')!).historyBucketMinutes).toBe(35)
+    localStorage.setItem('admin-monitor:1:admin:8:presentation', JSON.stringify({ historyMode: 'count', historyBarCount: 72 }))
+    auth.workspace = { id: 8 }
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ bucket_count: 72 })
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_minutes')
+    auth.workspace = null
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ bucket_minutes: 35 })
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_count')
+    wrapper.unmount()
+  })
+
   it('uses the saved default range only when no explicit filter is supplied', async () => {
     localStorage.setItem('admin-monitor:1:admin:owner:presentation', JSON.stringify({ defaultRange: '7d' }))
     const savedDefault = shallowMount(AdminMonitorDashboard)

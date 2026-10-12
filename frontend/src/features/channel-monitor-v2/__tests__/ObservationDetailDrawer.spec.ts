@@ -2,7 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import ObservationDetailDrawer from '../ObservationDetailDrawer.vue'
 import MonitorTrendPanel from '../MonitorTrendPanel.vue'
-import type { ObservationChannel } from '@/api/channelMonitorV2'
+import type { ObservationChannel, ObservationOverview } from '@/api/channelMonitorV2'
 const api = vi.hoisted(() => ({ getMonitorAccountDetail: vi.fn() }))
 vi.mock('@/api/channelMonitorV2', () => api)
 vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, te: () => false, locale: { value: 'en' } }) }))
@@ -51,13 +51,15 @@ describe('monitor detail privacy', () => {
   })
   it('uses the selected model history in the actual trend panel', async () => {
     const modelMetrics = { ...item.metrics, sample_state: 'sufficient' as const, reliability_rate: 0.8 }
-    const buckets = [{ bucket_start: '2026-09-20T06:00:00Z', metrics: modelMetrics, health: item.health }]
+    const buckets = [{ bucket_start: '2026-09-20T06:00:00Z', sample_start: '2026-09-20T06:01:00Z', sample_end: '2026-09-20T06:30:00Z', metrics: modelMetrics, health: item.health }]
     const model = { model: 'selected-model', metrics: modelMetrics, health: item.health, buckets }
-    const wrapper = mount(ObservationDetailDrawer, { props: { ...props, admin: true, model: model.model, item: { ...item, models: [model], buckets: [] } }, global: { stubs: { Teleport: true, Icon: true, MonitorTrendPanel: true } } })
+    const coverage = { requested_start: '2026-09-20T06:00:30Z', requested_end: '2026-09-20T07:00:30Z', bucket_seconds: 1800 } as ObservationOverview['coverage']
+    const wrapper = mount(ObservationDetailDrawer, { props: { ...props, coverage, filter: { ...props.filter, bucket_minutes: 30 }, admin: true, model: model.model, item: { ...item, models: [model], buckets: [] } }, global: { stubs: { Teleport: true, Icon: true, MonitorTrendPanel: true } } })
     await wrapper.get('[data-testid="detail-tab-trend"]').trigger('click')
     const selected = wrapper.getComponent(MonitorTrendPanel).props('items')[0]
     expect(selected.metrics).toEqual(modelMetrics)
     expect(selected.buckets).toEqual(buckets)
+    expect(wrapper.getComponent(MonitorTrendPanel).props('coverage')).toEqual(coverage)
     expect(selected.group_name).toContain(model.model)
     wrapper.unmount()
   })

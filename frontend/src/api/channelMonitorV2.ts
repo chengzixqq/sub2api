@@ -23,6 +23,9 @@ export interface MonitorFilter {
   platforms: string[]
   groupIds: number[]
   models: string[]
+  /** Overview-only history aggregation. These options are mutually exclusive. */
+  bucket_minutes?: number
+  bucket_count?: number
 }
 
 export interface LatencyMetric {
@@ -305,7 +308,7 @@ export interface ObservationProbe {
   consecutive_failures: number
 }
 export interface ObservationQuota { status: string; updated_at?: string }
-export interface ObservationBucket { bucket_start: string; metrics: ObservationMetrics; health: ObservationHealth }
+export interface ObservationBucket { bucket_start: string; sample_start?: string; sample_end?: string; metrics: ObservationMetrics; health: ObservationHealth }
 export interface ObservationModel {
   model: string
   metrics: ObservationMetrics
@@ -380,6 +383,8 @@ export interface ObservationConfig {
 }
 export async function getObservationOverview(filter: MonitorFilter, admin = false, signal?: AbortSignal, options: { endTime: string; refresh?: boolean; audience?: 'admin' | 'user'; preview?: boolean } = { endTime: new Date().toISOString() }) {
   const { data } = await apiClient.get<ObservationOverview>(`${base(admin)}/overview`, requestConfig(filter, signal, {
+    bucket_minutes: filter.bucket_minutes,
+    bucket_count: filter.bucket_count,
     end_time: options.endTime,
     refresh: options.refresh || undefined,
     audience: admin && options.audience === 'user' ? 'user' : undefined,

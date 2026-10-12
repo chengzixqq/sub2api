@@ -66,15 +66,17 @@ function time(value: string, precise = false) {
   const date = new Date(value)
   return Number.isFinite(date.getTime()) ? date.toLocaleString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', ...(precise ? { second: '2-digit' } : {}) }) : '-'
 }
-function period(start: string) {
+function period(start: string, bucket: ObservationBucket | null) {
   const startMs = Date.parse(start)
   const seconds = Number(props.coverage.bucket_seconds)
   if (!Number.isFinite(startMs) || !Number.isFinite(seconds) || seconds <= 0) return time(start)
   const requestedStartMs = Date.parse(props.coverage.requested_start)
   const requestedEndMs = Date.parse(props.coverage.requested_end || props.coverage.data_through)
-  const effectiveStartMs = Number.isFinite(requestedStartMs) ? Math.max(startMs, requestedStartMs) : startMs
+  const sampleStartMs = Date.parse(bucket?.sample_start || '')
+  const sampleEndMs = Date.parse(bucket?.sample_end || '')
+  const effectiveStartMs = Math.max(startMs, Number.isFinite(requestedStartMs) ? requestedStartMs : startMs, Number.isFinite(sampleStartMs) ? sampleStartMs : startMs)
   const calculatedEndMs = startMs + seconds * 1000
-  const endMs = Number.isFinite(requestedEndMs) ? Math.min(calculatedEndMs, requestedEndMs) : calculatedEndMs
+  const endMs = Math.min(calculatedEndMs, Number.isFinite(requestedEndMs) ? requestedEndMs : calculatedEndMs, Number.isFinite(sampleEndMs) ? sampleEndMs : calculatedEndMs)
   if (!(endMs > effectiveStartMs)) return time(start)
   const clipped = effectiveStartMs !== startMs || endMs !== calculatedEndMs
   return `${time(new Date(effectiveStartMs).toISOString(), clipped)} – ${time(new Date(endMs).toISOString(), clipped)}`
@@ -90,7 +92,7 @@ function bucketClass(bucket: ObservationBucket | null) {
 }
 function label(start: string, bucket: ObservationBucket | null) {
   const status = bucket ? bucket.metrics.sample_state === 'sufficient' ? bucket.health.reliability : bucket.metrics.sample_state : 'missing'
-  return `${period(start)} · ${t(`channelMonitorV2.observation.states.${status}`)}${bucket ? ` · ${t('channelMonitorV2.observation.reliability')} ${percent(bucket.metrics.reliability_rate)}` : ''}`
+  return `${period(start, bucket)} · ${t(`channelMonitorV2.observation.states.${status}`)}${bucket ? ` · ${t('channelMonitorV2.observation.reliability')} ${percent(bucket.metrics.reliability_rate)}` : ''}`
 }
 function tooltipLabel(start: string, bucket: ObservationBucket | null) {
   const base = label(start, bucket)

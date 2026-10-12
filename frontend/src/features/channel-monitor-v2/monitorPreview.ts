@@ -87,24 +87,37 @@ function health(reliability: ObservationHealth['reliability'] = 'healthy', laten
   return { reliability, latency: latencyState }
 }
 
-function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false, count = 6): ObservationBucket[] {
-  const { start } = windowTimes()
-  const bucketHours = 24 / count
-  const indices = Array.from({ length: count }, (_, index) => index).filter(index => !withGap || index !== 2)
-  // Allocate whole events across observed buckets so the visible history
-  // reconciles with the channel summary, including incomplete coverage.
-  const distribute = (total: number, slot: number) => Math.floor(total * (slot + 1) / indices.length) - Math.floor(total * slot / indices.length)
-  return indices.map((index, slot) => {
-    const bucketStart = iso(start + index * bucketHours * HOUR)
-    const successes = distribute(value.success_requests ?? 0, slot)
-    const categories = value.error_categories ? Object.fromEntries(Object.entries(value.error_categories).map(([category, count]) => [category, distribute(count, slot)])) : undefined
-    const errors = categories ? Object.values(categories).reduce((total, count) => total + count, 0) : distribute(value.channel_errors ?? 0, slot)
-    const clients = distribute(value.client_errors ?? 0, slot)
-    const cancelled = distribute(value.cancelled_requests ?? 0, slot)
+function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false, count = 6, bucketMinutes = 24 * 60 / count, observed?: Array<{ start: number; end: number }>): ObservationBucket[] {
+  const { start, end } = windowTimes()
+  const step = bucketMinutes * 60 * 1000
+  const slots: Array<{ start: number; minutes: number; weight: number }> = []
+  for (let at = Math.floor(start / step) * step, index = 0; at < end; at += step, index++) {
+    if (withGap && index === 2) continue
+    const from = Math.max(start, at)
+    const to = Math.min(end, at + step)
+    const weight = observed ? observed.reduce((sum, span) => sum + Math.max(0, Math.min(to, span.end) - Math.max(from, span.start)), 0) : to - from
+    if (weight > 0) slots.push({ start: at, minutes: (to - from) / 60000, weight })
+  }
+  // These are fictional event samples, not resampled production percentiles.
+  // Allocate whole samples by observed time; preserve gaps and all event totals.
+  const totalWeight = slots.reduce((sum, slot) => sum + slot.weight, 0)
+  let through = 0
+  return slots.map(slot => {
+    const before = through
+    through += slot.weight
+    const distribute = (total: number) => Math.floor(total * through / totalWeight) - Math.floor(total * before / totalWeight)
+    const bucketStart = iso(slot.start)
+    const successes = distribute(value.success_requests ?? 0)
+    const categories = value.error_categories ? Object.fromEntries(Object.entries(value.error_categories).map(([category, count]) => [category, distribute(count)])) : undefined
+    const errors = categories ? Object.values(categories).reduce((total, count) => total + count, 0) : distribute(value.channel_errors ?? 0)
+    const clients = distribute(value.client_errors ?? 0)
+    const cancelled = distribute(value.cancelled_requests ?? 0)
     const requestCount = successes + errors + clients + cancelled
     const reliability = successes + errors ? successes / (successes + errors) : null
     return {
       bucket_start: bucketStart,
+      sample_start: iso(Math.max(start, slot.start)),
+      sample_end: iso(Math.min(end, slot.start + step)),
       metrics: metrics({
         ...value,
         request_count: requestCount,
@@ -115,17 +128,17 @@ function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth
         cancelled_requests: cancelled,
         reliability_rate: reliability,
         success_rate: requestCount ? successes / requestCount : null,
-        rpm: requestCount / (bucketHours * 60),
-        tpm: requestCount * 820 / (bucketHours * 60),
-        attempt_count: distribute(value.attempt_count ?? 0, slot),
-        retry_recovered_requests: distribute(value.retry_recovered_requests ?? 0, slot),
-        ttft: { ...value.ttft, sample_count: Math.min(successes, distribute(value.ttft.sample_count, slot)) },
-        duration: { ...value.duration, sample_count: Math.min(successes, distribute(value.duration.sample_count, slot)) },
+        rpm: requestCount / slot.minutes,
+        tpm: requestCount * 820 / slot.minutes,
+        attempt_count: distribute(value.attempt_count ?? 0),
+        retry_recovered_requests: distribute(value.retry_recovered_requests ?? 0),
+        ttft: { ...value.ttft, sample_count: Math.min(successes, distribute(value.ttft.sample_count)) },
+        duration: { ...value.duration, sample_count: Math.min(successes, distribute(value.duration.sample_count)) },
         error_categories: categories,
       }),
       health: {
         reliability: successes + errors >= MINIMUM_SAMPLE && reliability != null ? reliability >= 0.99 ? 'healthy' : reliability >= 0.95 ? 'warning' : 'critical' : 'unknown',
-        latency: Math.min(successes, distribute(value.ttft.sample_count, slot)) >= MINIMUM_SAMPLE ? bucketHealth.latency : 'unknown',
+        latency: Math.min(successes, distribute(value.ttft.sample_count)) >= MINIMUM_SAMPLE ? bucketHealth.latency : 'unknown',
       },
     }
   })
@@ -314,9 +327,21 @@ function redactMetrics(value: ObservationMetrics): void {
   value.duration.sample_count = 0
 }
 
-export function getMonitorPreviewScenario(id: MonitorPreviewScenarioId, role: MonitorPreviewRole = 'admin'): MonitorPreviewScenario {
+export function getMonitorPreviewScenario(id: MonitorPreviewScenarioId, role: MonitorPreviewRole = 'admin', bucketMinutes?: number): MonitorPreviewScenario {
   const scenario = MONITOR_PREVIEW_SCENARIOS.find(item => item.id === id) || MONITOR_PREVIEW_SCENARIOS.find(item => item.id === 'normal')!
   const copy = JSON.parse(JSON.stringify(scenario)) as MonitorPreviewScenario
+  if (copy.overview && bucketMinutes !== undefined && Number.isInteger(bucketMinutes) && bucketMinutes >= 1 && bucketMinutes <= WINDOW_MINUTES) {
+    const sourceStep = copy.overview.coverage.bucket_seconds * 1000
+    const replaceBuckets = (item: ObservationChannel | ObservationModel) => {
+      const observed = item.buckets.map(bucket => ({ start: Date.parse(bucket.bucket_start), end: Date.parse(bucket.bucket_start) + sourceStep }))
+      item.buckets = bucketSeries(item.metrics, item.health, false, 6, bucketMinutes, observed)
+    }
+    for (const item of copy.overview.items) {
+      replaceBuckets(item)
+      item.models.forEach(replaceBuckets)
+    }
+    copy.overview.coverage.bucket_seconds = bucketMinutes * 60
+  }
   if (role === 'user' && copy.overview) {
     for (const item of copy.overview.items) {
       redactMetrics(item.metrics)

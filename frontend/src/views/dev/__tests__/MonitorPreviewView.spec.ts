@@ -1,11 +1,13 @@
 import { shallowMount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { nextTick } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import Select from '@/components/common/Select.vue'
 import AdminMonitorDashboard from '@/features/channel-monitor-v2/AdminMonitorDashboard.vue'
 import MonitorViewSwitcher from '@/features/channel-monitor-v2/MonitorViewSwitcher.vue'
 import ObservationCards from '@/features/channel-monitor-v2/ObservationCards.vue'
 import ObservationDetailDrawer from '@/features/channel-monitor-v2/ObservationDetailDrawer.vue'
+import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
+import { DEFAULT_MONITOR_PREFERENCES, useMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
 import { getMonitorPreviewScenario, MONITOR_PREVIEW_SCENARIOS } from '@/features/channel-monitor-v2/monitorPreview'
 import MonitorPreviewView from '../MonitorPreviewView.vue'
 
@@ -21,6 +23,7 @@ let wrapper: ReturnType<typeof shallowMount>
 afterEach(() => {
   wrapper?.unmount()
   document.body.innerHTML = ''
+  localStorage.clear()
 })
 
 function mountPreview() {
@@ -85,5 +88,38 @@ describe('monitor preview project-native controls', () => {
     expect(preview.getComponent(ObservationCards).props('overview')).toEqual(getMonitorPreviewScenario('card-gallery', 'user').overview)
     expect(preview.getComponent(ObservationCards).props('layout')).toBe('cards')
     expect(preview.getComponent(ObservationDetailDrawer).props('show')).toBe(false)
+  })
+
+  it('applies saved sample duration and target count to the preview, including after role switches', async () => {
+    localStorage.setItem('monitor-preview:user:presentation', JSON.stringify({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'interval', historyBucketMinutes: 30 }))
+    const preview = mountPreview()
+    let overview = preview.getComponent(ObservationCards).props('overview')
+    expect(overview.coverage.bucket_seconds).toBe(1800)
+    expect(overview.items[0].buckets).toHaveLength(48)
+    expect(preview.getComponent(MonitorAppearanceSettings).props('bucketSeconds')).toBe(1800)
+    localStorage.setItem('monitor-preview:admin:presentation', JSON.stringify({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'count', historyBarCount: 24 }))
+    await preview.findAll('[role="group"] button')[0]!.trigger('click')
+    overview = preview.getComponent(AdminMonitorDashboard).props('previewOverview')
+    expect(overview.coverage.bucket_seconds).toBe(3600)
+    expect(overview.items[0].buckets).toHaveLength(24)
+    await preview.findAll('[role="group"] button')[1]!.trigger('click')
+    expect(preview.getComponent(ObservationCards).props('overview').coverage.bucket_seconds).toBe(1800)
+  })
+
+  it('rebuilds history on preference changes and closes details from the old interval', async () => {
+    const preferenceControl = defineComponent({
+      setup: () => ({ preferences: useMonitorPreferences() }),
+      template: '<button data-testid="set-history-hour" @click="preferences.historyMode = \'count\'; preferences.historyBarCount = 24">Apply</button>',
+    })
+    wrapper = shallowMount(MonitorPreviewView, { global: { stubs: { MonitorAppearanceSettings: preferenceControl } } })
+    const cards = wrapper.getComponent(ObservationCards)
+    const item = cards.props('overview').items[0]
+    cards.vm.$emit('bucket', item, { start: item.buckets[0].bucket_start, bucket: item.buckets[0] })
+    await nextTick()
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('show')).toBe(true)
+    await wrapper.get('[data-testid="set-history-hour"]').trigger('click')
+    expect(cards.props('overview').coverage.bucket_seconds).toBe(3600)
+    expect(cards.props('overview').items[0].buckets).toHaveLength(24)
+    expect(wrapper.getComponent(ObservationDetailDrawer).props('show')).toBe(false)
   })
 })

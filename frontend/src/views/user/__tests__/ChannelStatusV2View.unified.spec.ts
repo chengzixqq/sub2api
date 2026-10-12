@@ -34,11 +34,73 @@ describe('unified channel monitor page', () => {
     vi.clearAllMocks()
     vi.useFakeTimers()
     api.getObservationOverview.mockResolvedValue(snapshot())
+    stores.auth.user.id = 1
     stores.auth.user.role = 'admin'
+    stores.auth.workspace.id = 1
     route.query = {}
     localStorage.clear()
   })
   afterEach(() => vi.useRealTimers())
+
+  it('restores history preferences independently across user workspaces and page reloads', async () => {
+    stores.auth.user.role = 'user'
+    const auth = reactive(stores.auth)
+    const key = (user: number, workspace: number) => `sub2api:monitor-unified:v1:${user}:user:${workspace}:presentation`
+    localStorage.setItem(key(1, 1), JSON.stringify({ historyMode: 'interval', historyBucketMinutes: 7 }))
+    localStorage.setItem(key(1, 2), JSON.stringify({ historyMode: 'count', historyBarCount: 72 }))
+    const wrapper = mountView()
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_minutes).toBe(7)
+    auth.workspace.id = 2
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_count).toBe(72)
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_minutes')
+    auth.user.id = 2
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_count')
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_minutes')
+    auth.user.id = 1
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_count).toBe(72)
+    wrapper.unmount()
+    const reloaded = mountView()
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0].bucket_count).toBe(72)
+    reloaded.unmount()
+  })
+
+  it.each(['admin', 'vendor', 'user'])('applies real history requests only after valid settings for %s', async role => {
+    stores.auth.user.role = role
+    const wrapper = mountView()
+    await flushPromises()
+    wrapper.getComponent('[data-testid="pref-history-mode"]').vm.$emit('update:modelValue', 'interval')
+    await flushPromises()
+    await wrapper.get('[data-testid="pref-history-minutes"]').setValue('0')
+    await wrapper.get('form').trigger('submit')
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-testid="pref-history-minutes"]').setValue('30')
+    await wrapper.get('[data-testid="open-bucket"]').trigger('click')
+    expect(wrapper.find('[data-testid="bucket-detail"]').exists()).toBe(true)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ bucket_minutes: 30 })
+    expect(wrapper.find('[data-testid="bucket-detail"]').exists()).toBe(false)
+    wrapper.getComponent('[data-testid="pref-history-mode"]').vm.$emit('update:modelValue', 'count')
+    await flushPromises()
+    await wrapper.get('[data-testid="pref-history-count"]').setValue('48')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).toMatchObject({ bucket_count: 48 })
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_minutes')
+    wrapper.getComponent('[data-testid="pref-history-mode"]').vm.$emit('update:modelValue', 'auto')
+    await flushPromises()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_minutes')
+    expect(api.getObservationOverview.mock.lastCall![0]).not.toHaveProperty('bucket_count')
+    wrapper.unmount()
+  })
 
   it.each(['admin', 'vendor', 'user'])('uses only overview for %s with a 24h default', async (role) => {
     stores.auth.user.role = role

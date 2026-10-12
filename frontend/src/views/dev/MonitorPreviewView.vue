@@ -51,7 +51,7 @@
         </div>
       </header>
 
-      <MonitorAppearanceSettings preview />
+      <MonitorAppearanceSettings preview range="24h" :bucket-seconds="overview?.coverage.bucket_seconds" />
       <div class="flex justify-end"><button type="button" class="btn btn-primary" data-testid="preview-settings" @click="showSettings = true">{{ locale.startsWith('zh') ? '配置参数验收' : 'Preview configuration' }}</button></div>
       <AdminMonitorSettingsDrawer :show="showSettings" preview @close="showSettings = false" />
       <div :key="role + ':' + scenarioId" class="preview-content space-y-5">
@@ -111,6 +111,7 @@ import type { MonitorFilter, ObservationBucket, ObservationChannel } from '@/api
 import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
 import AdminMonitorSettingsDrawer from '@/features/channel-monitor-v2/AdminMonitorSettingsDrawer.vue'
 import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
+import { resolveMonitorHistory } from '@/features/channel-monitor-v2/monitorHistoryPreferences'
 import Select from '@/components/common/Select.vue'
 import AdminMonitorDashboard from '@/features/channel-monitor-v2/AdminMonitorDashboard.vue'
 import MonitorEvidenceStatus from '@/features/channel-monitor-v2/MonitorEvidenceStatus.vue'
@@ -128,6 +129,7 @@ const { t, te, locale } = useI18n()
 const scenarioId = ref<MonitorPreviewScenarioId>('card-gallery')
 const role = ref<MonitorPreviewRole>('user')
 const preferences = provideMonitorPreferences(computed(() => 'monitor-preview:' + role.value))
+const history = computed(() => resolveMonitorHistory('24h', preferences.value))
 const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const showSettings = ref(false)
 const view = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)
@@ -141,7 +143,7 @@ function toggleTheme() {
 }
 onMounted(() => { darkTheme.value = document.documentElement.classList.contains('dark') })
 const scenario = computed(() => {
-  const result = getMonitorPreviewScenario(scenarioId.value, role.value)
+  const result = getMonitorPreviewScenario(scenarioId.value, role.value, history.value.mode === 'auto' ? undefined : history.value.bucketMinutes)
   for (const item of result.overview?.items || []) {
     const key = `channelMonitorV2.preview.channelNames.${item.group_id}`
     if (te(key)) item.group_name = t(key)
@@ -168,12 +170,13 @@ const scenarioDescription = (id: MonitorPreviewScenarioId) => t(`channelMonitorV
 const gapLabel = (reason: string) => { const key = `channelMonitorV2.unified.gaps.${reason}`; return te(key) ? t(key) : reason.split('_').join(' ') }
 const percent = (value: number | null) => value == null ? '—' : `${Math.round(value * 100)}%`
 const latency = (value: number | null) => value == null ? '—' : value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`
-const detailFilter: MonitorFilter = { range: '24h', platforms: [], groupIds: [], models: [] }
+const detailFilter = computed<MonitorFilter>(() => ({ range: '24h', platforms: [], groupIds: [], models: [], ...history.value.params }))
 const detail = ref<{ item: ObservationChannel; model?: string; slot: { start: string; bucket: ObservationBucket | null } | null } | null>(null)
 function openDetail(item: ObservationChannel) { detail.value = { item, slot: null } }
 function openModel(item: ObservationChannel, model: string) { detail.value = { item, model, slot: null } }
 function openBucket(item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }) { detail.value = { item, slot } }
 watch([scenarioId, role], () => { detail.value = null; showSettings.value = false; view.value = preferences.value.defaultView; layout.value = 'cards' }, { flush: 'sync' })
+watch(() => JSON.stringify(history.value.params), () => { detail.value = null }, { flush: 'sync' })
 const heroStats = computed(() => {
   const summary = summarizeMonitorTraffic(overview.value)
   const sources = summary.sources.map(item => item.source).join(' / ')

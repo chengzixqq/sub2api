@@ -134,7 +134,11 @@ func (s *ChannelMonitorOverviewService) legacyOverview(ctx context.Context, f Ch
 		return nil, ObservationCoverage{}, err
 	}
 	coverage := ObservationCoverage{ChannelMonitorV2Coverage: matrix.Coverage, State: "partial", CollectorState: "healthy", DetailRetentionHours: 24, UnsupportedProtocols: []string{}, GapReasons: []string{"legacy_log_semantics"}}
-	if matrix.Coverage.DataThrough.IsZero() || time.Since(matrix.Coverage.DataThrough) > 2*time.Minute {
+	collectorThrough := matrix.Coverage.DataThrough
+	if f.RollupBucket > time.Minute {
+		collectorThrough = matrix.Coverage.ComputedAt
+	}
+	if observationLegacyCollectorStale(collectorThrough, time.Now().UTC(), legacy.RefreshIntervalSeconds) {
 		coverage.CollectorState = "stale"
 	}
 	byGroup := map[int64][]ChannelMonitorObservationFact{}
@@ -164,7 +168,7 @@ func (s *ChannelMonitorOverviewService) legacyOverview(ctx context.Context, f Ch
 		for _, model := range row.Models {
 			row.Health.Latency = observationWorstLatency(row.Health.Latency, model.Health.Latency)
 			for _, bucket := range model.Buckets {
-				at := bucket.BucketStart.UTC().Truncate(f.Bucket)
+				at := ChannelMonitorObservationBucketStart(bucket.BucketStart, f.Bucket)
 				bucketLatency[at] = observationWorstLatency(bucketLatency[at], bucket.Health.Latency)
 			}
 		}
@@ -191,6 +195,12 @@ func (s *ChannelMonitorOverviewService) legacyOverview(ctx context.Context, f Ch
 			}
 		}
 		sort.Slice(row.Models, func(i, j int) bool { return row.Models[i].Model < row.Models[j].Model })
+		if f.RollupBucket > 0 {
+			annotateObservationSampleWindows(row.Buckets, f, matrix.Coverage.CoverageStart, matrix.Coverage.DataThrough)
+			for j := range row.Models {
+				annotateObservationSampleWindows(row.Models[j].Buckets, f, matrix.Coverage.CoverageStart, matrix.Coverage.DataThrough)
+			}
+		}
 		if admin {
 			rate := g.RateMultiplier * g.PeakMultiplierAt(time.Now())
 			row.RateMultiplier = &rate
@@ -232,6 +242,8 @@ func observationLegacyCollectorStale(dataThrough, now time.Time, refreshInterval
 func (s *ChannelMonitorOverviewService) fillCurrentStatuses(ctx context.Context, out *ObservationOverview, f ChannelMonitorV2Filter, cfg ChannelMonitorObservationConfig, groups map[int64]Group, catalogue map[int64]map[string]bool, admin bool, viewer int64, refresh bool) error {
 	now := time.Now().UTC().Truncate(time.Minute)
 	f.Start, f.End, f.Bucket = now.Add(-time.Duration(cfg.TrafficFreshnessSeconds)*time.Second), now, time.Minute
+	// Current health is independent of history display preferences.
+	f.RollupBucket = 0
 	byGroup := map[int64][]ChannelMonitorObservationFact{}
 	legacyLatency := map[int64]map[string]string{}
 	collectorStates := map[string]string{"compact": out.Coverage.CollectorState, "legacy": "healthy"}

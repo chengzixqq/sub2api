@@ -618,6 +618,10 @@ func (r *compactObservationRepository) QuerySource(ctx context.Context, f servic
 		return nil, err
 	}
 	snapshot := &service.ChannelMonitorObservationSnapshot{Facts: []service.ChannelMonitorObservationFact{}}
+	if len(parts) > 0 {
+		snapshot.QueryStart = parts[0].Start
+		snapshot.QueryEnd = parts[len(parts)-1].End
+	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return nil, err
@@ -651,7 +655,7 @@ func (r *compactObservationRepository) QuerySource(ctx context.Context, f servic
 				_ = rows.Close()
 				return nil, err
 			}
-			fact.BucketStart = bucket.UTC().Truncate(f.Bucket)
+			fact.BucketStart = service.ChannelMonitorObservationBucketStart(bucket, f.Bucket)
 			fact.Platform = platform
 			fact.GroupID = group
 			fact.Model = model
@@ -781,7 +785,7 @@ func (r *compactObservationRepository) QueryAccounts(ctx context.Context, f serv
 				return nil, err
 			}
 			fact.Source = "traffic"
-			fact.BucketStart = fact.BucketStart.UTC().Truncate(f.Bucket)
+			fact.BucketStart = service.ChannelMonitorObservationBucketStart(fact.BucketStart, f.Bucket)
 			fact.AttemptCount = counters.AttemptCount
 			fact.SuccessAttempts = counters.SuccessAttempts
 			fact.FailedAttempts = counters.FailedAttempts

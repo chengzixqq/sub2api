@@ -87,6 +87,9 @@ type ChannelMonitorV2Filter struct {
 	Start           time.Time
 	End             time.Time
 	Bucket          time.Duration
+	// RollupBucket selects an existing legacy storage tier independently of the
+	// requested display bucket. Only the observation handler sets this field.
+	RollupBucket time.Duration
 }
 
 type ChannelMonitorV2Metric struct {

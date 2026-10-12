@@ -21,7 +21,7 @@
 
     <section class="mt-4">
       <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-gray-400">
-        <span>{{ t('channelMonitorV2.observation.history') }} · {{ t('channelMonitorV2.unified.historyInterval', { minutes: Math.round(coverage.bucket_seconds / 60) }) }}</span>
+        <span data-testid="card-history-interval">{{ t('channelMonitorV2.observation.history') }} · {{ t('channelMonitorV2.unified.historyInterval', { minutes: Math.round(coverage.bucket_seconds / 60) }) }} · {{ historyBarCount }} {{ text('条', 'bars') }}</span>
         <span v-if="admin && (item.source || source)" class="text-[10px]">{{ monitorSourceLabel(item.source || source, t, te) }}</span>
       </div>
       <ObservationTimeline variant="card" :buckets="item.buckets" :coverage="coverage" :admin="admin" @select="$emit('bucket', item, $event)" />
@@ -76,6 +76,7 @@ import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import { platformBadgeClass } from '@/utils/platformColors'
 import { GROUP_PLATFORM_OPTIONS } from '@/constants/platforms'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
+import { observationTimeline } from './observationViewModel'
 import type { ObservationBucket, ObservationChannel, ObservationOverview } from '@/api/channelMonitorV2'
 import ObservationMetrics from './ObservationMetrics.vue'
 import ObservationTimeline from './ObservationTimeline.vue'
@@ -88,6 +89,7 @@ const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const platform = computed(() => GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.value)
 const platformLabel = computed(() => { const key = `channelMonitorV2.platforms.${props.item.platform}`; return te(key) ? t(key) : GROUP_PLATFORM_OPTIONS.find(p => p.value === props.item.platform)?.label || props.item.platform })
 const metrics = computed(() => props.item.traffic || props.item.metrics)
+const historyBarCount = computed(() => observationTimeline([], props.coverage).length)
 const hasTraffic = computed(() => metrics.value.sample_state !== 'no_samples' && props.coverage.state !== 'unavailable')
 const trafficCount = (value: number | undefined) => hasTraffic.value && value != null ? String(value) : '—'
 const aggregationLag = computed(() => {

@@ -9,6 +9,11 @@ const item = { platform: 'anthropic', group_id: 1, group_name: 'Visible channel'
 const coverage = { state: 'partial', aggregation_lag_seconds: 180, gap_reasons: ['collector_stale'] } as ObservationOverview['coverage']
 
 describe('admin observation card evidence', () => {
+  it('reports actual epoch-aligned bars including partial edges, independent of a desired count', () => {
+    const wrapper = shallowMount(ObservationGroupCard, { props: { item, coverage: { ...coverage, requested_start: '2026-09-15T00:15:00Z', requested_end: '2026-09-16T00:15:00Z', bucket_seconds: 1800 } } })
+    expect(wrapper.get('[data-testid="card-history-interval"]').text()).toContain('49 bars')
+    wrapper.unmount()
+  })
   it('shows actual lag, gaps, source fallback and recent error categories', () => {
     const wrapper = shallowMount(ObservationGroupCard, { props: { item, coverage, admin: true, source: 'terminal_v1' } })
     const evidence = wrapper.get('[data-testid="card-data-quality"]').text()

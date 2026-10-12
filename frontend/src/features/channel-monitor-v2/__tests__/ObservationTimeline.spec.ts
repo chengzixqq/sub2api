@@ -29,6 +29,27 @@ vi.mock('vue-i18n', async (importOriginal) => {
 })
 
 describe('ObservationTimeline', () => {
+  it('shows server sample boundaries inside a partially populated aggregation bucket', async () => {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } }, props: {
+      coverage: { state: 'complete', requested_start: '2026-09-15T00:00:30Z', requested_end: '2026-09-15T00:30:15Z', data_through: '2026-09-15T00:30:15Z', bucket_seconds: 1800 } as never,
+      buckets: [{ bucket_start: '2026-09-15T00:00:00Z', sample_start: '2026-09-15T00:01:00Z', sample_end: '2026-09-15T00:29:00Z', metrics: { sample_state: 'sufficient', reliability_rate: 1, cache_rate: null, ttft: { sample_count: 1, p50_ms: 10, p95_ms: 10, avg_ms: 10 }, duration: { sample_count: 1, p50_ms: 100, p95_ms: 100, avg_ms: 100 } }, health: { reliability: 'healthy', latency: 'healthy' } }],
+    } })
+    expect(wrapper.findAll('button')).toHaveLength(2)
+    await wrapper.get('button').trigger('mouseenter')
+    const format = (value: string) => new Date(value).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    expect(wrapper.get('[role="tooltip"]').text()).toContain(format('2026-09-15T00:01:00Z') + ' – ' + format('2026-09-15T00:29:00Z'))
+    expect(wrapper.get('[role="tooltip"]').text()).not.toContain(format('2026-09-15T00:00:30Z'))
+    wrapper.unmount()
+  })
+
+  it('keeps actual minute bars and all partial edge slots instead of clipping to a target count', () => {
+    const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } }, props: {
+      coverage: { state: 'complete', requested_start: '2026-09-15T00:00:30Z', requested_end: '2026-09-16T00:00:30Z', data_through: '2026-09-16T00:00:30Z', bucket_seconds: 60 } as never,
+      buckets: [],
+    } })
+    expect(wrapper.findAll('button')).toHaveLength(1441)
+    wrapper.unmount()
+  })
   it('fits the full 24h window in one bounded timeline rather than clipping early buckets', () => {
     const wrapper = mount(ObservationTimeline, { global: { stubs: { teleport: true } }, props: {
       coverage: { state: 'complete', requested_start: '2026-09-15T00:00:00Z', requested_end: '2026-09-16T00:00:00Z', data_through: '2026-09-16T00:00:00Z', bucket_seconds: 300 } as never,

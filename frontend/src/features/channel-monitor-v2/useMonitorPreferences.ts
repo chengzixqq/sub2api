@@ -1,8 +1,9 @@
 import { computed, inject, provide, ref, watch, type InjectionKey, type Ref } from 'vue'
 import type { MonitorRange } from '@/api/channelMonitorV2'
+import { isHistoryBarCount, isHistoryBucketMinutes, type MonitorHistoryPreferences } from './monitorHistoryPreferences'
 import './monitorPreferences.css'
 
-export interface MonitorPreferences {
+export interface MonitorPreferences extends MonitorHistoryPreferences {
   density: 'compact' | 'comfortable'
   columns: 'auto' | '2' | '3' | '4'
   motion: 'system' | 'off'
@@ -15,16 +16,19 @@ export interface MonitorPreferences {
 export const DEFAULT_MONITOR_PREFERENCES: MonitorPreferences = {
   density: 'compact', columns: 'auto', motion: 'system', metricDetails: true,
   expandModels: false, autoRefresh: true, defaultView: 'cards', defaultRange: '24h',
+  historyMode: 'auto', historyBucketMinutes: 5, historyBarCount: 60,
 }
 export function normalizeMonitorPreferences(input: unknown): MonitorPreferences {
   const result = { ...DEFAULT_MONITOR_PREFERENCES }
   if (!input || typeof input !== 'object') return result
   const raw = input as Record<string, unknown>
-  const enums = { density: ['compact', 'comfortable'], columns: ['auto', '2', '3', '4'], motion: ['system', 'off'], defaultView: ['cards', 'matrix', 'trend'], defaultRange: ['90m', '24h', '7d', '30d'] }
+  const enums = { density: ['compact', 'comfortable'], columns: ['auto', '2', '3', '4'], motion: ['system', 'off'], defaultView: ['cards', 'matrix', 'trend'], defaultRange: ['90m', '24h', '7d', '30d'], historyMode: ['auto', 'interval', 'count'] }
   for (const [key, values] of Object.entries(enums)) {
     if (typeof raw[key] === 'string' && values.includes(raw[key] as string)) Object.assign(result, { [key]: raw[key] })
   }
   for (const key of ['metricDetails', 'expandModels', 'autoRefresh'] as const) if (typeof raw[key] === 'boolean') result[key] = raw[key]
+  if (isHistoryBucketMinutes(raw.historyBucketMinutes)) result.historyBucketMinutes = raw.historyBucketMinutes
+  if (isHistoryBarCount(raw.historyBarCount)) result.historyBarCount = raw.historyBarCount
   return result
 }
 const preferenceKey: InjectionKey<Ref<MonitorPreferences>> = Symbol('monitor-preferences')

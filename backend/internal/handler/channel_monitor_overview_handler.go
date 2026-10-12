@@ -69,6 +69,12 @@ func (h *ChannelMonitorV2Handler) observationOverview(c *gin.Context, adminRoute
 		f.End = time.Now().UTC().Truncate(time.Minute)
 		f.Start = f.End.Add(-observationWindow(f.Range))
 	}
+	// A frozen endpoint can move a short range beyond minute-tier retention.
+	// Re-resolve custom controls against the actual requested window.
+	if err := applyObservationBucketQuery(c, &f); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 	refresh := false
 	if raw := c.Query("refresh"); raw != "" {
 		var err error
@@ -159,7 +165,57 @@ func (h *ChannelMonitorV2Handler) parseObservationFilter(c *gin.Context) (servic
 	}
 	f.End = time.Now().UTC().Truncate(time.Minute)
 	f.Start = f.End.Add(-observationWindow(f.Range))
+	if err := applyObservationBucketQuery(c, &f); err != nil {
+		response.BadRequest(c, err.Error())
+		return f, false
+	}
 	return f, true
+}
+
+// Both controls describe the same sample aggregation, not a rendering limit.
+// A target count rounds upward to storage-safe intervals and can produce one
+// extra partial edge bucket when the rolling window is not bucket-aligned.
+func applyObservationBucketQuery(c *gin.Context, f *service.ChannelMonitorV2Filter) error {
+	query := c.Request.URL.Query()
+	minutes, hasMinutes := query["bucket_minutes"]
+	count, hasCount := query["bucket_count"]
+	if hasMinutes && hasCount {
+		return errors.New("bucket_minutes and bucket_count are mutually exclusive")
+	}
+	if !hasMinutes && !hasCount {
+		return nil
+	}
+	values := minutes
+	if hasCount {
+		values = count
+	}
+	if len(values) != 1 || values[0] == "" {
+		return errors.New("one integer history bucket value is required")
+	}
+	value, err := strconv.Atoi(values[0])
+	if err != nil || value < 1 {
+		return errors.New("history bucket value must be a positive integer")
+	}
+	base := 1
+	minuteCutoff := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Hour).Add(time.Hour)
+	if f.Range == "7d" || f.Range == "30d" || (!f.Start.IsZero() && f.Start.Before(minuteCutoff)) {
+		base = 60
+	}
+	window := int(observationWindow(f.Range) / time.Minute)
+	if hasCount {
+		if value > 720 {
+			return errors.New("bucket_count must be between 1 and 720")
+		}
+		value = ((window + value*base - 1) / (value * base)) * base
+		if value > window {
+			value = (window / base) * base
+		}
+	} else if value < base || value > window || value%base != 0 {
+		return errors.New("bucket_minutes must use whole minutes (90m/24h) or multiples of 60 minutes (7d/30d), no longer than the selected range")
+	}
+	f.Bucket = time.Duration(value) * time.Minute
+	f.RollupBucket = time.Duration(base) * time.Minute
+	return nil
 }
 
 func (h *ChannelMonitorV2Handler) ObservationAccounts(c *gin.Context) {

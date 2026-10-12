@@ -13,6 +13,21 @@ import (
 
 const ChannelMonitorObservationMaxAttempts = 16
 
+// Use Unix UTC like PostgreSQL date_bin and the browser's millisecond floor.
+// time.Truncate is anchored at year 1, which differs for e.g. 35-minute buckets.
+func ChannelMonitorObservationBucketStart(at time.Time, bucket time.Duration) time.Time {
+	seconds := int64(bucket / time.Second)
+	if seconds <= 0 {
+		return at.UTC()
+	}
+	unix := at.Unix()
+	remainder := unix % seconds
+	if remainder < 0 {
+		remainder += seconds
+	}
+	return time.Unix(unix-remainder, 0).UTC()
+}
+
 var ErrChannelMonitorObservationCapacity = errors.New("channel monitor observation capacity reached")
 
 // Events contain terminal protocol facts only. No request/response payload or credentials belong here.
@@ -478,6 +493,10 @@ type ChannelMonitorObservationCoverage struct {
 type ChannelMonitorObservationSnapshot struct {
 	Facts    []ChannelMonitorObservationFact
 	Coverage ChannelMonitorObservationCoverage
+	// QueryStart/End bound the included storage-tier samples, not the first or
+	// last event. Missing old partial hours remain explicitly uncovered.
+	QueryStart time.Time
+	QueryEnd   time.Time
 }
 
 type ChannelMonitorObservationRepository interface {

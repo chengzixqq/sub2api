@@ -18,7 +18,7 @@
       <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="refresh">{{ t('common.retry') }}</button>
     </div>
     <MonitorEvidenceStatus v-if="overview" :overview="overview" :stale="stale" />
-    <MonitorAppearanceSettings v-if="!previewMode" />
+    <MonitorAppearanceSettings v-if="!previewMode" :range="filter.range" :bucket-seconds="overview?.coverage.bucket_seconds" />
     <MonitorViewSwitcher v-model="view" :label="text('监控视图', 'Monitor view')" :items="viewItems">
       <span class="text-xs text-gray-500 dark:text-gray-400">{{ loading ? t('channelMonitorV2.updating') : updatedLabel }}</span>
     </MonitorViewSwitcher>
@@ -56,6 +56,7 @@ import { getErrors, type MonitorErrorRow, type MonitorFilter, type MonitorRange,
 import Select from '@/components/common/Select.vue'
 import MonitorAppearanceSettings from './MonitorAppearanceSettings.vue'
 import { provideMonitorPreferences } from './useMonitorPreferences'
+import { useMonitorHistoryFilter } from './useMonitorHistoryFilter'
 import { useMonitorPolling } from './useMonitorPolling'
 import { useObservationOverview } from './useObservationOverview'
 import FilterMultiSelect from './FilterMultiSelect.vue'
@@ -82,6 +83,7 @@ const preferences = provideMonitorPreferences(identity)
 const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const previewMode = computed(() => props.preview || Boolean(props.previewOverview))
 const filter = ref<MonitorFilter>({ range: previewMode.value ? '24h' : props.filter?.range ?? preferences.value.defaultRange, platforms: [...(props.filter?.platforms || [])], groupIds: [...(props.filter?.groupIds || [])], models: [...(props.filter?.models || [])] })
+useMonitorHistoryFilter(filter, preferences)
 const { data, loading, error, stale, load, cancel } = useObservationOverview(filter, ref(true), ref(false), identity)
 const overview = computed(() => {
   const raw = previewMode.value ? props.previewOverview : data.value

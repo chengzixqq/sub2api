@@ -34,7 +34,7 @@ export function useObservationOverview(filter: Ref<MonitorFilter>, admin: Ref<bo
     controller?.abort()
     const current = new AbortController()
     controller = current
-    const frozen = { range: filter.value.range, platforms: [...filter.value.platforms], groupIds: [...filter.value.groupIds], models: [...filter.value.models] }
+    const frozen = { ...filter.value, platforms: [...filter.value.platforms], groupIds: [...filter.value.groupIds], models: [...filter.value.models] }
     const key = JSON.stringify([frozen, admin.value, userPreview.value, identity.value, preview.value])
     if (key !== appliedKey) data.value = null
     // A refresh represents a new snapshot boundary. Keep the boundary stable
