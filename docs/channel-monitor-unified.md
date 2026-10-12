@@ -63,6 +63,16 @@ because a different model's probe succeeded. Historical combined attempt
 failures are exposed as `unclassified_attempts`; they are never promoted to
 channel errors.
 
+Completed requests whose result could not be confirmed as successful are counted
+as channel failures in the overview and request samples. Reliability is
+`success / (success + stored_channel_errors + stored_unknown_requests)`. This read policy
+also applies to historical aggregates, without rewriting their diagnostic facts.
+Unknown terminal requests count toward completed request totals and RPM, and no
+longer create an `unknown_outcome` coverage gap. Actual collection gaps remain
+visible. Client errors and cancellations keep their existing classifications;
+unresolved account attempts remain diagnostic because an HTTP header alone does
+not establish a completed request result.
+
 ## Source and Rollout Semantics
 
 `enabled` controls collection, not publication. `mode=shadow` serves official
@@ -87,7 +97,8 @@ failure is audited separately; no customer-billing path is invoked.
 The current-state window is five minutes, independent of the selected chart
 range. Insufficient traffic may use a probe younger than twenty minutes. A
 collector error/backlog blocks probe-based green status and automatic idle
-probing. Client errors, cancellation and incomplete streams remain distinct.
+probing. Client errors and cancellation remain distinct from channel failures;
+incomplete streams retain their error category while counting as channel failures.
 
 ## Migration and Capacity
 

@@ -22,7 +22,7 @@ func (r *coverageReasonObservationRepo) Query(ctx context.Context, f ChannelMoni
 	return out, nil
 }
 
-func TestObservationOverview_CoverageExplainsUnclassifiedOutcomes(t *testing.T) {
+func TestObservationOverview_UnknownFailuresDoNotCreateCoverageGaps(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		initial     string
@@ -32,9 +32,9 @@ func TestObservationOverview_CoverageExplainsUnclassifiedOutcomes(t *testing.T) 
 		wantState   string
 		wantReasons []string
 	}{
-		{name: "healthy collector with unclassified outcomes", initial: "complete", model: "visible", unknown: 1, wantState: "partial", wantReasons: []string{"unknown_outcome"}},
-		{name: "existing gap remains explained", initial: "partial", reasons: []string{"queue_loss"}, model: "visible", unknown: 1, wantState: "partial", wantReasons: []string{"queue_loss", "unknown_outcome"}},
-		{name: "stale state is not downgraded", initial: "stale", model: "visible", unknown: 1, wantState: "stale", wantReasons: []string{"unknown_outcome"}},
+		{name: "healthy collector with unknown failures", initial: "complete", model: "visible", unknown: 1, wantState: "complete", wantReasons: []string{}},
+		{name: "existing gap remains explained", initial: "partial", reasons: []string{"queue_loss"}, model: "visible", unknown: 1, wantState: "partial", wantReasons: []string{"queue_loss"}},
+		{name: "stale state is not upgraded", initial: "stale", reasons: []string{"aggregation_lag"}, model: "visible", unknown: 1, wantState: "stale", wantReasons: []string{"aggregation_lag"}},
 		{name: "healthy idle window is complete", initial: "complete", model: "visible", wantState: "complete", wantReasons: []string{}},
 		{name: "invisible model does not expose a gap", initial: "complete", model: "private", unknown: 1, wantState: "complete", wantReasons: []string{}},
 	} {

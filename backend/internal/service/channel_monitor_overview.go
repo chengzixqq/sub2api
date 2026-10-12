@@ -95,10 +95,14 @@ type ObservationOverview struct {
 }
 
 func observationMetrics(f ChannelMonitorObservationFact, cfg ChannelMonitorObservationConfig, platform string, group int64, model string, window time.Duration, admin bool) (ObservationMetrics, ObservationHealth) {
-	classified := f.SuccessRequests + f.ChannelErrors + f.ClientErrors + f.CancelledRequests
-	eligible := f.SuccessRequests + f.ChannelErrors
-	m := ObservationMetrics{SuccessRequests: f.SuccessRequests, ChannelErrors: f.ChannelErrors, ClientErrors: f.ClientErrors, CancelledRequests: f.CancelledRequests, UnknownRequests: f.UnknownRequests,
-		RequestCount: classified + f.UnknownRequests, SampleState: "no_samples", RetryRecoveredRequests: f.RetryRecoveredRequests, AttemptCount: f.AttemptCount,
+	// An observed terminal without confirmed success counts as a channel failure.
+	// Apply this policy when reading so historical aggregates follow the same rule
+	// while retaining the original facts and error categories for diagnostics.
+	channelErrors := f.ChannelErrors + f.UnknownRequests
+	classified := f.SuccessRequests + channelErrors + f.ClientErrors + f.CancelledRequests
+	eligible := f.SuccessRequests + channelErrors
+	m := ObservationMetrics{SuccessRequests: f.SuccessRequests, ChannelErrors: channelErrors, ClientErrors: f.ClientErrors, CancelledRequests: f.CancelledRequests,
+		RequestCount: classified, SampleState: "no_samples", RetryRecoveredRequests: f.RetryRecoveredRequests, AttemptCount: f.AttemptCount,
 		TTFT: ChannelMonitorObservationLatency(f.TTFTSumMs, f.TTFTCount, f.TTFTHistogram), Duration: ChannelMonitorObservationLatency(f.DurationSumMs, f.DurationCount, f.DurationHistogram)}
 	h := ObservationHealth{Reliability: "unknown", Latency: "unknown"}
 	if classified > 0 {
@@ -141,10 +145,9 @@ func observationMetrics(f ChannelMonitorObservationFact, cfg ChannelMonitorObser
 	}
 	if admin {
 		if window > 0 {
-			// Throughput is completed traffic. Unknown/in-flight observations are
-			// deliberately excluded so an open request cannot inflate RPM.
-			completed := f.SuccessRequests + f.ChannelErrors + f.ClientErrors + f.CancelledRequests
-			m.RPM = float64(completed) / window.Minutes()
+			// Facts contain completed traffic; in-flight requests are tracked
+			// separately and never enter this count.
+			m.RPM = float64(classified) / window.Minutes()
 			m.TPM = float64(f.InputTokens+f.OutputTokens+f.CacheReadTokens+f.CacheCreationTokens) / window.Minutes()
 		}
 		m.PhaseAvgMs = map[string]float64{}
@@ -431,15 +434,6 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 			continue
 		}
 		byGroup[fact.GroupID] = append(byGroup[fact.GroupID], fact)
-		if fact.UnknownRequests > 0 {
-			if out.Coverage.State == "complete" {
-				out.Coverage.State = "partial"
-			}
-			out.Coverage.CoverageComplete = false
-			if !observationHasString(out.Coverage.GapReasons, "unknown_outcome") {
-				out.Coverage.GapReasons = append(out.Coverage.GapReasons, "unknown_outcome")
-			}
-		}
 	}
 	for _, m := range modelCatalog {
 		out.Dimensions.Models = append(out.Dimensions.Models, m)

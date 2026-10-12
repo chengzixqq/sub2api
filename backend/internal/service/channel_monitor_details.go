@@ -105,6 +105,15 @@ func (s *ChannelMonitorOverviewService) AccountDetails(ctx context.Context, f Ch
 		if err != nil {
 			return nil, err
 		}
+		// Samples describe completed requests, unlike the account attempts above.
+		// Match the overview's conservative failure policy without changing the
+		// stored diagnostic outcome or its specific error category.
+		out.Samples = append([]ChannelMonitorObservationSample{}, out.Samples...)
+		for i := range out.Samples {
+			if out.Samples[i].Outcome == "unknown" {
+				out.Samples[i].Outcome = "channel_error"
+			}
+		}
 	}
 	return out, nil
 }

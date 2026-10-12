@@ -867,7 +867,7 @@ func (r *compactObservationRepository) ProbeActivity(ctx context.Context, groupI
 		return activity, err
 	}
 	activity.CollectionHealthy = started.Valid && failed == 0 && gaps == 0
-	err = tx.QueryRowContext(ctx, `SELECT MAX(bucket_start) FROM channel_monitor_compact_minute WHERE source='traffic' AND group_id=$1 AND model=$2 AND (protocol=$3 OR ($3='openai_responses' AND protocol='responses_websocket')) AND bucket_start>=$4 AND COALESCE((facts->>'success_requests')::bigint,0)+COALESCE((facts->>'channel_errors')::bigint,0)+COALESCE((facts->>'client_errors')::bigint,0)+COALESCE((facts->>'cancelled_requests')::bigint,0)>0`, groupID, model, protocol, now.Add(-48*time.Hour)).Scan(&latest)
+	err = tx.QueryRowContext(ctx, `SELECT MAX(bucket_start) FROM channel_monitor_compact_minute WHERE source='traffic' AND group_id=$1 AND model=$2 AND (protocol=$3 OR ($3='openai_responses' AND protocol='responses_websocket')) AND bucket_start>=$4 AND COALESCE((facts->>'success_requests')::bigint,0)+COALESCE((facts->>'channel_errors')::bigint,0)+COALESCE((facts->>'client_errors')::bigint,0)+COALESCE((facts->>'cancelled_requests')::bigint,0)+COALESCE((facts->>'unknown_requests')::bigint,0)>0`, groupID, model, protocol, now.Add(-48*time.Hour)).Scan(&latest)
 	if err != nil {
 		return activity, err
 	}

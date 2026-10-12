@@ -120,6 +120,67 @@ func TestObservationCurrentStatus_RecentTrafficOnlyAndCollectorFailure(t *testin
 	require.Equal(t, "collection_unavailable", status.Reason)
 }
 
+func TestObservationOverview_UnknownFailuresApplyToHistoricalAndCurrentMetrics(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Minute)
+	policy := DefaultChannelMonitorObservationConfig()
+	policy.Mode = "live"
+	repo := &unifiedObservationRepo{policy: policy, facts: []ChannelMonitorObservationFact{
+		{Source: "traffic", GroupID: 7, Model: "visible", BucketStart: now.Add(-30 * time.Minute), SuccessRequests: 100, UnknownRequests: 10, ErrorCategories: map[string]int64{"empty_output": 10}},
+		{Source: "traffic", GroupID: 7, Model: "visible", BucketStart: now.Add(-time.Minute), SuccessRequests: 50, UnknownRequests: 50, ErrorCategories: map[string]int64{"incomplete_stream": 50}},
+	}}
+	svc := NewChannelMonitorOverviewService(repo, &channelMonitorV2RepoStub{}, unifiedGroups{items: []Group{{ID: 7, Platform: PlatformOpenAI}}}, nil)
+	svc.SetModelCatalogue(func(context.Context, *Group) ([]string, error) { return []string{"visible"}, nil })
+	filter := ChannelMonitorV2Filter{Start: now.Add(-time.Hour), End: now, Bucket: 5 * time.Minute, RestrictGroups: true, AllowedGroupIDs: []int64{7}}
+	out, err := svc.Overview(context.Background(), filter, true, 1, false)
+	require.NoError(t, err)
+	require.Equal(t, "complete", out.Coverage.State)
+	require.True(t, out.Coverage.CoverageComplete)
+	require.NotContains(t, out.Coverage.GapReasons, "unknown_outcome")
+	require.Len(t, out.Items, 1)
+	channel := out.Items[0]
+	require.Len(t, channel.Models, 1)
+	model := channel.Models[0]
+	for _, metrics := range []ObservationMetrics{channel.Metrics, channel.Traffic, model.Metrics} {
+		require.EqualValues(t, 210, metrics.RequestCount)
+		require.EqualValues(t, 150, metrics.SuccessRequests)
+		require.EqualValues(t, 60, metrics.ChannelErrors)
+		require.Zero(t, metrics.UnknownRequests)
+		require.InDelta(t, 150.0/210, *metrics.ReliabilityRate, 1e-9)
+		require.InDelta(t, 150.0/210, *metrics.SuccessRate, 1e-9)
+		require.InDelta(t, 210.0/60, metrics.RPM, 1e-9)
+		require.Equal(t, map[string]int64{"empty_output": 10, "incomplete_stream": 50}, metrics.ErrorCategories)
+	}
+	require.Equal(t, "critical", channel.Health.Reliability)
+	require.Equal(t, channel.Health, model.Health)
+	require.Equal(t, "critical", channel.CurrentStatus.State)
+	require.Equal(t, "recent_traffic", channel.CurrentStatus.Reason)
+	require.Equal(t, channel.CurrentStatus, model.CurrentStatus)
+	require.Equal(t, channel.Buckets, model.Buckets)
+	var requests, errors int64
+	for _, bucket := range channel.Buckets {
+		requests += bucket.Metrics.RequestCount
+		errors += bucket.Metrics.ChannelErrors
+		require.Zero(t, bucket.Metrics.UnknownRequests)
+		if bucket.Metrics.RequestCount > 0 {
+			require.InDelta(t, float64(bucket.Metrics.SuccessRequests)/float64(bucket.Metrics.RequestCount), *bucket.Metrics.ReliabilityRate, 1e-9)
+		}
+	}
+	require.Equal(t, channel.Metrics.RequestCount, requests)
+	require.Equal(t, channel.Metrics.ChannelErrors, errors)
+	require.EqualValues(t, 10, repo.facts[0].UnknownRequests)
+	require.EqualValues(t, 50, repo.facts[1].UnknownRequests)
+}
+
+func TestObservationCurrentStatus_UnknownOnlyTrafficIsCritical(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Minute)
+	cfg := DefaultChannelMonitorObservationConfig()
+	facts := []ChannelMonitorObservationFact{{Source: "traffic", BucketStart: now.Add(-time.Minute), UnknownRequests: cfg.MinimumSample}}
+	status := observationCurrentStatus(facts, cfg, "openai", 7, "m", now, "healthy")
+	require.Equal(t, "critical", status.State)
+	require.Equal(t, "traffic", status.Source)
+	require.Equal(t, "recent_traffic", status.Reason)
+}
+
 func TestObservationCurrentStatus_ProbeNeverEntersTraffic(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Minute)
 	facts := []ChannelMonitorObservationFact{{Source: "probe", BucketStart: now.Add(-time.Minute), SuccessRequests: 100}}
