@@ -50,6 +50,27 @@ func (h *ChannelMonitorV2Handler) observationOverview(c *gin.Context, adminRoute
 	if !ok {
 		return
 	}
+	// Display defaults remain readable when aggregation is unavailable; never expose policy here.
+	if raw := c.Query("presentation_only"); raw != "" {
+		only, err := strconv.ParseBool(raw)
+		if err != nil {
+			response.BadRequest(c, "invalid presentation_only")
+			return
+		}
+		if only {
+			if _, exists := middleware.GetAuthSubjectFromContext(c); !exists {
+				response.Unauthorized(c, "user not found in context")
+				return
+			}
+			defaults, version, err := h.overview.PresentationDefaults(ctx)
+			if err != nil {
+				response.ErrorFrom(c, err)
+				return
+			}
+			response.Success(c, gin.H{"presentation_defaults": defaults, "presentation_defaults_version": version})
+			return
+		}
+	}
 	f, ok := h.parseObservationFilter(c)
 	if !ok {
 		return

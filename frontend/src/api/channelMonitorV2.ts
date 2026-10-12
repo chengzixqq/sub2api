@@ -334,7 +334,22 @@ export interface ObservationChannel {
   buckets: ObservationBucket[]
   models: ObservationModel[]
 }
+export interface MonitorPresentationDefaults {
+  density: 'compact' | 'comfortable'
+  columns: 'auto' | '2' | '3' | '4'
+  motion: 'system' | 'off'
+  metricDetails: boolean
+  expandModels: boolean
+  autoRefresh: boolean
+  defaultView: 'cards' | 'matrix' | 'trend'
+  defaultRange: MonitorRange
+  historyMode: 'auto' | 'interval' | 'count'
+  historyBucketMinutes: number
+  historyBarCount: number
+}
 export interface ObservationOverview {
+  presentation_defaults?: MonitorPresentationDefaults
+  presentation_defaults_version?: number
   refresh_interval_seconds?: number
   contract_version: 2
   source: 'compact' | 'legacy' | 'mixed' | 'terminal_v1'
@@ -353,6 +368,7 @@ export interface ObservationOverview {
   items: ObservationChannel[]
 }
 export interface ObservationConfig {
+  presentation_defaults?: MonitorPresentationDefaults
   version?: number
   enabled: boolean
   probe_enabled?: boolean
@@ -390,6 +406,14 @@ export async function getObservationOverview(filter: MonitorFilter, admin = fals
     audience: admin && options.audience === 'user' ? 'user' : undefined,
     preview: admin && options.preview ? true : undefined,
   }))
+  return data
+}
+export interface MonitorPresentationSnapshot {
+  presentation_defaults: MonitorPresentationDefaults
+  presentation_defaults_version: number
+}
+export async function getMonitorPresentationDefaults(admin = false, signal?: AbortSignal) {
+  const { data } = await apiClient.get<MonitorPresentationSnapshot>(`${base(admin)}/overview`, { params: { presentation_only: true }, signal })
   return data
 }
 export async function getObservationConfig(signal?: AbortSignal) {

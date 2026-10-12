@@ -18,7 +18,8 @@
       <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="refresh">{{ t('common.retry') }}</button>
     </div>
     <MonitorEvidenceStatus v-if="overview" :overview="overview" :stale="stale" />
-    <MonitorAppearanceSettings v-if="!previewMode" :range="filter.range" :bucket-seconds="overview?.coverage.bucket_seconds" />
+    <AdminMonitorAppearanceSettings v-if="!previewMode && auth.isOwner" :key="identity" :range="filter.range" :bucket-seconds="overview?.coverage.bucket_seconds" />
+    <MonitorAppearanceSettings v-else-if="!previewMode" :range="filter.range" :bucket-seconds="overview?.coverage.bucket_seconds" />
     <MonitorViewSwitcher v-model="view" :label="text('监控视图', 'Monitor view')" :items="viewItems">
       <span class="text-xs text-gray-500 dark:text-gray-400">{{ loading ? t('channelMonitorV2.updating') : updatedLabel }}</span>
     </MonitorViewSwitcher>
@@ -55,6 +56,8 @@ import { useAuthStore } from '@/stores/auth'
 import { getErrors, type MonitorErrorRow, type MonitorFilter, type MonitorRange, type ObservationBucket, type ObservationChannel, type ObservationOverview } from '@/api/channelMonitorV2'
 import Select from '@/components/common/Select.vue'
 import MonitorAppearanceSettings from './MonitorAppearanceSettings.vue'
+import AdminMonitorAppearanceSettings from './AdminMonitorAppearanceSettings.vue'
+import { useMonitorPresentationDefaults } from './useMonitorPresentationDefaults'
 import { provideMonitorPreferences } from './useMonitorPreferences'
 import { useMonitorHistoryFilter } from './useMonitorHistoryFilter'
 import { useMonitorPolling } from './useMonitorPolling'
@@ -94,8 +97,9 @@ const overview = computed(() => {
   return { ...raw, items: items.filter(item => !filter.value.models.length || item.models.length > 0) }
 })
 const view = ref<'cards' | 'matrix' | 'advanced'>(preferences.value.defaultView === 'trend' ? 'advanced' : preferences.value.defaultView)
-watch(() => preferences.value.defaultView, value => { view.value = value === 'trend' ? 'advanced' : value })
-watch(() => preferences.value.defaultRange, value => { if (!previewMode.value) filter.value.range = value })
+watch(() => preferences.value.defaultView, (value, previous) => { if (!preferences.applyingDefaults.value || view.value === (previous === 'trend' ? 'advanced' : previous)) view.value = value === 'trend' ? 'advanced' : value }, { flush: 'sync' })
+watch(() => preferences.value.defaultRange, (value, previous) => { if (!previewMode.value && (!preferences.applyingDefaults.value || (!props.filter?.range && filter.value.range === previous))) filter.value.range = value }, { flush: 'sync' })
+useMonitorPresentationDefaults(preferences, identity, ref(true), overview, computed(() => !previewMode.value))
 watch(identity, () => {
   view.value = preferences.value.defaultView === 'trend' ? 'advanced' : preferences.value.defaultView
   filter.value = { range: previewMode.value ? props.previewRange ?? '24h' : preferences.value.defaultRange, platforms: [], groupIds: [], models: [] }

@@ -66,6 +66,7 @@ import { summarizeMonitorTraffic } from '@/features/channel-monitor-v2/monitorSu
 import { formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
 import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
+import { useMonitorPresentationDefaults } from '@/features/channel-monitor-v2/useMonitorPresentationDefaults'
 import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
 import { useMonitorHistoryFilter } from '@/features/channel-monitor-v2/useMonitorHistoryFilter'
 import { useMonitorPolling } from '@/features/channel-monitor-v2/useMonitorPolling'
@@ -93,8 +94,10 @@ useMonitorHistoryFilter(filter, preferences)
 const preview = ref(false)
 const { data: overview, loading, error, stale, errorStatus, load } = useObservationOverview(filter, isAdmin, ref(false), identity, preview)
 const viewMode = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)
-watch(() => preferences.value.defaultView, value => { viewMode.value = value })
-watch(() => preferences.value.defaultRange, value => { filter.value.range = value })
+watch(() => preferences.value.defaultView, (value, previous) => { if (!preferences.applyingDefaults.value || viewMode.value === previous) viewMode.value = value }, { flush: 'sync' })
+const hasInitialRange = ranges.includes(route.query.range as MonitorRange)
+watch(() => preferences.value.defaultRange, (value, previous) => { if (!preferences.applyingDefaults.value || (!hasInitialRange && filter.value.range === previous)) filter.value.range = value }, { flush: 'sync' })
+useMonitorPresentationDefaults(preferences, identity, isAdmin, overview, ref(true))
 const viewItems = computed(() => [
   { value: 'cards', label: t('channelMonitorV2.dashboard.views.cards') },
   { value: 'matrix', label: t('channelMonitorV2.dashboard.views.matrix') },

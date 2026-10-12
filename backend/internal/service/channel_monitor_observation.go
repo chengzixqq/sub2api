@@ -78,6 +78,7 @@ type ChannelMonitorEventSink interface {
 }
 
 type ChannelMonitorObservationConfig struct {
+	PresentationDefaults    *ChannelMonitorPresentationDefaults `json:"presentation_defaults,omitempty"`
 	Version                 int                                 `json:"version"`
 	Enabled                 bool                                `json:"enabled"`
 	ProbeEnabled            bool                                `json:"probe_enabled"`
@@ -99,6 +100,37 @@ type ChannelMonitorObservationConfig struct {
 	WarningTTFTMs           int64                               `json:"warning_ttft_ms"`
 	CriticalTTFTMs          int64                               `json:"critical_ttft_ms"`
 	Overrides               []ChannelMonitorObservationOverride `json:"overrides"`
+}
+
+// Presentation defaults are public display preferences, independent of collection policy.
+type ChannelMonitorPresentationDefaults struct {
+	Density              string `json:"density"`
+	Columns              string `json:"columns"`
+	Motion               string `json:"motion"`
+	MetricDetails        bool   `json:"metricDetails"`
+	ExpandModels         bool   `json:"expandModels"`
+	AutoRefresh          bool   `json:"autoRefresh"`
+	DefaultView          string `json:"defaultView"`
+	DefaultRange         string `json:"defaultRange"`
+	HistoryMode          string `json:"historyMode"`
+	HistoryBucketMinutes int    `json:"historyBucketMinutes"`
+	HistoryBarCount      int    `json:"historyBarCount"`
+}
+
+func DefaultChannelMonitorPresentationDefaults() ChannelMonitorPresentationDefaults {
+	return ChannelMonitorPresentationDefaults{Density: "compact", Columns: "auto", Motion: "system", MetricDetails: true, AutoRefresh: true, DefaultView: "cards", DefaultRange: "24h", HistoryMode: "auto", HistoryBucketMinutes: 5, HistoryBarCount: 60}
+}
+func (c ChannelMonitorObservationConfig) DisplayDefaults() ChannelMonitorPresentationDefaults {
+	if c.PresentationDefaults != nil {
+		return *c.PresentationDefaults
+	}
+	return DefaultChannelMonitorPresentationDefaults()
+}
+func (p ChannelMonitorPresentationDefaults) Validate() error {
+	if !observationHasString([]string{"compact", "comfortable"}, p.Density) || !observationHasString([]string{"auto", "2", "3", "4"}, p.Columns) || !observationHasString([]string{"system", "off"}, p.Motion) || !observationHasString([]string{"cards", "matrix", "trend"}, p.DefaultView) || !observationHasString([]string{"90m", "24h", "7d", "30d"}, p.DefaultRange) || !observationHasString([]string{"auto", "interval", "count"}, p.HistoryMode) || p.HistoryBucketMinutes < 1 || p.HistoryBucketMinutes > 43200 || p.HistoryBarCount < 1 || p.HistoryBarCount > 720 {
+		return errors.New("invalid monitor presentation defaults")
+	}
+	return nil
 }
 
 type ChannelMonitorObservationOverride struct {
@@ -129,6 +161,9 @@ func validObservationIdentifier(s string) bool {
 }
 
 func ValidateChannelMonitorObservationConfig(cfg ChannelMonitorObservationConfig) error {
+	if err := cfg.DisplayDefaults().Validate(); err != nil {
+		return err
+	}
 	if cfg.Mode != "shadow" && cfg.Mode != "live" {
 		return errors.New("invalid observation mode")
 	}

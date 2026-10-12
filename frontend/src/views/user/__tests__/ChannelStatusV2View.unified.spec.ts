@@ -149,7 +149,7 @@ describe('unified channel monitor page', () => {
     expect(api.getObservationOverview).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
-    await wrapper.get('[data-testid="pref-auto-refresh"]').setValue(false)
+    await wrapper.get('[data-testid="pref-auto-refresh"]').trigger('click')
     await vi.advanceTimersByTimeAsync(240_000)
     expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
     wrapper.unmount()

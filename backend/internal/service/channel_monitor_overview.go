@@ -83,13 +83,15 @@ type ObservationCoverage struct {
 }
 
 type ObservationOverview struct {
-	RefreshIntervalSeconds int                        `json:"refresh_interval_seconds"`
-	ContractVersion        int                        `json:"contract_version"`
-	Source                 string                     `json:"source"`
-	Mode                   string                     `json:"mode"`
-	Coverage               ObservationCoverage        `json:"coverage"`
-	Dimensions             ChannelMonitorV2Dimensions `json:"dimensions"`
-	Items                  []ObservationChannel       `json:"items"`
+	PresentationDefaults        ChannelMonitorPresentationDefaults `json:"presentation_defaults"`
+	PresentationDefaultsVersion int                                `json:"presentation_defaults_version"`
+	RefreshIntervalSeconds      int                                `json:"refresh_interval_seconds"`
+	ContractVersion             int                                `json:"contract_version"`
+	Source                      string                             `json:"source"`
+	Mode                        string                             `json:"mode"`
+	Coverage                    ObservationCoverage                `json:"coverage"`
+	Dimensions                  ChannelMonitorV2Dimensions         `json:"dimensions"`
+	Items                       []ObservationChannel               `json:"items"`
 }
 
 func observationMetrics(f ChannelMonitorObservationFact, cfg ChannelMonitorObservationConfig, platform string, group int64, model string, window time.Duration, admin bool) (ObservationMetrics, ObservationHealth) {
@@ -195,6 +197,14 @@ type ChannelMonitorOverviewService struct {
 
 func NewChannelMonitorOverviewService(repo ChannelMonitorObservationRepository, legacy ChannelMonitorV2Repository, groups GroupRepository, collector *ChannelMonitorCollector) *ChannelMonitorOverviewService {
 	return &ChannelMonitorOverviewService{repo: repo, legacy: legacy, groups: groups, collector: collector, cache: map[string]observationCached{}, pending: map[string]*observationPending{}}
+}
+
+func (s *ChannelMonitorOverviewService) PresentationDefaults(ctx context.Context) (ChannelMonitorPresentationDefaults, int, error) {
+	cfg, err := s.repo.GetConfig(ctx)
+	if err != nil {
+		return ChannelMonitorPresentationDefaults{}, 0, err
+	}
+	return cfg.DisplayDefaults(), cfg.Version, nil
 }
 
 func (s *ChannelMonitorOverviewService) GetConfig(ctx context.Context) (*ChannelMonitorObservationConfig, error) {
@@ -404,7 +414,7 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 		pending := snapshot.Coverage.PendingEvents
 		coverage.PendingEvents = &pending
 	}
-	out := &ObservationOverview{ContractVersion: 2, Source: "compact", Mode: policy.Mode, RefreshIntervalSeconds: policy.RefreshIntervalSeconds, Coverage: coverage, Dimensions: dims, Items: []ObservationChannel{}}
+	out := &ObservationOverview{PresentationDefaults: policy.DisplayDefaults(), PresentationDefaultsVersion: policy.Version, ContractVersion: 2, Source: "compact", Mode: policy.Mode, RefreshIntervalSeconds: policy.RefreshIntervalSeconds, Coverage: coverage, Dimensions: dims, Items: []ObservationChannel{}}
 	byGroup := map[int64][]ChannelMonitorObservationFact{}
 	for _, fact := range snapshot.Facts {
 		g, ok := allowed[fact.GroupID]
@@ -421,9 +431,14 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 			continue
 		}
 		byGroup[fact.GroupID] = append(byGroup[fact.GroupID], fact)
-		if fact.UnknownRequests > 0 && out.Coverage.State == "complete" {
-			out.Coverage.State = "partial"
+		if fact.UnknownRequests > 0 {
+			if out.Coverage.State == "complete" {
+				out.Coverage.State = "partial"
+			}
 			out.Coverage.CoverageComplete = false
+			if !observationHasString(out.Coverage.GapReasons, "unknown_outcome") {
+				out.Coverage.GapReasons = append(out.Coverage.GapReasons, "unknown_outcome")
+			}
 		}
 	}
 	for _, m := range modelCatalog {

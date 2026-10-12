@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Select from '@/components/common/Select.vue'
 import MonitorAppearanceSettings from '../MonitorAppearanceSettings.vue'
-import { provideMonitorPreferences } from '../useMonitorPreferences'
+import { DEFAULT_MONITOR_PREFERENCES, provideMonitorPreferences, type MonitorPreferenceState } from '../useMonitorPreferences'
 
 vi.mock('vue-i18n', async original => ({ ...await original<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, locale: { value: 'en' } }) }))
 beforeEach(() => localStorage.clear())
@@ -12,6 +12,52 @@ const mountSettings = (identity = ref('user:1:workspace:1')) => mount(defineComp
 const saved = (identity = 'user:1:workspace:1') => JSON.parse(localStorage.getItem(identity + ':presentation') || 'null')
 
 describe('history settings UI', () => {
+  it('keeps an unfinished history draft across background default changes until apply or reset', async () => {
+    let preferences!: MonitorPreferenceState
+    const wrapper = mount(defineComponent({ setup() {
+      preferences = provideMonitorPreferences(ref('draft:user'))
+      return () => h(MonitorAppearanceSettings)
+    } }))
+    preferences.setDefaults({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'interval' })
+    await flushPromises()
+    await wrapper.get('[data-testid="pref-history-minutes"]').setValue('35')
+    preferences.setDefaults({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'interval' })
+    await flushPromises()
+    expect((wrapper.get('[data-testid="pref-history-minutes"]').element as HTMLInputElement).value).toBe('35')
+    expect(saved('draft:user')).toBeNull()
+    preferences.setDefaults({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'interval', density: 'comfortable' })
+    await flushPromises()
+    expect((wrapper.get('[data-testid="pref-history-minutes"]').element as HTMLInputElement).value).toBe('35')
+    preferences.setDefaults({ ...DEFAULT_MONITOR_PREFERENCES, historyMode: 'count', historyBarCount: 72, density: 'comfortable' })
+    await flushPromises()
+    expect((wrapper.get('[data-testid="pref-history-minutes"]').element as HTMLInputElement).value).toBe('35')
+    expect(preferences.value.historyMode).toBe('count')
+    await wrapper.get('form').trigger('submit')
+    expect(saved('draft:user')).toMatchObject({ historyMode: 'interval', historyBucketMinutes: 35 })
+    expect(preferences.value).toMatchObject({ historyMode: 'interval', historyBucketMinutes: 35, density: 'comfortable' })
+    preferences.reset()
+    await flushPromises()
+    expect((wrapper.get('[data-testid="pref-history-count"]').element as HTMLInputElement).value).toBe('72')
+    wrapper.unmount()
+  })
+
+  it('opens its disclosure accessibly and uses the native animated switches', async () => {
+    const wrapper = mountSettings()
+    const trigger = wrapper.get('[data-testid="pref-disclosure"]')
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    await trigger.trigger('click')
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+    const toggle = wrapper.get('[data-testid="pref-auto-refresh"]')
+    expect(toggle.attributes('role')).toBe('switch')
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    await toggle.trigger('click')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(saved()).toMatchObject({ autoRefresh: false })
+    await trigger.trigger('click')
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    wrapper.unmount()
+  })
+
   it('uses the selected preview range rather than forcing the draft to 24h', async () => {
     const range = ref<'90m' | '7d'>('7d')
     const wrapper = mount(defineComponent({ setup() { provideMonitorPreferences(ref('preview')); return () => h(MonitorAppearanceSettings, { preview: true, range: range.value }) } }))

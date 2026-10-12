@@ -28,6 +28,25 @@ function snapshot(state: ObservationOverview['coverage']['state'] = 'partial'): 
 }
 
 describe('monitor evidence status', () => {
+  it('explains partial coverage from unknown outcomes even while collection is healthy', async () => {
+    const data = snapshot()
+    data.source = 'compact'
+    data.coverage.collector_state = 'healthy'
+    data.coverage.aggregation_lag_seconds = 5
+    data.coverage.coverage_start = data.coverage.requested_start
+    data.coverage.gap_reasons = ['unknown_outcome']
+    const i18n = createI18n({ legacy: false, locale: 'zh', messages })
+    const wrapper = mount(MonitorEvidenceStatus, { props: { overview: data }, global: { plugins: [i18n] } })
+    expect(wrapper.text()).toContain('采集正常')
+    expect(wrapper.text()).toContain('部分覆盖')
+    expect(wrapper.text()).toContain('存在结果未归类的请求，统计覆盖不完整')
+    expect(wrapper.text()).not.toContain('unknown_outcome')
+    i18n.global.locale.value = 'en'
+    await nextTick()
+    expect(wrapper.text()).toContain('Some request outcomes are unclassified; coverage is incomplete')
+    wrapper.unmount()
+  })
+
   it('reports coverage state, actual coverage window, lag and every gap without inventing a coverage rate', () => {
     const i18n = createI18n({ legacy: false, locale: 'zh', messages })
     const wrapper = mount(MonitorEvidenceStatus, { props: { overview: snapshot() }, global: { plugins: [i18n] } })

@@ -1,18 +1,9 @@
 import { computed, inject, provide, ref, watch, type InjectionKey, type Ref } from 'vue'
-import type { MonitorRange } from '@/api/channelMonitorV2'
-import { isHistoryBarCount, isHistoryBucketMinutes, type MonitorHistoryPreferences } from './monitorHistoryPreferences'
+import type { MonitorPresentationDefaults } from '@/api/channelMonitorV2'
+import { isHistoryBarCount, isHistoryBucketMinutes } from './monitorHistoryPreferences'
 import './monitorPreferences.css'
 
-export interface MonitorPreferences extends MonitorHistoryPreferences {
-  density: 'compact' | 'comfortable'
-  columns: 'auto' | '2' | '3' | '4'
-  motion: 'system' | 'off'
-  metricDetails: boolean
-  expandModels: boolean
-  autoRefresh: boolean
-  defaultView: 'cards' | 'matrix' | 'trend'
-  defaultRange: MonitorRange
-}
+export type MonitorPreferences = MonitorPresentationDefaults
 export const DEFAULT_MONITOR_PREFERENCES: MonitorPreferences = {
   density: 'compact', columns: 'auto', motion: 'system', metricDetails: true,
   expandModels: false, autoRefresh: true, defaultView: 'cards', defaultRange: '24h',
@@ -31,28 +22,80 @@ export function normalizeMonitorPreferences(input: unknown): MonitorPreferences 
   if (isHistoryBarCount(raw.historyBarCount)) result.historyBarCount = raw.historyBarCount
   return result
 }
-const preferenceKey: InjectionKey<Ref<MonitorPreferences>> = Symbol('monitor-preferences')
-export function provideMonitorPreferences(identity: Ref<string>) {
+export interface MonitorPreferenceState extends Ref<MonitorPreferences> {
+  setDefaults: (value: unknown, version?: number) => void
+  reset: () => void
+  applyingDefaults: Ref<boolean>
+}
+const preferenceKey: InjectionKey<MonitorPreferenceState> = Symbol('monitor-preferences')
+const keys = Object.keys(DEFAULT_MONITOR_PREFERENCES) as (keyof MonitorPreferences)[]
+function overridesFrom(input: unknown, legacy = false): Partial<MonitorPreferences> {
+  if (!input || typeof input !== 'object') return {}
+  const raw = input as Record<string, unknown>
+  const normalized = normalizeMonitorPreferences(raw)
+  return Object.fromEntries(keys.filter(key => Object.prototype.hasOwnProperty.call(raw, key) && raw[key] === normalized[key] && (!legacy || normalized[key] !== DEFAULT_MONITOR_PREFERENCES[key])).map(key => [key, normalized[key]]))
+}
+export function provideMonitorPreferences(identity: Ref<string>, options: { isolated?: boolean; persist?: boolean } = {}) {
   const inherited = inject(preferenceKey, null)
-  if (inherited) return inherited
-  const preferences = ref({ ...DEFAULT_MONITOR_PREFERENCES })
+  if (inherited && !options.isolated) return inherited
+  const preferences = ref({ ...DEFAULT_MONITOR_PREFERENCES }) as MonitorPreferenceState
+  let defaults = { ...DEFAULT_MONITOR_PREFERENCES }
+  let defaultsVersion = -1
+  let overrides: Partial<MonitorPreferences> = {}
+  let previous = { ...preferences.value }
   let restoring = false
-  watch(identity, value => {
+  const applyingDefaults = ref(false)
+  function apply(skipUnchanged = false) {
     restoring = true
-    try { preferences.value = normalizeMonitorPreferences(JSON.parse(localStorage.getItem(`${value}:presentation`) || 'null')) }
-    catch { preferences.value = { ...DEFAULT_MONITOR_PREFERENCES } }
-    finally { restoring = false }
+    const next = { ...defaults, ...overrides }
+    // Overview polling must not reset an unfinished editor draft when nothing changed.
+    if (!skipUnchanged || keys.some(key => next[key] !== preferences.value[key])) preferences.value = next
+    previous = { ...preferences.value }
+    restoring = false
+  }
+  function persist() {
+    if (options.persist === false) return
+    try { localStorage.setItem(`${identity.value}:presentation`, JSON.stringify({ __version: 2, ...overrides })) }
+    catch { /* Browser preferences remain usable when storage is unavailable. */ }
+  }
+  preferences.applyingDefaults = applyingDefaults
+  preferences.setDefaults = (value, version) => {
+    const incomingVersion = typeof version === 'number' && Number.isSafeInteger(version) && version >= 0 ? version : -1
+    // Config revision, not request completion order, determines which defaults are current.
+    if (incomingVersion < defaultsVersion) return
+    defaultsVersion = incomingVersion
+    applyingDefaults.value = true
+    defaults = normalizeMonitorPreferences(value)
+    apply(true)
+    applyingDefaults.value = false
+  }
+  preferences.reset = () => { overrides = {}; apply(); persist() }
+  watch(identity, () => {
+    defaults = { ...DEFAULT_MONITOR_PREFERENCES }
+    defaultsVersion = -1
+    overrides = {}
+    if (options.persist !== false) {
+      try {
+        const stored = JSON.parse(localStorage.getItem(`${identity.value}:presentation`) || 'null')
+        overrides = overridesFrom(stored, stored?.__version !== 2)
+      } catch { /* Invalid browser data falls back to site defaults. */ }
+    }
+    apply()
   }, { immediate: true, flush: 'sync' })
   watch(preferences, value => {
     if (restoring) return
-    try { localStorage.setItem(`${identity.value}:presentation`, JSON.stringify(normalizeMonitorPreferences(value))) }
-    catch { /* Browser preferences remain usable when storage is unavailable. */ }
+    const normalized = normalizeMonitorPreferences(value)
+    for (const key of keys) {
+      if (normalized[key] !== previous[key]) Object.assign(overrides, { [key]: normalized[key] })
+    }
+    previous = { ...normalized }
+    persist()
   }, { deep: true, flush: 'sync' })
   provide(preferenceKey, preferences)
   return preferences
 }
 export function useMonitorPreferences() {
-  return inject(preferenceKey, ref({ ...DEFAULT_MONITOR_PREFERENCES }))
+  return inject(preferenceKey, null) || Object.assign(ref({ ...DEFAULT_MONITOR_PREFERENCES }), { setDefaults: () => {}, reset: () => {}, applyingDefaults: ref(false) })
 }
 export function useMonitorMotion() {
   const preferences = useMonitorPreferences()
