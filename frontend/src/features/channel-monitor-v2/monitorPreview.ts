@@ -15,6 +15,7 @@ import type {
  */
 export type MonitorPreviewScenarioId =
   | 'normal'
+  | 'card-gallery'
   | 'high-latency'
   | 'high-error'
   | 'probe-no-traffic'
@@ -86,14 +87,15 @@ function health(reliability: ObservationHealth['reliability'] = 'healthy', laten
   return { reliability, latency: latencyState }
 }
 
-function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false): ObservationBucket[] {
+function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth, withGap = false, count = 6): ObservationBucket[] {
   const { start } = windowTimes()
-  const indices = Array.from({ length: 6 }, (_, index) => index).filter(index => !withGap || index !== 2)
+  const bucketHours = 24 / count
+  const indices = Array.from({ length: count }, (_, index) => index).filter(index => !withGap || index !== 2)
   // Allocate whole events across observed buckets so the visible history
   // reconciles with the channel summary, including incomplete coverage.
   const distribute = (total: number, slot: number) => Math.floor(total * (slot + 1) / indices.length) - Math.floor(total * slot / indices.length)
   return indices.map((index, slot) => {
-    const bucketStart = iso(start + index * BUCKET_HOURS * HOUR)
+    const bucketStart = iso(start + index * bucketHours * HOUR)
     const successes = distribute(value.success_requests ?? 0, slot)
     const categories = value.error_categories ? Object.fromEntries(Object.entries(value.error_categories).map(([category, count]) => [category, distribute(count, slot)])) : undefined
     const errors = categories ? Object.values(categories).reduce((total, count) => total + count, 0) : distribute(value.channel_errors ?? 0, slot)
@@ -113,8 +115,8 @@ function bucketSeries(value: ObservationMetrics, bucketHealth: ObservationHealth
         cancelled_requests: cancelled,
         reliability_rate: reliability,
         success_rate: requestCount ? successes / requestCount : null,
-        rpm: requestCount / (BUCKET_HOURS * 60),
-        tpm: requestCount * 820 / (BUCKET_HOURS * 60),
+        rpm: requestCount / (bucketHours * 60),
+        tpm: requestCount * 820 / (bucketHours * 60),
         attempt_count: distribute(value.attempt_count ?? 0, slot),
         retry_recovered_requests: distribute(value.retry_recovered_requests ?? 0, slot),
         ttft: { ...value.ttft, sample_count: Math.min(successes, distribute(value.ttft.sample_count, slot)) },
@@ -270,7 +272,24 @@ const coverageItems = [
   channel(602, 'Legacy backfill', 'openai', errorMetrics, health('warning', 'warning'), { source: 'legacy', buckets: bucketSeries(errorMetrics, health('warning', 'warning'), true) }),
 ]
 
+// A denser local fixture exercises the real two/three-column card layout.
+const galleryItems = [
+  channel(801, 'Claude Standard', 'anthropic', metrics({ request_count: 6000, channel_errors: 18, cache_rate: .634, ttft: latency(3870) }), health(), { source: 'compact', rate_multiplier: 1.3 }),
+  channel(802, 'Claude Backup', 'anthropic', metrics({ request_count: 6000, channel_errors: 120, cache_rate: .56, ttft: latency(5630) }), health('warning'), { source: 'compact', rate_multiplier: .2 }),
+  channel(803, 'ChatGPT Standard', 'openai', metrics({ request_count: 6000, channel_errors: 24, cache_rate: .868, ttft: latency(4360) }), health(), { source: 'compact', rate_multiplier: .15 }),
+  channel(804, 'ChatGPT Priority', 'openai', metrics({ request_count: 6000, channel_errors: 6, cache_rate: .733, ttft: latency(2700) }), health(), { source: 'compact', rate_multiplier: .25 }),
+  channel(805, 'ChatGPT Backup', 'openai', metrics({ request_count: 6000, channel_errors: 900, cache_rate: .945, ttft: latency(8630) }), health('critical'), { source: 'compact', rate_multiplier: .04, probe: { status: 'error', consecutive_failures: 2 } }),
+]
+
+for (const item of galleryItems) {
+  item.buckets = bucketSeries(item.metrics, item.health, false, 18)
+  for (const entry of item.models) entry.buckets = bucketSeries(entry.metrics, entry.health, false, 18)
+}
+const galleryOverview = overview('compact', galleryItems)
+galleryOverview.coverage.bucket_seconds = 24 * 3600 / 18
+
 export const MONITOR_PREVIEW_SCENARIOS: readonly MonitorPreviewScenario[] = [
+  { id: 'card-gallery', label: 'Card gallery', description: 'Five fictional channels for responsive visual review; no live data.', source: 'compact', state: 'ready', overview: galleryOverview },
   { id: 'normal', label: 'Normal · compact', description: 'Healthy traffic with complete compact coverage over a fixed 24h window.', source: 'compact', state: 'ready', overview: overview('compact', normalItems) },
   { id: 'high-latency', label: 'High latency', description: 'Reliability is healthy while TTFT breaches the critical threshold.', source: 'compact', state: 'ready', overview: overview('compact', slowItems) },
   { id: 'high-error', label: 'High error · legacy', description: 'Legacy traffic has a critical error rate and classified failures.', source: 'legacy', state: 'ready', overview: overview('legacy', errorItems) },
@@ -296,7 +315,7 @@ function redactMetrics(value: ObservationMetrics): void {
 }
 
 export function getMonitorPreviewScenario(id: MonitorPreviewScenarioId, role: MonitorPreviewRole = 'admin'): MonitorPreviewScenario {
-  const scenario = MONITOR_PREVIEW_SCENARIOS.find(item => item.id === id) || MONITOR_PREVIEW_SCENARIOS[0]
+  const scenario = MONITOR_PREVIEW_SCENARIOS.find(item => item.id === id) || MONITOR_PREVIEW_SCENARIOS.find(item => item.id === 'normal')!
   const copy = JSON.parse(JSON.stringify(scenario)) as MonitorPreviewScenario
   if (role === 'user' && copy.overview) {
     for (const item of copy.overview.items) {

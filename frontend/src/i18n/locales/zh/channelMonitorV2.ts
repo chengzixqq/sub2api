@@ -23,12 +23,13 @@ export default {
     },
     platforms: { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', antigravity: 'Antigravity', grok: 'Grok', kimi: 'Kimi', zhipu: '智谱 GLM', deepseek: 'DeepSeek', minimax: 'MiniMax', opencode_go: 'OpenCode', composite: '综合' },
     preview: {
-      channelNames: { '101': 'Claude 主力渠道', '102': 'OpenAI 备用渠道', '201': 'Claude 高延迟渠道', '202': 'Gemini 预热渠道', '301': 'OpenAI 旧版账号池', '401': '新增探针目标', '501': '额度受限账号', '502': '额度同步异常', '601': '混合来源历史', '602': '旧版历史回填' },
+      channelNames: { '801': 'Claude 标准渠道', '802': 'Claude 备用渠道', '803': 'ChatGPT 标准渠道', '804': 'ChatGPT 优先渠道', '805': 'ChatGPT 备用渠道', '101': 'Claude 主力渠道', '102': 'OpenAI 备用渠道', '201': 'Claude 高延迟渠道', '202': 'Gemini 预热渠道', '301': 'OpenAI 旧版账号池', '401': '新增探针目标', '501': '额度受限账号', '502': '额度同步异常', '601': '混合来源历史', '602': '旧版历史回填' },
       language: '预览语言',
       eyebrow: '本地开发夹具', title: '渠道监控预览', description: '无需登录即可检查本地监控夹具。切换场景和角色，核对证据层级；预览不会请求线上数据。', userEyebrow: '预览监控', userTitle: '渠道可用性', userSubtitle: '按渠道汇总真实流量；此用户预览不包含运营计数。',
       darkTheme: '深色主题', lightTheme: '浅色主题', adminView: '管理员视图', userView: '用户视图', scenario: '场景', quickScenarios: '快捷场景', previewRole: '预览角色', admin: '管理员', user: '用户',
       showHealthy: '查看正常状态', error: '预览请求失败（HTTP {status}）。此夹具没有保留快照。', loading: '正在加载监控依据…', coverage: '覆盖状态：{state}', viewLabel: '预览视图', cards: '卡片', matrix: '矩阵', trend: '趋势', emptyTitle: '当前范围没有匹配的渠道', emptyDescription: '这是预期的空状态，预览不会调用 API。',
       scenarios: {
+        'card-gallery': { label: '多渠道卡片', description: '五个虚构渠道，用于检查卡片布局和状态颜色，不代表线上数据。' },
         normal: { label: '正常 · compact', description: '固定 24 小时窗口内，compact 数据覆盖完整且真实流量正常。' },
         'high-latency': { label: '高延迟', description: '可靠性正常，但首字延迟超过严重阈值。' },
         'high-error': { label: '高错误 · legacy', description: 'legacy 真实流量错误率严重，并且有已分类失败。' },

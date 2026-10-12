@@ -21,14 +21,14 @@ describe('admin observation card evidence', () => {
   it('does not fabricate zero errors when there are no real traffic samples', () => {
     const empty = { ...item, metrics: { ...metrics, sample_state: 'no_samples' as const, request_count: 0, channel_errors: 0, attempt_count: 0 } }
     const wrapper = shallowMount(ObservationGroupCard, { props: { item: empty, coverage, admin: true } })
-    const counts = wrapper.findAll('dl')[1].findAll('dd').map(cell => cell.text())
+    const counts = wrapper.get('[data-testid="card-traffic-counts"]').findAll('dd').map(cell => cell.text())
     expect(counts).toEqual(['—', '—', '—'])
     expect(wrapper.get('[data-testid="card-data-quality"]').text()).toContain('states.no_samples')
     wrapper.unmount()
   })
   it('uses explicit traffic metrics and keeps admin details out of a user card', () => {
     const wrapper = shallowMount(ObservationGroupCard, { props: { item: { ...item, traffic: { ...metrics, channel_errors: 0, error_categories: {} } }, coverage, admin: true } })
-    expect(wrapper.findAll('dl')[1].findAll('dd')[1].text()).toBe('0')
+    expect(wrapper.get('[data-testid="card-traffic-counts"]').findAll('dd')[1].text()).toBe('0')
     expect(wrapper.get('[data-testid="card-data-quality"]').text()).toContain('No observed channel errors')
     wrapper.unmount()
     const user = shallowMount(ObservationGroupCard, { props: { item, coverage } })

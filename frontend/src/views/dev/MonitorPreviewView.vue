@@ -55,6 +55,7 @@
       <AdminMonitorDashboard v-if="overview && role === 'admin'" :key="scenarioId" :preview-overview="overview" preview />
       <template v-else-if="overview">
         <MonitorOverviewHero
+          v-if="view !== 'cards'"
           :eyebrow="t('channelMonitorV2.preview.userEyebrow')"
           :title="t('channelMonitorV2.preview.userTitle')"
           :subtitle="t('channelMonitorV2.preview.userSubtitle')"
@@ -106,8 +107,8 @@ import { getMonitorPreviewScenario, MONITOR_PREVIEW_SCENARIOS, type MonitorPrevi
 
 const scenarios = MONITOR_PREVIEW_SCENARIOS
 const { t, te, locale } = useI18n()
-const scenarioId = ref<MonitorPreviewScenarioId>('normal')
-const role = ref<MonitorPreviewRole>('admin')
+const scenarioId = ref<MonitorPreviewScenarioId>('card-gallery')
+const role = ref<MonitorPreviewRole>('user')
 const view = ref<'cards' | 'matrix' | 'trend'>('cards')
 const layout = ref<'cards' | 'list'>('cards')
 const darkTheme = ref(false)

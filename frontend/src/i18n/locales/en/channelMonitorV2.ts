@@ -23,12 +23,13 @@ export default {
     },
     platforms: { anthropic: 'Anthropic', openai: 'OpenAI', gemini: 'Gemini', antigravity: 'Antigravity', grok: 'Grok', kimi: 'Kimi', zhipu: 'Zhipu GLM', deepseek: 'DeepSeek', minimax: 'MiniMax', opencode_go: 'OpenCode', composite: 'Composite' },
     preview: {
-      channelNames: { '101': 'Claude production', '102': 'OpenAI failover', '201': 'Claude slow lane', '202': 'Gemini warming', '301': 'Legacy OpenAI pool', '401': 'New probe target', '501': 'Quota constrained account', '502': 'Quota sync error', '601': 'Mixed source history', '602': 'Legacy backfill' },
+      channelNames: { '801': 'Claude Standard', '802': 'Claude Backup', '803': 'ChatGPT Standard', '804': 'ChatGPT Priority', '805': 'ChatGPT Backup', '101': 'Claude production', '102': 'OpenAI failover', '201': 'Claude slow lane', '202': 'Gemini warming', '301': 'Legacy OpenAI pool', '401': 'New probe target', '501': 'Quota constrained account', '502': 'Quota sync error', '601': 'Mixed source history', '602': 'Legacy backfill' },
       language: 'Preview language',
       eyebrow: 'Local development fixture', title: 'Channel monitor preview', description: 'Review local monitor fixtures without signing in. Switch scenarios and roles to inspect the evidence hierarchy; no live data is requested.', userEyebrow: 'Preview monitor', userTitle: 'Channel readiness', userSubtitle: 'Channel-level traffic summaries. Operator counters are not included in this user fixture.',
       darkTheme: 'Dark theme', lightTheme: 'Light theme', adminView: 'Admin view', userView: 'User view', scenario: 'Scenario', quickScenarios: 'Quick scenarios', previewRole: 'Preview role', admin: 'Admin', user: 'User',
       showHealthy: 'Show healthy state', error: 'Preview request failed (HTTP {status}). This fixture has no retained snapshot.', loading: 'Loading monitor evidence…', coverage: 'Coverage: {state}', viewLabel: 'Preview view', cards: 'Cards', matrix: 'Matrix', trend: 'Trend', emptyTitle: 'No channels match this preview range', emptyDescription: 'This empty state is intentional; the preview does not call the API.',
       scenarios: {
+        'card-gallery': { label: 'Card gallery', description: 'Five fictional channels for checking layout and status colors; no live data.' },
         normal: { label: 'Normal · compact', description: 'Healthy traffic with complete compact coverage over a fixed 24h window.' },
         'high-latency': { label: 'High latency', description: 'Reliability is healthy while TTFT breaches the critical threshold.' },
         'high-error': { label: 'High error · legacy', description: 'Legacy traffic has a critical error rate and classified failures.' },

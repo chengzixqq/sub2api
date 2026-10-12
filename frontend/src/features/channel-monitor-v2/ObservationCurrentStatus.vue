@@ -1,5 +1,5 @@
 <template>
-  <div class="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+  <div class="flex min-h-6 flex-wrap gap-x-2 gap-y-1 text-xs" :class="compact ? 'flex-col items-end text-right' : 'items-center'">
     <span class="badge" :class="tone" :title="reason">{{ t(`channelMonitorV2.unified.states.${state}`) }}</span>
     <span class="text-gray-500 dark:text-gray-400">{{ t(`channelMonitorV2.unified.sources.${status?.source || 'none'}`) }}</span>
     <time v-if="validTime" :datetime="status?.updated_at" class="text-gray-400">{{ validTime }}</time>
@@ -9,7 +9,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationCurrentStatus } from '@/api/channelMonitorV2'
-const props = defineProps<{ status?: ObservationCurrentStatus; stale?: boolean }>()
+const props = defineProps<{ status?: ObservationCurrentStatus; stale?: boolean; compact?: boolean }>()
 const { t, te, locale } = useI18n()
 const state = computed(() => props.stale ? 'stale' : props.status?.state || 'unknown')
 const tone = computed(() => state.value === 'healthy' ? 'badge-success' : state.value === 'critical' ? 'badge-danger' : state.value === 'warning' || state.value === 'stale' ? 'badge-warning' : 'badge-gray')

@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="min-w-0 space-y-5 pb-8">
+    <div class="min-w-0 space-y-5 pb-8" :class="{ 'monitor-card-page': viewMode === 'cards' }">
       <header class="page-header mb-0 flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-4 dark:border-dark-700">
         <div class="min-w-0">
           <h1 class="page-title flex items-center gap-2 text-xl font-semibold"><Icon name="chart" size="md" />{{ t('channelMonitorV2.title') }}</h1>
@@ -19,13 +19,13 @@
         <span>{{ t(`channelMonitorV2.unified.${errorStatus === 403 ? 'accessDenied' : overview ? 'refreshFailed' : 'loadFailed'}`) }}</span>
         <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="refresh">{{ t('common.retry') }}</button>
       </div>
-      <MonitorOverviewHero v-if="overview" :eyebrow="t('channelMonitorV2.dashboard.eyebrow')" :title="t('channelMonitorV2.dashboard.title')" :subtitle="t('channelMonitorV2.dashboard.subtitle')" :stats="heroStats" />
+      <MonitorOverviewHero v-if="overview && viewMode !== 'cards'" :eyebrow="t('channelMonitorV2.dashboard.eyebrow')" :title="t('channelMonitorV2.dashboard.title')" :subtitle="t('channelMonitorV2.dashboard.subtitle')" :stats="heroStats" />
       <MonitorEvidenceStatus v-if="overview" :overview="overview" :stale="stale" />
       <div v-if="overview && overview.coverage.state !== 'complete'" role="status" class="flex flex-wrap items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
         <span class="badge badge-warning">{{ t(`channelMonitorV2.observation.coverage.${overview.coverage.state}`) }}</span>
         <span v-for="reason in visibleGaps" :key="reason">{{ reason }}</span>
       </div>
-      <div class="monitor-toolbar flex flex-wrap items-center gap-2">
+      <div class="monitor-toolbar flex flex-wrap items-center gap-2" :class="{ 'rounded-2xl border border-slate-100 bg-white/90 p-3 dark:border-dark-700 dark:bg-dark-800': viewMode === 'cards' }">
         <label v-if="isAdmin" class="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300"><input v-model="preview" type="checkbox" class="checkbox" />{{ t('channelMonitorV2.unified.preview') }}</label>
         <div class="tabs inline-flex w-auto shrink-0" role="group" :aria-label="t('channelMonitorV2.timeRange')">
           <button v-for="range in ranges" :key="range" type="button" class="tab !px-3 !py-2 text-xs" :class="filter.range === range ? 'tab-active' : ''" :aria-pressed="filter.range === range" @click="filter.range = range">{{ t(`channelMonitorV2.ranges.${range}`) }}</button>
@@ -159,3 +159,18 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', resume)
 })
 </script>
+
+<style scoped>
+.monitor-card-page {
+  position: relative;
+  isolation: isolate;
+}
+.monitor-card-page::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  inset: -24px -16px 0;
+  background: radial-gradient(ellipse 75% 600px at 45% 150px, rgba(16, 185, 129, .055), transparent);
+}
+</style>

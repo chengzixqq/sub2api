@@ -1,10 +1,10 @@
 <template>
   <div class="relative min-w-0" @mouseleave="clearTooltip">
-    <div data-testid="observation-timeline" class="grid min-h-8 w-full py-1" :style="{ gridTemplateColumns: `repeat(${Math.max(1, slots.length)}, minmax(0, 1fr))`, gap: slots.length <= 60 ? '2px' : '0' }" :aria-label="t('channelMonitorV2.observation.history')">
+    <div data-testid="observation-timeline" class="grid min-h-8 w-full py-1" :style="{ gridTemplateColumns: `repeat(${Math.max(1, slots.length)}, minmax(0, 1fr))`, gap: slots.length <= 60 ? variant === 'card' ? '4px' : '2px' : '0' }" :aria-label="t('channelMonitorV2.observation.history')">
       <button
         v-for="slot in slots" :key="slot.start" type="button"
-        class="h-6 min-w-0 first:rounded-l-sm last:rounded-r-sm focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
-        :class="bucketClass(slot.bucket)"
+        class="min-w-0 focus-visible:z-10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500"
+        :class="[variant === 'card' ? 'h-7 rounded-[5px]' : 'h-6 first:rounded-l-sm last:rounded-r-sm', bucketClass(slot.bucket)]"
         :aria-describedby="tooltip?.slotStart === slot.start ? tooltipId : undefined"
         :aria-label="tooltipLabel(slot.start, slot.bucket)" :title="tooltipLabel(slot.start, slot.bucket)"
         @mouseenter="showTooltip($event, slot)" @focus="showTooltip($event, slot)"
@@ -34,7 +34,7 @@ import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
 import { observationTimeline } from './observationViewModel'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
-const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage']; admin?: boolean }>(), { admin: false })
+const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage']; admin?: boolean; variant?: 'default' | 'card' }>(), { admin: false, variant: 'default' })
 defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, locale } = useI18n()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
