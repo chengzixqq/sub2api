@@ -49,8 +49,8 @@
 
       <div v-if="adminMonitorTab === 'v2'" class="space-y-6">
         <div class="flex justify-end"><button type="button" class="btn btn-secondary" @click="showSettings = true"><Icon name="edit" size="sm" />{{ t('channelMonitorV2.unified.settings.title') }}</button></div>
-        <AdminMonitorDashboard />
-        <AdminMonitorSettingsDrawer :show="showSettings" @close="showSettings = false" />
+        <AdminMonitorDashboard ref="monitorDashboard" />
+        <AdminMonitorSettingsDrawer :key="monitorIdentity" :show="showSettings" @saved="monitorDashboard?.refresh()" @close="showSettings = false" />
       </div>
 
       <TablePageLayout v-else>
@@ -175,6 +175,8 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
+import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
@@ -208,9 +210,14 @@ import { isChannelMonitorV1Mode } from '@/utils/featureFlags'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const auth = useAuthStore()
+const monitorIdentity = computed(() => ['admin-monitor', auth.user?.id ?? 'anonymous', auth.user?.role ?? 'unknown', auth.workspace?.id ?? 'owner'].join(':'))
+provideMonitorPreferences(monitorIdentity)
 const isV1Mode = computed(() => isChannelMonitorV1Mode())
 const adminMonitorTab = ref<'v2' | 'legacy'>('v2')
+const monitorDashboard = ref<InstanceType<typeof AdminMonitorDashboard> | null>(null)
 const showSettings = ref(false)
+watch(monitorIdentity, () => { showSettings.value = false }, { flush: 'sync' })
 const {
   providerLabel,
   providerBadgeClass,

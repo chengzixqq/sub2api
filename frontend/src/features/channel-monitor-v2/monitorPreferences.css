@@ -1,0 +1,20 @@
+/* Applies to page content and explicitly marked teleported monitor panels. */
+.monitor-motion-off, .monitor-motion-off *, .monitor-motion-off *::before, .monitor-motion-off *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+.monitor-motion-off .observation-group-card:hover,
+.monitor-motion-off .timeline-segment:hover,
+.monitor-motion-off .timeline-segment:focus-visible,
+.monitor-motion-off .preview-control:hover { transform: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .monitor-motion-system, .monitor-motion-system *, .monitor-motion-system *::before, .monitor-motion-system *::after {
+    animation: none !important; transition: none !important; scroll-behavior: auto !important;
+  }
+  .monitor-motion-system .observation-group-card:hover,
+  .monitor-motion-system .timeline-segment:hover,
+  .monitor-motion-system .timeline-segment:focus-visible,
+  .monitor-motion-system .preview-control:hover { transform: none !important; }
+}

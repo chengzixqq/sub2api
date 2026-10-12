@@ -4,6 +4,7 @@
       <div
         v-if="show"
         class="modal-overlay"
+        :class="overlayClass"
         :style="zIndexStyle"
         :aria-labelledby="dialogId"
         role="dialog"
@@ -69,6 +70,7 @@ interface Props {
   closeOnClickOutside?: boolean
   showCloseButton?: boolean
   zIndex?: number
+  overlayClass?: string
 }
 
 interface Emits {

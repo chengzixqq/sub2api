@@ -1,5 +1,5 @@
 <template>
-  <main class="monitor-preview-page min-h-screen bg-gray-50 px-4 py-6 text-gray-900 dark:bg-dark-950 dark:text-gray-100 sm:px-6 lg:px-10">
+  <main :class="motionClass" class="monitor-preview-page min-h-screen bg-gray-50 px-4 py-6 text-gray-900 dark:bg-dark-950 dark:text-gray-100 sm:px-6 lg:px-10">
     <div class="mx-auto max-w-[1600px] space-y-5">
       <header class="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-800 sm:p-6">
         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -14,7 +14,7 @@
         <div class="mt-5 grid gap-3 border-t border-gray-100 pt-4 dark:border-dark-700 lg:grid-cols-[minmax(220px,0.75fr)_minmax(0,1.25fr)]">
           <div>
             <label for="monitor-preview-scenario" class="block text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.preview.scenario') }}</label>
-            <Select
+            <Select :dropdown-class="motionClass"
               id="monitor-preview-scenario"
               :model-value="scenarioId"
               :options="scenarioOptions"
@@ -51,6 +51,9 @@
         </div>
       </header>
 
+      <MonitorAppearanceSettings preview />
+      <div class="flex justify-end"><button type="button" class="btn btn-primary" data-testid="preview-settings" @click="showSettings = true">{{ locale.startsWith('zh') ? '配置参数验收' : 'Preview configuration' }}</button></div>
+      <AdminMonitorSettingsDrawer :show="showSettings" preview @close="showSettings = false" />
       <div :key="role + ':' + scenarioId" class="preview-content space-y-5">
         <section v-if="isError" class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-200" role="alert">
           <span>{{ t('channelMonitorV2.preview.error', { status: scenario.errorStatus || 500 }) }}</span>
@@ -105,6 +108,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitorFilter, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
+import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
+import AdminMonitorSettingsDrawer from '@/features/channel-monitor-v2/AdminMonitorSettingsDrawer.vue'
+import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
 import Select from '@/components/common/Select.vue'
 import AdminMonitorDashboard from '@/features/channel-monitor-v2/AdminMonitorDashboard.vue'
 import MonitorEvidenceStatus from '@/features/channel-monitor-v2/MonitorEvidenceStatus.vue'
@@ -121,7 +127,11 @@ const scenarios = MONITOR_PREVIEW_SCENARIOS
 const { t, te, locale } = useI18n()
 const scenarioId = ref<MonitorPreviewScenarioId>('card-gallery')
 const role = ref<MonitorPreviewRole>('user')
-const view = ref<'cards' | 'matrix' | 'trend'>('cards')
+const preferences = provideMonitorPreferences(computed(() => 'monitor-preview:' + role.value))
+const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
+const showSettings = ref(false)
+const view = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)
+watch(() => preferences.value.defaultView, value => { view.value = value })
 const layout = ref<'cards' | 'list'>('cards')
 const darkTheme = ref(false)
 function toggleTheme() {
@@ -163,7 +173,7 @@ const detail = ref<{ item: ObservationChannel; model?: string; slot: { start: st
 function openDetail(item: ObservationChannel) { detail.value = { item, slot: null } }
 function openModel(item: ObservationChannel, model: string) { detail.value = { item, model, slot: null } }
 function openBucket(item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }) { detail.value = { item, slot } }
-watch([scenarioId, role], () => { detail.value = null; view.value = 'cards'; layout.value = 'cards' }, { flush: 'sync' })
+watch([scenarioId, role], () => { detail.value = null; showSettings.value = false; view.value = preferences.value.defaultView; layout.value = 'cards' }, { flush: 'sync' })
 const heroStats = computed(() => {
   const summary = summarizeMonitorTraffic(overview.value)
   const sources = summary.sources.map(item => item.source).join(' / ')

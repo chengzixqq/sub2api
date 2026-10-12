@@ -3,7 +3,7 @@
     <!-- A context change destroys any leaving snapshot before privileged content can linger. -->
     <div :key="drawerContext" class="contents">
     <Transition name="monitor-detail" @before-leave="deactivatePanel" @before-enter="activatePanel">
-    <div v-if="show && item" class="fixed inset-0 z-50 bg-black/30" @click.self="emit('close')">
+    <div v-if="show && item" :class="motionClass" class="fixed inset-0 z-50 bg-black/30" @click.self="emit('close')">
       <aside ref="panel" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1" class="monitor-detail-panel absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-white shadow-xl outline-none dark:bg-dark-900">
         <header class="flex items-start justify-between gap-3 border-b border-gray-200 p-5 dark:border-dark-700">
           <div class="min-w-0">
@@ -91,6 +91,8 @@
   </Teleport>
 </template>
 <script setup lang="ts">
+import { useMonitorMotion } from './useMonitorPreferences'
+const motionClass = useMonitorMotion()
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'

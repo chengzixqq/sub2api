@@ -19,10 +19,11 @@ func (s monitorProbeGroupStub) GetByID(context.Context, int64) (*Group, error) {
 
 type monitorProbeRepoStub struct {
 	ChannelMonitorProbeRepository
-	target     ChannelMonitorProbeTarget
-	completed  *ChannelMonitorProbeRun
-	saved      bool
-	quotaReads int
+	target         ChannelMonitorProbeTarget
+	completed      *ChannelMonitorProbeRun
+	saved          bool
+	quotaReads     int
+	reservedPolicy ChannelMonitorProbePolicy
 }
 
 func (s *monitorProbeRepoStub) QuotaAccounts(context.Context) ([]int64, error) {
@@ -52,8 +53,28 @@ func (s *monitorProbeRepoStub) SaveTarget(context.Context, *ChannelMonitorProbeT
 	s.saved = true
 	return nil
 }
-func (s *monitorProbeRepoStub) Reserve(context.Context, int64, string, bool, time.Time) (*ChannelMonitorProbeRun, bool, error) {
+func (s *monitorProbeRepoStub) Reserve(_ context.Context, _ int64, _ string, _ bool, _ time.Time, policy ChannelMonitorProbePolicy) (*ChannelMonitorProbeRun, bool, error) {
+	s.reservedPolicy = policy
 	return &ChannelMonitorProbeRun{TargetID: s.target.ID, GroupID: s.target.GroupID, Model: s.target.Model, Protocol: s.target.Protocol}, true, nil
+}
+
+func TestChannelMonitorProbeService_ConfiguredPolicyReachesReservationAndExecution(t *testing.T) {
+	repo := &monitorProbeRepoStub{target: ChannelMonitorProbeTarget{ID: 1, GroupID: 3, Model: "gpt-test", Protocol: "openai_chat", Enabled: true}}
+	selector := &probeDeadlineSelector{}
+	svc := NewChannelMonitorProbeService(repo, monitorProbeGroupStub{group: &Group{ID: 3, Status: StatusActive}}, &ChannelMonitorProbeExecutor{selector: selector}, nil)
+	svc.SetEnabledReader(func(context.Context) bool { return true })
+	svc.SetTargetValidator(func(context.Context, *Group, string) error { return nil })
+	cfg := DefaultChannelMonitorObservationConfig()
+	cfg.ProbeIntervalSeconds = 120
+	cfg.ProbeTimeoutSeconds = 45
+	cfg.ProbeTargetDailyLimit = 12
+	cfg.ProbeGlobalDailyLimit = 17
+	svc.SetPolicyReader(func(context.Context) (*ChannelMonitorObservationConfig, error) { return &cfg, nil })
+	start := time.Now()
+	_, err := svc.Probe(WithScope(context.Background(), AdminScope()), 1, "configured-policy-test")
+	require.NoError(t, err)
+	require.Equal(t, cfg.ProbePolicy(), repo.reservedPolicy)
+	require.WithinDuration(t, start.Add(45*time.Second), selector.deadline, time.Second)
 }
 func (s *monitorProbeRepoStub) Complete(_ context.Context, run *ChannelMonitorProbeRun) error {
 	s.completed = run

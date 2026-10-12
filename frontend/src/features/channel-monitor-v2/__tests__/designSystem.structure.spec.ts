@@ -36,7 +36,7 @@ describe('channel-monitor-v2 design system structure', () => {
     expect(src).not.toMatch(/min-w-\[980px\]/)
     expect(src).toContain('flex-wrap')
     expect(src).toContain("'24h'")
-    expect(src).toContain('60_000')
+    expect(src).toContain('useMonitorPolling')
   })
 
   it('RelayPulseMatrix uses card chrome, matrix scroll, and hover tooltips (no click modal)', () => {

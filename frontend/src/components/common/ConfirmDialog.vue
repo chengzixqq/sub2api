@@ -1,5 +1,5 @@
 <template>
-  <BaseDialog :show="show" :title="title" width="narrow" @close="handleCancel">
+  <BaseDialog :overlay-class="overlayClass" :show="show" :title="title" width="narrow" @close="handleCancel">
     <div class="space-y-4">
       <p class="text-sm text-gray-600 dark:text-gray-400">{{ message }}</p>
       <slot></slot>
@@ -45,6 +45,7 @@ interface Props {
   confirmText?: string
   cancelText?: string
   danger?: boolean
+  overlayClass?: string
 }
 
 interface Emits {

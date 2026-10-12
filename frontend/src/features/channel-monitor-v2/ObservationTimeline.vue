@@ -20,7 +20,7 @@
           :id="tooltipId"
           role="tooltip"
           class="timeline-tooltip pointer-events-none fixed z-[100] w-80 max-w-[calc(100vw-1.5rem)] -translate-x-1/2"
-          :class="tooltip.above ? 'is-above -translate-y-full' : 'is-below'"
+          :class="[motionClass, tooltip.above ? 'is-above -translate-y-full' : 'is-below']"
           :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px`, '--tooltip-arrow': `${tooltip.arrow}px` }"
         >
           <div class="timeline-tooltip-bubble relative rounded-lg bg-dark-900 px-3 py-2 text-[11px] font-medium leading-4 text-white shadow-lg">
@@ -39,11 +39,13 @@
 import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ObservationBucket, ObservationOverview } from '@/api/channelMonitorV2'
+import { useMonitorMotion } from './useMonitorPreferences'
 import { observationTimeline } from './observationViewModel'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
 const props = withDefaults(defineProps<{ buckets: ObservationBucket[]; coverage: ObservationOverview['coverage']; admin?: boolean; variant?: 'default' | 'card' }>(), { admin: false, variant: 'default' })
 defineEmits<{ select: [slot: { start: string; bucket: ObservationBucket | null }] }>()
 const { t, locale } = useI18n()
+const motionClass = useMonitorMotion()
 const slots = computed(() => observationTimeline(props.buckets, props.coverage))
 let fallbackTimelineId = 0
 const tooltipId = `observation-timeline-tooltip-${getCurrentInstance()?.uid ?? ++fallbackTimelineId}`

@@ -178,3 +178,6 @@ __pycache__/
 /deploy/linapi_v025*.py
 /deploy/test_linapi_v025*.py
 /tools/redact_*_user_excel.py
+
+# Keep the monitor configuration contract with the implementation.
+!docs/channel-monitor-v2-configuration.md

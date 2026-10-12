@@ -5,9 +5,9 @@ const api = vi.hoisted(() => ({ getProbeTargets: vi.fn(), getProbeBudget: vi.fn(
 vi.mock('@/api/channelMonitorV2', () => api)
 vi.mock('@/api/admin', () => ({ adminAPI: { groups: { getAll: api.getAll } } }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => api }))
-vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('vue-i18n', async (importOriginal) => ({ ...await importOriginal<typeof import('vue-i18n')>(), useI18n: () => ({ t: (key: string) => key, locale: { value: 'en' } }) }))
 const target = { id: 9, group_id: 7, model: 'gpt-test', protocol: 'openai_responses', enabled: false, version: 1 }
-const stubs = { Icon: true, BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' }, ConfirmDialog: { props: ['show'], emits: ['confirm'], template: '<button v-if="show" data-testid="confirm-probe" @click="$emit(\'confirm\')">Confirm</button>' } }
+const stubs = { Select: { props: ['modelValue', 'options'], emits: ['update:modelValue'], template: `<select :value="modelValue" @change="$emit('update:modelValue', options.find(o => String(o.value) === $event.target.value).value)"><option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>` }, Icon: true, BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' }, ConfirmDialog: { props: ['show'], emits: ['confirm'], template: '<button v-if="show" data-testid="confirm-probe" @click="$emit(\'confirm\')">Confirm</button>' } }
 describe('probe target controls', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -40,4 +40,39 @@ describe('probe target controls', () => {
     await flushPromises()
     expect(api.runProbeTarget.mock.calls[1]![1]).toBe(key)
   })
+  it('keeps a conflicting target edit and blocks blind resubmission', async () => {
+    api.updateProbeTarget.mockRejectedValueOnce({ response: { status: 409 } })
+    const wrapper = mount(MonitorProbeSettings, { global: { stubs } })
+    await flushPromises()
+    await wrapper.get('button[aria-label="channelMonitorV2.unified.probes.edit"]').trigger('click')
+    await wrapper.get('[data-testid="target-model"]').setValue('edited-model')
+    await wrapper.get('[data-testid="target-form"]').trigger('submit')
+    await flushPromises()
+    expect((wrapper.get('[data-testid="target-model"]').element as HTMLInputElement).value).toBe('edited-model')
+    expect(api.getProbeTargets).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-testid="target-form"]').trigger('submit')
+    expect(api.updateProbeTarget).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+  it('disables billable execution in preview and preserves locally created targets', async () => {
+    const options = { props: { preview: true }, global: { stubs } }
+    const wrapper = mount(MonitorProbeSettings, options)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="probe-1"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="probe-1"]').trigger('click')
+    expect(wrapper.find('[data-testid="confirm-probe"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="add-target"]').trigger('click')
+    await wrapper.get('[data-testid="target-group"]').setValue('2')
+    await wrapper.get('[data-testid="target-model"]').setValue('preview-only')
+    await wrapper.get('[data-testid="target-form"]').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="settings-saved"]').text()).toContain('Last target save succeeded locally')
+    wrapper.unmount()
+    const reopened = mount(MonitorProbeSettings, options)
+    await flushPromises()
+    expect(reopened.text()).toContain('preview-only')
+    for (const name of ['getProbeTargets', 'getProbeBudget', 'getAll', 'createProbeTarget', 'updateProbeTarget', 'runProbeTarget'] as const) expect(api[name]).not.toHaveBeenCalled()
+    reopened.unmount()
+  })
+
 })

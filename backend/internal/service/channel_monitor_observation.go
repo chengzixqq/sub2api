@@ -63,20 +63,27 @@ type ChannelMonitorEventSink interface {
 }
 
 type ChannelMonitorObservationConfig struct {
-	Version                int                                 `json:"version"`
-	Enabled                bool                                `json:"enabled"`
-	ProbeEnabled           bool                                `json:"probe_enabled"`
-	QuotaEnabled           bool                                `json:"quota_enabled"`
-	Mode                   string                              `json:"mode"`
-	LiveGroupIDs           []int64                             `json:"live_group_ids,omitempty"`
-	DetailRetentionHours   int                                 `json:"detail_retention_hours"`
-	RefreshIntervalSeconds int                                 `json:"refresh_interval_seconds"`
-	MinimumSample          int64                               `json:"minimum_sample"`
-	HealthyReliability     float64                             `json:"healthy_reliability"`
-	WarningReliability     float64                             `json:"warning_reliability"`
-	WarningTTFTMs          int64                               `json:"warning_ttft_ms"`
-	CriticalTTFTMs         int64                               `json:"critical_ttft_ms"`
-	Overrides              []ChannelMonitorObservationOverride `json:"overrides"`
+	Version                 int                                 `json:"version"`
+	Enabled                 bool                                `json:"enabled"`
+	ProbeEnabled            bool                                `json:"probe_enabled"`
+	QuotaEnabled            bool                                `json:"quota_enabled"`
+	Mode                    string                              `json:"mode"`
+	LiveGroupIDs            []int64                             `json:"live_group_ids,omitempty"`
+	DetailRetentionHours    int                                 `json:"detail_retention_hours"`
+	RefreshIntervalSeconds  int                                 `json:"refresh_interval_seconds"`
+	ProbeIntervalSeconds    int                                 `json:"probe_interval_seconds"`
+	ProbeTimeoutSeconds     int                                 `json:"probe_timeout_seconds"`
+	ProbeTargetDailyLimit   int                                 `json:"probe_target_daily_limit"`
+	ProbeGlobalDailyLimit   int                                 `json:"probe_global_daily_limit"`
+	TrafficFreshnessSeconds int                                 `json:"traffic_freshness_seconds"`
+	ProbeFailureThreshold   int                                 `json:"probe_failure_threshold"`
+	QuotaStaleSeconds       int                                 `json:"quota_stale_seconds"`
+	MinimumSample           int64                               `json:"minimum_sample"`
+	HealthyReliability      float64                             `json:"healthy_reliability"`
+	WarningReliability      float64                             `json:"warning_reliability"`
+	WarningTTFTMs           int64                               `json:"warning_ttft_ms"`
+	CriticalTTFTMs          int64                               `json:"critical_ttft_ms"`
+	Overrides               []ChannelMonitorObservationOverride `json:"overrides"`
 }
 
 type ChannelMonitorObservationOverride struct {
@@ -89,7 +96,10 @@ type ChannelMonitorObservationOverride struct {
 
 func DefaultChannelMonitorObservationConfig() ChannelMonitorObservationConfig {
 	return ChannelMonitorObservationConfig{Version: 1, Enabled: true, QuotaEnabled: true, Mode: "shadow", DetailRetentionHours: 24,
-		RefreshIntervalSeconds: 60, MinimumSample: 50, HealthyReliability: .99, WarningReliability: .95,
+		RefreshIntervalSeconds: 60, ProbeIntervalSeconds: 900, ProbeTimeoutSeconds: 20,
+		ProbeTargetDailyLimit: ChannelMonitorProbeTargetDailyLimit, ProbeGlobalDailyLimit: ChannelMonitorProbeGlobalDailyLimit,
+		TrafficFreshnessSeconds: 300, ProbeFailureThreshold: 2, QuotaStaleSeconds: 600,
+		MinimumSample: 50, HealthyReliability: .99, WarningReliability: .95,
 		WarningTTFTMs: 3000, CriticalTTFTMs: 10000, Overrides: []ChannelMonitorObservationOverride{}}
 }
 
@@ -107,8 +117,17 @@ func ValidateChannelMonitorObservationConfig(cfg ChannelMonitorObservationConfig
 	if cfg.Mode != "shadow" && cfg.Mode != "live" {
 		return errors.New("invalid observation mode")
 	}
-	if cfg.DetailRetentionHours != 24 || cfg.RefreshIntervalSeconds != 60 {
-		return errors.New("observation sample retention and refresh must be 24 hours and 60 seconds")
+	if cfg.DetailRetentionHours != 24 {
+		return errors.New("observation sample retention must be 24 hours")
+	}
+	if cfg.RefreshIntervalSeconds < 30 || cfg.RefreshIntervalSeconds > 300 {
+		return errors.New("observation refresh must be between 30 and 300 seconds")
+	}
+	if err := cfg.ProbePolicy().Validate(); err != nil {
+		return err
+	}
+	if cfg.TrafficFreshnessSeconds < 60 || cfg.TrafficFreshnessSeconds > 3600 {
+		return errors.New("traffic freshness must be between 60 and 3600 seconds")
 	}
 	if len(cfg.LiveGroupIDs) > 1000 {
 		return errors.New("too many live groups")

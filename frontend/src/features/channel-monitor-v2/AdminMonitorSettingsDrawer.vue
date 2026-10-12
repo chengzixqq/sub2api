@@ -1,38 +1,46 @@
 <template>
   <Teleport to="body">
-    <div v-if="show" class="fixed inset-0 z-50 bg-black/30" @click.self="$emit('close')">
+    <Transition name="monitor-settings">
+    <div v-if="show" :class="motionClass" class="fixed inset-0 z-50 bg-black/30" @click.self="$emit('close')">
       <aside ref="panel" class="absolute inset-y-0 right-0 flex w-full max-w-4xl flex-col bg-white shadow-xl outline-none dark:bg-dark-900" role="dialog" aria-modal="true" :aria-labelledby="titleId" tabindex="-1">
         <header class="flex items-start justify-between gap-3 border-b border-gray-200 p-5 dark:border-dark-700">
-          <div><h2 :id="titleId" class="text-base font-semibold text-gray-900 dark:text-white">{{ text('监控设置', 'Monitor settings') }}</h2><p class="mt-1 text-xs text-gray-500">{{ text('集中管理采集、阈值、探测和旧版展示策略。', 'Manage collection, thresholds, probes and legacy display policy.') }}</p></div>
+          <div><h2 :id="titleId" class="text-base font-semibold text-gray-900 dark:text-white">{{ text('监控设置', 'Monitor settings') }}</h2><p class="mt-1 text-xs text-gray-500">{{ text('集中管理采集、阈值、探测和旧聚合兼容策略。', 'Manage collection, thresholds, probes and legacy aggregation compatibility.') }}</p></div>
           <button type="button" class="btn btn-secondary btn-icon h-8 w-8" :aria-label="t('common.close')" @click="$emit('close')"><Icon name="x" size="sm" /></button>
         </header>
         <div class="min-h-0 flex-1 overflow-y-auto p-5">
+          <p v-if="preview" class="mb-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ text('本地配置验收：保存仅作用于示例，不连接站点，也不执行付费探测。', 'Local settings preview: saves affect fixtures only; no site requests or paid probes.') }}</p>
           <nav class="mb-6 flex flex-wrap gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800" :aria-label="text('设置分类', 'Settings sections')">
             <button v-for="item in tabs" :key="item.value" type="button" class="rounded-lg px-3 py-2 text-xs font-medium" :class="tab === item.value ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white' : 'text-gray-500 dark:text-gray-400'" :aria-pressed="tab === item.value" @click="tab = item.value">{{ item.label }}</button>
           </nav>
-          <ObservationSettingsPanel v-if="tab === 'policy'" />
-          <MonitorProbeSettings v-else-if="tab === 'probes'" />
-          <MonitorSettingsPanel v-else />
+          <ObservationSettingsPanel @saved="emit('saved')" v-if="tab === 'policy'" :preview="preview" />
+          <MonitorProbeSettings v-else-if="tab === 'probes'" :preview="preview" />
+          <div v-else class="space-y-4">
+            <p class="rounded-lg bg-sky-50 p-3 text-xs leading-5 text-sky-800 dark:bg-sky-950/30 dark:text-sky-200">{{ text('此处管理旧 V2 日志聚合，不是 V1 探测。平台、分组和错误分类影响影子模式或未发布分组的旧数据源；旧评分权重与阈值供原 V2 接口使用。当前统一卡片的健康判定以“监控与阈值”为准。', 'Controls legacy V2 log aggregation, not V1 probes. Platform, group and error filters affect shadow or unpublished legacy groups. Legacy scores serve original V2 APIs; unified cards use Monitor & thresholds.') }}</p>
+            <MonitorSettingsPanel @saved="emit('saved')" :preview="preview" />
+          </div>
         </div>
       </aside>
     </div>
+    </Transition>
   </Teleport>
 </template>
 <script setup lang="ts">
 import { computed, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useMonitorMotion } from './useMonitorPreferences'
 import Icon from '@/components/icons/Icon.vue'
 import ObservationSettingsPanel from './ObservationSettingsPanel.vue'
 import MonitorProbeSettings from './MonitorProbeSettings.vue'
 import MonitorSettingsPanel from './MonitorSettingsPanel.vue'
-const props = defineProps<{ show: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+const props = defineProps<{ show: boolean; preview?: boolean }>()
+const motionClass = useMonitorMotion()
+const emit = defineEmits<{ close: []; saved: [] }>()
 const { t, locale } = useI18n()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const panel = ref<HTMLElement | null>(null)
 const titleId = 'monitor-settings-' + getCurrentInstance()?.uid
 const tab = ref<'policy' | 'probes' | 'legacy'>('policy')
-const tabs = computed(() => [{ value: 'policy' as const, label: text('监控与阈值', 'Monitor & thresholds') }, { value: 'probes' as const, label: text('探针配置', 'Probe configuration') }, { value: 'legacy' as const, label: text('旧版设置', 'Legacy settings') }])
+const tabs = computed(() => [{ value: 'policy' as const, label: text('监控与阈值', 'Monitor & thresholds') }, { value: 'probes' as const, label: text('探针配置', 'Probe configuration') }, { value: 'legacy' as const, label: text('旧聚合兼容', 'Legacy aggregation') }])
 let previousFocus: HTMLElement | null = null
 let previousOverflow = ''
 function restore() { document.body.style.overflow = previousOverflow; previousFocus?.focus(); previousFocus = null }
@@ -53,3 +61,14 @@ function keydown(event: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', keydown))
 onBeforeUnmount(() => { document.removeEventListener('keydown', keydown); if (props.show) restore() })
 </script>
+
+<style scoped>
+.monitor-settings-enter-active, .monitor-settings-leave-active { transition: opacity 160ms ease; }
+.monitor-settings-enter-active aside, .monitor-settings-leave-active aside { transition: transform 200ms ease; }
+.monitor-settings-enter-from, .monitor-settings-leave-to { opacity: 0; }
+.monitor-settings-enter-from aside, .monitor-settings-leave-to aside { transform: translateX(24px); }
+@media (prefers-reduced-motion: reduce) {
+  .monitor-settings-enter-active, .monitor-settings-leave-active,
+  .monitor-settings-enter-active aside, .monitor-settings-leave-active aside { transition: none; }
+}
+</style>

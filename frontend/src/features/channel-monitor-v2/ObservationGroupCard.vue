@@ -1,5 +1,5 @@
 <template>
-  <article class="observation-group-card flex h-full min-w-0 flex-col" :data-group-id="item.group_id">
+  <article class="observation-group-card flex h-full min-w-0 flex-col" :class="[motionClass, { 'card-comfortable': preferences.density === 'comfortable' }]" :data-group-id="item.group_id">
     <header class="flex items-start gap-3">
       <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="platformBadgeClass(item.platform)"><PlatformIcon :platform="platform" size="md" /></span>
       <div class="min-w-0 flex-1">
@@ -67,7 +67,8 @@
   </article>
 </template>
 <script setup lang="ts">
-import { computed, getCurrentInstance, ref } from 'vue'
+import { computed, getCurrentInstance, ref, watch } from 'vue'
+import { useMonitorMotion, useMonitorPreferences } from './useMonitorPreferences'
 import { monitorCategoryLabel, monitorSourceLabel } from './monitorLabels'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
@@ -105,7 +106,10 @@ const recentErrorLabel = computed(() => {
   }).join(' / ')
   return metrics.value.channel_errors === 0 ? text('已观测流量无渠道错误', 'No observed channel errors') : text('暂无分类，不能推断为零错误', 'No classification; zero errors cannot be inferred')
 })
-const expanded = ref(false)
+const preferences = useMonitorPreferences()
+const motionClass = useMonitorMotion()
+const expanded = ref(preferences.value.expandModels)
+watch(() => preferences.value.expandModels, value => { expanded.value = value })
 const modelsId = `card-models-${getCurrentInstance()?.uid}`
 const percent = (value: number | null | undefined) => value == null ? '-' : formatMonitorPercent(value)
 const statusLabel = (value?: string) => {
@@ -127,6 +131,7 @@ function toggleExpanded() {
   box-shadow: 0 10px 32px -20px rgba(33, 77, 76, .22);
   transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms cubic-bezier(.2, .8, .2, 1);
 }
+.observation-group-card.card-comfortable { padding: 28px; border-radius: 28px; }
 @media (hover: hover) and (pointer: fine) {
   .observation-group-card:hover {
     transform: translateY(-2px);

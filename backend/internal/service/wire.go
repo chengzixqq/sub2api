@@ -1076,6 +1076,7 @@ func ProvideChannelMonitorCollector(repo ChannelMonitorObservationRepository) *C
 
 func ProvideChannelMonitorProbeService(repo ChannelMonitorProbeRepository, groups GroupRepository, executor *ChannelMonitorProbeExecutor, quota *ChannelMonitorQuotaFetcher, observations ChannelMonitorObservationRepository) *ChannelMonitorProbeService {
 	svc := NewChannelMonitorProbeService(repo, groups, executor, quota)
+	svc.SetPolicyReader(observations.GetConfig)
 	if activity, ok := observations.(ChannelMonitorProbeActivityReader); ok {
 		svc.SetActivityReader(activity)
 	}

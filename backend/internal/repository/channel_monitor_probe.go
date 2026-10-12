@@ -65,7 +65,7 @@ func (r *channelMonitorProbeRepository) SaveTarget(ctx context.Context, t *servi
 	return err
 }
 
-func (r *channelMonitorProbeRepository) QuotaSummaries(ctx context.Context, groupIDs []int64, now time.Time) (map[int64]service.ChannelMonitorQuotaSummary, error) {
+func (r *channelMonitorProbeRepository) QuotaSummaries(ctx context.Context, groupIDs []int64, now time.Time, staleAfter time.Duration) (map[int64]service.ChannelMonitorQuotaSummary, error) {
 	result := map[int64]service.ChannelMonitorQuotaSummary{}
 	if len(groupIDs) == 0 {
 		return result, nil
@@ -74,7 +74,7 @@ func (r *channelMonitorProbeRepository) QuotaSummaries(ctx context.Context, grou
 	if err != nil {
 		return nil, err
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT ag.group_id,BOOL_OR(q.snapshot IS NULL),BOOL_OR(q.snapshot IS NOT NULL AND NOT COALESCE((q.snapshot->>'success')::boolean,FALSE)),BOOL_OR(q.fetched_at<$2),MIN(q.fetched_at) FROM account_groups ag JOIN accounts a ON a.id=ag.account_id LEFT JOIN channel_monitor_probe_quotas q ON q.account_id=ag.account_id WHERE a.deleted_at IS NULL AND a.status='active' AND ag.group_id IN (SELECT value::bigint FROM jsonb_array_elements_text($1::jsonb)) GROUP BY ag.group_id`, data, now.Add(-10*time.Minute))
+	rows, err := r.db.QueryContext(ctx, `SELECT ag.group_id,BOOL_OR(q.snapshot IS NULL),BOOL_OR(q.snapshot IS NOT NULL AND NOT COALESCE((q.snapshot->>'success')::boolean,FALSE)),BOOL_OR(q.fetched_at<$2),MIN(q.fetched_at) FROM account_groups ag JOIN accounts a ON a.id=ag.account_id LEFT JOIN channel_monitor_probe_quotas q ON q.account_id=ag.account_id WHERE a.deleted_at IS NULL AND a.status='active' AND ag.group_id IN (SELECT value::bigint FROM jsonb_array_elements_text($1::jsonb)) GROUP BY ag.group_id`, data, now.Add(-staleAfter))
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,10 @@ func (r *channelMonitorProbeRepository) QuotaSummaries(ctx context.Context, grou
 	return result, rows.Err()
 }
 
-func (r *channelMonitorProbeRepository) Reserve(ctx context.Context, id int64, key string, manual bool, now time.Time) (*service.ChannelMonitorProbeRun, bool, error) {
+func (r *channelMonitorProbeRepository) Reserve(ctx context.Context, id int64, key string, manual bool, now time.Time, policy service.ChannelMonitorProbePolicy) (*service.ChannelMonitorProbeRun, bool, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, false, err
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
@@ -143,14 +146,14 @@ func (r *channelMonitorProbeRepository) Reserve(ctx context.Context, id int64, k
 	if lease != nil && lease.After(now) {
 		return nil, false, service.ErrChannelMonitorProbeBusy
 	}
-	if !manual && t.LastProbeAt != nil && now.Sub(*t.LastProbeAt) < 15*time.Minute {
+	if !manual && t.LastProbeAt != nil && now.Sub(*t.LastProbeAt) < time.Duration(policy.IntervalSeconds)*time.Second {
 		return nil, false, service.ErrChannelMonitorProbeBusy
 	}
 	var used int
 	if err = tx.QueryRowContext(ctx, `SELECT used FROM channel_monitor_probe_budgets WHERE utc_day=$1 AND target_id=$2 FOR UPDATE`, day, id).Scan(&used); err != nil {
 		return nil, false, err
 	}
-	if globalUsed >= service.ChannelMonitorProbeGlobalDailyLimit || used >= service.ChannelMonitorProbeTargetDailyLimit {
+	if globalUsed >= policy.GlobalDailyLimit || used >= policy.TargetDailyLimit {
 		return nil, false, service.ErrChannelMonitorProbeBudget
 	}
 	runHash := sha256.Sum256([]byte(fmt.Sprintf("%d:%s", id, hash)))
@@ -165,7 +168,7 @@ func (r *channelMonitorProbeRepository) Reserve(ctx context.Context, id int64, k
 	if _, err = tx.ExecContext(ctx, `INSERT INTO channel_monitor_probe_runs(id,target_id,idempotency_key,manual,started_at,result) VALUES($1,$2,$3,$4,$5,$6)`, run.ID, id, hash, manual, now, data); err != nil {
 		return nil, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE channel_monitor_probe_targets SET lease_until=$2,last_probe_at=$3 WHERE id=$1`, id, now.Add(30*time.Second), now); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE channel_monitor_probe_targets SET lease_until=$2,last_probe_at=$3 WHERE id=$1`, id, now.Add(time.Duration(policy.TimeoutSeconds+10)*time.Second), now); err != nil {
 		return nil, false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -198,8 +201,11 @@ func (r *channelMonitorProbeRepository) Complete(ctx context.Context, run *servi
 	}
 	return tx.Commit()
 }
-func (r *channelMonitorProbeRepository) Budget(ctx context.Context, now time.Time) (*service.ChannelMonitorProbeBudget, error) {
-	b := &service.ChannelMonitorProbeBudget{UTCDay: now.UTC().Format("2006-01-02"), GlobalLimit: service.ChannelMonitorProbeGlobalDailyLimit, Targets: []service.ChannelMonitorProbeTargetBudget{}}
+func (r *channelMonitorProbeRepository) Budget(ctx context.Context, now time.Time, policy service.ChannelMonitorProbePolicy) (*service.ChannelMonitorProbeBudget, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
+	b := &service.ChannelMonitorProbeBudget{UTCDay: now.UTC().Format("2006-01-02"), GlobalLimit: policy.GlobalDailyLimit, Targets: []service.ChannelMonitorProbeTargetBudget{}}
 	rows, err := r.db.QueryContext(ctx, `SELECT target_id,used FROM channel_monitor_probe_budgets WHERE utc_day=$1 ORDER BY target_id`, b.UTCDay)
 	if err != nil {
 		return nil, err
@@ -214,7 +220,7 @@ func (r *channelMonitorProbeRepository) Budget(ctx context.Context, now time.Tim
 		if id == 0 {
 			b.GlobalUsed = used
 		} else {
-			b.Targets = append(b.Targets, service.ChannelMonitorProbeTargetBudget{TargetID: id, Limit: service.ChannelMonitorProbeTargetDailyLimit, Used: used})
+			b.Targets = append(b.Targets, service.ChannelMonitorProbeTargetBudget{TargetID: id, Limit: policy.TargetDailyLimit, Used: used})
 		}
 	}
 	return b, rows.Err()
@@ -308,7 +314,7 @@ func (r *channelMonitorProbeRepository) ReadQuotas(ctx context.Context, ids []in
 }
 
 func (r *channelMonitorProbeRepository) MaintainProbe(ctx context.Context, now time.Time) error {
-	if _, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_probe_runs SET completed_at=$1,result=(result-'success')||jsonb_build_object('status','error','error_class','execution_interrupted','completed_at',$1::timestamptz) WHERE id IN (SELECT id FROM channel_monitor_probe_runs WHERE completed_at IS NULL AND started_at<$2 LIMIT 1000)`, now, now.Add(-time.Minute)); err != nil {
+	if _, err := r.db.ExecContext(ctx, `UPDATE channel_monitor_probe_runs SET completed_at=$1,result=(result-'success')||jsonb_build_object('status','error','error_class','execution_interrupted','completed_at',$1::timestamptz) WHERE id IN (SELECT id FROM channel_monitor_probe_runs WHERE completed_at IS NULL AND started_at<$2 LIMIT 1000)`, now, now.Add(-2*time.Minute)); err != nil {
 		return err
 	}
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM channel_monitor_probe_runs WHERE id IN (SELECT id FROM channel_monitor_probe_runs WHERE started_at<$1 LIMIT 5000)`, now.Add(-30*24*time.Hour)); err != nil {

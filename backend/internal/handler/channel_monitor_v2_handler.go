@@ -55,7 +55,7 @@ func (h *ChannelMonitorV2Handler) GetConfig(c *gin.Context) {
 }
 
 func (h *ChannelMonitorV2Handler) UpdateConfig(c *gin.Context) {
-	var input service.ChannelMonitorV2Config
+	input := service.ChannelMonitorV2Config{HealthThresholds: service.DefaultChannelMonitorV2HealthThresholds()}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		response.BadRequest(c, "invalid channel monitor v2 config")
 		return

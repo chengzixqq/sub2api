@@ -170,7 +170,7 @@ func (unavailableQuotaRepo) RecentRuns(context.Context, []int64, time.Time) ([]C
 func (unavailableQuotaRepo) ListTargets(context.Context) ([]ChannelMonitorProbeTarget, error) {
 	return nil, nil
 }
-func (unavailableQuotaRepo) QuotaSummaries(context.Context, []int64, time.Time) (map[int64]ChannelMonitorQuotaSummary, error) {
+func (unavailableQuotaRepo) QuotaSummaries(context.Context, []int64, time.Time, time.Duration) (map[int64]ChannelMonitorQuotaSummary, error) {
 	return nil, errors.New("quota unavailable")
 }
 

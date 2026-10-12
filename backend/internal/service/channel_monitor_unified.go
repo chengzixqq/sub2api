@@ -44,6 +44,7 @@ func observationCurrentStatus(facts []ChannelMonitorObservationFact, cfg Channel
 		out.Reason = "collection_unavailable"
 		return out
 	}
+	freshness := time.Duration(cfg.TrafficFreshnessSeconds) * time.Second
 	var recent ChannelMonitorObservationFact
 	for _, fact := range facts {
 		if fact.Source != "" && fact.Source != "traffic" {
@@ -57,15 +58,15 @@ func observationCurrentStatus(facts []ChannelMonitorObservationFact, cfg Channel
 			copy := at
 			out.UpdatedAt = &copy
 		}
-		if !at.Before(now.Add(-5*time.Minute)) && at.Before(now) {
+		if !at.Before(now.Add(-freshness)) && at.Before(now) {
 			recent.Add(fact)
 		}
 	}
-	if out.UpdatedAt != nil && out.UpdatedAt.Before(now.Add(-5*time.Minute)) {
+	if out.UpdatedAt != nil && out.UpdatedAt.Before(now.Add(-freshness)) {
 		out.State, out.Reason = "stale", "traffic_expired"
 		return out
 	}
-	m, health := observationMetrics(recent, cfg, platform, group, model, 5*time.Minute, true)
+	m, health := observationMetrics(recent, cfg, platform, group, model, freshness, true)
 	switch m.SampleState {
 	case "sufficient":
 		out.State, out.Source, out.Reason = health.Reliability, "traffic", "recent_traffic"
@@ -220,9 +221,17 @@ func applyObservationLatency(status *ObservationCurrentStatus, latency string) {
 	}
 }
 
+func observationLegacyCollectorStale(dataThrough, now time.Time, refreshIntervalSeconds int) bool {
+	allowance := time.Duration(refreshIntervalSeconds)*time.Second + time.Minute
+	if allowance < 2*time.Minute {
+		allowance = 2 * time.Minute
+	}
+	return dataThrough.IsZero() || now.Sub(dataThrough) > allowance
+}
+
 func (s *ChannelMonitorOverviewService) fillCurrentStatuses(ctx context.Context, out *ObservationOverview, f ChannelMonitorV2Filter, cfg ChannelMonitorObservationConfig, groups map[int64]Group, catalogue map[int64]map[string]bool, admin bool, viewer int64, refresh bool) error {
 	now := time.Now().UTC().Truncate(time.Minute)
-	f.Start, f.End, f.Bucket = now.Add(-5*time.Minute), now, time.Minute
+	f.Start, f.End, f.Bucket = now.Add(-time.Duration(cfg.TrafficFreshnessSeconds)*time.Second), now, time.Minute
 	byGroup := map[int64][]ChannelMonitorObservationFact{}
 	legacyLatency := map[int64]map[string]string{}
 	collectorStates := map[string]string{"compact": out.Coverage.CollectorState, "legacy": "healthy"}
@@ -261,7 +270,7 @@ func (s *ChannelMonitorOverviewService) fillCurrentStatuses(ctx context.Context,
 		if err != nil {
 			return err
 		}
-		if matrix.Coverage.DataThrough.IsZero() || time.Since(matrix.Coverage.DataThrough) > 2*time.Minute {
+		if observationLegacyCollectorStale(matrix.Coverage.DataThrough, time.Now().UTC(), legacy.RefreshIntervalSeconds) {
 			collectorStates["legacy"] = "stale"
 		}
 		for _, row := range matrix.Items {
@@ -324,9 +333,21 @@ func (s *ChannelMonitorOverviewService) fillCurrentStatuses(ctx context.Context,
 }
 
 func observationProbeEvidence(evidence ChannelMonitorProbeEvidence, group int64, model string, now time.Time) *ObservationProbeStatus {
+	maxAge := evidence.MaxAge
+	if maxAge <= 0 {
+		maxAge = 20 * time.Minute
+	}
+	historyAge := evidence.HistoryAge
+	if historyAge <= 0 {
+		historyAge = maxAge
+	}
+	failureThreshold := evidence.FailureThreshold
+	if failureThreshold <= 0 {
+		failureThreshold = 2
+	}
 	runsByTarget := map[int64][]ChannelMonitorProbeRun{}
 	for _, run := range evidence.Runs {
-		if run.GroupID == group && (model == "" || run.Model == model) && run.CompletedAt != nil && !run.CompletedAt.Before(now.Add(-20*time.Minute)) {
+		if run.GroupID == group && (model == "" || run.Model == model) && run.CompletedAt != nil && !run.CompletedAt.Before(now.Add(-historyAge)) {
 			runsByTarget[run.TargetID] = append(runsByTarget[run.TargetID], run)
 		}
 	}
@@ -336,12 +357,22 @@ func observationProbeEvidence(evidence ChannelMonitorProbeEvidence, group int64,
 		if !target.Enabled || target.GroupID != group || (model != "" && target.Model != model) {
 			continue
 		}
-		selected := runsByTarget[target.ID]
+		selected := []ChannelMonitorProbeRun{}
+		for _, run := range runsByTarget[target.ID] {
+			// Editing a target keeps its ID. Results from its former model or
+			// protocol are not evidence for the newly configured target.
+			if run.GroupID == target.GroupID && run.Model == target.Model && run.Protocol == target.Protocol {
+				selected = append(selected, run)
+			}
+		}
 		if len(selected) == 0 {
 			continue
 		}
 		sort.Slice(selected, func(i, j int) bool { return selected[i].CompletedAt.After(*selected[j].CompletedAt) })
 		latest := selected[0]
+		if latest.CompletedAt.Before(now.Add(-maxAge)) {
+			continue
+		}
 		candidate := &ObservationProbeStatus{Status: "unknown", LastCheckedAt: latest.CompletedAt}
 		if latest.Success != nil && latest.AccountID != nil {
 			if *latest.Success {
@@ -354,7 +385,7 @@ func observationProbeEvidence(evidence ChannelMonitorProbeEvidence, group int64,
 					}
 					candidate.ConsecutiveFailures++
 				}
-				if candidate.ConsecutiveFailures >= 2 {
+				if candidate.ConsecutiveFailures >= failureThreshold {
 					candidate.Status = "critical"
 				}
 			}

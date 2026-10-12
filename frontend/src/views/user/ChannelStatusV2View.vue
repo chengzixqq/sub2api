@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="min-w-0 space-y-5 pb-8" :class="{ 'monitor-card-page': viewMode === 'cards' }">
+    <div class="min-w-0 space-y-5 pb-8" :class="[motionClass, { 'monitor-card-page': viewMode === 'cards' }]">
       <header class="page-header mb-0 flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-4 dark:border-dark-700">
         <div class="min-w-0">
           <h1 class="page-title flex items-center gap-2 text-xl font-semibold"><Icon name="chart" size="md" />{{ t('channelMonitorV2.title') }}</h1>
@@ -35,11 +35,12 @@
         <FilterMultiSelect v-model="filter.models" :options="modelOptions" :label="t('channelMonitorV2.filters.model')" :all-label="t('channelMonitorV2.filters.allModels')" />
         <button v-if="hasFilters" type="button" class="btn btn-secondary btn-icon h-8 w-8" :title="t('channelMonitorV2.clearFilters')" :aria-label="t('channelMonitorV2.clearFilters')" @click="clearFilters"><Icon name="x" size="sm" /></button>
       </div>
+      <MonitorAppearanceSettings />
       <MonitorViewSwitcher v-model="viewMode" :items="viewItems" :label="t('channelMonitorV2.dashboard.views.label')" />
       <div :key="viewMode" class="monitor-view-panel min-w-0">
       <template v-if="overview && viewMode === 'matrix'"><MonitorHealthMatrix :items="overview.items" :coverage="overview.coverage" :source="overview.source" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" /></template>
       <template v-else-if="overview && viewMode === 'trend'"><MonitorTrendPanel :items="overview.items" :coverage="overview.coverage" :source="overview.source" /></template>
-      <ObservationCards v-else :overview="overview" :layout="layout" :view="viewMode === 'cards' ? 'cards' : 'list'" :admin="isAdmin" :loading="loading" :error="error" :stale="stale" @retry="refresh" @toggle-layout="layout = layout === 'cards' ? 'list' : 'cards'" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" />
+      <ObservationCards v-else :overview="overview" layout="cards" :view="viewMode === 'cards' ? 'cards' : 'list'" :admin="isAdmin" :loading="loading" :error="error" :stale="stale" @retry="refresh" @detail="openDetail" @model="openModelDetail" @bucket="openBucket" />
       </div>
       <ObservationDetailDrawer :show="Boolean(detail)" :item="detail?.item || null" :model="detail?.model" :selection="detail?.slot || null" :coverage="overview?.coverage" :source="overview?.source" :admin="isAdmin" :owner="isAdmin" :stale="stale" :filter="filter" :identity="identity" @close="detail = null" />
     </div>
@@ -47,7 +48,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -65,7 +66,10 @@ import MonitorEvidenceStatus from '@/features/channel-monitor-v2/MonitorEvidence
 import { summarizeMonitorTraffic } from '@/features/channel-monitor-v2/monitorSummary'
 import { formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { useObservationOverview } from '@/features/channel-monitor-v2/useObservationOverview'
-import { observationPreferenceKey, type ObservationLayout } from '@/features/channel-monitor-v2/observationViewModel'
+import MonitorAppearanceSettings from '@/features/channel-monitor-v2/MonitorAppearanceSettings.vue'
+import { provideMonitorPreferences } from '@/features/channel-monitor-v2/useMonitorPreferences'
+import { useMonitorPolling } from '@/features/channel-monitor-v2/useMonitorPolling'
+import { observationPreferenceKey } from '@/features/channel-monitor-v2/observationViewModel'
 import type { MonitorFilter, MonitorRange, ObservationBucket, ObservationChannel } from '@/api/channelMonitorV2'
 import { useAuthStore } from '@/stores/auth'
 
@@ -75,18 +79,21 @@ const router = useRouter()
 const auth = useAuthStore()
 const isAdmin = computed(() => auth.user?.role === 'admin')
 const identity = computed(() => observationPreferenceKey(auth.user?.id, auth.user?.role || 'user', auth.workspace?.id))
+const preferences = provideMonitorPreferences(identity)
+const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const ranges: MonitorRange[] = ['90m', '24h', '7d', '30d']
 const csv = (value: unknown) => typeof value === 'string' ? value.split(',').filter(Boolean) : []
 const filter = ref<MonitorFilter>({
-  range: ranges.includes(route.query.range as MonitorRange) ? route.query.range as MonitorRange : '24h',
+  range: ranges.includes(route.query.range as MonitorRange) ? route.query.range as MonitorRange : preferences.value.defaultRange,
   platforms: csv(route.query.platform),
   groupIds: csv(route.query.group).map(Number).filter(value => Number.isInteger(value) && value > 0),
   models: csv(route.query.model),
 })
 const preview = ref(false)
 const { data: overview, loading, error, stale, errorStatus, load } = useObservationOverview(filter, isAdmin, ref(false), identity, preview)
-const layout = ref<ObservationLayout>('list')
-const viewMode = ref<'cards' | 'matrix' | 'trend'>('cards')
+const viewMode = ref<'cards' | 'matrix' | 'trend'>(preferences.value.defaultView)
+watch(() => preferences.value.defaultView, value => { viewMode.value = value })
+watch(() => preferences.value.defaultRange, value => { filter.value.range = value })
 const viewItems = computed(() => [
   { value: 'cards', label: t('channelMonitorV2.dashboard.views.cards') },
   { value: 'matrix', label: t('channelMonitorV2.dashboard.views.matrix') },
@@ -134,32 +141,20 @@ watch(overview, value => {
   const slot = detail.value.slot
   detail.value = { item, model: detail.value.model, slot: slot ? { start: slot.start, bucket: item.buckets.find(bucket => bucket.bucket_start === slot.start) || null } : null }
 }, { flush: 'sync' })
-watch(identity, () => {
+watch(identity, (_value, previous) => {
   detail.value = null
   preview.value = false
-  try { layout.value = localStorage.getItem(`${identity.value}:layout`) === 'cards' ? 'cards' : 'list' } catch { layout.value = 'list' }
+  viewMode.value = preferences.value.defaultView
+  if (previous !== undefined) filter.value = { range: preferences.value.defaultRange, platforms: [], groupIds: [], models: [] }
 }, { immediate: true, flush: 'sync' })
-watch(layout, value => {
-  if (!auth.user?.id) return
-  try { localStorage.setItem(`${identity.value}:layout`, value) } catch { /* Preferences are optional. */ }
-})
 watch([filter, identity, preview], () => {
   detail.value = null
   void router.replace({ query: { range: filter.value.range, platform: filter.value.platforms.join(',') || undefined, group: filter.value.groupIds.join(',') || undefined, model: filter.value.models.join(',') || undefined } })
   void load()
 }, { deep: true })
 
-let timer: ReturnType<typeof setInterval> | undefined
-function resume() { if (document.visibilityState === 'visible' && !loading.value) void refresh() }
-onMounted(() => {
-  void load()
-  timer = setInterval(resume, 60_000)
-  document.addEventListener('visibilitychange', resume)
-})
-onBeforeUnmount(() => {
-  clearInterval(timer)
-  document.removeEventListener('visibilitychange', resume)
-})
+useMonitorPolling(refresh, computed(() => overview.value?.refresh_interval_seconds), computed(() => preferences.value.autoRefresh), loading)
+onMounted(() => { void load() })
 </script>
 
 <style scoped>

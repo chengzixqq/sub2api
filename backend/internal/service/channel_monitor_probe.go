@@ -17,6 +17,39 @@ const (
 	channelMonitorProbeIdle             = 15 * time.Minute
 )
 
+// ChannelMonitorProbePolicy is captured once per operation so scheduling, the
+// transactional reservation and execution use the same limits.
+type ChannelMonitorProbePolicy struct {
+	IntervalSeconds   int
+	TimeoutSeconds    int
+	TargetDailyLimit  int
+	GlobalDailyLimit  int
+	FailureThreshold  int
+	QuotaStaleSeconds int
+}
+
+func (c ChannelMonitorObservationConfig) ProbePolicy() ChannelMonitorProbePolicy {
+	return ChannelMonitorProbePolicy{c.ProbeIntervalSeconds, c.ProbeTimeoutSeconds, c.ProbeTargetDailyLimit, c.ProbeGlobalDailyLimit, c.ProbeFailureThreshold, c.QuotaStaleSeconds}
+}
+
+func (p ChannelMonitorProbePolicy) Validate() error {
+	if p.IntervalSeconds < 60 || p.IntervalSeconds > 3600 || p.TimeoutSeconds < 5 || p.TimeoutSeconds > 60 || p.TargetDailyLimit < 1 || p.TargetDailyLimit > 1440 || p.GlobalDailyLimit < 1 || p.GlobalDailyLimit > 100000 {
+		return errors.New("invalid probe policy: interval 60..3600s, timeout 5..60s, target budget 1..1440, global budget 1..100000")
+	}
+	if p.FailureThreshold < 1 || p.FailureThreshold > 10 || p.QuotaStaleSeconds < 300 || p.QuotaStaleSeconds > 3600 {
+		return errors.New("invalid status policy: probe failure threshold 1..10, quota stale 300..3600s")
+	}
+	return nil
+}
+
+func (p ChannelMonitorProbePolicy) HistoryWindow() time.Duration {
+	return time.Duration(p.IntervalSeconds*p.FailureThreshold)*time.Second + 5*time.Minute
+}
+
+func (p ChannelMonitorProbePolicy) EvidenceWindow() time.Duration {
+	return time.Duration(p.IntervalSeconds)*time.Second + 5*time.Minute
+}
+
 var (
 	ErrChannelMonitorProbeNotFound = errors.New("monitor probe target not found")
 	ErrChannelMonitorProbeConflict = errors.New("monitor probe configuration or idempotency conflict")
@@ -77,8 +110,11 @@ type ChannelMonitorProbeRun struct {
 // terminal runs. A target is the unit of health evidence, so one protocol
 // cannot overwrite a different protocol's result.
 type ChannelMonitorProbeEvidence struct {
-	Targets []ChannelMonitorProbeTarget
-	Runs    []ChannelMonitorProbeRun
+	MaxAge           time.Duration
+	HistoryAge       time.Duration
+	FailureThreshold int
+	Targets          []ChannelMonitorProbeTarget
+	Runs             []ChannelMonitorProbeRun
 }
 
 type ChannelMonitorProbeTargetBudget struct {
@@ -108,25 +144,29 @@ type ChannelMonitorProbeRepository interface {
 	ListTargets(context.Context) ([]ChannelMonitorProbeTarget, error)
 	GetTarget(context.Context, int64) (*ChannelMonitorProbeTarget, error)
 	SaveTarget(context.Context, *ChannelMonitorProbeTarget) error
-	Reserve(context.Context, int64, string, bool, time.Time) (*ChannelMonitorProbeRun, bool, error)
+	Reserve(context.Context, int64, string, bool, time.Time, ChannelMonitorProbePolicy) (*ChannelMonitorProbeRun, bool, error)
 	Complete(context.Context, *ChannelMonitorProbeRun) error
-	Budget(context.Context, time.Time) (*ChannelMonitorProbeBudget, error)
+	Budget(context.Context, time.Time, ChannelMonitorProbePolicy) (*ChannelMonitorProbeBudget, error)
 	RecentRuns(context.Context, []int64, time.Time) ([]ChannelMonitorProbeRun, error)
 	QuotaAccounts(context.Context) ([]int64, error)
 	ClaimQuota(context.Context, int64, time.Time) (bool, error)
 	StoreQuota(context.Context, int64, *domain.MonitorQuotaSnapshot) error
 	ReadQuotas(context.Context, []int64) (map[int64]*domain.MonitorQuotaSnapshot, error)
-	QuotaSummaries(context.Context, []int64, time.Time) (map[int64]ChannelMonitorQuotaSummary, error)
+	QuotaSummaries(context.Context, []int64, time.Time, time.Duration) (map[int64]ChannelMonitorQuotaSummary, error)
 }
 
 func channelMonitorProbeDue(now time.Time, a ChannelMonitorProbeActivity, lastProbe *time.Time) bool {
-	if !a.CollectionHealthy || a.ObservedSince.IsZero() || now.Sub(a.ObservedSince) < channelMonitorProbeIdle {
+	return channelMonitorProbeDueWithInterval(now, a, lastProbe, channelMonitorProbeIdle)
+}
+
+func channelMonitorProbeDueWithInterval(now time.Time, a ChannelMonitorProbeActivity, lastProbe *time.Time, interval time.Duration) bool {
+	if !a.CollectionHealthy || a.ObservedSince.IsZero() || now.Sub(a.ObservedSince) < interval {
 		return false
 	}
-	if a.LastTrafficAt != nil && now.Sub(*a.LastTrafficAt) < channelMonitorProbeIdle {
+	if a.LastTrafficAt != nil && now.Sub(*a.LastTrafficAt) < interval {
 		return false
 	}
-	return lastProbe == nil || now.Sub(*lastProbe) >= channelMonitorProbeIdle
+	return lastProbe == nil || now.Sub(*lastProbe) >= interval
 }
 func validMonitorProbeKey(key string) bool {
 	if len(key) < 16 || len(key) > 128 {

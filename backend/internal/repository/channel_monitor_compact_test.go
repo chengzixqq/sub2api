@@ -31,6 +31,22 @@ func TestCompactObservationConfig_UsesIndependentPolicy(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestCompactObservationConfig_LegacyStoredJSONGetsSafeRuntimeDefaults(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery("SELECT version, config FROM channel_monitor_compact_config").WillReturnRows(sqlmock.NewRows([]string{"version", "config"}).AddRow(7, `{"enabled":true,"mode":"live","refresh_interval_seconds":120,"probe_enabled":false}`))
+	cfg, err := NewChannelMonitorObservationRepository(db).GetConfig(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 7, cfg.Version)
+	require.Equal(t, 120, cfg.RefreshIntervalSeconds)
+	require.False(t, cfg.ProbeEnabled)
+	require.Equal(t, service.DefaultChannelMonitorObservationConfig().ProbePolicy(), cfg.ProbePolicy())
+	require.Equal(t, 300, cfg.TrafficFreshnessSeconds)
+	require.NoError(t, service.ValidateChannelMonitorObservationConfig(*cfg))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestCompactObservationAggregate_SeparatesTrafficProbeAndAttempts(t *testing.T) {
 	now := time.Date(2026, 9, 18, 10, 12, 30, 0, time.UTC)
 	event := service.ChannelMonitorEvent{RequestID: uuid.NewString(), SessionID: uuid.NewString(), StartedAt: now.Add(-time.Second), CompletedAt: now, Platform: "openai", GroupID: 7, RequestedModel: "gpt-test", Protocol: "openai_chat", Outcome: "success", DurationMs: 1000, Attempts: []service.ChannelMonitorAttempt{{Sequence: 1, AccountID: 11, Outcome: "channel_error", DurationMs: 100}, {Sequence: 2, AccountID: 12, Outcome: "success", DurationMs: 900}}}

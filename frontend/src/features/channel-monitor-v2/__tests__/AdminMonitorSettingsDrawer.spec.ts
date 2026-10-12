@@ -5,7 +5,7 @@ vi.mock('vue-i18n', async importOriginal => ({ ...await importOriginal<typeof im
 
 describe('monitor settings drawer', () => {
   it('mounts settings only after opening and selects one configuration section at a time', async () => {
-    const wrapper = shallowMount(AdminMonitorSettingsDrawer, { props: { show: false }, global: { stubs: { Teleport: true } } })
+    const wrapper = shallowMount(AdminMonitorSettingsDrawer, { props: { show: false }, global: { stubs: { Teleport: true }, renderStubDefaultSlot: true } })
     expect(wrapper.find('observation-settings-panel-stub').exists()).toBe(false)
     expect(wrapper.find('monitor-probe-settings-stub').exists()).toBe(false)
     expect(wrapper.find('monitor-settings-panel-stub').exists()).toBe(false)

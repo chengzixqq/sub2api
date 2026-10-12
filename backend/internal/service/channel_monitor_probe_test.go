@@ -26,6 +26,20 @@ func TestChannelMonitorProbeDue_RequiresHealthyContinuousIdleWindow(t *testing.T
 	require.False(t, channelMonitorProbeDue(now, activity, &recent))
 }
 
+func TestChannelMonitorProbeDue_ConfiguredIntervalAppliesToTrafficAndPreviousProbe(t *testing.T) {
+	now := time.Now().UTC()
+	activity := ChannelMonitorProbeActivity{CollectionHealthy: true, ObservedSince: now.Add(-time.Hour)}
+	recent := now.Add(-2 * time.Minute)
+	require.True(t, channelMonitorProbeDueWithInterval(now, activity, &recent, time.Minute))
+	require.False(t, channelMonitorProbeDueWithInterval(now, activity, &recent, 3*time.Minute))
+	activity.LastTrafficAt = &recent
+	require.True(t, channelMonitorProbeDueWithInterval(now, activity, nil, time.Minute))
+	require.False(t, channelMonitorProbeDueWithInterval(now, activity, nil, 3*time.Minute))
+	activity.LastTrafficAt = nil
+	activity.ObservedSince = recent
+	require.False(t, channelMonitorProbeDueWithInterval(now, activity, nil, 3*time.Minute))
+}
+
 func TestChannelMonitorProbeTarget_Validation(t *testing.T) {
 	valid := ChannelMonitorProbeTarget{GroupID: 1, Model: "gpt-test", Protocol: "openai_chat"}
 	require.NoError(t, valid.Validate())

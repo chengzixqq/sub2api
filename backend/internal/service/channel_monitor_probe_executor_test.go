@@ -17,6 +17,26 @@ import (
 
 type probeAccountSelectorStub struct{ account *Account }
 
+type probeDeadlineSelector struct{ deadline time.Time }
+
+func (s *probeDeadlineSelector) SelectAccountForModel(ctx context.Context, _ *int64, _, _ string) (*Account, error) {
+	s.deadline, _ = ctx.Deadline()
+	return nil, nil
+}
+
+func TestChannelMonitorProbeExecutor_ConfiguredTimeoutIsNotCappedAtDefault(t *testing.T) {
+	for _, seconds := range []int{5, 45, 60} {
+		selector := &probeDeadlineSelector{}
+		executor := NewChannelMonitorProbeExecutor(nil, nil)
+		executor.selector = selector
+		run := &ChannelMonitorProbeRun{}
+		start := time.Now()
+		executor.ExecuteWithTimeout(context.Background(), run, time.Duration(seconds)*time.Second)
+		require.WithinDuration(t, start.Add(time.Duration(seconds)*time.Second), selector.deadline, time.Second)
+		require.Zero(t, executor.client.Timeout)
+	}
+}
+
 func (s probeAccountSelectorStub) SelectAccountForModel(context.Context, *int64, string, string) (*Account, error) {
 	return s.account, nil
 }

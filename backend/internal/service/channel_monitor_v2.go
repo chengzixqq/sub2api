@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -433,6 +434,20 @@ func (s *ChannelMonitorV2Service) getEnabledConfig(ctx context.Context) (*Channe
 }
 
 func (s *ChannelMonitorV2Service) UpdateConfig(ctx context.Context, cfg ChannelMonitorV2Config, expectedVersion int, actorID int64) (*ChannelMonitorV2Config, error) {
+	allowedCategories := make(map[string]bool, len(ChannelMonitorV2ErrorCategories))
+	for _, category := range ChannelMonitorV2ErrorCategories {
+		allowedCategories[category] = true
+	}
+	for _, category := range cfg.IgnoredErrorCategories {
+		if !allowedCategories[strings.ToLower(strings.TrimSpace(category))] {
+			return nil, fmt.Errorf("%w: unknown ignored error category", ErrChannelMonitorV2InvalidConfig)
+		}
+	}
+	// HTTP decoding supplies defaults for omitted legacy fields. Explicitly
+	// invalid thresholds must not silently become a different saved policy.
+	if err := ValidateChannelMonitorV2HealthThresholds(cfg.HealthThresholds); err != nil {
+		return nil, err
+	}
 	if err := normalizeChannelMonitorV2Config(&cfg); err != nil {
 		return nil, err
 	}
@@ -812,6 +827,26 @@ func DefaultChannelMonitorV2HealthThresholds() ChannelMonitorV2HealthThresholds 
 
 func NormalizeChannelMonitorV2HealthThresholds(in ChannelMonitorV2HealthThresholds) ChannelMonitorV2HealthThresholds {
 	def := DefaultChannelMonitorV2HealthThresholds()
+	// Read compatibility for historical malformed values. JSON cannot represent
+	// NaN/Inf, but programmatic callers and health calculations must stay finite.
+	for _, pair := range []struct {
+		value    *float64
+		fallback float64
+	}{
+		{&in.WarningErrorRate, def.WarningErrorRate}, {&in.CriticalErrorRate, def.CriticalErrorRate},
+		{&in.WarningCacheRate, def.WarningCacheRate}, {&in.CriticalCacheRate, def.CriticalCacheRate},
+		{&in.ErrorWeight, def.ErrorWeight}, {&in.TTFTWeight, def.TTFTWeight}, {&in.CacheWeight, def.CacheWeight},
+	} {
+		if math.IsNaN(*pair.value) || math.IsInf(*pair.value, 0) {
+			*pair.value = pair.fallback
+		}
+		if *pair.value < 0 {
+			*pair.value = 0
+		}
+		if *pair.value > 1 {
+			*pair.value = 1
+		}
+	}
 	if in.MinimumSample <= 0 {
 		in.MinimumSample = def.MinimumSample
 	}
@@ -864,6 +899,19 @@ func NormalizeChannelMonitorV2HealthThresholds(in ChannelMonitorV2HealthThreshol
 		in.ErrorWeight, in.TTFTWeight, in.CacheWeight = def.ErrorWeight, def.TTFTWeight, def.CacheWeight
 	}
 	return in
+}
+
+func ValidateChannelMonitorV2HealthThresholds(t ChannelMonitorV2HealthThresholds) error {
+	invalid := func() error { return fmt.Errorf("%w: invalid health thresholds", ErrChannelMonitorV2InvalidConfig) }
+	for _, value := range []float64{t.WarningErrorRate, t.CriticalErrorRate, t.WarningCacheRate, t.CriticalCacheRate, t.ErrorWeight, t.TTFTWeight, t.CacheWeight} {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1 {
+			return invalid()
+		}
+	}
+	if t.MinimumSample < 1 || t.MinimumSample > 10000 || t.WarningErrorRate <= 0 || t.CriticalErrorRate < t.WarningErrorRate || t.TargetTTFTMs < 1 || t.WarningTTFTMs < t.TargetTTFTMs || t.CriticalTTFTMs < t.WarningTTFTMs || t.CriticalTTFTMs > 86400000 || t.CriticalCacheRate > t.WarningCacheRate || math.Abs(t.ErrorWeight+t.TTFTWeight+t.CacheWeight-1) > 0.000001 {
+		return invalid()
+	}
+	return nil
 }
 
 func normalizeChannelMonitorV2IgnoredCategories(values []string) []string {

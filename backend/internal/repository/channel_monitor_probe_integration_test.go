@@ -45,7 +45,7 @@ func TestChannelMonitorProbeRepository_ConcurrentIdempotency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			run, owner, err := repo.Reserve(ctx, target.ID, "one-idempotent-operation", true, now)
+			run, owner, err := repo.Reserve(ctx, target.ID, "one-idempotent-operation", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 			if err != nil {
 				errs <- err
 				return
@@ -70,7 +70,7 @@ func TestChannelMonitorProbeRepository_ConcurrentIdempotency(t *testing.T) {
 		}
 		require.Equal(t, first.ID, run.ID)
 	}
-	budget, err := repo.Budget(ctx, now)
+	budget, err := repo.Budget(ctx, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.Equal(t, 1, budget.GlobalUsed)
 	require.Equal(t, 1, budget.Targets[0].Used)
@@ -79,7 +79,7 @@ func TestChannelMonitorProbeRepository_ConcurrentIdempotency(t *testing.T) {
 	first.Status = "healthy"
 	require.NoError(t, repo.Complete(ctx, first))
 	// A client retry after commit/response loss reads the committed result, not another generation.
-	replayed, owner, err := repo.Reserve(ctx, target.ID, "one-idempotent-operation", true, now.Add(time.Minute))
+	replayed, owner, err := repo.Reserve(ctx, target.ID, "one-idempotent-operation", true, now.Add(time.Minute), service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.False(t, owner)
 	require.Equal(t, "healthy", replayed.Status)
@@ -99,7 +99,7 @@ func TestChannelMonitorProbeRepository_GlobalBudgetConcurrentTargets(t *testing.
 		wg.Add(1)
 		go func(id int64) {
 			defer wg.Done()
-			_, owned, err := repo.Reserve(ctx, id, fmt.Sprintf("global-boundary-%d", id), true, now)
+			_, owned, err := repo.Reserve(ctx, id, fmt.Sprintf("global-boundary-%d", id), true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 			if owned {
 				owners.Add(1)
 			} else {
@@ -109,7 +109,7 @@ func TestChannelMonitorProbeRepository_GlobalBudgetConcurrentTargets(t *testing.
 	}
 	wg.Wait()
 	require.Equal(t, int32(1), owners.Load())
-	budget, err := repo.Budget(ctx, now)
+	budget, err := repo.Budget(ctx, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.Equal(t, 1000, budget.GlobalUsed)
 }
@@ -121,9 +121,9 @@ func TestChannelMonitorProbeRepository_TargetBudgetAndUTCReset(t *testing.T) {
 	ctx := context.Background()
 	_, err := integrationDB.ExecContext(ctx, `INSERT INTO channel_monitor_probe_budgets(utc_day,target_id,used) VALUES($1,$2,96)`, now.Format("2006-01-02"), target.ID)
 	require.NoError(t, err)
-	_, _, err = repo.Reserve(ctx, target.ID, "limit-before-midnight", true, now)
+	_, _, err = repo.Reserve(ctx, target.ID, "limit-before-midnight", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.ErrorIs(t, err, service.ErrChannelMonitorProbeBudget)
-	run, owner, err := repo.Reserve(ctx, target.ID, "limit-after-midnight", true, now.Add(time.Minute))
+	run, owner, err := repo.Reserve(ctx, target.ID, "limit-after-midnight", true, now.Add(time.Minute), service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.True(t, owner)
 	require.NotNil(t, run)
@@ -141,14 +141,14 @@ func TestChannelMonitorProbeRepository_VersionAndLease(t *testing.T) {
 	target.Enabled = false
 	require.NoError(t, repo.SaveTarget(ctx, target))
 	require.ErrorIs(t, repo.SaveTarget(ctx, &stale), service.ErrChannelMonitorProbeConflict)
-	_, _, err := repo.Reserve(ctx, target.ID, "disabled-probe-target", true, now)
+	_, _, err := repo.Reserve(ctx, target.ID, "disabled-probe-target", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.ErrorIs(t, err, service.ErrChannelMonitorProbeDisabled)
 	target.Enabled = true
 	require.NoError(t, repo.SaveTarget(ctx, target))
-	_, owner, err := repo.Reserve(ctx, target.ID, "lease-first-operation", true, now)
+	_, owner, err := repo.Reserve(ctx, target.ID, "lease-first-operation", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.True(t, owner)
-	_, _, err = repo.Reserve(ctx, target.ID, "lease-second-operation", true, now)
+	_, _, err = repo.Reserve(ctx, target.ID, "lease-second-operation", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.ErrorIs(t, err, service.ErrChannelMonitorProbeBusy)
 	require.ErrorIs(t, repo.SaveTarget(ctx, target), service.ErrChannelMonitorProbeConflict)
 }
@@ -176,13 +176,13 @@ func TestChannelMonitorProbeRepository_QuotaClaimAndSafeSummary(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, claimed)
 	require.NoError(t, repo.StoreQuota(ctx, accountID, &domain.MonitorQuotaSnapshot{Success: true, Source: "observed", FetchedAt: now}))
-	states, err := repo.QuotaSummaries(ctx, []int64{target.GroupID}, now)
+	states, err := repo.QuotaSummaries(ctx, []int64{target.GroupID}, now, 10*time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, "available", states[target.GroupID].State)
-	states, err = repo.QuotaSummaries(ctx, []int64{target.GroupID}, now.Add(11*time.Minute))
+	states, err = repo.QuotaSummaries(ctx, []int64{target.GroupID}, now.Add(11*time.Minute), 10*time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, "stale", states[target.GroupID].State)
-	states, err = repo.QuotaSummaries(ctx, nil, now)
+	states, err = repo.QuotaSummaries(ctx, nil, now, 10*time.Minute)
 	require.NoError(t, err)
 	require.Empty(t, states)
 }
@@ -192,13 +192,13 @@ func TestChannelMonitorProbeRepository_InterruptedRunNotHealthEvidence(t *testin
 	target := probeIntegrationTarget(t, now)
 	repo := NewChannelMonitorProbeRepository(integrationDB)
 	ctx := context.Background()
-	run, owner, err := repo.Reserve(ctx, target.ID, "interrupted-operation", true, now.Add(-2*time.Minute))
+	run, owner, err := repo.Reserve(ctx, target.ID, "interrupted-operation", true, now.Add(-3*time.Minute), service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.True(t, owner)
 	probeRepo, ok := repo.(*channelMonitorProbeRepository)
 	require.True(t, ok)
 	require.NoError(t, probeRepo.MaintainProbe(ctx, now))
-	replayed, owner, err := repo.Reserve(ctx, target.ID, "interrupted-operation", true, now)
+	replayed, owner, err := repo.Reserve(ctx, target.ID, "interrupted-operation", true, now, service.DefaultChannelMonitorObservationConfig().ProbePolicy())
 	require.NoError(t, err)
 	require.False(t, owner)
 	require.Equal(t, run.ID, replayed.ID)

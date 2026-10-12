@@ -81,12 +81,13 @@ type ObservationCoverage struct {
 }
 
 type ObservationOverview struct {
-	ContractVersion int                        `json:"contract_version"`
-	Source          string                     `json:"source"`
-	Mode            string                     `json:"mode"`
-	Coverage        ObservationCoverage        `json:"coverage"`
-	Dimensions      ChannelMonitorV2Dimensions `json:"dimensions"`
-	Items           []ObservationChannel       `json:"items"`
+	RefreshIntervalSeconds int                        `json:"refresh_interval_seconds"`
+	ContractVersion        int                        `json:"contract_version"`
+	Source                 string                     `json:"source"`
+	Mode                   string                     `json:"mode"`
+	Coverage               ObservationCoverage        `json:"coverage"`
+	Dimensions             ChannelMonitorV2Dimensions `json:"dimensions"`
+	Items                  []ObservationChannel       `json:"items"`
 }
 
 func observationMetrics(f ChannelMonitorObservationFact, cfg ChannelMonitorObservationConfig, platform string, group int64, model string, window time.Duration, admin bool) (ObservationMetrics, ObservationHealth) {
@@ -398,7 +399,7 @@ func (s *ChannelMonitorOverviewService) Overview(ctx context.Context, f ChannelM
 		pending := snapshot.Coverage.PendingEvents
 		coverage.PendingEvents = &pending
 	}
-	out := &ObservationOverview{ContractVersion: 2, Source: "compact", Mode: policy.Mode, Coverage: coverage, Dimensions: dims, Items: []ObservationChannel{}}
+	out := &ObservationOverview{ContractVersion: 2, Source: "compact", Mode: policy.Mode, RefreshIntervalSeconds: policy.RefreshIntervalSeconds, Coverage: coverage, Dimensions: dims, Items: []ObservationChannel{}}
 	byGroup := map[int64][]ChannelMonitorObservationFact{}
 	for _, fact := range snapshot.Facts {
 		g, ok := allowed[fact.GroupID]

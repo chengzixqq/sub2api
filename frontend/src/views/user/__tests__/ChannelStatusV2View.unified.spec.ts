@@ -63,11 +63,24 @@ describe('unified channel monitor page', () => {
     expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
-  it('defaults to the group list without inheriting old card preferences', async () => {
-    localStorage.setItem('sub2api:observation:v2:1:admin:1:layout', 'cards')
+  it('uses the site refresh interval and honors the browser auto-refresh preference', async () => {
+    api.getObservationOverview.mockResolvedValue({ ...snapshot(), refresh_interval_seconds: 120 })
     const wrapper = mountView()
     await flushPromises()
-    expect(wrapper.findComponent(cards).props('layout')).toBe('list')
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
+    await wrapper.get('[data-testid="pref-auto-refresh"]').setValue(false)
+    await vi.advanceTimersByTimeAsync(240_000)
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+  it('uses the actual card layout rather than the obsolete list preference', async () => {
+    localStorage.setItem('sub2api:observation:v2:1:admin:1:layout', 'list')
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.findComponent(cards).props('layout')).toBe('cards')
     wrapper.unmount()
   })
   it('revokes an open detail when access is lost during refresh', async () => {

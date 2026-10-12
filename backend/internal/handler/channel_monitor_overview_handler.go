@@ -224,9 +224,25 @@ func (h *ChannelMonitorV2Handler) UpdateObservationConfig(c *gin.Context) {
 		response.Error(c, http.StatusServiceUnavailable, "observation service unavailable")
 		return
 	}
-	var cfg service.ChannelMonitorObservationConfig
+	stored, err := h.overview.GetConfig(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if stored == nil {
+		response.Error(c, http.StatusServiceUnavailable, "observation policy unavailable")
+		return
+	}
+	// Older clients omit new controls. Preserve the persisted values rather than
+	// resetting budgets or flags while saving an unrelated threshold.
+	cfg := *stored
+	cfg.Version = 0
 	if err := c.ShouldBindJSON(&cfg); err != nil {
 		response.BadRequest(c, "invalid observation policy")
+		return
+	}
+	if cfg.Version < 1 {
+		response.BadRequest(c, "observation policy version required")
 		return
 	}
 	if err := service.ValidateChannelMonitorObservationConfig(cfg); err != nil {

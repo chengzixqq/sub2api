@@ -1,10 +1,10 @@
 <template>
-  <section class="space-y-5" data-testid="admin-monitor-dashboard">
+  <section :class="motionClass" class="space-y-5" data-testid="admin-monitor-dashboard">
     <MonitorOverviewHero :eyebrow="text('运营监控', 'Operations monitor')" :title="text('渠道控制台', 'Channel control room')" :subtitle="text('真实流量、主动探测与额度同步分别呈现，快速定位故障来源。', 'Traffic, probes and quota remain separate to identify the source of a problem.')" :stats="heroStats" />
 
     <div class="monitor-toolbar flex flex-wrap items-center gap-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-800">
       <label class="sr-only" :for="rangeId">{{ t('channelMonitorV2.timeRange') }}</label>
-      <select :id="rangeId" v-model="filter.range" class="input !w-auto !py-1.5 text-xs" :disabled="previewMode" :aria-describedby="previewMode ? rangeId + '-hint' : undefined"><option v-for="range in ranges" :key="range" :value="range">{{ t('channelMonitorV2.ranges.' + range) }}</option></select>
+      <Select :dropdown-class="motionClass" :id="rangeId" v-model="filter.range" class="min-w-32" :options="rangeOptions" :searchable="false" :disabled="previewMode" :aria-label="t('channelMonitorV2.timeRange')" :aria-describedby="previewMode ? rangeId + '-hint' : undefined" />
       <span v-if="previewMode" :id="rangeId + '-hint'" class="text-xs text-gray-500">{{ text('预览固定 24 小时数据', 'Preview uses a fixed 24h fixture window') }}</span>
       <FilterMultiSelect v-model="filter.platforms" compact :label="t('channelMonitorV2.filters.platform')" :all-label="t('channelMonitorV2.filters.allPlatforms')" :options="platformOptions" />
       <FilterMultiSelect v-model="selectedGroups" compact :label="t('channelMonitorV2.filters.group')" :all-label="t('channelMonitorV2.filters.allGroups')" :options="groupOptions" />
@@ -18,6 +18,7 @@
       <button type="button" class="btn btn-secondary btn-sm" :disabled="loading" @click="refresh">{{ t('common.retry') }}</button>
     </div>
     <MonitorEvidenceStatus v-if="overview" :overview="overview" :stale="stale" />
+    <MonitorAppearanceSettings v-if="!previewMode" />
     <MonitorViewSwitcher v-model="view" :label="text('监控视图', 'Monitor view')" :items="viewItems">
       <span class="text-xs text-gray-500 dark:text-gray-400">{{ loading ? t('channelMonitorV2.updating') : updatedLabel }}</span>
     </MonitorViewSwitcher>
@@ -52,6 +53,10 @@ import { computed, getCurrentInstance, onBeforeUnmount, onMounted, ref, watch } 
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import { getErrors, type MonitorErrorRow, type MonitorFilter, type MonitorRange, type ObservationBucket, type ObservationChannel, type ObservationOverview } from '@/api/channelMonitorV2'
+import Select from '@/components/common/Select.vue'
+import MonitorAppearanceSettings from './MonitorAppearanceSettings.vue'
+import { provideMonitorPreferences } from './useMonitorPreferences'
+import { useMonitorPolling } from './useMonitorPolling'
 import { useObservationOverview } from './useObservationOverview'
 import FilterMultiSelect from './FilterMultiSelect.vue'
 import { monitorSourceLabel } from './monitorLabels'
@@ -64,16 +69,19 @@ import MonitorOverviewHero from './MonitorOverviewHero.vue'
 import MonitorTrendPanel from './MonitorTrendPanel.vue'
 import MonitorViewSwitcher from './MonitorViewSwitcher.vue'
 
-const props = withDefaults(defineProps<{ filter?: MonitorFilter; previewOverview?: ObservationOverview | null; preview?: boolean }>(), { filter: () => ({ range: '24h', platforms: [], groupIds: [], models: [] }), previewOverview: null, preview: false })
+const props = withDefaults(defineProps<{ filter?: MonitorFilter; previewOverview?: ObservationOverview | null; preview?: boolean }>(), { previewOverview: null, preview: false })
 const emit = defineEmits<{ detail: [item: ObservationChannel] }>()
 const { t, te, locale } = useI18n()
 const auth = useAuthStore()
 const text = (zh: string, en: string) => locale.value.startsWith('zh') ? zh : en
 const rangeId = 'admin-monitor-range-' + getCurrentInstance()?.uid
 const ranges: MonitorRange[] = ['90m', '24h', '7d', '30d']
-const filter = ref<MonitorFilter>({ ...props.filter, platforms: [...props.filter.platforms], groupIds: [...props.filter.groupIds], models: [...props.filter.models] })
+const rangeOptions = computed(() => ranges.map(value => ({ value, label: t('channelMonitorV2.ranges.' + value) })))
 const identity = computed(() => ['admin-monitor', auth.user?.id ?? 'anonymous', auth.user?.role ?? 'unknown', auth.workspace?.id ?? 'owner'].join(':'))
+const preferences = provideMonitorPreferences(identity)
+const motionClass = computed(() => preferences.value.motion === 'off' ? 'monitor-motion-off' : 'monitor-motion-system')
 const previewMode = computed(() => props.preview || Boolean(props.previewOverview))
+const filter = ref<MonitorFilter>({ range: previewMode.value ? '24h' : props.filter?.range ?? preferences.value.defaultRange, platforms: [...(props.filter?.platforms || [])], groupIds: [...(props.filter?.groupIds || [])], models: [...(props.filter?.models || [])] })
 const { data, loading, error, stale, load, cancel } = useObservationOverview(filter, ref(true), ref(false), identity)
 const overview = computed(() => {
   const raw = previewMode.value ? props.previewOverview : data.value
@@ -81,7 +89,13 @@ const overview = computed(() => {
   const items = raw.items.filter(item => (!filter.value.platforms.length || filter.value.platforms.includes(item.platform)) && (!filter.value.groupIds.length || filter.value.groupIds.includes(item.group_id))).map(item => ({ ...item, models: item.models.filter(model => !filter.value.models.length || filter.value.models.includes(model.model)) }))
   return { ...raw, items: items.filter(item => !filter.value.models.length || item.models.length > 0) }
 })
-const view = ref<'cards' | 'matrix' | 'advanced'>('cards')
+const view = ref<'cards' | 'matrix' | 'advanced'>(preferences.value.defaultView === 'trend' ? 'advanced' : preferences.value.defaultView)
+watch(() => preferences.value.defaultView, value => { view.value = value === 'trend' ? 'advanced' : value })
+watch(() => preferences.value.defaultRange, value => { if (!previewMode.value) filter.value.range = value })
+watch(identity, () => {
+  view.value = preferences.value.defaultView === 'trend' ? 'advanced' : preferences.value.defaultView
+  filter.value = { range: previewMode.value ? '24h' : preferences.value.defaultRange, platforms: [], groupIds: [], models: [] }
+}, { flush: 'sync' })
 const viewItems = computed(() => [{ value: 'cards', label: text('卡片', 'Cards') }, { value: 'matrix', label: text('矩阵', 'Matrix') }, { value: 'advanced', label: text('高级大屏', 'Advanced') }])
 const selectedGroups = computed<string[]>({ get: () => filter.value.groupIds.map(String), set: values => { filter.value.groupIds = values.map(Number).filter(value => Number.isInteger(value) && value > 0) } })
 const dimensions = computed(() => overview.value?.dimensions || { platforms: [], groups: [], models: [] })
@@ -153,12 +167,11 @@ async function loadErrors() {
 }
 function clearFilters() { filter.value = { ...filter.value, platforms: [], groupIds: [], models: [] } }
 async function refresh() { if (previewMode.value) return; await load(true, true) }
-watch([filter, identity], () => { detail.value = null; remoteErrors.value = []; errorsController?.abort(); if (!previewMode.value) void load() }, { deep: true, flush: 'sync' })
+watch([filter, identity], () => { detail.value = null; remoteErrors.value = []; errorsController?.abort(); if (!previewMode.value) void load() }, { deep: true })
 watch([view, overview], () => { if (view.value === 'advanced') void loadErrors(); else { errorsController?.abort(); errorsLoading.value = false } })
 watch(previewMode, () => { cancel(); detail.value = null; if (!previewMode.value) void load() })
-let timer: ReturnType<typeof setInterval> | undefined
-function resume() { if (document.visibilityState === 'visible' && !loading.value) void refresh() }
-onMounted(() => { if (!previewMode.value) void load(); timer = setInterval(resume, 60_000); document.addEventListener('visibilitychange', resume) })
-onBeforeUnmount(() => { clearInterval(timer); errorsController?.abort(); document.removeEventListener('visibilitychange', resume) })
+useMonitorPolling(refresh, computed(() => overview.value?.refresh_interval_seconds), computed(() => preferences.value.autoRefresh && !previewMode.value), loading)
+onMounted(() => { if (!previewMode.value) void load() })
+onBeforeUnmount(() => { errorsController?.abort() })
 defineExpose({ refresh, overview })
 </script>

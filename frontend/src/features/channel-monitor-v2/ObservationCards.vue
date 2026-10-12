@@ -17,7 +17,7 @@
             <h2 class="text-lg font-semibold tracking-tight text-slate-800 dark:text-gray-100">{{ platformLabel(section.platform) }}</h2>
             <span class="rounded-lg border border-white/80 bg-white/70 px-2 py-0.5 text-xs tabular-nums text-slate-500 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-400">{{ section.items.length }}</span>
           </header>
-          <div class="observation-card-grid">
+          <div class="observation-card-grid" :data-columns="preferences.columns">
             <ObservationGroupCard v-for="item in section.items" :key="`${item.platform}:${item.group_id}`" :item="item" :coverage="overview.coverage" :source="overview.source" :admin="admin" :stale="stale" @detail="emit('detail', $event)" @bucket="handleBucket" />
           </div>
         </section>
@@ -30,6 +30,7 @@
 </template>
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useMonitorPreferences } from './useMonitorPreferences'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformIcon from '@/components/common/PlatformIcon.vue'
@@ -43,6 +44,7 @@ import ObservationGroupList from './ObservationGroupList.vue'
 const props = withDefaults(defineProps<{ overview: ObservationOverview | null; layout: ObservationLayout; view?: 'cards' | 'list'; admin?: boolean; loading?: boolean; error?: boolean; stale?: boolean }>(), { admin: false, loading: false, error: false, stale: false })
 const emit = defineEmits<{ toggleLayout: []; detail: [item: ObservationChannel]; model: [item: ObservationChannel, model: string]; bucket: [item: ObservationChannel, slot: { start: string; bucket: ObservationBucket | null }]; retry: [] }>()
 const { t, te } = useI18n()
+const preferences = useMonitorPreferences()
 const platformValue = (value: string) => GROUP_PLATFORM_OPTIONS.find(item => item.value === value)?.value
 const platformLabel = (value: string) => {
   const key = `channelMonitorV2.platforms.${value}`
@@ -59,6 +61,13 @@ function handleBucket(item: ObservationChannel, slot: { start: string; bucket: O
 .observation-card-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 @container (min-width: 720px) {
   .observation-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (min-width: 1160px) {
+  .observation-card-grid[data-columns="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .observation-card-grid[data-columns="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container (min-width: 1440px) {
+  .observation-card-grid[data-columns="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @container (min-width: 1160px) {
   .observation-card-grid { grid-template-columns: repeat(3, minmax(0, 440px)); }

@@ -1,6 +1,7 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { reactive } from 'vue'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import Select from '@/components/common/Select.vue'
 import AdminMonitorDashboard from '../AdminMonitorDashboard.vue'
 import MonitorOverviewHero from '../MonitorOverviewHero.vue'
 import MonitorViewSwitcher from '../MonitorViewSwitcher.vue'
@@ -21,7 +22,60 @@ function item(source: 'compact' | 'legacy', id: number): ObservationChannel { re
 function snapshot(source: ObservationOverview['source'] = 'compact'): ObservationOverview { return { contract_version: 2, source, mode: 'live', items: [item(source === 'legacy' ? 'legacy' : 'compact', 1)], dimensions: { platforms: [], groups: [], models: [] }, coverage: { requested_start: '2026-09-20T00:00:00Z', requested_end: '2026-09-21T00:00:00Z', coverage_start: '2026-09-20T00:00:00Z', data_through: '2026-09-21T00:00:00Z', computed_at: '2026-09-21T00:00:00Z', aggregation_lag_seconds: 0, coverage_complete: true, state: 'complete', bucket_seconds: 3600, detail_retention_hours: 24, unsupported_protocols: [] } } }
 
 describe('admin monitor dashboard', () => {
-  beforeEach(() => { api.getObservationOverview.mockReset().mockResolvedValue(snapshot()); api.getErrors.mockReset().mockResolvedValue({ items: [] }); auth.isOwner = true; auth.user.role = 'admin'; auth.workspace = null })
+  beforeEach(() => { localStorage.clear(); api.getObservationOverview.mockReset().mockResolvedValue(snapshot()); api.getErrors.mockReset().mockResolvedValue({ items: [] }); auth.isOwner = true; auth.user.id = 1; auth.user.role = 'admin'; auth.workspace = null })
+  afterEach(() => localStorage.clear())
+
+  it('uses the saved default range only when no explicit filter is supplied', async () => {
+    localStorage.setItem('admin-monitor:1:admin:owner:presentation', JSON.stringify({ defaultRange: '7d' }))
+    const savedDefault = shallowMount(AdminMonitorDashboard)
+    await flushPromises()
+    expect(savedDefault.getComponent(Select).props('modelValue')).toBe('7d')
+    expect(api.getObservationOverview.mock.calls.at(-1)?.[0].range).toBe('7d')
+    savedDefault.unmount()
+
+    const explicit = shallowMount(AdminMonitorDashboard, { props: { filter: { range: '24h', platforms: [], groupIds: [], models: [] } } })
+    await flushPromises()
+    expect(explicit.getComponent(Select).props('modelValue')).toBe('24h')
+    expect(api.getObservationOverview.mock.calls.at(-1)?.[0].range).toBe('24h')
+    explicit.unmount()
+  })
+
+  it('keeps the preview range fixed at 24h despite a different saved default', async () => {
+    localStorage.setItem('admin-monitor:1:admin:owner:presentation', JSON.stringify({ defaultRange: '7d' }))
+    const wrapper = shallowMount(AdminMonitorDashboard, { props: { preview: true, previewOverview: snapshot() } })
+    await flushPromises()
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('24h')
+    expect(wrapper.getComponent(Select).props('disabled')).toBe(true)
+    expect(wrapper.text()).toContain('Preview uses a fixed 24h fixture window')
+    expect(api.getObservationOverview).not.toHaveBeenCalled()
+    expect(api.getErrors).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it.each(['account', 'workspace'] as const)('resets active view, range and filters across %s changes with equal defaults', async identityPart => {
+    const wrapper = shallowMount(AdminMonitorDashboard)
+    await flushPromises()
+    wrapper.getComponent(Select).vm.$emit('update:modelValue', '90m')
+    wrapper.getComponent(MonitorViewSwitcher).vm.$emit('update:modelValue', 'advanced')
+    const selectors = wrapper.findAllComponents(FilterMultiSelect)
+    selectors[0].vm.$emit('update:modelValue', ['openai'])
+    selectors[1].vm.$emit('update:modelValue', ['2'])
+    selectors[2].vm.$emit('update:modelValue', ['private-model'])
+    await flushPromises()
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('90m')
+    expect(wrapper.getComponent(MonitorViewSwitcher).props('modelValue')).toBe('advanced')
+    api.getObservationOverview.mockClear()
+
+    if (identityPart === 'account') auth.user.id = 2
+    else auth.workspace = { id: 8 }
+    await flushPromises()
+    expect(wrapper.getComponent(Select).props('modelValue')).toBe('24h')
+    expect(wrapper.getComponent(MonitorViewSwitcher).props('modelValue')).toBe('cards')
+    expect(wrapper.findAllComponents(FilterMultiSelect).map(select => select.props('modelValue'))).toEqual([[], [], []])
+    expect(api.getObservationOverview).toHaveBeenCalledTimes(1)
+    expect(api.getObservationOverview.mock.calls[0][0]).toEqual({ range: '24h', platforms: [], groupIds: [], models: [] })
+    wrapper.unmount()
+  })
 
   it('loads one overview on mount and requests legacy diagnostics only after advanced opens', async () => {
     api.getObservationOverview.mockResolvedValue(snapshot('legacy'))

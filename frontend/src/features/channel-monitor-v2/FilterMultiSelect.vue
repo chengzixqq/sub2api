@@ -34,7 +34,7 @@
           v-if="isOpen"
           ref="dropdownRef"
           class="select-dropdown-portal dropdown filter-dropdown"
-          :class="[instanceId]"
+          :class="[instanceId, motionClass]"
           :style="dropdownStyle"
           role="listbox"
           aria-multiselectable="true"
@@ -79,6 +79,8 @@
 </template>
 
 <script setup lang="ts">
+import { useMonitorMotion } from './useMonitorPreferences'
+const motionClass = useMonitorMotion()
 import type { CSSProperties } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'

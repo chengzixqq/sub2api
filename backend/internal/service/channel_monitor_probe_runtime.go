@@ -19,6 +19,7 @@ type ChannelMonitorProbeService struct {
 	activity       ChannelMonitorProbeActivityReader
 	enabled        func(context.Context) bool
 	quotaEnabled   func(context.Context) bool
+	policyReader   func(context.Context) (*ChannelMonitorObservationConfig, error)
 	validateTarget func(context.Context, *Group, string) error
 	once           sync.Once
 	cancel         context.CancelFunc
@@ -36,6 +37,24 @@ func (s *ChannelMonitorProbeService) SetEnabledReader(reader func(context.Contex
 }
 func (s *ChannelMonitorProbeService) SetQuotaEnabledReader(reader func(context.Context) bool) {
 	s.quotaEnabled = reader
+}
+func (s *ChannelMonitorProbeService) SetPolicyReader(reader func(context.Context) (*ChannelMonitorObservationConfig, error)) {
+	s.policyReader = reader
+}
+func (s *ChannelMonitorProbeService) policy(ctx context.Context) (ChannelMonitorProbePolicy, error) {
+	cfg := DefaultChannelMonitorObservationConfig()
+	if s.policyReader != nil {
+		stored, err := s.policyReader(ctx)
+		if err != nil {
+			return ChannelMonitorProbePolicy{}, err
+		}
+		if stored == nil {
+			return ChannelMonitorProbePolicy{}, ErrChannelMonitorProbeInvalid
+		}
+		cfg = *stored
+	}
+	p := cfg.ProbePolicy()
+	return p, p.Validate()
 }
 func (s *ChannelMonitorProbeService) SetTargetValidator(validator func(context.Context, *Group, string) error) {
 	s.validateTarget = validator
@@ -99,7 +118,11 @@ func (s *ChannelMonitorProbeService) Budget(ctx context.Context) (*ChannelMonito
 	if err := RequireStationOwnerScope(ctx); err != nil {
 		return nil, err
 	}
-	return s.repo.Budget(ctx, time.Now().UTC())
+	policy, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.Budget(ctx, time.Now().UTC(), policy)
 }
 func (s *ChannelMonitorProbeService) Probe(ctx context.Context, id int64, key string) (*ChannelMonitorProbeRun, error) {
 	if err := RequireStationOwnerScope(ctx); err != nil {
@@ -114,6 +137,10 @@ func (s *ChannelMonitorProbeService) Probe(ctx context.Context, id int64, key st
 	return s.run(ctx, id, key, true)
 }
 func (s *ChannelMonitorProbeService) run(ctx context.Context, id int64, key string, manual bool) (*ChannelMonitorProbeRun, error) {
+	policy, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
 	target, err := s.repo.GetTarget(ctx, id)
 	if err != nil {
 		return nil, err
@@ -131,13 +158,14 @@ func (s *ChannelMonitorProbeService) run(ctx context.Context, id int64, key stri
 	if err := s.validateTarget(ctx, g, target.Model); err != nil {
 		return nil, err
 	}
-	run, reserved, err := s.repo.Reserve(ctx, id, key, manual, time.Now().UTC())
+	run, reserved, err := s.repo.Reserve(ctx, id, key, manual, time.Now().UTC(), policy)
 	if err != nil || !reserved {
 		return run, err
 	}
 	// A disconnected management client cannot cancel persistence of an already
-	// dispatched generation. The execution itself remains bounded to 20 seconds.
-	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ChannelMonitorProbeTimeout)
+	// dispatched generation. The execution remains bounded by the configured timeout.
+	timeout := time.Duration(policy.TimeoutSeconds) * time.Second
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 	if run.GroupID != target.GroupID || run.Model != target.Model || run.Protocol != target.Protocol {
 		now := time.Now().UTC()
@@ -145,7 +173,7 @@ func (s *ChannelMonitorProbeService) run(ctx context.Context, id int64, key stri
 		run.Status = "error"
 		run.ErrorClass = "target_changed"
 	} else {
-		s.executor.Execute(runCtx, run)
+		s.executor.ExecuteWithTimeout(runCtx, run, timeout)
 	}
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer writeCancel()
@@ -203,6 +231,11 @@ func (s *ChannelMonitorProbeService) runCycle(ctx context.Context) {
 	if s.enabled == nil || !s.enabled(ctx) {
 		return
 	}
+	policy, err := s.policy(ctx)
+	if err != nil {
+		slog.Warn("channel_monitor_probe: policy unavailable", "error", err)
+		return
+	}
 	if s.activity != nil {
 		targets, err := s.repo.ListTargets(ctx)
 		if err != nil {
@@ -226,7 +259,7 @@ func (s *ChannelMonitorProbeService) runCycle(ctx context.Context) {
 				}
 				now := time.Now().UTC()
 				a, err := s.activity.ProbeActivity(ctx, target.GroupID, target.Model, target.Protocol)
-				if err != nil || !channelMonitorProbeDue(now, a, target.LastProbeAt) {
+				if err != nil || !channelMonitorProbeDueWithInterval(now, a, target.LastProbeAt, time.Duration(policy.IntervalSeconds)*time.Second) {
 					continue
 				}
 				if dispatched >= 8 {
@@ -238,7 +271,7 @@ func (s *ChannelMonitorProbeService) runCycle(ctx context.Context) {
 				go func(target ChannelMonitorProbeTarget) {
 					defer pending.Done()
 					defer func() { <-slots }()
-					key := fmt.Sprintf("auto:%d:%d", target.ID, now.Unix()/900)
+					key := fmt.Sprintf("auto:%d:%d:%d", target.ID, policy.IntervalSeconds, now.Unix()/int64(policy.IntervalSeconds))
 					if _, err := s.run(ctx, target.ID, key, false); err != nil {
 						slog.Warn("channel_monitor_probe: run skipped", "target_id", target.ID, "error", err)
 					}
@@ -295,6 +328,10 @@ func (s *ChannelMonitorProbeService) pollQuotas(ctx context.Context) {
 
 // Evidence is an internal read surface. Callers must supply their already-authorized group set.
 func (s *ChannelMonitorProbeService) Evidence(ctx context.Context, groupIDs []int64, now time.Time) (ChannelMonitorProbeEvidence, error) {
+	policy, err := s.policy(ctx)
+	if err != nil {
+		return ChannelMonitorProbeEvidence{}, err
+	}
 	targets, err := s.repo.ListTargets(ctx)
 	if err != nil {
 		return ChannelMonitorProbeEvidence{}, err
@@ -305,14 +342,18 @@ func (s *ChannelMonitorProbeService) Evidence(ctx context.Context, groupIDs []in
 			allowed = append(allowed, target)
 		}
 	}
-	runs, err := s.repo.RecentRuns(ctx, groupIDs, now.Add(-20*time.Minute))
+	runs, err := s.repo.RecentRuns(ctx, groupIDs, now.Add(-policy.HistoryWindow()))
 	if err != nil {
 		return ChannelMonitorProbeEvidence{}, err
 	}
-	return ChannelMonitorProbeEvidence{Targets: allowed, Runs: runs}, nil
+	return ChannelMonitorProbeEvidence{Targets: allowed, Runs: runs, MaxAge: policy.EvidenceWindow(), HistoryAge: policy.HistoryWindow(), FailureThreshold: policy.FailureThreshold}, nil
 }
 func (s *ChannelMonitorProbeService) QuotaSummaries(ctx context.Context, groupIDs []int64, now time.Time) (map[int64]ChannelMonitorQuotaSummary, error) {
-	return s.repo.QuotaSummaries(ctx, groupIDs, now)
+	policy, err := s.policy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.QuotaSummaries(ctx, groupIDs, now, time.Duration(policy.QuotaStaleSeconds)*time.Second)
 }
 func (s *ChannelMonitorProbeService) ReadQuotas(ctx context.Context, ids []int64) (map[int64]*domain.MonitorQuotaSnapshot, error) {
 	if err := RequireStationOwnerScope(ctx); err != nil {

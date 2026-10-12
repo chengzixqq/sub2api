@@ -332,6 +332,7 @@ export interface ObservationChannel {
   models: ObservationModel[]
 }
 export interface ObservationOverview {
+  refresh_interval_seconds?: number
   contract_version: 2
   source: 'compact' | 'legacy' | 'mixed' | 'terminal_v1'
   mode: 'shadow' | 'live'
@@ -353,6 +354,13 @@ export interface ObservationConfig {
   enabled: boolean
   probe_enabled?: boolean
   quota_enabled?: boolean
+  traffic_freshness_seconds?: number
+  probe_failure_threshold?: number
+  quota_stale_seconds?: number
+  probe_interval_seconds?: number
+  probe_timeout_seconds?: number
+  probe_target_daily_limit?: number
+  probe_global_daily_limit?: number
   mode: 'shadow' | 'live'
   live_group_ids?: number[]
   detail_retention_hours: number

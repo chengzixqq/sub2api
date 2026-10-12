@@ -25,7 +25,9 @@ type ChannelMonitorProbeExecutor struct {
 
 func NewChannelMonitorProbeExecutor(gateway *GatewayService, billing *BillingService) *ChannelMonitorProbeExecutor {
 	client := *monitorHTTPClient
-	client.Timeout = ChannelMonitorProbeTimeout
+	// ExecuteWithTimeout always supplies the per-run deadline, including connection
+	// setup and response reads. A fixed client timeout would cap configured values.
+	client.Timeout = 0
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	executor := &ChannelMonitorProbeExecutor{client: &client, billing: billing, validateURL: validateEndpoint}
 	if gateway != nil {
@@ -39,6 +41,10 @@ func NewChannelMonitorProbeExecutor(gateway *GatewayService, billing *BillingSer
 // enters a gateway forwarding/billing handler, accepts no external marker or body,
 // and sends at most one non-streaming POST without redirects, retry or failover.
 func (e *ChannelMonitorProbeExecutor) Execute(ctx context.Context, run *ChannelMonitorProbeRun) {
+	e.ExecuteWithTimeout(ctx, run, ChannelMonitorProbeTimeout)
+}
+
+func (e *ChannelMonitorProbeExecutor) ExecuteWithTimeout(ctx context.Context, run *ChannelMonitorProbeRun, timeout time.Duration) {
 	started := time.Now()
 	run.Status = "error"
 	defer func() {
@@ -50,7 +56,7 @@ func (e *ChannelMonitorProbeExecutor) Execute(ctx context.Context, run *ChannelM
 		run.ErrorClass = "executor_unavailable"
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, ChannelMonitorProbeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	a, err := e.selector.SelectAccountForModel(ctx, &run.GroupID, "", run.Model)
 	if err != nil || a == nil {
