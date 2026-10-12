@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,8 +34,39 @@ func NewChannelMonitorProbeExecutor(gateway *GatewayService, billing *BillingSer
 	if gateway != nil {
 		executor.selector = gateway
 		executor.acquire = gateway.tryAcquireAccountSlot
+		if gateway.cfg != nil {
+			executor.validateURL = func(raw string) error {
+				return validateMonitorProbeAccountEndpoint(gateway, raw)
+			}
+		}
 	}
 	return executor
+}
+
+// Account probes follow the gateway's configured scheme and upstream allowlist
+// policy, rather than V1 monitors' unconditional HTTPS requirement. The monitor
+// transport still only permits public destinations and checks IPs again at dial.
+func validateMonitorProbeAccountEndpoint(gateway *GatewayService, raw string) error {
+	if _, err := gateway.validateUpstreamBaseURL(raw); err != nil {
+		return err
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ErrChannelMonitorInvalidEndpoint
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return ErrChannelMonitorEndpointPath
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), monitorEndpointResolveTimeout)
+	defer cancel()
+	blocked, err := isPrivateOrLoopbackHost(ctx, u.Hostname())
+	if err != nil {
+		return ErrChannelMonitorEndpointUnreachable
+	}
+	if blocked {
+		return ErrChannelMonitorEndpointPrivate
+	}
+	return nil
 }
 
 // Execute only uses the account selector and protocol adapter. It deliberately never
