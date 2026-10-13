@@ -9,6 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func channelMonitorProbeDue(now time.Time, a ChannelMonitorProbeActivity, lastProbe *time.Time) bool {
+	return channelMonitorProbeDueWithInterval(now, a, lastProbe, channelMonitorProbeIdle)
+}
+
 func TestChannelMonitorProbeDue_RequiresHealthyContinuousIdleWindow(t *testing.T) {
 	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
 	activity := ChannelMonitorProbeActivity{CollectionHealthy: true, ObservedSince: now.Add(-time.Hour)}

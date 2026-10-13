@@ -59,6 +59,8 @@ type GatewayHandler struct {
 	cfg                       *config.Config
 	settingService            *service.SettingService
 	probeCoalescer            *ProbeCoalescer
+	// geminiCachedContentService 管理 Gemini 显式缓存；为 nil 时相关接口不可用。
+	geminiCachedContentService *service.GeminiCachedContentService
 }
 
 // NewGatewayHandler creates a new GatewayHandler

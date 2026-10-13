@@ -40,6 +40,7 @@ func TestIsForcedUsageBillingRequestID(t *testing.T) {
 	require.True(t, isForcedUsageBillingRequestID("grok_audio:up-1"))
 	require.True(t, isForcedUsageBillingRequestID("grok_realtime:sess-1"))
 	require.True(t, isForcedUsageBillingRequestID("probe:server-request-1"))
+	require.True(t, isForcedUsageBillingRequestID(GeminiCachedContentCreateUsageRequestID("abc")))
 	require.False(t, isForcedUsageBillingRequestID("resp_abc"))
 }
 
@@ -47,6 +48,23 @@ func TestResolveUsageBillingRequestID_ForcedProbeBeatsClientID(t *testing.T) {
 	t.Parallel()
 	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-shared-id")
 	require.Equal(t, "probe:server-request-1", resolveUsageBillingRequestID(ctx, "probe:server-request-1"))
+}
+
+func TestGeminiCachedContentUsageRequestIDs(t *testing.T) {
+	t.Parallel()
+	publicID, err := NewGeminiCachedContentPublicID()
+	require.NoError(t, err)
+	create := GeminiCachedContentCreateUsageRequestID(publicID)
+	patch := GeminiCachedContentPatchUsageRequestID(publicID)
+	require.Equal(t, "gcache:create:"+publicID, create)
+	require.True(t, strings.HasPrefix(patch, "gcache:patch:"+publicID+":"))
+	require.NotEqual(t, patch, GeminiCachedContentPatchUsageRequestID(publicID), "每次延长各自唯一")
+	require.LessOrEqual(t, len(create), 64, "usage_logs.request_id 列长 64")
+	require.LessOrEqual(t, len(patch), 64, "usage_logs.request_id 列长 64")
+
+	ctx := context.WithValue(context.Background(), ctxkey.ClientRequestID, "client-shared-id")
+	require.Equal(t, create, resolveUsageBillingRequestID(ctx, create), "缓存费用行不被客户端请求 id 覆盖")
+	require.Equal(t, patch, resolveUsageBillingRequestID(ctx, patch))
 }
 
 func TestStableGrokAudioBillingRequestID(t *testing.T) {

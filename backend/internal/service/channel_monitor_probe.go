@@ -155,10 +155,6 @@ type ChannelMonitorProbeRepository interface {
 	QuotaSummaries(context.Context, []int64, time.Time, time.Duration) (map[int64]ChannelMonitorQuotaSummary, error)
 }
 
-func channelMonitorProbeDue(now time.Time, a ChannelMonitorProbeActivity, lastProbe *time.Time) bool {
-	return channelMonitorProbeDueWithInterval(now, a, lastProbe, channelMonitorProbeIdle)
-}
-
 func channelMonitorProbeDueWithInterval(now time.Time, a ChannelMonitorProbeActivity, lastProbe *time.Time, interval time.Duration) bool {
 	if !a.CollectionHealthy || a.ObservedSince.IsZero() || now.Sub(a.ObservedSince) < interval {
 		return false
