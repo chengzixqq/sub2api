@@ -36,6 +36,49 @@ func TestGroupFieldScopeBillingOnlyCannotTouchOps(t *testing.T) {
 	}
 }
 
+func TestGroupFieldScopeI18nRequiresOps(t *testing.T) {
+	roles := []struct {
+		name string
+		ctx  context.Context
+		deny bool
+	}{
+		{"billing_only", vendorFieldCtx(WorkspacePermissions{GroupBilling: true}), true},
+		{"ops_only", vendorFieldCtx(WorkspacePermissions{GroupOps: true}), false},
+		{"admin", WithScope(context.Background(), AdminScope()), false},
+	}
+	for _, role := range roles {
+		t.Run(role.name, func(t *testing.T) {
+			for _, operation := range []string{"replace", "clear", "omit"} {
+				t.Run(operation, func(t *testing.T) {
+					translations := GroupI18n{"en": {Name: "Standard", Description: "Localized description"}}
+					input := &UpdateGroupInput{I18n: &translations}
+					switch operation {
+					case "clear":
+						translations = GroupI18n{}
+					case "omit":
+						input.I18n = nil
+					}
+					original := input.I18n
+
+					dropped := applyGroupFieldScope(role.ctx, input, false)
+
+					wantDropped := role.deny && original != nil
+					if wantDropped {
+						if input.I18n != nil {
+							t.Fatal("billing-only vendor must not replace or clear localized group presentation")
+						}
+					} else if input.I18n != original {
+						t.Fatal("authorized or omitted i18n input must remain unchanged")
+					}
+					if slices.Contains(dropped, "i18n") != wantDropped {
+						t.Fatalf("i18n audit entry must match field removal: dropped=%v wantDropped=%v", dropped, wantDropped)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestGroupFieldScopeOpsOnlyCannotTouchBilling 锁定「只有运营权改不动计费字段」。
 //
 // 倍率与限额直接决定一次请求收多少钱。供应商拿到运营权后若能改倍率，

@@ -81,7 +81,7 @@ func TestAdminService_UpdateGroup_I18n(t *testing.T) {
 		repo := &groupRepoStubForAdmin{getByID: newExisting()}
 		svc := &adminServiceImpl{groupRepo: repo}
 
-		_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{Name: "标准版"})
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{Name: "标准版"})
 
 		require.NoError(t, err)
 		require.Equal(t, "标准版", repo.updated.Name)
@@ -93,7 +93,7 @@ func TestAdminService_UpdateGroup_I18n(t *testing.T) {
 		svc := &adminServiceImpl{groupRepo: repo}
 		next := GroupI18n{"zh": {Description: " 号池 "}}
 
-		_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{I18n: &next})
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{I18n: &next})
 
 		require.NoError(t, err)
 		require.Equal(t, GroupI18n{"zh": {Description: "号池"}}, repo.updated.I18n)
@@ -104,7 +104,7 @@ func TestAdminService_UpdateGroup_I18n(t *testing.T) {
 		svc := &adminServiceImpl{groupRepo: repo}
 		next := GroupI18n{}
 
-		_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{I18n: &next})
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{I18n: &next})
 
 		require.NoError(t, err)
 		require.NotNil(t, repo.updated.I18n)
@@ -116,7 +116,7 @@ func TestAdminService_UpdateGroup_I18n(t *testing.T) {
 		svc := &adminServiceImpl{groupRepo: repo}
 		next := GroupI18n{"not a locale": {Name: "x"}}
 
-		_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{I18n: &next})
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{I18n: &next})
 
 		require.Error(t, err)
 		require.Equal(t, "INVALID_GROUP_I18N", infraerrors.FromError(err).Reason)
@@ -130,7 +130,7 @@ func TestAdminService_UpdateGroup_I18n(t *testing.T) {
 		next := GroupI18n{"en": {Name: "Standard v2"}}
 		rate := 9.0
 
-		_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{I18n: &next, RateMultiplier: &rate})
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), 1, &UpdateGroupInput{I18n: &next, RateMultiplier: &rate})
 
 		require.NoError(t, err)
 		require.Equal(t, GroupI18n{"en": {Name: "Standard v2"}}, repo.updated.I18n)

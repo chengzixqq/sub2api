@@ -127,7 +127,7 @@ func clearBillingFields(in *UpdateGroupInput) []string {
 // clearOpsFields 清除受 GroupOps 约束的运营字段。
 //
 // 判定口径：影响「请求怎么走、走到哪」的调度与路由配置。
-// 也包含 Name/Description/Platform/Status 这类身份与开关字段 ——
+// 也包含 Name/Description/I18n/Platform/Status 这类身份与开关字段 ——
 // 只有计费权的供应商不该能改分组名或停用整个分组。
 func clearOpsFields(in *UpdateGroupInput) []string {
 	var dropped []string
@@ -141,6 +141,9 @@ func clearOpsFields(in *UpdateGroupInput) []string {
 	}
 	if in.Description != nil {
 		drop("description", func() { in.Description = nil })
+	}
+	if in.I18n != nil {
+		drop("i18n", func() { in.I18n = nil })
 	}
 	if in.Platform != "" {
 		drop("platform", func() { in.Platform = "" })
