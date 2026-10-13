@@ -11,12 +11,12 @@
     <template v-else>
       <div class="mb-4 flex flex-wrap items-center gap-2 text-xs text-gray-500">
         <span class="badge badge-gray">{{ monitorSourceLabel(selected.source || source, t, te) }}</span>
-        <span>{{ text('每个点对应一个时间桶，未使用平滑或插值', 'Each point is a time bucket; no smoothing or interpolation') }}</span>
+        <span>{{ text('悬浮查看各时段数值，缺失时段保留断点', 'Hover to inspect each time bucket; missing periods remain gaps') }}</span>
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
         <div v-for="chart in charts" :key="chart.key" class="min-w-0 rounded-xl border border-gray-100 p-3 dark:border-dark-700">
           <div class="flex items-center justify-between gap-2"><h4 class="text-xs font-medium text-gray-600 dark:text-gray-300">{{ chart.label }}</h4><span class="text-sm font-semibold tabular-nums" :style="{ color: chart.color }">{{ chart.value }}</span></div>
-          <div class="mt-3 h-40"><Line v-if="slots.length" :data="chart.data" :options="chart.options" /><p v-else class="flex h-full items-center justify-center text-xs text-gray-400">{{ text('暂无时间序列', 'No time series') }}</p></div>
+          <div class="mt-3 h-40"><Line v-if="slots.length" :data="chart.data" :options="chart.options" :motion="motionClass !== 'monitor-motion-off'" /><p v-else class="flex h-full items-center justify-center text-xs text-gray-400">{{ text('暂无时间序列', 'No time series') }}</p></div>
         </div>
       </div>
     </template>
@@ -26,7 +26,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import Line from '@/components/charts/TrendLineChart.vue'
 import Select from '@/components/common/Select.vue'
 import type { ObservationChannel, ObservationMetrics, ObservationOverview } from '@/api/channelMonitorV2'
 import { formatMonitorMs, formatMonitorPercent } from './monitorFormat'
@@ -65,6 +65,6 @@ const charts = computed(() => {
     { key: 'errors', label: text('渠道错误率', 'Channel error rate'), value: percent(channelErrorRate(m)), color: '#f43f5e', percent: true, datasets: [{ label: text('渠道错误率（1 − 可靠性）', 'Channel errors (1 − reliability)'), data: series(channelErrorRate, true), borderColor: '#f43f5e' }] },
     { key: 'cache', label: text('缓存率', 'Cache rate'), value: percent(m?.cache_rate), color: '#6366f1', percent: true, datasets: [{ label: text('缓存率', 'Cache rate'), data: series(value => value.cache_rate, true), borderColor: '#6366f1' }] },
   ]
-  return entries.map(entry => ({ ...entry, data: { labels, datasets: entry.datasets.map(dataset => ({ ...dataset, borderWidth: 2, pointRadius: 0, pointHitRadius: 10, tension: 0, spanGaps: false })) }, options: { responsive: true, maintainAspectRatio: false, animation: false as const, interaction: { mode: 'index' as const, intersect: false }, plugins: { legend: { display: entry.datasets.length > 1, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 10 } } }, tooltip: { callbacks: { label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) => `${ctx.dataset.label || ''}: ${ctx.parsed.y == null ? '—' : entry.percent ? `${ctx.parsed.y.toFixed(1)}%` : formatMonitorMs(ctx.parsed.y)}` } } }, scales: { x: { ticks: { maxTicksLimit: 4, maxRotation: 0, color: '#94a3b8', font: { size: 9 } }, grid: { display: false } }, y: { min: 0, ...(entry.percent ? { max: 100 } : {}), ticks: { color: '#94a3b8', font: { size: 9 } }, grid: { color: 'rgba(148,163,184,0.10)' } } } } }))
+  return entries.map(entry => ({ ...entry, data: { labels, datasets: entry.datasets.map(dataset => ({ ...dataset, borderWidth: 2, pointRadius: 0, pointHitRadius: 10, spanGaps: false })) }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index' as const, intersect: false }, plugins: { legend: { display: entry.datasets.length > 1, labels: { color: '#94a3b8', boxWidth: 12, font: { size: 10 } } }, tooltip: { callbacks: { label: (ctx: { dataset: { label?: string }; parsed: { y: number | null } }) => `${ctx.dataset.label || ''}: ${ctx.parsed.y == null ? '—' : entry.percent ? `${ctx.parsed.y.toFixed(1)}%` : formatMonitorMs(ctx.parsed.y)}` } } }, scales: { x: { ticks: { maxTicksLimit: 4, maxRotation: 0, color: '#94a3b8', font: { size: 9 } }, grid: { display: false } }, y: { min: 0, ...(entry.percent ? { max: 100 } : {}), ticks: { color: '#94a3b8', font: { size: 9 } }, grid: { color: 'rgba(148,163,184,0.10)' } } } } }))
 })
 </script>

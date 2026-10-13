@@ -31,7 +31,7 @@ import {
   Legend,
   Filler
 } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import Line from '@/components/charts/TrendLineChart.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import type { DailyPaymentStats } from '@/types/payment'
 

@@ -381,7 +381,7 @@ import {
   Legend,
   Filler
 } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import Line from '@/components/charts/TrendLineChart.vue'
 
 // Register Chart.js components
 ChartJS.register(

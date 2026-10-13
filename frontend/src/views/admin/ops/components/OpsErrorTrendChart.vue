@@ -12,7 +12,7 @@ import {
   Title,
   Tooltip
 } from 'chart.js'
-import { Line } from 'vue-chartjs'
+import Line from '@/components/charts/TrendLineChart.vue'
 import type { OpsErrorTrendPoint } from '@/api/admin/ops'
 import type { ChartState } from '../types'
 import { formatHistoryLabel, sumNumbers } from '../utils/opsFormatters'
