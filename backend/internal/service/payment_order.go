@@ -160,6 +160,9 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := s.validateSelectedEasyPayInstance(ctx, tx.Client(), sel); err != nil {
+		return nil, err
+	}
 	if err := s.checkPendingLimit(ctx, tx, req.UserID, cfg.MaxPendingOrders); err != nil {
 		return nil, err
 	}
@@ -230,6 +233,58 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 	return order, nil
 }
 
+func (s *PaymentService) validateSelectedEasyPayInstance(ctx context.Context, client *dbent.Client, sel *payment.InstanceSelection) error {
+	if sel == nil || sel.ProviderKey != payment.TypeEasyPay {
+		return nil
+	}
+	id, err := strconv.ParseInt(sel.InstanceID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid selected EasyPay instance: %w", err)
+	}
+	if err := lockPaymentProviderInstance(ctx, client, id); err != nil {
+		return err
+	}
+	inst, err := client.PaymentProviderInstance.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !inst.Enabled || inst.ProviderKey != payment.TypeEasyPay {
+		return infraerrors.Conflict("PROVIDER_SELECTION_CHANGED", "selected payment provider changed; please retry")
+	}
+	configService := s.configService
+	if configService == nil {
+		configService = &PaymentConfigService{}
+	}
+	current, err := configService.decryptConfig(inst.Config)
+	if err != nil {
+		return err
+	}
+	expected, err := payment.NormalizeEasyPayAPIVersion(sel.Config["apiVersion"])
+	if err != nil {
+		return err
+	}
+	actual, err := payment.NormalizeEasyPayAPIVersion(current["apiVersion"])
+	if err != nil {
+		return err
+	}
+	if expected != actual {
+		return infraerrors.Conflict("PROVIDER_SELECTION_CHANGED", "selected EasyPay API version changed; please retry")
+	}
+	selectedConfig := make(map[string]string, len(sel.Config)+1)
+	for key, value := range sel.Config {
+		selectedConfig[key] = value
+	}
+	selectedConfig["apiVersion"] = expected
+	if current == nil {
+		current = map[string]string{}
+	}
+	current["apiVersion"] = actual
+	if hasPendingOrderProtectedConfigChange(payment.TypeEasyPay, selectedConfig, current) {
+		return infraerrors.Conflict("PROVIDER_SELECTION_CHANGED", "selected EasyPay merchant configuration changed; please retry")
+	}
+	return nil
+}
+
 func (s *PaymentService) allocateOutTradeNo(ctx context.Context, tx *dbent.Tx) (string, error) {
 	const maxAttempts = 5
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -296,6 +351,13 @@ func buildPaymentOrderProviderSnapshot(sel *payment.InstanceSelection, req Creat
 		if merchantAppID := strings.TrimSpace(sel.Config["appId"]); merchantAppID != "" {
 			snapshot["merchant_app_id"] = merchantAppID
 		}
+	}
+	if providerKey == payment.TypeEasyPay {
+		version, err := payment.NormalizeEasyPayAPIVersion(sel.Config["apiVersion"])
+		if err != nil {
+			version = strings.TrimSpace(sel.Config["apiVersion"])
+		}
+		snapshot["api_version"] = version
 	}
 	if providerKey == payment.TypeEasyPay || providerKey == payment.TypeJupitong {
 		if merchantID := strings.TrimSpace(sel.Config["pid"]); merchantID != "" {

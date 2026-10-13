@@ -70,6 +70,10 @@
         </div>
       </div>
 
+      <p v-if="form.provider_key === 'easypay' && easyPayVersion === 'v2'" class="rounded-lg bg-blue-50 p-3 text-xs leading-relaxed text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+        {{ t('admin.settings.payment.easypayV2ScopeHint') }}
+      </p>
+
       <div v-if="form.provider_key === 'easypay'" class="space-y-3 rounded-lg border border-gray-100 p-3 dark:border-dark-700">
         <div class="flex items-center justify-between gap-3">
           <div>
@@ -153,7 +157,7 @@
           {{ paymentGuide.summary }}
         </p>
         <div class="space-y-3">
-          <div v-for="field in resolvedFields" :key="field.key">
+          <div v-for="field in resolvedFields" :key="field.key" :data-config-field="field.key">
             <label class="input-label">
               {{ field.label }}
               <span v-if="field.optional" class="text-xs text-gray-400">({{ t('common.optional') }})</span>
@@ -305,7 +309,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, computed, ref } from 'vue'
+import { reactive, computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
@@ -327,6 +331,8 @@ import {
   extractBaseUrl,
   parseEasyPayCustomMethods,
   serializeEasyPayCustomMethods,
+  easyPayAPIVersion,
+  getProviderConfigFields,
 } from './providerConfig'
 
 /** Default payment_mode per provider key — "" means "no preference, use
@@ -432,6 +438,7 @@ const providerWebhookHint = computed(() =>
 const callbackPaths = computed(() => PROVIDER_CALLBACK_PATHS[form.provider_key] || null)
 
 const supportsPaymentMode = computed(() => providerSupportsPaymentMode(form.provider_key))
+const easyPayVersion = computed(() => easyPayAPIVersion(config))
 
 const paymentModeOptions = computed(() => {
   if (form.provider_key === 'alipay') {
@@ -443,7 +450,7 @@ const paymentModeOptions = computed(() => {
     ]
   }
   return [
-    { value: PAYMENT_MODE_QRCODE, label: t('admin.settings.payment.modeQRCode') },
+    { value: PAYMENT_MODE_QRCODE, label: t(form.provider_key === 'easypay' && easyPayVersion.value === 'v2' ? 'admin.settings.payment.modeAPIJump' : 'admin.settings.payment.modeQRCode') },
     { value: PAYMENT_MODE_POPUP, label: t('admin.settings.payment.modePopup') },
   ]
 })
@@ -469,10 +476,12 @@ const availableTypes = computed(() => {
 })
 
 const resolvedFields = computed(() => {
-  const fields = PROVIDER_CONFIG_FIELDS[form.provider_key] || []
+  const fields = getProviderConfigFields(form.provider_key, config)
   return fields.map(f => ({
     ...f,
-    label: f.label || t(`admin.settings.payment.field_${f.key}`),
+    label: form.provider_key === 'easypay' && (f.key === 'privateKey' || f.key === 'publicKey')
+      ? t(`admin.settings.payment.easypay_${f.key}`)
+      : f.label || t(`admin.settings.payment.field_${f.key}`),
   }))
 })
 
@@ -610,10 +619,11 @@ function clearConfig() {
 }
 
 function applyDefaults() {
-  for (const f of PROVIDER_CONFIG_FIELDS[form.provider_key] || []) {
+  for (const f of getProviderConfigFields(form.provider_key, config)) {
     if (f.defaultValue && !config[f.key]) config[f.key] = f.defaultValue
   }
 }
+watch(() => config.apiVersion, applyDefaults)
 
 function getLimitVal(paymentType: string, field: string): string {
   const val = limits[paymentType]?.[field]
@@ -675,9 +685,10 @@ function handleSave() {
   // Validate required config fields — all non-optional fields must be filled.
   // In edit mode, sensitive fields may be left blank to preserve the stored
   // value (backend merges blanks by preserving the existing secret).
-  for (const f of PROVIDER_CONFIG_FIELDS[form.provider_key] || []) {
+  for (const f of getProviderConfigFields(form.provider_key, config)) {
     if (f.optional) continue
-    if (props.editing && f.sensitive) continue
+    const sameProtocol = form.provider_key !== 'easypay' || easyPayAPIVersion(props.editing?.config || {}) === easyPayVersion.value
+    if (props.editing && f.sensitive && sameProtocol) continue
     const val = (config[f.key] || '').trim()
     if (!val) {
       const label = f.label || t(`admin.settings.payment.field_${f.key}`)
@@ -692,7 +703,9 @@ function handleSave() {
       .map(field => field.key),
   )
   const filteredConfig: Record<string, string> = {}
+  const allowedEasyPayFields = new Set(getProviderConfigFields('easypay', config).map(field => field.key))
   for (const [k, v] of Object.entries(config)) {
+    if (form.provider_key === 'easypay' && !allowedEasyPayFields.has(k)) continue
     if (!v || !v.trim()) {
       if (clearableConfigKeys.has(k)) {
         filteredConfig[k] = ''
@@ -821,6 +834,8 @@ function loadProvider(provider: ProviderInstance) {
     for (const [k, v] of Object.entries(provider.config)) {
       // Skip notifyUrl/returnUrl — they are derived from callbackBaseUrl
       if (k === 'notifyUrl' || k === 'returnUrl') continue
+      // Never refill a credential input from a masked (or legacy plaintext) response.
+      if (PROVIDER_CONFIG_FIELDS[provider.provider_key]?.some(field => field.key === k && field.sensitive)) continue
       if (k === 'customMethods' && provider.provider_key === 'easypay') {
         easyPayCustomMethods.push(...parseEasyPayCustomMethods(v))
         continue

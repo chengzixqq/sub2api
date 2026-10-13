@@ -23,6 +23,9 @@ export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' 
 
 export type OrderType = 'balance' | 'subscription'
 
+export type EasyPayAPIVersion = 'v1' | 'v2'
+export type EasyPayV1RefundSuccessCode = '0' | '1'
+
 // ==================== Configuration ====================
 
 /** 充值赠送档位：支付金额 ≥ min_amount 时在到账基数上赠送 bonus_percent% */

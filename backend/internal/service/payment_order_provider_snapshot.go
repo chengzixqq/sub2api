@@ -11,6 +11,7 @@ import (
 )
 
 type paymentOrderProviderSnapshot struct {
+	APIVersion         string
 	SchemaVersion      int
 	ProviderInstanceID string
 	ProviderKey        string
@@ -26,6 +27,7 @@ func psOrderProviderSnapshot(order *dbent.PaymentOrder) *paymentOrderProviderSna
 	}
 
 	snapshot := &paymentOrderProviderSnapshot{
+		APIVersion:         psSnapshotStringValue(order.ProviderSnapshot["api_version"]),
 		SchemaVersion:      psSnapshotIntValue(order.ProviderSnapshot["schema_version"]),
 		ProviderInstanceID: psSnapshotStringValue(order.ProviderSnapshot["provider_instance_id"]),
 		ProviderKey:        psSnapshotStringValue(order.ProviderSnapshot["provider_key"]),
@@ -34,7 +36,7 @@ func psOrderProviderSnapshot(order *dbent.PaymentOrder) *paymentOrderProviderSna
 		MerchantID:         psSnapshotStringValue(order.ProviderSnapshot["merchant_id"]),
 		Currency:           psSnapshotStringValue(order.ProviderSnapshot["currency"]),
 	}
-	if snapshot.SchemaVersion == 0 &&
+	if snapshot.APIVersion == "" && snapshot.SchemaVersion == 0 &&
 		snapshot.ProviderInstanceID == "" &&
 		snapshot.ProviderKey == "" &&
 		snapshot.PaymentMode == "" &&

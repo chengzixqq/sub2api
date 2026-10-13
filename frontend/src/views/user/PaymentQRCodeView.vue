@@ -33,6 +33,7 @@
 </template>
 
 <script setup lang="ts">
+import { safePaymentUrl } from '@/components/payment/paymentUrl'
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -195,7 +196,7 @@ watch(qrUrl, () => renderQR())
 onMounted(() => {
   orderId.value = Number(route.query.order_id) || 0
   qrUrl.value = String(route.query.qr || '')
-  payUrl.value = String(route.query.pay_url || '')
+  payUrl.value = safePaymentUrl(String(route.query.pay_url || ''))
   paymentType.value = String(route.query.payment_type || '')
 
   // Calculate countdown from expiresAt

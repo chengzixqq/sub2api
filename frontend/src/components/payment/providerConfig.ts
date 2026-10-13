@@ -1,6 +1,7 @@
 /**
  * Shared constants and types for payment provider management.
  */
+import type { EasyPayAPIVersion } from '@/types/payment'
 
 // --- Types ---
 
@@ -129,11 +130,15 @@ export const PROVIDER_CALLBACK_PATHS: Record<string, CallbackPaths> = {
 /** Per-provider config fields (excludes notifyUrl/returnUrl which are handled separately). */
 export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
   easypay: [
+    { key: 'apiVersion', label: '', sensitive: false, defaultValue: 'v1', hintKey: 'admin.settings.payment.easypayVersionHint', options: [{ value: 'v1', label: 'V1 (MD5)' }, { value: 'v2', label: 'V2 (RSA)' }] },
     { key: 'pid', label: 'PID', sensitive: false },
     { key: 'pkey', label: 'PKey', sensitive: true },
-    { key: 'apiBase', label: '', sensitive: false },
+    { key: 'privateKey', label: '', sensitive: true },
+    { key: 'publicKey', label: '', sensitive: true },
+    { key: 'apiBase', label: '', sensitive: false, hintKey: 'admin.settings.payment.easypayApiBaseHint' },
     { key: 'cidAlipay', label: '', sensitive: false, optional: true },
     { key: 'cidWxpay', label: '', sensitive: false, optional: true },
+    { key: 'v1RefundSuccessCode', label: '', sensitive: false, defaultValue: '1', hintKey: 'admin.settings.payment.easypayRefundCodeHint', options: [{ value: '1', label: '1' }, { value: '0', label: '0' }] },
   ],
   jupitong: [
     { key: 'pid', label: 'PID', sensitive: false },
@@ -171,6 +176,20 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
 }
 
 // --- Helpers ---
+
+export function easyPayAPIVersion(config: Record<string, string>): EasyPayAPIVersion {
+  return config.apiVersion === 'v2' ? 'v2' : 'v1'
+}
+
+/** Protocol-specific credentials must never leak into the other protocol. */
+export function getProviderConfigFields(providerKey: string, config: Record<string, string>): ConfigFieldDef[] {
+  const fields = PROVIDER_CONFIG_FIELDS[providerKey] || []
+  if (providerKey !== 'easypay') return fields
+  const hidden = easyPayAPIVersion(config) === 'v2'
+    ? new Set(['pkey', 'cidAlipay', 'cidWxpay', 'v1RefundSuccessCode'])
+    : new Set(['privateKey', 'publicKey'])
+  return fields.filter(field => !hidden.has(field.key))
+}
 
 /** Resolve type label for display. */
 export function resolveTypeLabel(

@@ -134,6 +134,20 @@ describe('PaymentStatusPanel', () => {
     openSpy.mockRestore()
   })
 
+  it('never opens an unsafe URL when reopening an existing payment', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    const wrapper = mount(PaymentStatusPanel, {
+      props: { orderId: 42, qrCode: 'https://pay.example.com/qr', payUrl: 'javascript:alert(1)', expiresAt: '2099-01-01T12:30:00Z', paymentType: 'alipay', orderType: 'balance' },
+      global: { stubs: { Icon: true } },
+    })
+    await flushPromises()
+    await wrapper.get('button.btn.btn-secondary.text-sm').trigger('click')
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.emitted('popup-opened')).toBeUndefined()
+    wrapper.unmount()
+    openSpy.mockRestore()
+  })
+
   it('uses generic QR copy for custom methods that contain built-in names', async () => {
     const wrapper = mount(PaymentStatusPanel, {
       props: {

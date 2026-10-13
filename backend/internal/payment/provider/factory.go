@@ -10,6 +10,13 @@ import (
 func CreateProvider(providerKey string, instanceID string, config map[string]string) (payment.Provider, error) {
 	switch providerKey {
 	case payment.TypeEasyPay:
+		version, err := payment.NormalizeEasyPayAPIVersion(config["apiVersion"])
+		if err != nil {
+			return nil, err
+		}
+		if version == payment.EasyPayAPIVersionV2 {
+			return NewEasyPayV2(instanceID, config)
+		}
 		return NewEasyPay(instanceID, config)
 	case payment.TypeJupitong:
 		return NewJupitong(instanceID, config)

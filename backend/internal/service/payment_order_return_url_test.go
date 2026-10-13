@@ -4,7 +4,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
+	"strconv"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/payment"
@@ -26,6 +28,12 @@ func TestInvokeProvider_StripsClientReturnQueryBeforeResumeTokenAndProvider(t *t
 			"notifyUrl": "https://app.example.com/payment/notify", "returnUrl": "https://app.example.com/payment/result", "paymentMode": "popup",
 		},
 	}
+	storedConfig, err := json.Marshal(sel.Config)
+	require.NoError(t, err)
+	instance, err := client.PaymentProviderInstance.Create().SetName("return-url-provider").SetProviderKey(payment.TypeEasyPay).
+		SetConfig(string(storedConfig)).SetSupportedTypes(payment.TypeAlipay).SetEnabled(true).SetPaymentMode("popup").Save(ctx)
+	require.NoError(t, err)
+	sel.InstanceID = strconv.FormatInt(instance.ID, 10)
 	req := CreateOrderRequest{
 		UserID: user.ID, Amount: 10, PaymentType: payment.TypeAlipay, OrderType: payment.OrderTypeBalance,
 		SrcHost: "app.example.com", ReturnURL: "https://app.example.com/payment/result?from=checkout&trade_status=TRADE_SUCCESS&order_id=attacker&resume_token=attacker#fragment",

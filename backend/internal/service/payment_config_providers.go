@@ -59,19 +59,28 @@ func (s *PaymentConfigService) ListProviderInstancesWithConfig(ctx context.Conte
 	}
 	result := make([]ProviderInstanceResponse, 0, len(instances))
 	for _, inst := range instances {
-		resp := ProviderInstanceResponse{
-			ID: int64(inst.ID), ProviderKey: inst.ProviderKey, Name: inst.Name,
-			SupportedTypes: splitTypes(inst.SupportedTypes), Limits: inst.Limits,
-			Enabled: inst.Enabled, RefundEnabled: inst.RefundEnabled, AllowUserRefund: inst.AllowUserRefund,
-			SortOrder: inst.SortOrder, PaymentMode: inst.PaymentMode,
-		}
-		resp.Config, err = s.decryptAndMaskConfig(inst.ProviderKey, inst.Config)
+		resp, err := s.ProviderInstanceResponse(inst)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt config for instance %d: %w", inst.ID, err)
+			return nil, err
 		}
 		result = append(result, resp)
 	}
 	return result, nil
+}
+
+// ProviderInstanceResponse is shared by list/create/update so credentials never
+// leave the server through a raw Ent response.
+func (s *PaymentConfigService) ProviderInstanceResponse(inst *dbent.PaymentProviderInstance) (ProviderInstanceResponse, error) {
+	config, err := s.decryptAndMaskConfig(inst.ProviderKey, inst.Config)
+	if err != nil {
+		return ProviderInstanceResponse{}, fmt.Errorf("decrypt config for instance %d: %w", inst.ID, err)
+	}
+	return ProviderInstanceResponse{
+		ID: inst.ID, ProviderKey: inst.ProviderKey, Name: inst.Name, Config: config,
+		SupportedTypes: splitTypes(inst.SupportedTypes), Limits: inst.Limits,
+		Enabled: inst.Enabled, RefundEnabled: inst.RefundEnabled, AllowUserRefund: inst.AllowUserRefund,
+		SortOrder: inst.SortOrder, PaymentMode: inst.PaymentMode,
+	}, nil
 }
 
 // decryptAndMaskConfig returns the stored config with sensitive fields omitted.
@@ -101,6 +110,9 @@ var pendingOrderStatuses = []string{
 	payment.OrderStatusPending,
 	payment.OrderStatusPaid,
 	payment.OrderStatusRecharging,
+	payment.OrderStatusRefundRequested,
+	payment.OrderStatusRefunding,
+	payment.OrderStatusRefundPending,
 }
 
 // providerSensitiveConfigFields is the authoritative list of config keys that
@@ -111,7 +123,7 @@ var pendingOrderStatuses = []string{
 // Key matching is case-insensitive. Non-listed keys (e.g. appId, notifyUrl,
 // stripe publishableKey) are returned in plaintext by the admin GET API.
 var providerSensitiveConfigFields = map[string]map[string]struct{}{
-	payment.TypeEasyPay:   {"pkey": {}},
+	payment.TypeEasyPay:   {"pkey": {}, "privatekey": {}, "publickey": {}},
 	payment.TypeJupitong:  {"pkey": {}},
 	payment.TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}},
 	payment.TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}},
@@ -124,7 +136,7 @@ var providerSensitiveConfigFields = map[string]map[string]struct{}{
 // all provider identity fields that are snapshotted into orders or used by
 // webhook/refund verification.
 var providerPendingOrderProtectedConfigFields = map[string]map[string]struct{}{
-	payment.TypeEasyPay:   {"pkey": {}, "pid": {}},
+	payment.TypeEasyPay:   {"pkey": {}, "pid": {}, "privatekey": {}, "publickey": {}, "apiversion": {}, "apibase": {}, "v1refundsuccesscode": {}},
 	payment.TypeJupitong:  {"pkey": {}, "pid": {}, "apibase": {}, "signtype": {}},
 	payment.TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}, "appid": {}},
 	payment.TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}, "appid": {}, "mpappid": {}, "mchid": {}, "publickeyid": {}, "certserial": {}},
@@ -189,6 +201,9 @@ func (s *PaymentConfigService) CreateProviderInstance(ctx context.Context, req C
 		return nil, err
 	}
 	if req.ProviderKey == payment.TypeEasyPay {
+		if _, err := payment.NormalizeEasyPayAPIVersion(req.Config["apiVersion"]); err != nil {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
+		}
 		if err := validateEasyPayCustomMethods(req.Config, typesStr); err != nil {
 			return nil, err
 		}
@@ -308,6 +323,35 @@ func easyPayCustomMethodTypeConflictsWithBuiltin(methodType string) bool {
 // NOTE: This function exceeds 30 lines due to per-field nil-check patch update
 // boilerplate and pending-order safety checks.
 func (s *PaymentConfigService) UpdateProviderInstance(ctx context.Context, id int64, req UpdateProviderInstanceRequest) (*dbent.PaymentProviderInstance, error) {
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// The same row lock is acquired while creating an order, making the
+	// historical-order check atomic with the first order's protocol snapshot.
+	if err := lockPaymentProviderInstance(ctx, tx.Client(), id); err != nil {
+		return nil, err
+	}
+	transactional := *s
+	transactional.entClient = tx.Client()
+	inst, err := transactional.updateProviderInstance(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return inst.Unwrap(), nil
+}
+
+func lockPaymentProviderInstance(ctx context.Context, client *dbent.Client, id int64) error {
+	// A no-op UPDATE takes a row lock on PostgreSQL and remains supported by
+	// the SQLite test backend, where SELECT FOR UPDATE is unavailable.
+	return client.PaymentProviderInstance.UpdateOneID(id).AddSortOrder(0).Exec(ctx)
+}
+
+func (s *PaymentConfigService) updateProviderInstance(ctx context.Context, id int64, req UpdateProviderInstanceRequest) (*dbent.PaymentProviderInstance, error) {
 	current, err := s.entClient.PaymentProviderInstance.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("load provider instance: %w", err)
@@ -344,6 +388,25 @@ func (s *PaymentConfigService) UpdateProviderInstance(ctx context.Context, id in
 		mergedConfig, err = s.mergeConfig(ctx, id, req.Config)
 		if err != nil {
 			return nil, err
+		}
+		if current.ProviderKey == payment.TypeEasyPay {
+			oldVersion, err := payment.NormalizeEasyPayAPIVersion(currentConfig["apiVersion"])
+			if err != nil {
+				return nil, err
+			}
+			newVersion, err := payment.NormalizeEasyPayAPIVersion(mergedConfig["apiVersion"])
+			if err != nil {
+				return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
+			}
+			if oldVersion != newVersion {
+				hasOrders, err := s.entClient.PaymentOrder.Query().Where(paymentorder.ProviderInstanceIDEQ(strconv.FormatInt(id, 10))).Exist(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("check provider history: %w", err)
+				}
+				if hasOrders {
+					return nil, infraerrors.Conflict("PROVIDER_PROTOCOL_LOCKED", "instances with historical orders cannot change EasyPay API version; create a new instance")
+				}
+			}
 		}
 		if hasPendingOrderProtectedConfigChange(current.ProviderKey, currentConfig, mergedConfig) {
 			count, err := getPendingOrderCount()
@@ -549,7 +612,17 @@ func (s *PaymentConfigService) decryptConfig(stored string) (map[string]string, 
 }
 
 func (s *PaymentConfigService) DeleteProviderInstance(ctx context.Context, id int64) error {
-	count, err := s.countPendingOrders(ctx, id)
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := lockPaymentProviderInstance(ctx, tx.Client(), id); err != nil {
+		return err
+	}
+	transactional := *s
+	transactional.entClient = tx.Client()
+	count, err := transactional.countPendingOrders(ctx, id)
 	if err != nil {
 		return fmt.Errorf("check pending orders: %w", err)
 	}
@@ -557,7 +630,10 @@ func (s *PaymentConfigService) DeleteProviderInstance(ctx context.Context, id in
 		return infraerrors.Conflict("PENDING_ORDERS",
 			fmt.Sprintf("this instance has %d in-progress orders and cannot be deleted — wait for orders to complete or disable the instance first", count))
 	}
-	return s.entClient.PaymentProviderInstance.DeleteOneID(id).Exec(ctx)
+	if err := tx.PaymentProviderInstance.DeleteOneID(id).Exec(ctx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // encryptConfig serialises a provider config for storage.

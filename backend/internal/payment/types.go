@@ -2,7 +2,28 @@
 // registry, load balancing, and shared utilities for the payment subsystem.
 package payment
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
+
+const (
+	EasyPayAPIVersionV1 = "v1"
+	EasyPayAPIVersionV2 = "v2"
+)
+
+// NormalizeEasyPayAPIVersion keeps historical configurations on the V1 protocol.
+func NormalizeEasyPayAPIVersion(raw string) (string, error) {
+	version := strings.ToLower(strings.TrimSpace(raw))
+	if version == "" {
+		return EasyPayAPIVersionV1, nil
+	}
+	if version != EasyPayAPIVersionV1 && version != EasyPayAPIVersionV2 {
+		return "", fmt.Errorf("unsupported EasyPay API version %q", version)
+	}
+	return version, nil
+}
 
 // PaymentType represents a supported payment method.
 type PaymentType = string
@@ -182,10 +203,11 @@ type PaymentNotification struct {
 
 // RefundRequest contains the parameters for requesting a refund.
 type RefundRequest struct {
-	TradeNo string
-	OrderID string
-	Amount  string // Refund amount formatted to 2 decimal places
-	Reason  string
+	RefundID string // Stable merchant refund identifier, retained across retries.
+	TradeNo  string
+	OrderID  string
+	Amount   string // Refund amount formatted to 2 decimal places
+	Reason   string
 }
 
 // RefundQueryRequest contains identifiers needed to query a previously
@@ -201,6 +223,7 @@ type RefundQueryRequest struct {
 type RefundResponse struct {
 	RefundID string
 	Status   string // "success", "pending", "failed"
+	Metadata map[string]string
 }
 
 // InstanceSelection holds the selected provider instance and its decrypted config.

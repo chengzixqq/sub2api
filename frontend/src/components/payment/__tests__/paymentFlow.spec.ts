@@ -32,6 +32,20 @@ function createOrderResult(overrides: Partial<CreateOrderResult> = {}): CreateOr
   }
 }
 
+describe('payment launch URL safety', () => {
+  it.each(['javascript:alert(1)', 'data:text/html,payment', 'intent://payment'])('rejects unsafe checkout navigation: %s', pay_url => {
+    const decision = decidePaymentLaunch(createOrderResult({ pay_url }), { visibleMethod: 'alipay', orderType: 'balance', isMobile: true })
+    expect(decision.kind).toBe('unhandled')
+    expect(decision.paymentState.payUrl).toBe('')
+  })
+
+  it.each(['alipay://platformapi/startapp?appId=20000067', 'alipays://platformapi/startapp?saId=10000007', 'weixin://wxpay/bizpayurl?pr=abc'])('launches an approved native payment scheme: %s', pay_url => {
+    const decision = decidePaymentLaunch(createOrderResult({ pay_url }), { visibleMethod: 'alipay', orderType: 'balance', isMobile: true })
+    expect(decision.kind).toBe('redirect_waiting')
+    expect(decision.paymentState.payUrl).toBe(pay_url)
+  })
+})
+
 describe('getVisibleMethods', () => {
   it('normalizes provider aliases and keeps stripe as a top-level method', () => {
     const visible = getVisibleMethods({
@@ -403,6 +417,10 @@ describe('readPaymentRecoverySnapshot', () => {
     })
 
     expect(restored?.orderId).toBe(33)
+    expect(readPaymentRecoverySnapshot(JSON.stringify({ ...snapshot, payUrl: 'javascript:alert(1)' }), {
+      now: Date.UTC(2099, 0, 1, 0, 1, 0),
+      resumeToken: 'resume-33',
+    })?.payUrl).toBe('')
   })
 
   it('drops expired or mismatched recovery snapshots', () => {

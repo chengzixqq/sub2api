@@ -122,6 +122,8 @@ type OrderListParams struct {
 }
 
 type RefundPlan struct {
+	RefundID        string
+	ManagedRefund   bool
 	OrderID         int64
 	Order           *dbent.PaymentOrder
 	RefundAmount    float64

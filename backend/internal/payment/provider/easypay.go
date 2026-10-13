@@ -53,6 +53,12 @@ type easyPayCustomMethod struct {
 // NewEasyPay creates a new EasyPay provider.
 // config keys: pid, pkey, apiBase, notifyUrl, returnUrl, cid, cidAlipay, cidWxpay
 func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
+	if version, err := payment.NormalizeEasyPayAPIVersion(config["apiVersion"]); err != nil || version != payment.EasyPayAPIVersionV1 {
+		return nil, errors.New("easypay V1 requires apiVersion v1")
+	}
+	if code := strings.TrimSpace(config["v1RefundSuccessCode"]); code != "" && code != "0" && code != "1" {
+		return nil, errors.New("easypay v1RefundSuccessCode must be 0 or 1")
+	}
 	for _, k := range []string{"pid", "pkey", "apiBase", "notifyUrl", "returnUrl"} {
 		if strings.TrimSpace(config[k]) == "" {
 			return nil, fmt.Errorf("easypay config missing required key: %s", k)
@@ -247,12 +253,13 @@ func (e *EasyPay) createAPIPayment(ctx context.Context, req payment.CreatePaymen
 		return nil, fmt.Errorf("easypay create: %w", err)
 	}
 	var resp struct {
-		Code    int    `json:"code"`
-		Msg     string `json:"msg"`
-		TradeNo string `json:"trade_no"`
-		PayURL  string `json:"payurl"`
-		PayURL2 string `json:"payurl2"` // H5 mobile payment URL
-		QRCode  string `json:"qrcode"`
+		Code      int    `json:"code"`
+		Msg       string `json:"msg"`
+		TradeNo   string `json:"trade_no"`
+		PayURL    string `json:"payurl"`
+		PayURL2   string `json:"payurl2"` // H5 mobile payment URL
+		QRCode    string `json:"qrcode"`
+		URLScheme string `json:"urlscheme"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("easypay parse: %w", err)
@@ -263,6 +270,15 @@ func (e *EasyPay) createAPIPayment(ctx context.Context, req payment.CreatePaymen
 	payURL := resp.PayURL
 	if req.IsMobile && resp.PayURL2 != "" {
 		payURL = resp.PayURL2
+	}
+	if strings.TrimSpace(payURL) == "" && strings.TrimSpace(resp.URLScheme) != "" {
+		if err := validateEasyPayURLScheme(resp.URLScheme); err != nil {
+			return nil, err
+		}
+		payURL = strings.TrimSpace(resp.URLScheme)
+	}
+	if strings.TrimSpace(payURL) == "" && strings.TrimSpace(resp.QRCode) == "" {
+		return nil, errors.New("easypay create returned no usable payment URL or QR code")
 	}
 	base := e.apiBase()
 	return &payment.CreatePaymentResponse{
@@ -583,7 +599,7 @@ func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payme
 		if err != nil {
 			return nil, fmt.Errorf("easypay refund request: %w", err)
 		}
-		if err := parseEasyPayRefundResponse(status, body); err != nil {
+		if err := parseEasyPayRefundResponse(status, body, e.refundSuccessCode()); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -640,7 +656,14 @@ func isEasyPayRefundOrderNotFound(err error) bool {
 		strings.Contains(lower, "not exist")
 }
 
-func parseEasyPayRefundResponse(status int, body []byte) error {
+func (e *EasyPay) refundSuccessCode() int {
+	if strings.TrimSpace(e.config["v1RefundSuccessCode"]) == "0" {
+		return 0
+	}
+	return 1
+}
+
+func parseEasyPayRefundResponse(status int, body []byte, successCode ...int) error {
 	summary := summarizeEasyPayResponse(body)
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return fmt.Errorf("easypay refund HTTP %d: %s", status, summary)
@@ -661,10 +684,19 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 		Code any    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.Unmarshal(body, &resp); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&resp); err != nil {
 		return fmt.Errorf("easypay refund non-JSON response (HTTP %d): %s", status, summary)
 	}
-	if !easyPayResponseCodeIsSuccess(resp.Code) {
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("easypay refund non-JSON response (HTTP %d): %s", status, summary)
+	}
+	expected := easypayCodeSuccess
+	if len(successCode) > 0 {
+		expected = successCode[0]
+	}
+	if !easyPayResponseCodeEquals(resp.Code, expected) {
 		msg := strings.TrimSpace(resp.Msg)
 		if msg == "" {
 			msg = summary
@@ -674,13 +706,14 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 	return nil
 }
 
-func easyPayResponseCodeIsSuccess(code any) bool {
+func easyPayResponseCodeEquals(code any, expected int) bool {
 	switch v := code.(type) {
+	case json.Number:
+		return string(v) == strconv.Itoa(expected)
 	case float64:
-		return int(v) == easypayCodeSuccess
+		return v == float64(expected)
 	case string:
-		n, err := strconv.Atoi(strings.TrimSpace(v))
-		return err == nil && n == easypayCodeSuccess
+		return strings.TrimSpace(v) == strconv.Itoa(expected)
 	default:
 		return false
 	}
@@ -772,9 +805,12 @@ func (e *EasyPay) postRaw(ctx context.Context, endpoint string, params map[strin
 	if resp.Request == nil || easyPayOrigin(resp.Request.URL.String()) != origin {
 		return nil, resp.StatusCode, errors.New("easypay response origin does not match configured apiBase")
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEasypayResponseSize))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEasypayResponseSize+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if len(body) > maxEasypayResponseSize {
+		return nil, resp.StatusCode, errors.New("easypay response exceeds maximum size")
 	}
 	return body, resp.StatusCode, nil
 }
@@ -843,4 +879,23 @@ var easyPayNotifyAllowedParams = map[string]bool{
 	"param":        true,
 	"sign":         true,
 	"sign_type":    true,
+}
+
+// validateEasyPayURLScheme only accepts explicitly supported payment-app links.
+// Never turn arbitrary provider output into a browser navigation protocol.
+func validateEasyPayURLScheme(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if strings.ContainsAny(raw, "\r\n\t\x00\\") {
+		return errors.New("easypay returned invalid payment URL scheme")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil {
+		return errors.New("easypay returned invalid payment URL scheme")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "alipay", "alipays", "weixin":
+		return nil
+	default:
+		return errors.New("easypay returned unsupported payment URL scheme")
+	}
 }

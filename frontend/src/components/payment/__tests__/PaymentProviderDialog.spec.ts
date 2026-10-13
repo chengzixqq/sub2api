@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import Select from '@/components/common/Select.vue'
 import PaymentProviderDialog from '@/components/payment/PaymentProviderDialog.vue'
 import { STRIPE_SDK_API_VERSION } from '@/components/payment/providerConfig'
 import type { ProviderInstance } from '@/types/payment'
@@ -101,6 +102,82 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
 }
 
 describe('PaymentProviderDialog callback URLs', () => {
+  it('defaults legacy EasyPay to V1 with an explicit refund code and preserves masked secrets', async () => {
+    const provider = providerFactory({ provider_key: 'easypay', config: { pid: '123', pkey: '********', apiBase: 'https://pay.example.com/GatewayV2' } })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+    expect((wrapper.get('[data-config-field="pkey"] input').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('[data-config-field="privateKey"]').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string> }
+    expect(payload.config).toMatchObject({ apiVersion: 'v1', v1RefundSuccessCode: '1', apiBase: 'https://pay.example.com/GatewayV2' })
+    expect(payload.config.pkey).toBeUndefined()
+    wrapper.get('[data-config-field="v1RefundSuccessCode"]').findComponent(Select).vm.$emit('update:modelValue', '0')
+    await nextTick()
+    await wrapper.get('form').trigger('submit')
+    expect((wrapper.emitted('save')?.[1]?.[0] as { config: Record<string, string> }).config.v1RefundSuccessCode).toBe('0')
+    wrapper.unmount()
+  })
+
+  it('requires V2 RSA keys and drops V1 credentials and CIDs when switching a new instance', async () => {
+    const wrapper = mountDialog()
+    ;(wrapper.vm as unknown as { reset: (key: string) => void }).reset('easypay')
+    await nextTick()
+    await wrapper.get('input[type="text"]').setValue('V2 gateway')
+    await wrapper.get('[data-config-field="pid"] input').setValue('123')
+    await wrapper.get('[data-config-field="apiBase"] input').setValue('https://pay.example.com/GatewayV2')
+    await wrapper.get('[data-config-field="pkey"] input').setValue('v1-secret')
+    await wrapper.get('[data-config-field="cidAlipay"] input').setValue('77')
+    wrapper.get('[data-config-field="apiVersion"]').findComponent(Select).vm.$emit('update:modelValue', 'v2')
+    await nextTick()
+    expect(wrapper.find('[data-config-field="pkey"]').exists()).toBe(false)
+    expect(wrapper.find('[data-config-field="cidAlipay"]').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('save')).toBeUndefined()
+    await wrapper.get('[data-config-field="privateKey"] textarea').setValue('merchant-private-key')
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('save')).toBeUndefined()
+    await wrapper.get('[data-config-field="publicKey"] textarea').setValue('platform-public-key')
+    await wrapper.get('form').trigger('submit')
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { provider_key: string; config: Record<string, string> }
+    expect(payload.provider_key).toBe('easypay')
+    expect(payload.config).toMatchObject({ apiVersion: 'v2', privateKey: 'merchant-private-key', publicKey: 'platform-public-key', apiBase: 'https://pay.example.com/GatewayV2' })
+    expect(payload.config.pkey).toBeUndefined()
+    expect(payload.config.cidAlipay).toBeUndefined()
+    expect(payload.config.v1RefundSuccessCode).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('retains existing V2 secrets when editing unrelated provider fields', async () => {
+    const provider = providerFactory({ provider_key: 'easypay', config: { apiVersion: 'v2', pid: '123', privateKey: '********', publicKey: '********', apiBase: 'https://pay.example.com/GatewayV2' } })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+    await wrapper.get('input[type="text"]').setValue('Renamed gateway')
+    await wrapper.get('form').trigger('submit')
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string> }
+    expect(payload.config.apiVersion).toBe('v2')
+    expect(payload.config.privateKey).toBeUndefined()
+    expect(payload.config.publicKey).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('requires a fresh V1 secret when switching an unused V2 instance and restores the default refund code', async () => {
+    const provider = providerFactory({ provider_key: 'easypay', config: { apiVersion: 'v2', pid: '123', apiBase: 'https://pay.example.com' } })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+    wrapper.get('[data-config-field="apiVersion"]').findComponent(Select).vm.$emit('update:modelValue', 'v1')
+    await nextTick()
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('save')).toBeUndefined()
+    await wrapper.get('[data-config-field="pkey"] input').setValue('new-v1-secret')
+    await wrapper.get('form').trigger('submit')
+    expect((wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string> }).config).toMatchObject({ apiVersion: 'v1', pkey: 'new-v1-secret', v1RefundSuccessCode: '1' })
+    wrapper.unmount()
+  })
+
   it('requires PID and PKey when creating a JuFuTong provider', async () => {
     const wrapper = mountDialog()
     ;(wrapper.vm as unknown as { reset: (key: string) => void }).reset('jupitong')

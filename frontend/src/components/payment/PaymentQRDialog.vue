@@ -71,6 +71,7 @@
 </template>
 
 <script setup lang="ts">
+import { safePaymentUrl } from './paymentUrl'
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -157,8 +158,9 @@ function getLogoForType(): string | null {
 
 
 function reopenPopup() {
-  if (props.payUrl) {
-    window.open(props.payUrl, 'paymentPopup', getPaymentPopupFeatures())
+  const payUrl = safePaymentUrl(props.payUrl, true)
+  if (payUrl) {
+    window.open(payUrl, 'paymentPopup', getPaymentPopupFeatures())
   }
 }
 

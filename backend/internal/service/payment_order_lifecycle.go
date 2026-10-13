@@ -382,7 +382,7 @@ func (s *PaymentService) getOrderProvider(ctx context.Context, o *dbent.PaymentO
 		return nil, fmt.Errorf("load order provider instance: %w", err)
 	}
 	if inst != nil {
-		return s.createProviderFromInstance(ctx, inst)
+		return s.createProviderForOrder(ctx, o, inst)
 	}
 	if !paymentOrderAllowsRegistryFallback(o) {
 		return nil, fmt.Errorf("order %d provider instance is unresolved", o.ID)
@@ -418,7 +418,15 @@ func paymentOrderFallbackProviderKey(order *dbent.PaymentOrder) string {
 	return strings.TrimSpace(psStringValue(order.ProviderKey))
 }
 
+func (s *PaymentService) createProviderForOrder(ctx context.Context, order *dbent.PaymentOrder, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {
+	return s.createProviderFromInstanceForOrder(ctx, inst, order)
+}
+
 func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *dbent.PaymentProviderInstance) (payment.Provider, error) {
+	return s.createProviderFromInstanceForOrder(ctx, inst, nil)
+}
+
+func (s *PaymentService) createProviderFromInstanceForOrder(ctx context.Context, inst *dbent.PaymentProviderInstance, order *dbent.PaymentOrder) (payment.Provider, error) {
 	if inst == nil {
 		return nil, fmt.Errorf("payment provider instance is missing")
 	}
@@ -426,6 +434,25 @@ func (s *PaymentService) createProviderFromInstance(ctx context.Context, inst *d
 	cfg, err := s.loadBalancer.GetInstanceConfig(ctx, int64(inst.ID))
 	if err != nil {
 		return nil, fmt.Errorf("load provider instance config: %w", err)
+	}
+	if order != nil && inst.ProviderKey == payment.TypeEasyPay {
+		actual, err := payment.NormalizeEasyPayAPIVersion(cfg["apiVersion"])
+		if err != nil {
+			return nil, err
+		}
+		expected := "v1"
+		if snapshot := psOrderProviderSnapshot(order); snapshot != nil {
+			expected, err = payment.NormalizeEasyPayAPIVersion(snapshot.APIVersion)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if actual != expected {
+			return nil, fmt.Errorf("order %d EasyPay API version mismatch: snapshot=%s instance=%s", order.ID, expected, actual)
+		}
+	}
+	if cfg == nil {
+		cfg = map[string]string{}
 	}
 	if inst.PaymentMode != "" {
 		cfg["paymentMode"] = inst.PaymentMode
