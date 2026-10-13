@@ -105,6 +105,9 @@ func decodeEasyPayV2Object(body []byte) (map[string]string, error) {
 				params[key] = ""
 			}
 		case nil, []any, map[string]any:
+			if key == "pid" {
+				return nil, errors.New("easypay V2 invalid protocol field type")
+			}
 			// PHP excludes these values from its signature input.
 		default:
 			return nil, errors.New("easypay V2 unsupported JSON value")

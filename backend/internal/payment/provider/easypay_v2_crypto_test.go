@@ -84,3 +84,11 @@ func TestEasyPayV2RejectsAmbiguousJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestEasyPayV2RejectsExplicitNonScalarMerchant(t *testing.T) {
+	for _, raw := range []string{`{"code":0,"pid":null}`, `{"code":0,"pid":[]}`, `{"code":0,"pid":{}}`, `{"code":0,"pid":true}`} {
+		if _, err := decodeEasyPayV2Object([]byte(raw)); err == nil {
+			t.Fatalf("accepted invalid merchant identity: %s", raw)
+		}
+	}
+}

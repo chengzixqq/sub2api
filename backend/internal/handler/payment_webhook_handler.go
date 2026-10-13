@@ -82,7 +82,19 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 	}
 
 	var rawBody string
-	if c.Request.Method == http.MethodGet {
+	if providerKey == payment.TypeEasyPay {
+		var err error
+		rawBody, err = readEasyPayWebhookPayload(c.Request)
+		if err != nil {
+			slog.Warn("[Payment Webhook] invalid callback payload", "provider", providerKey, "error", err)
+			status := http.StatusBadRequest
+			if errors.Is(err, errEasyPayWebhookTooLarge) {
+				status = http.StatusRequestEntityTooLarge
+			}
+			c.String(status, "verify failed")
+			return
+		}
+	} else if c.Request.Method == http.MethodGet {
 		// GET callbacks (e.g. EasyPay) pass params as URL query string
 		rawBody = c.Request.URL.RawQuery
 	} else {
@@ -154,6 +166,47 @@ func (h *PaymentWebhookHandler) handleNotify(c *gin.Context, providerKey string)
 	}
 
 	writeSuccessResponse(c, resolvedProviderKey)
+}
+
+var errEasyPayWebhookTooLarge = errors.New("easypay callback payload exceeds maximum size")
+
+// readEasyPayWebhookPayload accepts either query parameters or a form body.
+// Some gateways send POST with an empty body and all signed fields in the URL.
+// Never merge the two sources: order routing and verification must consume the
+// same unchanged payload, with duplicate fields rejected before either step.
+func readEasyPayWebhookPayload(r *http.Request) (string, error) {
+	if len(r.URL.RawQuery) > maxWebhookBodySize {
+		return "", errEasyPayWebhookTooLarge
+	}
+	var body []byte
+	if r.Body != nil {
+		var err error
+		body, err = io.ReadAll(io.LimitReader(r.Body, maxWebhookBodySize+1))
+		if err != nil {
+			return "", fmt.Errorf("read easypay callback body: %w", err)
+		}
+	}
+	if len(body) > maxWebhookBodySize {
+		return "", errEasyPayWebhookTooLarge
+	}
+	if len(body) > 0 && (r.URL.RawQuery != "" || r.Method == http.MethodGet) {
+		return "", errors.New("easypay callback has ambiguous parameter sources")
+	}
+
+	raw := r.URL.RawQuery
+	if len(body) > 0 {
+		raw = string(body)
+	}
+	params, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", errors.New("easypay callback has invalid parameter encoding")
+	}
+	for key, values := range params {
+		if key == "" || len(values) != 1 {
+			return "", errors.New("easypay callback has duplicate or invalid parameters")
+		}
+	}
+	return raw, nil
 }
 
 // extractOutTradeNoWithContentType parses the webhook body to find the out_trade_no.

@@ -191,7 +191,9 @@ func (e *EasyPayV2) QueryOrder(ctx context.Context, orderID string) (*payment.Qu
 	if err != nil {
 		return nil, err
 	}
-	if result["pid"] != e.config["pid"] || result["out_trade_no"] != orderID || strings.TrimSpace(result["trade_no"]) == "" {
+	// Standard V2 query responses may omit pid. execute checks it whenever
+	// present; the signed order ID must still bind this response to our request.
+	if result["out_trade_no"] != orderID || strings.TrimSpace(result["trade_no"]) == "" {
 		return nil, errors.New("easypay V2 query merchant or order mismatch")
 	}
 	amount, err := easyPayV2Amount(result["money"])
@@ -212,7 +214,9 @@ func (e *EasyPayV2) QueryOrder(ctx context.Context, orderID string) (*payment.Qu
 	default:
 		return nil, errors.New("easypay V2 unknown payment status")
 	}
-	return &payment.QueryOrderResponse{TradeNo: result["trade_no"], Status: status, Amount: amount, PaidAt: result["endtime"], Metadata: e.MerchantIdentityMetadata()}, nil
+	metadata := e.MerchantIdentityMetadata()
+	metadata["out_trade_no"] = result["out_trade_no"]
+	return &payment.QueryOrderResponse{TradeNo: result["trade_no"], Status: status, Amount: amount, PaidAt: result["endtime"], Metadata: metadata}, nil
 }
 
 func (e *EasyPayV2) VerifyNotification(_ context.Context, rawBody string, _ map[string]string) (*payment.PaymentNotification, error) {

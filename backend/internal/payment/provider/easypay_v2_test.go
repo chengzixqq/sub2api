@@ -134,12 +134,59 @@ func TestEasyPayV2QueryStatusAndBindings(t *testing.T) {
 		if err != nil || got.Status != want {
 			t.Fatalf("status=%s got=%+v err=%v", input, got, err)
 		}
+		if got.Metadata["out_trade_no"] != "o-1" || got.Metadata["pid"] != "1001" {
+			t.Fatalf("query lost verified order or merchant identity: %+v", got.Metadata)
+		}
 	}
 	for _, tc := range [][4]string{{"1", "other", "o-1", "1.00"}, {"1", "1001", "other", "1.00"}, {"1.5", "1001", "o-1", "1.00"}, {"5", "1001", "o-1", "1.00"}, {"1", "1001", "o-1", "NaN"}} {
 		status, pid, order, money = tc[0], tc[1], tc[2], tc[3]
 		if _, err := f.provider.QueryOrder(context.Background(), "o-1"); err == nil {
 			t.Fatalf("accepted %v", tc)
 		}
+	}
+}
+
+func TestEasyPayV2QueryOptionalMerchantStillRequiresSignedOrderIdentity(t *testing.T) {
+	var response map[string]string
+	f := newEasyPayV2Fixture(t, func(w http.ResponseWriter, r *http.Request, f *easyPayV2Fixture) {
+		f.response(w, response)
+	})
+	for _, tc := range []struct {
+		name, pid, order, trade string
+		omitPID, omitOrder      bool
+		wantErr                 bool
+	}{
+		{name: "merchant present", pid: "1001", order: "o-1", trade: "t-1"},
+		{name: "merchant omitted", omitPID: true, order: "o-1", trade: "t-1"},
+		{name: "merchant empty", order: "o-1", trade: "t-1", wantErr: true},
+		{name: "merchant wrong", pid: "other", order: "o-1", trade: "t-1", wantErr: true},
+		{name: "order omitted", omitPID: true, omitOrder: true, trade: "t-1", wantErr: true},
+		{name: "order empty", omitPID: true, trade: "t-1", wantErr: true},
+		{name: "order wrong", omitPID: true, order: "other", trade: "t-1", wantErr: true},
+		{name: "trade empty", omitPID: true, order: "o-1", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response = map[string]string{"status": "1", "money": "1.00", "trade_no": tc.trade}
+			if !tc.omitPID {
+				response["pid"] = tc.pid
+			}
+			if !tc.omitOrder {
+				response["out_trade_no"] = tc.order
+			}
+			got, err := f.provider.QueryOrder(context.Background(), "o-1")
+			if tc.wantErr {
+				if err == nil || got != nil {
+					t.Fatalf("accepted unbound query response: got=%+v err=%v", got, err)
+				}
+				return
+			}
+			if err != nil || got == nil {
+				t.Fatalf("rejected signed bound query response: got=%+v err=%v", got, err)
+			}
+			if got.Metadata["pid"] != "1001" || got.Metadata["out_trade_no"] != "o-1" || got.Status != payment.ProviderStatusPaid {
+				t.Fatalf("lost pinned merchant or signed order identity: %+v", got)
+			}
+		})
 	}
 }
 
