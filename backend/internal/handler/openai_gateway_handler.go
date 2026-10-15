@@ -863,6 +863,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}()
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
+		h.recordAccountRPM(c.Request.Context(), account, result, err)
 		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
 		if result != nil {
@@ -1556,6 +1557,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			cyberBlockBodyMsg = body
 		}
 		// cyber 已按上游真实 usage 记账 ⇒ 这次请求已结算，请求级失败兜底让路（同上）。
+		h.recordAccountRPM(c.Request.Context(), account, result, err)
 		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
 		if result != nil {
@@ -3450,6 +3452,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return checkSimpleModeTurnBilling()
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
+				h.recordAccountRPM(ctx, account, result, turnErr)
 				turnStart := getTurnStart(turn)
 				cyberBlockBody := takeCyberTurnBody(turn)
 				// 每次 attempt 都清 cyber mark；failover 链结束前保留 recorded guard，

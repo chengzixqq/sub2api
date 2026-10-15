@@ -400,6 +400,8 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 
+		h.recordAccountRPM(c.Request.Context(), account)
+
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)

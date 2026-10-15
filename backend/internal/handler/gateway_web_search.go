@@ -223,6 +223,8 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		return
 	}
 
+	h.recordAccountRPM(c.Request.Context(), account)
+
 	userAgent := c.GetHeader("User-Agent")
 	clientIP := ip.GetClientIP(c)
 	inboundEndpoint := GetInboundEndpoint(c)

@@ -152,6 +152,7 @@ func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
 		}
 	}
 	if result := grokRealtimeBillingResult(model, elapsed, audioObserved); result != nil {
+		h.recordAccountRPM(c.Request.Context(), selection.Account, result, nil)
 		h.recordGrokVoiceUsage(c, apiKey, selection.Account, subscription, "realtime", nil, result)
 	}
 }
@@ -289,6 +290,7 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			defer release()
 			return h.gatewayService.ForwardGrokVoice(c.Request.Context(), c, account, endpoint, body, contentType)
 		}()
+		h.recordAccountRPM(c.Request.Context(), account, result, forwardErr)
 		if forwardErr == nil {
 			h.recordGrokVoiceUsage(c, apiKey, account, subscription, endpoint, body, result)
 			return

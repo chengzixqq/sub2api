@@ -289,6 +289,16 @@
           <template #cell-capacity="{ row }">
             <AccountCapacityCell :account="row" />
           </template>
+          <template #header-current_rpm="{ column }">
+            <div class="flex items-center">
+              <span>{{ column.label }}</span>
+              <HelpTooltip :content="t('admin.accounts.currentRpmHint')" width-class="w-64" />
+            </div>
+          </template>
+          <template #cell-current_rpm="{ row }">
+            <span v-if="row.current_rpm != null" class="font-mono text-sm tabular-nums text-gray-900 dark:text-gray-100">{{ row.current_rpm }}</span>
+            <span v-else class="text-sm text-gray-400 dark:text-dark-500">{{ t('common.notAvailable') }}</span>
+          </template>
           <template #cell-status="{ row }">
             <div class="flex items-center gap-1.5">
               <AccountStatusIndicator :account="row" @show-temp-unsched="handleShowTempUnsched" />
@@ -1406,6 +1416,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.updated_at !== next.updated_at ||
     current.current_concurrency !== next.current_concurrency ||
     current.probe_concurrency !== next.probe_concurrency ||
+    current.current_rpm !== next.current_rpm ||
     current.current_window_cost !== next.current_window_cost ||
     current.active_sessions !== next.active_sessions ||
     current.schedulable !== next.schedulable ||
@@ -1806,6 +1817,7 @@ const allColumns = computed(() => {
     { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
+    { key: 'current_rpm', label: t('admin.accounts.columns.currentRpm'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }

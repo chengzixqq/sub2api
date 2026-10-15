@@ -1947,6 +1947,7 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
+	rpmCache               service.RPMCache
 	simpleModeRejectAtRead int64
 	compositeResolver      *service.CompositeRouteResolver
 	accountPlatform        string
@@ -2276,6 +2277,8 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 		nil,
 		nil, // workspaceService
 	)
+	rpmCache := &accountRPMHandlerCache{}
+	gatewaySvc.SetRPMCache(rpmCache)
 	h := NewOpenAIGatewayHandler(
 		gatewaySvc,
 		service.NewConcurrencyService(nil),
@@ -2300,6 +2303,7 @@ func TestOpenAIResponses_APIKeyPassthroughPool5xxRetriesThenExhaustsMaxSwitches(
 	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
 
 	h.Responses(c)
+	require.Equal(t, []int64(nil), rpmCache.calls(), "failed attempts must not increment account RPM")
 
 	require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
 	require.Equal(t, http.StatusBadGateway, rec.Code)
@@ -2378,6 +2382,8 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 				nil,
 				nil,
 			)
+			rpmCache := &accountRPMHandlerCache{}
+			gatewaySvc.SetRPMCache(rpmCache)
 			h := NewOpenAIGatewayHandler(
 				gatewaySvc,
 				service.NewConcurrencyService(nil),
@@ -2402,6 +2408,7 @@ func TestOpenAIResponses_APIKeyPassthroughPoolAuthFailureRetriesThenSwitchesToHe
 			c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1703, Concurrency: 0})
 
 			h.Responses(c)
+			require.Equal(t, []int64{9911}, rpmCache.calls(), "failed attempts must not increment account RPM")
 
 			require.Equal(t, []int64{9910, 9910, 9911}, upstream.calls())
 			require.Equal(t, http.StatusOK, rec.Code)
@@ -3067,6 +3074,8 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil, // userPlatformQuotaRepo
 		nil, // workspaceService
 	)
+
+	gatewaySvc.SetRPMCache(tc.rpmCache)
 
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {

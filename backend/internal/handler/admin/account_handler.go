@@ -415,11 +415,11 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 				}
 			}
 		}
-
-		if h.rpmCache != nil && account.GetBaseRPM() > 0 {
-			if rpm, err := h.rpmCache.GetRPM(ctx, account.ID); err == nil {
-				item.CurrentRPM = &rpm
-			}
+	}
+	// Runtime RPM is observed for every account, independently of RPM limits.
+	if h.rpmCache != nil {
+		if rpm, err := h.rpmCache.GetRPM(ctx, account.ID); err == nil {
+			item.CurrentRPM = &rpm
 		}
 	}
 
@@ -752,10 +752,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	// 识别需要查询窗口费用、会话数和 RPM 的账号（Anthropic OAuth/SetupToken 且启用了相应功能）
+	// 窗口费用和会话数仍仅查询启用了对应功能的 Anthropic OAuth/SetupToken 账号。
 	windowCostAccountIDs := make([]int64, 0)
 	sessionLimitAccountIDs := make([]int64, 0)
-	rpmAccountIDs := make([]int64, 0)
 	sessionIdleTimeouts := make(map[int64]time.Duration) // 各账号的会话空闲超时配置
 	for i := range accounts {
 		acc := &accounts[i]
@@ -767,18 +766,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 				sessionLimitAccountIDs = append(sessionLimitAccountIDs, acc.ID)
 				sessionIdleTimeouts[acc.ID] = time.Duration(acc.GetSessionIdleTimeoutMinutes()) * time.Minute
 			}
-			if acc.GetBaseRPM() > 0 {
-				rpmAccountIDs = append(rpmAccountIDs, acc.ID)
-			}
 		}
 	}
 
-	// 始终获取 RPM 计数（Redis GET，极低开销）
-	if len(rpmAccountIDs) > 0 && h.rpmCache != nil {
-		rpmCounts, _ = h.rpmCache.GetRPMBatch(c.Request.Context(), rpmAccountIDs)
-		if rpmCounts == nil {
-			rpmCounts = make(map[int64]int)
-		}
+	// 仅对当前页做一次 Redis 批量查询，不依赖账号类型或是否配置 RPM 限额。
+	// 读取失败的账号不在返回 map 中，保持 current_rpm 缺省而非伪造为零。
+	if len(accountIDs) > 0 && h.rpmCache != nil {
+		rpmCounts, _ = h.rpmCache.GetRPMBatch(c.Request.Context(), accountIDs)
 	}
 
 	// 始终获取活跃会话数（Redis ZCARD，低开销）
@@ -851,7 +845,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 			}
 		}
 
-		// 添加 RPM 计数（仅当启用时）
+		// 添加成功读取的当前分钟 RPM（包括真实的零值）。
 		if rpmCounts != nil {
 			if rpm, ok := rpmCounts[acc.ID]; ok {
 				item.CurrentRPM = &rpm

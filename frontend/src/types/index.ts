@@ -1381,10 +1381,10 @@ export interface Account {
   quota_daily_reset_at?: string | null
   quota_weekly_reset_at?: string | null
 
-  // 运行时状态（仅当启用对应限制时返回）
+  // 运行时状态（窗口费用、活跃会话仅当启用对应限制时返回）
   current_window_cost?: number | null // 当前窗口费用
   active_sessions?: number | null // 当前活跃会话数
-  current_rpm?: number | null // 当前分钟 RPM 计数
+  current_rpm?: number | null // 当前分钟请求计数；读取失败或旧版后端未返回时缺失
 
   // 影子账号关系（spark 维度影子）
   parent_account_id?: number | null

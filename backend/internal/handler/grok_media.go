@@ -508,6 +508,8 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 
+		h.recordAccountRPM(c.Request.Context(), account, result, err)
+
 		// 转发成功即认定结算归正常路径所有，无条件 MarkSettled。
 		// 不能只在 shouldRecordGrokMediaUsage 为真时标记：video status/content 这类
 		// 查询端点成功时刻意不记用量行，若不标记，defer guard.Flush() 会把一次成功请求

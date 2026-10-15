@@ -215,6 +215,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			}
 			return h.gatewayService.ForwardAlphaSearch(c.Request.Context(), c, account, forwardBody)
 		}()
+		h.recordAccountRPM(c.Request.Context(), account, result, err)
 		service.SetOpsLatencyMs(c, service.OpsResponseLatencyMsKey, time.Since(forwardStart).Milliseconds())
 
 		if err == nil {

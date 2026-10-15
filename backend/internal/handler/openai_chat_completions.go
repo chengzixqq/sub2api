@@ -318,6 +318,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}()
 		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
+		h.recordAccountRPM(c.Request.Context(), account, result, err)
 		if result != nil {
 			result.SearchCount = searchSnapshot.CumulativeSearchCount
 		}

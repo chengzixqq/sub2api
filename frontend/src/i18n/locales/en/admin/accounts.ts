@@ -264,6 +264,7 @@ export default {
         platform: 'Platform',
         type: 'Type',
         capacity: 'Capacity',
+        currentRpm: 'Current RPM',
         notes: 'Notes',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
@@ -281,6 +282,7 @@ export default {
         expiresAt: 'Expires At',
         actions: 'Actions'
       },
+      currentRpmHint: 'Successfully forwarded requests in the current calendar minute, reset each minute and updated with list refreshes. This is not the RPM limit. Missing counts display N/A.',
       schedulerScore: {
         baseShort: 'Base',
         stickyShort: 'Sticky',

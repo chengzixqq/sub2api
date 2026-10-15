@@ -803,7 +803,7 @@ type GatewayService struct {
 	concurrencyService    *ConcurrencyService
 	claudeTokenProvider   *ClaudeTokenProvider
 	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
+	rpmCache              RPMCache          // 所有账号的成功转发计数；Anthropic 可另用于调度限额
 	userGroupRateResolver *userGroupRateResolver
 	userGroupRateCache    *gocache.Cache
 	userGroupRateSF       singleflight.Group

@@ -125,17 +125,26 @@ func (c *RPMCacheImpl) GetRPMBatch(ctx context.Context, accountIDs []int64) (map
 		cmds[id] = pipe.Get(ctx, key)
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return nil, fmt.Errorf("rpm batch get: %w", err)
-	}
+	_, pipelineErr := pipe.Exec(ctx)
 
 	result := make(map[int64]int, len(accountIDs))
+	var readErrors []error
 	for id, cmd := range cmds {
 		if val, err := cmd.Int(); err == nil {
 			result[id] = val
-		} else {
+		} else if errors.Is(err, redis.Nil) {
 			result[id] = 0
+		} else {
+			// Do not turn a corrupt counter or failed read into an observed zero.
+			// Keep other accounts' successful results available to batch consumers.
+			readErrors = append(readErrors, fmt.Errorf("account %d: %w", id, err))
 		}
+	}
+	if len(readErrors) > 0 {
+		return result, fmt.Errorf("rpm batch get: %w", errors.Join(readErrors...))
+	}
+	if pipelineErr != nil && !errors.Is(pipelineErr, redis.Nil) {
+		return result, fmt.Errorf("rpm batch get: %w", pipelineErr)
 	}
 	return result, nil
 }

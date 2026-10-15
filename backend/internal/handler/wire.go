@@ -144,8 +144,10 @@ func ProvideOpenAIGatewayHandler(
 	cfg *config.Config,
 	coordinator *securityaudit.Coordinator,
 	compositeResolver *service.CompositeRouteResolver,
+	rpmCache service.RPMCache,
 ) *OpenAIGatewayHandler {
 	gatewayService.SetPluginManager(pluginManager)
+	gatewayService.SetRPMCache(rpmCache)
 	h := NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService,
 		usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, cfg)
 	h.compositeResolver = compositeResolver

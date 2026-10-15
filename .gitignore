@@ -140,6 +140,7 @@ docs/*
 !docs/BILLING_FAILURE_PARITY.md
 !docs/BATCH_IMAGE_MVP.md
 !docs/COMPOSITE_GROUPS.md
+!docs/ACCOUNT_CURRENT_RPM.md
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/channel-monitor-unified.md
