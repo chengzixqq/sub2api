@@ -189,8 +189,8 @@ export async function transferAffiliateQuota(): Promise<AffiliateTransferRespons
 /**
  * 获取当前用户的平台限额 + 用量。
  */
-export async function getMyPlatformQuotas(): Promise<PlatformQuotasResponse> {
-  const { data } = await apiClient.get<PlatformQuotasResponse>('/user/platform-quotas')
+export async function getMyPlatformQuotas(options?: { signal?: AbortSignal }): Promise<PlatformQuotasResponse> {
+  const { data } = await apiClient.get<PlatformQuotasResponse>('/user/platform-quotas', { signal: options?.signal })
   return data
 }
 

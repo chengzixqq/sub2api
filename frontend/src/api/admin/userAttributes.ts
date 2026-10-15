@@ -23,8 +23,9 @@ export async function listDefinitions(): Promise<UserAttributeDefinition[]> {
 /**
  * Get enabled attribute definitions only
  */
-export async function listEnabledDefinitions(): Promise<UserAttributeDefinition[]> {
+export async function listEnabledDefinitions(options?: { signal?: AbortSignal }): Promise<UserAttributeDefinition[]> {
   const { data } = await apiClient.get<UserAttributeDefinition[]>('/admin/user-attributes', {
+    signal: options?.signal,
     params: { enabled: true }
   })
   return data
@@ -107,11 +108,11 @@ export interface BatchUserAttributesResponse {
  * Get attribute values for multiple users
  */
 export async function getBatchUserAttributes(
-  userIds: number[]
+  userIds: number[], options?: { signal?: AbortSignal }
 ): Promise<BatchUserAttributesResponse> {
   const { data } = await apiClient.post<BatchUserAttributesResponse>(
     '/admin/user-attributes/batch',
-    { user_ids: userIds }
+    { user_ids: userIds }, { signal: options?.signal }
   )
   return data
 }

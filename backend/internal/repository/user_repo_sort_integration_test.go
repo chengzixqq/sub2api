@@ -125,12 +125,20 @@ func (s *UserRepoSuite) TestGetLatestUsedAtByUserIDs_UsesUsageLogs() {
 	s.mustInsertUsageLog(userWithUsage.ID, older)
 	s.mustInsertUsageLog(userWithUsage.ID, newer)
 
-	got, err := s.repo.GetLatestUsedAtByUserIDs(s.ctx, []int64{userWithUsage.ID, userWithoutUsage.ID})
+	got, err := s.repo.GetLatestUsedAtByUserIDs(s.ctx, []int64{userWithUsage.ID, userWithoutUsage.ID, userWithUsage.ID, -1})
 	s.Require().NoError(err)
+	s.Require().Len(got, 1, "duplicate IDs must not duplicate results; unknown/no-log users stay absent")
 	s.Require().Contains(got, userWithUsage.ID)
 	s.Require().NotContains(got, userWithoutUsage.ID)
 	s.Require().NotNil(got[userWithUsage.ID])
 	s.Require().True(got[userWithUsage.ID].Equal(newer))
+	s.Require().Equal(time.UTC, got[userWithUsage.ID].Location())
+	missing, err := s.repo.GetLatestUsedAtByUserID(s.ctx, userWithoutUsage.ID)
+	s.Require().NoError(err)
+	s.Require().Nil(missing)
+	empty, err := s.repo.GetLatestUsedAtByUserIDs(s.ctx, nil)
+	s.Require().NoError(err)
+	s.Require().Empty(empty)
 }
 
 func (s *UserRepoSuite) TestListWithFilters_SortByLastUsedAtDesc_UsesUsageLogsNotLastActiveAt() {

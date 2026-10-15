@@ -37,4 +37,22 @@ describe('usage minute query transport', () => {
     await listErrorLogs(params, options)
     expect(get.mock.calls.every(([, config]) => config.signal === options.signal)).toBe(true)
   })
+
+  it('keeps the date-range default and requests only five recent rows without a total when specified', async () => {
+    const signal = new AbortController().signal
+    await usage.getByDateRange('2026-10-01', '2026-10-02')
+    expect(get).toHaveBeenLastCalledWith('/usage', expect.objectContaining({
+      params: { start_date: '2026-10-01', end_date: '2026-10-02', page: 1, page_size: 100 }
+    }))
+    await usage.getByDateRange('2026-10-01', '2026-10-02', undefined, { pageSize: 5, countMode: 'deferred', signal })
+    expect(get).toHaveBeenLastCalledWith('/usage', {
+      params: { start_date: '2026-10-01', end_date: '2026-10-02', page: 1, page_size: 5, count_mode: 'deferred' }, signal
+    })
+    await usage.getDashboardStats({ signal })
+    await usage.getDashboardTrend(undefined, { signal })
+    await dashboard.getStats({ signal })
+    await dashboard.getUserUsageTrend(undefined, { signal })
+    await dashboard.getUserSpendingRanking(undefined, { signal })
+    for (const [, config] of get.mock.calls.slice(1)) expect(config.signal).toBe(signal)
+  })
 })

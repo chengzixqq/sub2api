@@ -90,10 +90,14 @@ watch(subscriptionFeatureEnabled, (enabled) => {
 })
 
 watch(
-  () => authStore.isAuthenticated,
-  (isAuthenticated, oldValue) => {
+  [() => authStore.isAuthenticated, () => authStore.user?.id, () => authStore.user?.role],
+  ([isAuthenticated, userId, role], oldState) => {
+    const [wasAuthenticated, previousUserId, previousRole] = oldState
+    if (oldState.length > 0 && (userId !== previousUserId || role !== previousRole)) {
+      adminComplianceStore.reset()
+    }
     if (isAuthenticated) {
-      if (authStore.isAdmin) {
+      if (authStore.isAdmin && !adminComplianceStore.initialized) {
         adminComplianceStore.fetchStatus().catch((error) => {
           console.error('Failed to fetch admin compliance status:', error)
         })
@@ -106,7 +110,7 @@ watch(
       }
 
       // Announcements: new login vs page refresh restore
-      if (oldValue === false) {
+      if (wasAuthenticated === false) {
         // New login: delay 3s then force fetch
         setTimeout(() => announcementStore.fetchAnnouncements(true), 3000)
       } else {
@@ -142,19 +146,17 @@ onBeforeUnmount(() => {
 onMounted(async () => {
   window.addEventListener('admin-compliance-required', onAdminComplianceRequired)
 
-  // Check if setup is needed
-  try {
-    const status = await getSetupStatus()
-    if (status.needs_setup && route.path !== '/setup') {
-      router.replace('/setup')
-      return
-    }
-  } catch {
-    // If setup endpoint fails, assume normal mode and continue
+  // Both reads are independent; keep setup redirection ahead of normal-page updates.
+  const setupStatusRequest = getSetupStatus().catch(() => null)
+  const publicSettingsRequest = appStore.fetchPublicSettings()
+  const status = await setupStatusRequest
+  if (status?.needs_setup && route.path !== '/setup') {
+    router.replace('/setup')
+    return
   }
 
   // Load public settings into appStore (will be cached for other components)
-  await appStore.fetchPublicSettings()
+  await publicSettingsRequest
 
   // Re-resolve document title now that site settings are available
   updateDocumentTitle()

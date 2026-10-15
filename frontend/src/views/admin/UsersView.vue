@@ -1365,6 +1365,10 @@ const closePlatformQuotaModal = () => {
   platformQuotaUser.value = null
 }
 let abortController: AbortController | null = null
+let secondaryAbortController: AbortController | null = null
+let attributeDefinitionsController: AbortController | null = null
+let attributeDefinitionsRequest: Promise<void> | null = null
+let attributeDefinitionsSeq = 0
 let secondaryDataSeq = 0
 
 const loadUsersSecondaryData = async (
@@ -1380,7 +1384,7 @@ const loadUsersSecondaryData = async (
     tasks.push(
       (async () => {
         try {
-          const usageResponse = await adminAPI.dashboard.getBatchUsersUsage(userIds)
+          const usageResponse = await adminAPI.dashboard.getBatchUsersUsage(userIds, { signal })
           if (signal?.aborted) return
           if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
           usageStats.value = usageResponse.stats
@@ -1392,11 +1396,13 @@ const loadUsersSecondaryData = async (
     )
   }
 
-  if (attributeDefinitions.value.length > 0 && hasVisibleAttributeColumns.value) {
-    tasks.push(
-      (async () => {
+  tasks.push(
+    (async () => {
+      await attributeDefinitionsRequest
+      if (signal?.aborted || (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq)) return
+      if (attributeDefinitions.value.length > 0 && hasVisibleAttributeColumns.value) {
         try {
-          const attrResponse = await adminAPI.userAttributes.getBatchUserAttributes(userIds)
+          const attrResponse = await adminAPI.userAttributes.getBatchUserAttributes(userIds, { signal })
           if (signal?.aborted) return
           if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
           userAttributeValues.value = attrResponse.attributes
@@ -1404,9 +1410,9 @@ const loadUsersSecondaryData = async (
           if (signal?.aborted) return
           console.error('Failed to load user attribute values:', e)
         }
-      })()
-    )
-  }
+      }
+    })()
+  )
 
   if (hasVisiblePlatformQuotaColumn.value) {
     tasks.push(
@@ -1419,7 +1425,7 @@ const loadUsersSecondaryData = async (
             if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
             const chunk = userIds.slice(i, i + CHUNK)
             const results = await Promise.allSettled(
-              chunk.map((id) => adminAPI.users.getPlatformQuotas(id))
+              chunk.map((id) => adminAPI.users.getPlatformQuotas(id, { signal }))
             )
             if (signal?.aborted) return
             if (typeof expectedSeq === 'number' && expectedSeq !== secondaryDataSeq) return
@@ -1445,10 +1451,13 @@ const loadUsersSecondaryData = async (
 }
 
 const refreshCurrentPageSecondaryData = () => {
+  if (loading.value) return
   const userIds = users.value.map((u) => u.id)
   if (userIds.length === 0) return
+  secondaryAbortController?.abort()
+  secondaryAbortController = new AbortController()
   const seq = ++secondaryDataSeq
-  void loadUsersSecondaryData(userIds, undefined, seq)
+  void loadUsersSecondaryData(userIds, secondaryAbortController.signal, seq)
 }
 
 // Action Menu State
@@ -1570,9 +1579,18 @@ const getDaysRemaining = (expiresAt: string): number => {
 }
 
 const loadAttributeDefinitions = async () => {
+  attributeDefinitionsController?.abort()
+  const controller = new AbortController()
+  attributeDefinitionsController = controller
+  const seq = ++attributeDefinitionsSeq
   try {
-    attributeDefinitions.value = await adminAPI.userAttributes.listEnabledDefinitions()
+    const definitions = await adminAPI.userAttributes.listEnabledDefinitions({
+      signal: controller.signal
+    })
+    if (controller.signal.aborted || seq !== attributeDefinitionsSeq) return
+    attributeDefinitions.value = definitions
   } catch (e) {
+    if (controller.signal.aborted || seq !== attributeDefinitionsSeq) return
     console.error('Failed to load attribute definitions:', e)
   }
 }
@@ -1580,12 +1598,17 @@ const loadAttributeDefinitions = async () => {
 // Handle attributes modal close - reload definitions and users
 const handleAttributesModalClose = async () => {
   showAttributesModal.value = false
-  await loadAttributeDefinitions()
+  const request = loadAttributeDefinitions()
+  attributeDefinitionsRequest = request
+  await request
+  if (attributeDefinitionsRequest !== request || attributeDefinitionsController?.signal.aborted) return
   loadUsers()
 }
 
 const loadUsers = async () => {
   abortController?.abort()
+  secondaryAbortController?.abort()
+  ++secondaryDataSeq
   const currentAbortController = new AbortController()
   abortController = currentAbortController
   const { signal } = currentAbortController
@@ -1632,7 +1655,8 @@ const loadUsers = async () => {
       const seq = ++secondaryDataSeq
       window.setTimeout(() => {
         if (signal.aborted || seq !== secondaryDataSeq) return
-        void loadUsersSecondaryData(userIds, signal, seq)
+        secondaryAbortController = new AbortController()
+        void loadUsersSecondaryData(userIds, secondaryAbortController.signal, seq)
       }, 50)
     }
   } catch (error: any) {
@@ -1890,10 +1914,10 @@ const handleScroll = () => {
   closeActionMenu()
 }
 
-onMounted(async () => {
-  await loadAttributeDefinitions()
+onMounted(() => {
   loadSavedFilters()
   loadSavedColumns()
+  attributeDefinitionsRequest = loadAttributeDefinitions()
   loadUsers()
   if (hasVisibleGroupsColumn.value || visibleFilters.has('group')) {
     loadAllGroups()
@@ -1910,5 +1934,7 @@ onUnmounted(() => {
   window.removeEventListener('scroll', handleScroll, true)
   clearTimeout(searchTimeout)
   abortController?.abort()
+  secondaryAbortController?.abort()
+  attributeDefinitionsController?.abort()
 })
 </script>

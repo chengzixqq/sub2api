@@ -125,6 +125,7 @@ const apiKeys = ref<ApiKey[]>([])
 const allGroups = ref<AdminGroup[]>([])
 const loading = ref(false)
 let requestVersion = 0
+let abortController: AbortController | null = null
 const updatingKeyIds = ref(new Set<number>())
 const groupSelectorKeyId = ref<number | null>(null)
 const dropdownPosition = ref<{ top: number; left: number } | null>(null)
@@ -146,7 +147,10 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 }
 
 watch(() => [props.show, props.user?.id] as const, ([show], _, onCleanup) => {
-  onCleanup(() => { requestVersion++ })
+  onCleanup(() => {
+    requestVersion++
+    abortController?.abort()
+  })
   closeGroupSelector()
   if (show && props.user) {
     load()
@@ -156,15 +160,18 @@ watch(() => [props.show, props.user?.id] as const, ([show], _, onCleanup) => {
 
 const load = async () => {
   if (!props.user) return
+  abortController?.abort()
+  const controller = new AbortController()
+  abortController = controller
   const version = ++requestVersion
   apiKeys.value = []
   loading.value = true
   groupButtonRefs.value.clear()
   try {
-    const res = await adminAPI.users.getUserApiKeys(props.user.id)
-    if (version === requestVersion) apiKeys.value = res.items || []
+    const res = await adminAPI.users.getUserApiKeys(props.user.id, { signal: controller.signal })
+    if (!controller.signal.aborted && version === requestVersion) apiKeys.value = res.items || []
   } catch (error) {
-    if (version !== requestVersion) return
+    if (controller.signal.aborted || version !== requestVersion) return
     console.error('Failed to load API keys:', error)
   } finally {
     if (version === requestVersion) loading.value = false
@@ -249,6 +256,7 @@ const handleClickOutside = (event: MouseEvent) => {
 }
 
 const handleClose = () => {
+  abortController?.abort()
   closeGroupSelector()
   emit('close')
 }
@@ -259,6 +267,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  abortController?.abort()
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('keydown', handleKeyDown, true)
 })

@@ -28,6 +28,23 @@ type UserSpendingRankingResponse = usagestats.UserSpendingRankingResponse
 // APIKeyUsageTrendPoint represents API key usage trend data point
 type APIKeyUsageTrendPoint = usagestats.APIKeyUsageTrendPoint
 
+// usageRankingBucket groups compact local timestamps before formatting the small
+// result set. Casting before truncation preserves TO_CHAR's session-timezone and
+// repeated-hour semantics when the caller did not supply an explicit timezone.
+func usageRankingBucket(ctx context.Context, granularity string, args []any) (string, []any) {
+	unit := "day"
+	switch granularity {
+	case "hour", "week", "month":
+		unit = granularity
+	}
+	localTime := "created_at::timestamp"
+	if zone := usagequery.OptionsFrom(ctx).Timezone; zone != "" {
+		localTime = fmt.Sprintf("created_at AT TIME ZONE $%d", len(args)+1)
+		args = append(args, zone)
+	}
+	return fmt.Sprintf("DATE_TRUNC('%s', %s)", unit, localTime), args
+}
+
 // GetAPIKeyUsageTrend returns usage trend data grouped by API key and date
 func (r *usageLogRepository) GetAPIKeyUsageTrend(ctx context.Context, startTime, endTime time.Time, granularity string, limit int) ([]APIKeyUsageTrendPoint, error) {
 	return r.GetAPIKeyUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, UsageLogFilters{})
@@ -38,29 +55,38 @@ func (r *usageLogRepository) GetAPIKeyUsageTrendWithFilters(ctx context.Context,
 
 	args := []any{startTime, endTime, limit}
 	where, args := usageRankingWhere(ctx, filters, args)
+	bucketExpr, args := usageRankingBucket(ctx, granularity, args)
+	// Materialize bucket totals rather than every matching log. Both the top-key
+	// selection and chart consume this much smaller relation, so large ranges do
+	// not spill a duplicate copy of the raw usage rows to temporary storage.
 	query := fmt.Sprintf(`
-		WITH scoped AS MATERIALIZED (SELECT api_key_id,created_at,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens FROM usage_logs %s), top_keys AS (
+		WITH grouped AS MATERIALIZED (
+			SELECT
+				%s as bucket,
+				api_key_id,
+				COUNT(*) as requests,
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens
+			FROM usage_logs %s
+			GROUP BY bucket, api_key_id
+		), top_keys AS (
 			SELECT api_key_id
-			FROM scoped
+			FROM grouped
 			GROUP BY api_key_id
-			ORDER BY SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) DESC
+			ORDER BY SUM(tokens) DESC
 			LIMIT $3
 		)
 		SELECT
-			TO_CHAR(u.created_at, '%s') as date,
+			TO_CHAR(u.bucket, '%s') as date,
 			u.api_key_id,
 			COALESCE(k.name, '') as key_name,
-			COUNT(*) as requests,
-			COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens
-
-		FROM scoped u
+			u.requests,
+			u.tokens
+		FROM grouped u
 		LEFT JOIN api_keys k ON u.api_key_id = k.id
 		WHERE u.api_key_id IN (SELECT api_key_id FROM top_keys)
-		GROUP BY date, u.api_key_id, k.name
 		ORDER BY date ASC, tokens DESC
-	`, where, dateFormat)
+	`, bucketExpr, where, dateFormat)
 
-	query, args = usageQueryTimezone(ctx, query, args)
 	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -100,39 +126,50 @@ func (r *usageLogRepository) GetUserUsageTrendWithFilters(ctx context.Context, s
 
 func (r *usageLogRepository) getUserUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string, filters UsageLogFilters) (results []UserUsageTrendPoint, err error) {
 	dateFormat := safeDateFormat(granularity)
-	rankExpr := "SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)"
+	rankExpr := "SUM(tokens)"
 	if metric == "actual_cost" {
 		rankExpr = "SUM(actual_cost)"
 	}
 
 	args := []any{startTime, endTime, limit}
 	where, args := usageRankingWhere(ctx, filters, args)
+	bucketExpr, args := usageRankingBucket(ctx, granularity, args)
+	// The shared relation contains one row per user/bucket, not one row per
+	// request. Keep all row predicates before aggregation and rank over the full
+	// requested range, including buckets that are not selected in the top list.
 	query := fmt.Sprintf(`
-		WITH scoped AS MATERIALIZED (SELECT user_id,created_at,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost,actual_cost,provider_cost_recorded FROM usage_logs %s), top_users AS (
+		WITH grouped AS MATERIALIZED (
+			SELECT
+				%s as bucket,
+				user_id,
+				COUNT(*) as requests,
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
+				COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
+				COALESCE(SUM(actual_cost), 0) as actual_cost
+			FROM usage_logs %s
+			GROUP BY bucket, user_id
+		), top_users AS (
 			SELECT user_id
-			FROM scoped
+			FROM grouped
 			GROUP BY user_id
 			ORDER BY %s DESC, user_id ASC
 			LIMIT $3
 		)
 		SELECT
-			TO_CHAR(u.created_at, '%s') as date,
+			TO_CHAR(u.bucket, '%s') as date,
 			u.user_id,
 			COALESCE(us.email, '') as email,
 			COALESCE(us.username, '') as username,
-			COUNT(*) as requests,
-			COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens,
-			COALESCE(SUM(u.total_cost) FILTER (WHERE u.provider_cost_recorded), 0) as cost,
-			COALESCE(SUM(u.actual_cost), 0) as actual_cost
-
-		FROM scoped u
+			u.requests,
+			u.tokens,
+			u.cost,
+			u.actual_cost
+		FROM grouped u
 		LEFT JOIN users us ON u.user_id = us.id
 		WHERE u.user_id IN (SELECT user_id FROM top_users)
-		GROUP BY date, u.user_id, us.email, us.username
 		ORDER BY date ASC, tokens DESC
-	`, where, rankExpr, dateFormat)
+	`, bucketExpr, where, rankExpr, dateFormat)
 
-	query, args = usageQueryTimezone(ctx, query, args)
 	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -174,24 +211,18 @@ func (r *usageLogRepository) GetUserSpendingRankingWithFilters(ctx context.Conte
 	args := []any{startTime, endTime, limit}
 	where, args := usageRankingWhere(ctx, filters, args)
 	query := fmt.Sprintf(`
-		WITH scoped AS MATERIALIZED (SELECT user_id,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,actual_cost FROM usage_logs %s), user_spend AS (
+		WITH user_spend AS (
 			SELECT
-				u.user_id,
-				COALESCE(us.email, '') as email,
-				COALESCE(us.username, '') as username,
-				COALESCE(SUM(u.actual_cost), 0) as actual_cost,
+				user_id,
+				COALESCE(SUM(actual_cost), 0) as actual_cost,
 				COUNT(*) as requests,
-				COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_creation_tokens + u.cache_read_tokens), 0) as tokens
-
-		FROM scoped u
-			LEFT JOIN users us ON u.user_id = us.id
-			GROUP BY u.user_id, us.email, us.username
+				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens
+			FROM usage_logs %s
+			GROUP BY user_id
 		),
 		ranked AS (
 			SELECT
 				user_id,
-				email,
-				username,
 				actual_cost,
 				requests,
 				tokens,
@@ -203,16 +234,17 @@ func (r *usageLogRepository) GetUserSpendingRankingWithFilters(ctx context.Conte
 			LIMIT $3
 		)
 		SELECT
-			user_id,
-			email,
-			username,
-			actual_cost,
-			requests,
-			tokens,
-			total_actual_cost,
-			total_requests,
-			total_tokens
-		FROM ranked
+			r.user_id,
+			COALESCE(us.email, '') as email,
+			COALESCE(us.username, '') as username,
+			r.actual_cost,
+			r.requests,
+			r.tokens,
+			r.total_actual_cost,
+			r.total_requests,
+			r.total_tokens
+		FROM ranked r
+		LEFT JOIN users us ON r.user_id = us.id
 		ORDER BY actual_cost DESC, tokens DESC, user_id ASC
 	`, where)
 
@@ -414,26 +446,36 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 	}
 	_, startOffset := startTime.In(timezone.Location()).Zone()
 	_, endOffset := endTime.Add(-time.Nanosecond).In(timezone.Location()).Zone()
-	if startOffset != endOffset {
+	if startOffset != endOffset || startOffset%3600 != 0 {
 		return nil, nil
 	}
 	if granularity != "hour" && granularity != "day" {
 		return nil, nil
 	}
-	// Only fresh, finalized, fully covered hourly buckets participate. Raw rows fill
-	// partial edges and missing/stale buckets in the same SQL snapshot, without overlap.
+	// Raw rows fill partial edges and missing/stale live hours. Once retention
+	// removes a source hour, its last certified closed snapshot is independent
+	// history: later partial raw rows cannot reconstruct or replace that snapshot.
+	// LATERAL + OFFSET 0 keeps raw reads behind each nonempty range check, so the
+	// planner cannot scan the source before discovering full aggregate coverage.
 	query := fmt.Sprintf(`
 		WITH valid_buckets AS MATERIALIZED (
 			SELECT h.* FROM usage_dashboard_hourly h
-			JOIN usage_dashboard_aggregation_watermark w ON w.id=1
-			WHERE h.bucket_start >= $1 AND h.bucket_start + INTERVAL '1 hour' <= $2
-			  AND h.bucket_start + INTERVAL '1 hour' <= LEAST(w.last_aggregated_at, CURRENT_TIMESTAMP)
-			  AND h.computed_at >= h.bucket_start + INTERVAL '1 hour'
-			  AND h.computed_at <= CURRENT_TIMESTAMP
-			  AND h.computed_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
-			  AND w.last_aggregated_at <= CURRENT_TIMESTAMP
-			  AND w.updated_at <= CURRENT_TIMESTAMP
-			  AND w.updated_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+			JOIN usage_dashboard_source_state s ON s.id=1
+			LEFT JOIN usage_dashboard_aggregation_watermark w ON w.id=1
+			WHERE h.source_verified AND h.source_finalized
+			  AND h.bucket_start >= $1 AND h.bucket_start + INTERVAL '1 hour' <= $2
+			  AND h.bucket_start + INTERVAL '1 hour' <= CURRENT_TIMESTAMP
+			  AND (
+			    h.bucket_start < s.raw_retained_from
+			    OR (
+			      h.bucket_start + INTERVAL '1 hour' <= w.last_aggregated_at
+			      AND h.computed_at >= h.bucket_start + INTERVAL '1 hour'
+			      AND h.computed_at <= CURRENT_TIMESTAMP
+			      AND w.last_aggregated_at <= CURRENT_TIMESTAMP
+			      AND w.updated_at <= CURRENT_TIMESTAMP
+			      AND w.updated_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
+			    )
+			  )
 		), raw_ranges AS (
 			SELECT LAG(bucket_start + INTERVAL '1 hour',1,$1) OVER(ORDER BY bucket_start) AS range_start,
 				bucket_start AS range_end FROM valid_buckets
@@ -448,8 +490,15 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 				COUNT(*) AS requests,COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
 				COALESCE(SUM(cache_creation_tokens),0),COALESCE(SUM(cache_read_tokens),0),
 				COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded),0),COALESCE(SUM(actual_cost),0)
-			FROM raw_ranges r JOIN usage_logs u ON u.created_at >= r.range_start AND u.created_at < r.range_end
-			WHERE r.range_start < r.range_end
+			FROM raw_ranges r
+			CROSS JOIN LATERAL (
+				SELECT created_at,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,
+					total_cost,actual_cost,provider_cost_recorded
+				FROM usage_logs u
+				WHERE r.range_start < r.range_end
+				  AND u.created_at >= r.range_start AND u.created_at < r.range_end
+				OFFSET 0
+			) u
 			GROUP BY date
 		)
 		SELECT date,SUM(requests),SUM(input_tokens),SUM(output_tokens),SUM(cache_creation_tokens),SUM(cache_read_tokens),

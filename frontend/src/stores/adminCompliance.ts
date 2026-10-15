@@ -13,6 +13,7 @@ export const useAdminComplianceStore = defineStore('adminCompliance', () => {
   const initialized = ref(false)
   const forceVisible = ref(false)
   let stateVersion = 0
+  let statusRequest: Promise<AdminComplianceStatus> | null = null
 
   const required = computed(() => status.value?.required === true)
   const shouldShow = computed(() => required.value || forceVisible.value)
@@ -24,19 +25,32 @@ export const useAdminComplianceStore = defineStore('adminCompliance', () => {
     return status.value?.ack_phrase_en || FALLBACK_EN_PHRASE
   })
 
-  async function fetchStatus(): Promise<AdminComplianceStatus> {
+  function invalidateStatusRequest(): void {
+    statusRequest = null
+    loading.value = false
+  }
+
+  function fetchStatus(force = false): Promise<AdminComplianceStatus> {
+    if (statusRequest && !force) return statusRequest
+
     const version = stateVersion
     loading.value = true
-    try {
-      const nextStatus = await adminComplianceAPI.getStatus()
-      if (version !== stateVersion) return nextStatus
-      status.value = nextStatus
-      initialized.value = true
-      forceVisible.value = nextStatus.required
-      return nextStatus
-    } finally {
-      if (version === stateVersion) loading.value = false
-    }
+    const request = adminComplianceAPI.getStatus()
+      .then((nextStatus) => {
+        if (version !== stateVersion || statusRequest !== request) return nextStatus
+        status.value = nextStatus
+        initialized.value = true
+        forceVisible.value = nextStatus.required
+        return nextStatus
+      })
+      .finally(() => {
+        if (statusRequest === request) {
+          statusRequest = null
+          loading.value = false
+        }
+      })
+    statusRequest = request
+    return request
   }
 
   async function accept(phrase: string): Promise<AdminComplianceStatus> {
@@ -48,6 +62,7 @@ export const useAdminComplianceStore = defineStore('adminCompliance', () => {
         language: currentLocale.value
       })
       if (version !== stateVersion) return nextStatus
+      invalidateStatusRequest()
       status.value = nextStatus
       forceVisible.value = nextStatus.required
       return nextStatus
@@ -57,6 +72,7 @@ export const useAdminComplianceStore = defineStore('adminCompliance', () => {
   }
 
   function requireAcknowledgement(partialStatus?: Partial<AdminComplianceStatus>): void {
+    invalidateStatusRequest()
     status.value = {
       required: true,
       version: partialStatus?.version || status.value?.version || 'v2026.06.10',
@@ -74,6 +90,7 @@ export const useAdminComplianceStore = defineStore('adminCompliance', () => {
 
   function reset(): void {
     stateVersion++
+    invalidateStatusRequest()
     status.value = null
     loading.value = false
     submitting.value = false

@@ -126,28 +126,10 @@ func TestUsageLogSuccessFilter_DashboardPlatformQuery_AppliedOnlyToRequestCounts
 	db, mock, captured := newCapturingSQLMock(t)
 	repo := &usageLogRepository{sql: db}
 
-	// GetUserDashboardStats 依次发起 6 次 QueryContext：API Key 总数、API Key 活跃数、
-	// totalStatsQuery、todayStatsQuery、getPerformanceStats 内部查询,最后才是 platformQuery。
-	// 默认 ordered 模式按注册顺序一一对应,这里给每一步都返回能让扫描成功的最小合法数据,
-	// 让方法一路跑到底、真正下发 platformQuery 供上面的 matcher 捕获。
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{
-		"total_requests", "total_input_tokens", "total_output_tokens",
-		"total_cache_creation_tokens", "total_cache_read_tokens",
-		"total_cost", "total_actual_cost", "avg_duration_ms",
-	}).AddRow(int64(0), int64(0), int64(0), int64(0), int64(0), float64(0), float64(0), float64(0)))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{
-		"today_requests", "today_input_tokens", "today_output_tokens",
-		"today_cache_creation_tokens", "today_cache_read_tokens",
-		"today_cost", "today_actual_cost",
-	}).AddRow(int64(0), int64(0), int64(0), int64(0), int64(0), float64(0), float64(0)))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"request_count", "token_count"}).
-		AddRow(int64(0), int64(0)))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{
-		"platform", "total_requests", "total_tokens", "total_actual_cost",
-		"today_requests", "today_tokens", "today_actual_cost",
-	}))
+	// One key-count query, one all-history aggregate, one recent range query.
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"total", "active"}).AddRow(1, 1))
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows(userDashboardAggregateColumns))
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"request_count", "token_count"}).AddRow(0, 0))
 
 	_, err := repo.GetUserDashboardStats(context.Background(), 42)
 	require.NoError(t, err)
@@ -155,12 +137,12 @@ func TestUsageLogSuccessFilter_DashboardPlatformQuery_AppliedOnlyToRequestCounts
 
 	platformQuery := findCapturedQuery(t, *captured, "usage_logs ul")
 
-	totalRequestsExpr := columnExpr(t, platformQuery, "total_requests", "platform")
-	totalTokensExpr := columnExpr(t, platformQuery, "total_tokens", "total_requests")
-	totalActualCostExpr := columnExpr(t, platformQuery, "total_actual_cost", "total_tokens")
-	todayRequestsExpr := columnExpr(t, platformQuery, "today_requests", "total_actual_cost")
-	todayTokensExpr := columnExpr(t, platformQuery, "today_tokens", "today_requests")
-	todayActualCostExpr := columnExpr(t, platformQuery, "today_actual_cost", "today_tokens")
+	totalRequestsExpr := columnExpr(t, platformQuery, "successful_requests", "today_actual_cost")
+	totalTokensExpr := columnExpr(t, platformQuery, "total_input_tokens", "total_requests")
+	totalActualCostExpr := columnExpr(t, platformQuery, "total_actual_cost", "total_cost")
+	todayRequestsExpr := columnExpr(t, platformQuery, "today_successful_requests", "successful_requests")
+	todayTokensExpr := columnExpr(t, platformQuery, "today_input_tokens", "today_requests")
+	todayActualCostExpr := columnExpr(t, platformQuery, "today_actual_cost", "today_cost")
 
 	assert.Contains(t, totalRequestsExpr, "FILTER (WHERE",
 		"total_requests must gate on the success filter via FILTER (WHERE ...), not a plain COUNT(*)")

@@ -13,7 +13,8 @@ const {
   getAllGroups,
   getBatchUsersUsage,
   listEnabledDefinitions,
-  getBatchUserAttributes
+  getBatchUserAttributes,
+  getPlatformQuotas
 } = vi.hoisted(() => ({
   listUsers: vi.fn(),
   toggleStatus: vi.fn(),
@@ -23,7 +24,8 @@ const {
   getAllGroups: vi.fn(),
   getBatchUsersUsage: vi.fn(),
   listEnabledDefinitions: vi.fn(),
-  getBatchUserAttributes: vi.fn()
+  getBatchUserAttributes: vi.fn(),
+  getPlatformQuotas: vi.fn()
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -31,7 +33,8 @@ vi.mock('@/api/admin', () => ({
     users: {
       list: listUsers,
       toggleStatus,
-      delete: deleteUser
+      delete: deleteUser,
+      getPlatformQuotas
     },
     groups: {
       getAll: getAllGroups
@@ -191,6 +194,7 @@ describe('admin UsersView', () => {
     getBatchUsersUsage.mockReset()
     listEnabledDefinitions.mockReset()
     getBatchUserAttributes.mockReset()
+    getPlatformQuotas.mockReset()
 
     listUsers.mockResolvedValue({
       items: [createAdminUser()],
@@ -202,11 +206,148 @@ describe('admin UsersView', () => {
     getAllGroups.mockResolvedValue([])
     getBatchUsersUsage.mockResolvedValue({ stats: {} })
     listEnabledDefinitions.mockResolvedValue([])
-    getBatchUserAttributes.mockResolvedValue({ values: {} })
+    getBatchUserAttributes.mockResolvedValue({ attributes: {} })
+    getPlatformQuotas.mockResolvedValue({ platform_quotas: [] })
   })
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it('starts the user list with saved filters while attribute definitions are still loading', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('user-filter-values', JSON.stringify({ attributes: { 7: 'saved-value' } }))
+    let finishDefinitions!: (value: unknown[]) => void
+    listEnabledDefinitions.mockReturnValue(new Promise(resolve => { finishDefinitions = resolve }))
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+
+    expect(listUsers).toHaveBeenCalledOnce()
+    expect(listUsers.mock.calls[0][2].attributes).toEqual({ 7: 'saved-value' })
+    expect(wrapper.get('[data-test="row-order"]').text()).toBe('scoped@example.com')
+    await vi.advanceTimersByTimeAsync(50)
+    expect(getBatchUserAttributes).not.toHaveBeenCalled()
+
+    finishDefinitions([{ id: 7, name: 'Attribute', enabled: true, type: 'text' }])
+    await flushPromises()
+    expect(getBatchUserAttributes).toHaveBeenCalledWith([42], { signal: expect.any(AbortSignal) })
+    wrapper.unmount()
+  })
+
+  it('cancels usage, attributes, and quota requests when a new search replaces the page', async () => {
+    vi.useFakeTimers()
+    localStorage.setItem('user-column-settings-version', '3')
+    localStorage.setItem('user-hidden-columns', '[]')
+    listEnabledDefinitions.mockResolvedValue([{ id: 7, name: 'Attribute', enabled: true, type: 'text' }])
+    getBatchUsersUsage.mockReturnValue(new Promise(() => {}))
+    getBatchUserAttributes.mockReturnValue(new Promise(() => {}))
+    getPlatformQuotas.mockReturnValue(new Promise(() => {}))
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+    await flushPromises()
+    for (const request of [getBatchUsersUsage, getBatchUserAttributes, getPlatformQuotas]) {
+      expect(request).toHaveBeenCalledWith(expect.anything(), { signal: expect.any(AbortSignal) })
+    }
+    const oldSignals = [getBatchUsersUsage, getBatchUserAttributes, getPlatformQuotas]
+      .map(mock => mock.mock.calls[0][1].signal as AbortSignal)
+    expect(oldSignals.every(signal => !signal.aborted)).toBe(true)
+
+    await wrapper.get('input[placeholder="admin.users.searchUsers"]').setValue('another@example.com')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(oldSignals.every(signal => signal.aborted)).toBe(true)
+    expect(listUsers).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(50)
+    await flushPromises()
+    const currentSignal = getBatchUsersUsage.mock.lastCall![1].signal as AbortSignal
+    expect(currentSignal.aborted).toBe(false)
+    wrapper.unmount()
+    expect(currentSignal.aborted).toBe(true)
+    expect((listEnabledDefinitions.mock.calls[0][0].signal as AbortSignal).aborted).toBe(true)
+  })
+
+  it('loads attributes only for the current page when definitions arrive after a page change', async () => {
+    vi.useFakeTimers()
+    let finishDefinitions!: (value: unknown[]) => void
+    listEnabledDefinitions.mockReturnValue(new Promise(resolve => { finishDefinitions = resolve }))
+    listUsers.mockImplementation(async (page: number) => ({
+      items: [createAdminUser({ id: page === 2 ? 43 : 42 })],
+      total: 2, page, page_size: 20, pages: 2
+    }))
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+    await wrapper.get('[data-test="next-page"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+    finishDefinitions([{ id: 7, name: 'Attribute', enabled: true, type: 'text' }])
+    await flushPromises()
+
+    expect(getBatchUserAttributes.mock.calls.map(call => call[0])).toEqual([[43]])
+    wrapper.unmount()
+  })
+
+  it('defers newly enabled secondary columns to the pending main list', async () => {
+    vi.useFakeTimers()
+    getBatchUsersUsage.mockReturnValue(new Promise(() => {}))
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(getBatchUsersUsage).not.toHaveBeenCalled()
+    let finishList!: (value: unknown) => void
+    listUsers.mockReturnValueOnce(new Promise(resolve => { finishList = resolve }))
+    await wrapper.get('[data-test="sort-last-used"]').trigger('click')
+    await wrapper.get('button[title="admin.users.columnSettings"]').trigger('click')
+    const usageButton = wrapper.findAll('button').find(button => button.text() === 'admin.users.columns.usage')!
+    await usageButton.trigger('click')
+    await flushPromises()
+
+    expect(getBatchUsersUsage).not.toHaveBeenCalled()
+    finishList({ items: [createAdminUser({ id: 43 })], total: 1, page: 1, page_size: 20, pages: 1 })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(getBatchUsersUsage).toHaveBeenCalledOnce()
+    expect(getBatchUsersUsage.mock.calls[0][0]).toEqual([43])
+    const signal = getBatchUsersUsage.mock.calls[0][1].signal as AbortSignal
+    expect(signal.aborted).toBe(false)
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('preserves refreshed definitions when an aborted initial request resolves late', async () => {
+    vi.useFakeTimers()
+    let finishInitial!: (value: unknown[]) => void
+    listEnabledDefinitions.mockReturnValueOnce(new Promise(resolve => { finishInitial = resolve }))
+      .mockResolvedValueOnce([{ id: 8, name: 'New definition', enabled: true, type: 'text' }])
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+    const initialSignal = listEnabledDefinitions.mock.calls[0][0].signal as AbortSignal
+    wrapper.findComponent({ name: 'UserAttributesConfigModal' }).vm.$emit('close')
+    await flushPromises()
+
+    expect(initialSignal.aborted).toBe(true)
+    expect(wrapper.get('[data-test="columns"]').text()).toContain('attr_8')
+    finishInitial([{ id: 7, name: 'Old definition', enabled: true, type: 'text' }])
+    await flushPromises()
+    expect(wrapper.get('[data-test="columns"]').text()).toContain('attr_8')
+    expect(wrapper.get('[data-test="columns"]').text()).not.toContain('attr_7')
+    wrapper.unmount()
+  })
+
+  it('does not reload users after unmount while refreshed definitions are pending', async () => {
+    let finishRefresh!: (value: unknown[]) => void
+    listEnabledDefinitions.mockResolvedValueOnce([])
+      .mockReturnValueOnce(new Promise(resolve => { finishRefresh = resolve }))
+    const wrapper = mountBulkDeleteView()
+    await flushPromises()
+    wrapper.findComponent({ name: 'UserAttributesConfigModal' }).vm.$emit('close')
+    await flushPromises()
+    wrapper.unmount()
+    finishRefresh([{ id: 8, name: 'New definition', enabled: true, type: 'text' }])
+    await flushPromises()
+
+    expect(listUsers).toHaveBeenCalledOnce()
+    expect((listEnabledDefinitions.mock.calls[1][0].signal as AbortSignal).aborted).toBe(true)
   })
 
   it('cancels bulk deletion without deleting or clearing selected users', async () => {

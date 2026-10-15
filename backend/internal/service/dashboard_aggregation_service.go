@@ -264,6 +264,15 @@ func (s *DashboardAggregationService) runScheduledAggregation() {
 		return
 	}
 
+	if repairer, ok := s.repo.(interface {
+		RepairInvalidatedBuckets(context.Context, int) error
+	}); ok {
+		if err := repairer.RepairInvalidatedBuckets(ctx, 4); err != nil {
+			logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] 历史失效桶修复失败: %v", err)
+			return
+		}
+	}
+
 	updateErr := s.repo.UpdateAggregationWatermark(ctx, now)
 	if updateErr != nil {
 		logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] 更新水位失败: %v", updateErr)

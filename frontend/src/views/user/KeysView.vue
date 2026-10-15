@@ -232,11 +232,14 @@
                 class="inline-flex items-center gap-1 text-xs font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300"
                 :title="t('keys.retryUsage')"
                 data-test="usage-unavailable"
-                @click.stop="loadApiKeys"
+                @click.stop="loadUsageStats"
               >
                 <Icon name="refresh" size="xs" />
                 {{ t('keys.usageUnavailable') }}
               </button>
+              <span v-else-if="usageStatsStatus === 'loading'" class="text-xs text-gray-400" role="status">
+                {{ t('common.loading') }}
+              </span>
               <!-- Quota progress (if quota is set) -->
               <div v-if="row.quota > 0" class="mt-1.5">
                 <div class="flex items-center gap-1.5">
@@ -1227,7 +1230,7 @@
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 
 const { t } = useI18n()
-import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
+import { keysAPI, usageAPI, userGroupsAPI } from '@/api'
 import GroupSelect from '@/components/common/GroupSelect.vue'
 import GroupPlatformFilter from '@/components/common/GroupPlatformFilter.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
@@ -1400,7 +1403,8 @@ const submitting = ref(false)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
 const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
-const usageStatsStatus = ref<'idle' | 'loaded' | 'error'>('idle')
+const usageStatsStatus = ref<'idle' | 'loading' | 'loaded' | 'error'>('idle')
+let usageAbortController: AbortController | null = null
 const userGroupRates = ref<Record<number, number>>({})
 
 const pagination = ref({
@@ -1431,7 +1435,7 @@ const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
-const publicSettings = ref<PublicSettings | null>(null)
+const publicSettings = ref<PublicSettings | null>(appStore.cachedPublicSettings)
 const dropdownRef = ref<HTMLElement | null>(null)
 const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
@@ -1607,8 +1611,42 @@ const isAbortError = (error: unknown) => {
   return name === 'AbortError' || code === 'ERR_CANCELED'
 }
 
+const loadUsageStats = async () => {
+  usageAbortController?.abort()
+  const controller = new AbortController()
+  usageAbortController = controller
+  const { signal } = controller
+  usageStats.value = {}
+  if (!isColumnVisible('usage')) {
+    usageStatsStatus.value = 'idle'
+    return
+  }
+  const keyIds = apiKeys.value.map((key) => key.id)
+  if (keyIds.length === 0) {
+    usageStatsStatus.value = 'loaded'
+    return
+  }
+  usageStatsStatus.value = 'loading'
+  try {
+    const response = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
+    if (signal.aborted) return
+    usageStats.value = response.stats
+    usageStatsStatus.value = 'loaded'
+  } catch (error) {
+    if (signal.aborted || isAbortError(error)) return
+    console.error('Failed to load usage stats:', error)
+    usageStatsStatus.value = 'error'
+    appStore.showError(t('keys.usageLoadFailed'))
+  }
+}
+
+watch(() => isColumnVisible('usage'), () => {
+  if (!loading.value) void loadUsageStats()
+})
+
 const loadApiKeys = async () => {
   abortController?.abort()
+  usageAbortController?.abort()
   const controller = new AbortController()
   abortController = controller
   const { signal } = controller
@@ -1639,25 +1677,8 @@ const loadApiKeys = async () => {
     pagination.value.total = response.total
     pagination.value.pages = response.pages
 
-    // Load usage stats for all API keys in the list
-    if (response.items.length > 0) {
-      const keyIds = response.items.map((k) => k.id)
-      try {
-        const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
-        if (signal.aborted) return
-        usageStats.value = usageResponse.stats
-        usageStatsStatus.value = 'loaded'
-      } catch (e) {
-        if (!isAbortError(e)) {
-          console.error('Failed to load usage stats:', e)
-          usageStats.value = {}
-          usageStatsStatus.value = 'error'
-          appStore.showError(t('keys.usageLoadFailed'))
-        }
-      }
-    } else {
-      usageStatsStatus.value = 'loaded'
-    }
+    // The list is usable while its optional usage statistics load independently.
+    void loadUsageStats()
   } catch (error) {
     if (isAbortError(error)) {
       return
@@ -1688,7 +1709,7 @@ const loadUserGroupRates = async () => {
 
 const loadPublicSettings = async () => {
   try {
-    publicSettings.value = await authAPI.getPublicSettings()
+    publicSettings.value = await appStore.fetchPublicSettings()
   } catch (error) {
     console.error('Failed to load public settings:', error)
   }
@@ -2122,6 +2143,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  abortController?.abort()
+  usageAbortController?.abort()
   document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })

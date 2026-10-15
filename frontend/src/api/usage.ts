@@ -227,24 +227,44 @@ export async function getStatsByDateRange(
  * @param apiKeyId - Optional API key ID filter
  * @returns Usage logs within date range
  */
+interface DateRangeOptions {
+  pageSize?: number
+  signal?: AbortSignal
+}
+
+export function getByDateRange(
+  startDate: string,
+  endDate: string,
+  apiKeyId: number | undefined,
+  options: DateRangeOptions & { countMode: 'deferred' }
+): Promise<UsagePage<UsageLog>>
+export function getByDateRange(
+  startDate: string,
+  endDate: string,
+  apiKeyId?: number,
+  options?: DateRangeOptions
+): Promise<PaginatedResponse<UsageLog>>
 export async function getByDateRange(
   startDate: string,
   endDate: string,
-  apiKeyId?: number
-): Promise<PaginatedResponse<UsageLog>> {
+  apiKeyId?: number,
+  options?: DateRangeOptions & { countMode?: 'deferred' }
+): Promise<UsagePage<UsageLog>> {
   const params: UsageQueryParams = {
     start_date: startDate,
     end_date: endDate,
     page: 1,
-    page_size: 100
+    page_size: options?.pageSize ?? 100
   }
+  if (options?.countMode) params.count_mode = options.countMode
 
   if (apiKeyId !== undefined) {
     params.api_key_id = apiKeyId
   }
 
-  const { data } = await apiClient.get<PaginatedResponse<UsageLog>>('/usage', {
-    params
+  const { data } = await apiClient.get<UsagePage<UsageLog>>('/usage', {
+    params,
+    signal: options?.signal
   })
   return data
 }
@@ -265,8 +285,8 @@ export async function getById(id: number): Promise<UsageLog> {
  * Get user dashboard statistics
  * @returns Dashboard statistics for current user
  */
-export async function getDashboardStats(): Promise<UserDashboardStats> {
-  const { data } = await apiClient.get<UserDashboardStats>('/usage/dashboard/stats')
+export async function getDashboardStats(options?: { signal?: AbortSignal }): Promise<UserDashboardStats> {
+  const { data } = await apiClient.get<UserDashboardStats>('/usage/dashboard/stats', { signal: options?.signal })
   return data
 }
 
@@ -275,8 +295,8 @@ export async function getDashboardStats(): Promise<UserDashboardStats> {
  * @param params - Query parameters for filtering
  * @returns Usage trend data for current user
  */
-export async function getDashboardTrend(params?: TrendParams): Promise<TrendResponse> {
-  const { data } = await apiClient.get<TrendResponse>('/usage/dashboard/trend', { params })
+export async function getDashboardTrend(params?: TrendParams, options?: { signal?: AbortSignal }): Promise<TrendResponse> {
+  const { data } = await apiClient.get<TrendResponse>('/usage/dashboard/trend', { params, signal: options?.signal })
   return data
 }
 

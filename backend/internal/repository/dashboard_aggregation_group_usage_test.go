@@ -105,7 +105,7 @@ func TestDashboardAggregationRepositorySyncGroupUsageRollupsRejectsFutureWaterma
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestDashboardAggregationRepositoryRecomputeRangeInvalidatesGroupRollupsBeforeDashboardRebuild(t *testing.T) {
+func TestDashboardAggregationRepositoryRecomputeRangeFailureLeavesGroupRollupsUntouched(t *testing.T) {
 	setGroupUsageRollupTestTimezone(t)
 	db, mock := newSQLMock(t)
 	repo := newDashboardAggregationRepositoryWithSQL(db)
@@ -113,11 +113,11 @@ func TestDashboardAggregationRepositoryRecomputeRangeInvalidatesGroupRollupsBefo
 	end := start.Add(time.Hour)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
-		WithArgs(start, "Asia/Shanghai").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_verified_publish`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR SHARE`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`SELECT .*CURRENT_TIMESTAMP`).WillReturnRows(sqlmock.NewRows([]string{"finalized"}).AddRow(true))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT source_verified FROM usage_dashboard_hourly`).WillReturnRows(sqlmock.NewRows([]string{"source_verified"}).AddRow(true))
 	mock.ExpectExec(`DELETE FROM usage_dashboard_hourly`).
 		WillReturnError(sql.ErrConnDone)
 	mock.ExpectRollback()
@@ -141,23 +141,33 @@ func TestDashboardAggregationRepositoryRecomputeRangeRebuildsGroupRollupsBeforeC
 	require.NoError(t, err)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
-		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
-		WithArgs(start, "Asia/Shanghai").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_verified_publish`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR SHARE`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`SELECT .*CURRENT_TIMESTAMP`).WillReturnRows(sqlmock.NewRows([]string{"finalized"}).AddRow(true))
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT source_verified FROM usage_dashboard_hourly`).WillReturnRows(sqlmock.NewRows([]string{"source_verified"}).AddRow(true))
 	for _, query := range []string{
 		`DELETE FROM usage_dashboard_hourly WHERE`,
 		`DELETE FROM usage_dashboard_hourly_users WHERE`,
-		`DELETE FROM usage_dashboard_daily WHERE`,
-		`DELETE FROM usage_dashboard_daily_users WHERE`,
 		`INSERT INTO usage_dashboard_hourly_users`,
-		`INSERT INTO usage_dashboard_daily_users`,
 		`INSERT INTO usage_dashboard_hourly`,
+		`INSERT INTO usage_dashboard_hourly`,
+	} {
+		mock.ExpectExec(query).WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
+	for _, query := range []string{
+		`DELETE FROM usage_dashboard_daily_users WHERE`,
+		`INSERT INTO usage_dashboard_daily_users`,
 		`INSERT INTO usage_dashboard_daily`,
 	} {
 		mock.ExpectExec(query).WillReturnResult(sqlmock.NewResult(0, 1))
 	}
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectExec(`UPDATE usage_group_rollup_state`).WithArgs(start, "Asia/Shanghai").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`SELECT closed_before::text, retained_from.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"closed_before", "retained_from", "timezone_name"}).
 			AddRow(startDate, time.Unix(0, 0).UTC(), "Asia/Shanghai"))
@@ -191,13 +201,18 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsNonPartitionedInvalidates
 	mock.ExpectQuery(`SELECT EXISTS`).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_preserve_aggregates`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	mock.ExpectQuery(`(?s)DELETE FROM usage_logs.*RETURNING created_at`).
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`(?s)SELECT tableoid::bigint, ctid::text, created_at.*FOR UPDATE NOWAIT`).
 		WithArgs(cutoff, usageLogsCleanupBatchSize).
-		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).
-			AddRow(earliestDeletedAt.Add(time.Hour)).
-			AddRow(earliestDeletedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"tableoid", "ctid", "created_at"}).
+			AddRow(123, "(0,1)", earliestDeletedAt.Add(time.Hour)).
+			AddRow(123, "(0,2)", earliestDeletedAt))
+	expectDashboardRetentionSafety(mock)
+	mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(earliestDeletedAt.Add(time.Hour + time.Microsecond)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)DELETE FROM usage_logs WHERE \(tableoid,ctid\) IN.*unnest`).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 2))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
 		WithArgs(earliestDeletedAt, "Asia/Shanghai").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -242,6 +257,10 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsPartitionedSortsAndInvali
 		mock.ExpectBegin()
 		mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 			WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+		mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+		mock.ExpectExec(`LOCK TABLE ONLY usage_logs, "` + partition.name + `" IN ACCESS EXCLUSIVE MODE NOWAIT`).WillReturnResult(sqlmock.NewResult(0, 0))
+		expectDashboardRetentionSafety(mock)
+		mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(partition.start.AddDate(0, 1, 0)).WillReturnResult(sqlmock.NewResult(0, 1))
 		mock.ExpectExec(`UPDATE usage_group_rollup_state`).
 			WithArgs(partition.start, "Asia/Shanghai").
 			WillReturnResult(sqlmock.NewResult(0, 1))
@@ -252,11 +271,16 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsPartitionedSortsAndInvali
 	// The boundary partition is pruned by exact timestamp. tableoid is required
 	// because ctid alone can also identify a retained row in another partition.
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_preserve_aggregates`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	mock.ExpectQuery(`(?s)SELECT tableoid, ctid.*WHERE created_at < \$1.*WHERE \(tableoid, ctid\) IN.*RETURNING created_at`).
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`(?s)SELECT tableoid::bigint, ctid::text, created_at.*FOR UPDATE NOWAIT`).
 		WithArgs(cutoff, usageLogsCleanupBatchSize).
-		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(cutoff.Add(-time.Hour)))
+		WillReturnRows(sqlmock.NewRows([]string{"tableoid", "ctid", "created_at"}).AddRow(123, "(0,1)", cutoff.Add(-time.Hour)))
+	expectDashboardRetentionSafety(mock)
+	mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(cutoff.Add(-time.Hour + time.Microsecond)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)DELETE FROM usage_logs WHERE \(tableoid,ctid\) IN.*unnest`).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
 		WithArgs(cutoff.Add(-time.Hour), "Asia/Shanghai").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -281,11 +305,16 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsNonPartitionedFailureRoll
 	mock.ExpectQuery(`SELECT EXISTS`).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_preserve_aggregates`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-	mock.ExpectQuery(`(?s)SELECT tableoid, ctid.*ORDER BY created_at ASC, id ASC.*DELETE FROM usage_logs.*RETURNING created_at`).
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`(?s)SELECT tableoid::bigint, ctid::text, created_at.*FOR UPDATE NOWAIT`).
 		WithArgs(cutoff, usageLogsCleanupBatchSize).
-		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(deletedAt))
+		WillReturnRows(sqlmock.NewRows([]string{"tableoid", "ctid", "created_at"}).AddRow(123, "(0,1)", deletedAt))
+	expectDashboardRetentionSafety(mock)
+	mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(deletedAt.Add(time.Microsecond)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)DELETE FROM usage_logs WHERE \(tableoid,ctid\) IN.*unnest`).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
 		WithArgs(deletedAt, "Asia/Shanghai").
 		WillReturnError(sql.ErrConnDone)
@@ -313,6 +342,10 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsPartitionFailureRollsBack
 	mock.ExpectBegin()
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectExec(`LOCK TABLE ONLY usage_logs, "usage_logs_202604" IN ACCESS EXCLUSIVE MODE NOWAIT`).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectDashboardRetentionSafety(mock)
+	mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
 		WithArgs(aprilStart, "Asia/Shanghai").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -323,6 +356,13 @@ func TestDashboardAggregationRepositoryCleanupUsageLogsPartitionFailureRollsBack
 	err := repo.CleanupUsageLogs(context.Background(), cutoff)
 	require.ErrorIs(t, err, dropErr)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func expectDashboardRetentionSafety(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`(?s)SELECT bucket_start FROM usage_dashboard_hourly.*ORDER BY bucket_start LIMIT`).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), dashboardRetentionHourLockLimit+1).WillReturnRows(sqlmock.NewRows([]string{"bucket_start"}))
+	mock.ExpectQuery(`(?s)SELECT bucket_start FROM usage_dashboard_hourly.*WHERE source_verified`).WillReturnRows(sqlmock.NewRows([]string{"bucket_start"}))
+	mock.ExpectQuery(`SELECT bool_and\(pg_try_advisory_xact_lock`).WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
+	mock.ExpectQuery(`(?s)SELECT EXISTS.*NOT source_finalized`).WillReturnRows(sqlmock.NewRows([]string{"unsafe"}).AddRow(false))
 }
 
 func setGroupUsageRollupTestTimezone(t *testing.T) {

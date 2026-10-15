@@ -20,8 +20,8 @@ import type {
  * Get dashboard statistics
  * @returns Dashboard statistics including users, keys, accounts, and token usage
  */
-export async function getStats(): Promise<DashboardStats> {
-  const { data } = await apiClient.get<DashboardStats>('/admin/dashboard/stats')
+export async function getStats(options?: { signal?: AbortSignal }): Promise<DashboardStats> {
+  const { data } = await apiClient.get<DashboardStats>('/admin/dashboard/stats', { signal: options?.signal })
   return data
 }
 
@@ -273,9 +273,10 @@ export interface UserSpendingRankingParams
  * @param params - Query parameters for filtering
  * @returns User usage trend data
  */
-export async function getUserUsageTrend(params?: UserTrendParams): Promise<UserTrendResponse> {
+export async function getUserUsageTrend(params?: UserTrendParams, options?: { signal?: AbortSignal }): Promise<UserTrendResponse> {
   const { data } = await apiClient.get<UserTrendResponse>('/admin/dashboard/users-trend', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }
@@ -286,10 +287,12 @@ export async function getUserUsageTrend(params?: UserTrendParams): Promise<UserT
  * @returns User spending ranking data
  */
 export async function getUserSpendingRanking(
-  params?: UserSpendingRankingParams
+  params?: UserSpendingRankingParams,
+  options?: { signal?: AbortSignal }
 ): Promise<UserSpendingRankingResponse> {
   const { data } = await apiClient.get<UserSpendingRankingResponse>('/admin/dashboard/users-ranking', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }
@@ -316,10 +319,12 @@ export interface BatchUsersUsageResponse {
  * @param userIds - Array of user IDs
  * @returns Usage stats map keyed by user ID
  */
-export async function getBatchUsersUsage(userIds: number[]): Promise<BatchUsersUsageResponse> {
+export async function getBatchUsersUsage(
+  userIds: number[], options?: { signal?: AbortSignal }
+): Promise<BatchUsersUsageResponse> {
   const { data } = await apiClient.post<BatchUsersUsageResponse>('/admin/dashboard/users-usage', {
     user_ids: userIds
-  })
+  }, { signal: options?.signal })
   return data
 }
 

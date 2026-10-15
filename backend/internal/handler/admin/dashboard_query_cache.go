@@ -105,10 +105,10 @@ func (h *DashboardHandler) getAPIKeyUsageTrendCached(ctx context.Context, startT
 }
 
 func (h *DashboardHandler) getUserUsageTrendCached(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string) ([]usagestats.UserUsageTrendPoint, bool, error) {
-	key := mustMarshalDashboardCacheKey(dashboardEntityTrendCacheKey{
+	key := scopedUsageCacheKey(ctx, mustMarshalDashboardCacheKey(dashboardEntityTrendCacheKey{
 		StartTime: startTime.UTC().Format(time.RFC3339), EndTime: endTime.UTC().Format(time.RFC3339),
 		Granularity: granularity, Limit: limit, Metric: metric,
-	})
+	}))
 	entry, hit, err := dashboardUsersTrendCache.GetOrLoadContext(ctx, key, func(work context.Context) (any, error) {
 		return h.dashboardService.GetUserUsageTrend(work, startTime, endTime, granularity, limit, metric)
 	})

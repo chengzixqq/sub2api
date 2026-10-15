@@ -454,13 +454,15 @@ func (h *UsageHandler) DashboardStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.usageService.GetUserDashboardStats(c.Request.Context(), subject.UserID)
+	stats, err := loadUserUsageQuery(userQueryContext(c), "dashboard-stats:"+timezone.Today().Format(time.DateOnly), usagestats.UsageLogFilters{UserID: subject.UserID}, func(work context.Context) (*usagestats.UserDashboardStats, error) {
+		return h.usageService.GetUserDashboardStats(work, subject.UserID)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, stats)
+	response.Success(c, cloneUserDashboardStats(stats))
 }
 
 // DashboardTrend handles getting user usage trend data
@@ -676,13 +678,15 @@ func (h *UsageHandler) DashboardAPIKeysUsage(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.usageService.GetBatchAPIKeyUsageStats(c.Request.Context(), validAPIKeyIDs, time.Time{}, time.Time{})
+	stats, err := loadUserUsageQuery(userQueryContext(c), apiKeyUsageCacheKind(validAPIKeyIDs), usagestats.UsageLogFilters{UserID: subject.UserID}, func(work context.Context) (map[int64]*usagestats.BatchAPIKeyUsageStats, error) {
+		return h.usageService.GetBatchAPIKeyUsageStats(work, validAPIKeyIDs, time.Time{}, time.Time{})
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, gin.H{"stats": stats})
+	response.Success(c, gin.H{"stats": cloneAPIKeyUsageStats(stats)})
 }
 
 // GetMyAPIKeyDailyUsage handles getting daily usage details for the current user's API key.

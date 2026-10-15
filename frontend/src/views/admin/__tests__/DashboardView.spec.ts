@@ -5,7 +5,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import type { DashboardStats } from '@/types'
 import DashboardView from '../DashboardView.vue'
 
-const { getSnapshotV2, getUserUsageTrend, getUserSpendingRanking } = vi.hoisted(() => ({
+const { getStats, getSnapshotV2, getUserUsageTrend, getUserSpendingRanking } = vi.hoisted(() => ({
+  getStats: vi.fn(),
   getSnapshotV2: vi.fn(),
   getUserUsageTrend: vi.fn(),
   getUserSpendingRanking: vi.fn()
@@ -18,6 +19,7 @@ vi.mock('vue-chartjs', () => ({
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     dashboard: {
+      getStats,
       getSnapshotV2,
       getUserUsageTrend,
       getUserSpendingRanking
@@ -94,6 +96,7 @@ describe('admin DashboardView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
 
+    getStats.mockReset().mockResolvedValue(createDashboardStats())
     getSnapshotV2.mockReset()
     getUserUsageTrend.mockReset()
     getUserSpendingRanking.mockReset()
@@ -131,9 +134,9 @@ describe('admin DashboardView', () => {
       } }
     })
     await flushPromises()
-    expect(getUserUsageTrend).toHaveBeenCalledWith(expect.objectContaining({ metric: 'tokens', limit: 12 }))
+    expect(getUserUsageTrend).toHaveBeenCalledWith(expect.objectContaining({ metric: 'tokens', limit: 12 }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     await wrapper.findAll('button').find(button => button.text() === 'admin.dashboard.actualSpending')!.trigger('click')
-    expect(getUserUsageTrend).toHaveBeenCalledWith(expect.objectContaining({ metric: 'actual_cost', limit: 12 }))
+    expect(getUserUsageTrend).toHaveBeenCalledWith(expect.objectContaining({ metric: 'actual_cost', limit: 12 }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
     await flushPromises()
     const chart = wrapper.findComponent({ name: 'Line' })
     expect(chart.props('data').datasets[0].data).toEqual([5])
@@ -168,7 +171,50 @@ describe('admin DashboardView', () => {
     expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
       start_date: formatLocalDate(yesterday),
       end_date: formatLocalDate(now),
-      granularity: 'hour'
-    }))
+      granularity: 'hour',
+      include_stats: false
+    }), expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+
+  it('renders basic stats while charts are pending without duplicating stats work', async () => {
+    getSnapshotV2.mockReturnValueOnce(new Promise(() => {}))
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), total_api_keys: 42 })
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('42')
+    expect(getStats).toHaveBeenCalledTimes(1)
+    expect(getSnapshotV2.mock.calls[0][0].include_stats).toBe(false)
+    expect(wrapper.findComponent({ name: 'TokenUsageTrend' }).attributes('loading')).toBe('true')
+    const signal = getSnapshotV2.mock.calls[0][1].signal as AbortSignal
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('keeps charts and their controls visible if the initial basic stats fail', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    getStats.mockRejectedValueOnce(new Error('stats unavailable'))
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'TokenUsageTrend' }).exists()).toBe(true)
+    const retry = wrapper.findAll('button').find(button => button.text() === 'common.retry')!
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), total_api_keys: 17 })
+    await retry.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('17')
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    consoleError.mockRestore()
   })
 })

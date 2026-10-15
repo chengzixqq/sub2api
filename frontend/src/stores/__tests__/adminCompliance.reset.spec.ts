@@ -81,3 +81,60 @@ it('still updates compliance status during a normal fetch and acceptance', async
   expect(store.status).toEqual(status(false))
   expect(store.shouldShow).toBe(false)
 })
+
+it('shares pending status reads but lets a completed status be refreshed explicitly', async () => {
+  const pending = deferred()
+  api.getStatus.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(status(false, 'refreshed'))
+  const store = useAdminComplianceStore()
+  const first = store.fetchStatus()
+  const second = store.fetchStatus()
+  expect(api.getStatus).toHaveBeenCalledTimes(1)
+  pending.resolve(status(true))
+  await Promise.all([first, second])
+  await store.fetchStatus()
+  expect(api.getStatus).toHaveBeenCalledTimes(2)
+  expect(store.status?.version).toBe('refreshed')
+})
+
+it('allows a forced refresh during a pending read and retains its newer response', async () => {
+  const old = deferred()
+  const fresh = deferred()
+  api.getStatus.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+  const store = useAdminComplianceStore()
+  const first = store.fetchStatus()
+  const second = store.fetchStatus(true)
+  expect(api.getStatus).toHaveBeenCalledTimes(2)
+  fresh.resolve(status(false, 'fresh'))
+  await second
+  old.resolve(status(true, 'old'))
+  await first
+  expect(store.status?.version).toBe('fresh')
+  expect(store.shouldShow).toBe(false)
+})
+
+it('keeps a new acknowledgement requirement when an older status read finishes', async () => {
+  const pending = deferred()
+  api.getStatus.mockReturnValueOnce(pending.promise)
+  const store = useAdminComplianceStore()
+  const request = store.fetchStatus()
+  store.requireAcknowledgement({ version: 'new-policy' })
+  pending.resolve(status(false, 'old-policy'))
+  await request
+  expect(store.shouldShow).toBe(true)
+  expect(store.status?.version).toBe('new-policy')
+  expect(store.loading).toBe(false)
+})
+
+it('keeps an accepted status when an older status read finishes', async () => {
+  const pending = deferred()
+  api.getStatus.mockReturnValueOnce(pending.promise)
+  api.accept.mockResolvedValue(status(false, 'accepted'))
+  const store = useAdminComplianceStore()
+  const request = store.fetchStatus()
+  await store.accept('test')
+  pending.resolve(status(true, 'old-policy'))
+  await request
+  expect(store.shouldShow).toBe(false)
+  expect(store.status?.version).toBe('accepted')
+  expect(store.loading).toBe(false)
+})

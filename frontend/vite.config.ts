@@ -116,6 +116,20 @@ export default defineConfig(({ mode }) => {
          */
         manualChunks(id: string) {
           if (id.includes('node_modules')) {
+            // Payment and optional editor features must stay out of the entry vendor chunk.
+            if (id.includes('/@airwallex/')) {
+              return 'vendor-payment-sdk'
+            }
+            if (id.includes('/qrcode/') || id.includes('/dijkstrajs/')) {
+              return 'vendor-qrcode'
+            }
+            if (id.includes('/vue-draggable-plus/')) {
+              return 'vendor-drag'
+            }
+            if (id.includes('/@tanstack/')) {
+              return 'vendor-table'
+            }
+
             // Vue 核心库
             if (
               id.includes('/vue/') ||
@@ -126,13 +140,18 @@ export default defineConfig(({ mode }) => {
               return 'vendor-vue'
             }
 
-            // UI 工具库（较大，单独分离）
-            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
+            // Keep spreadsheet export lazy when ordinary pages use VueUse.
+            if (id.includes('/xlsx/')) {
+              return 'vendor-spreadsheet'
+            }
+
+            // UI 工具库
+            if (id.includes('/@vueuse/')) {
               return 'vendor-ui'
             }
 
             // 图表库
-            if (id.includes('/chart.js/') || id.includes('/vue-chartjs/')) {
+            if (id.includes('/chart.js/') || id.includes('/vue-chartjs/') || id.includes('/@kurkle/color/')) {
               return 'vendor-chart'
             }
 

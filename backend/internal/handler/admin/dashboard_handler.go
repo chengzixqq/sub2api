@@ -429,23 +429,22 @@ func (h *DashboardHandler) GetBatchUsersUsage(c *gin.Context) {
 		Day:     timezone.Today().Format("2006-01-02"),
 		UserIDs: userIDs,
 	})
-	cacheKey := string(keyRaw)
-	if cached, ok := dashboardBatchUsersUsageCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
-		return
-	}
-
-	stats, err := h.dashboardService.GetBatchUserUsageStats(c.Request.Context(), userIDs, time.Time{}, time.Time{})
+	ctx := queryContext(c)
+	cacheKey := scopedUsageCacheKey(ctx, string(keyRaw))
+	entry, hit, err := dashboardBatchUsersUsageCache.GetOrLoadContext(ctx, cacheKey, func(work context.Context) (any, error) {
+		stats, err := h.dashboardService.GetBatchUserUsageStats(work, userIDs, time.Time{}, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"stats": stats}, nil
+	})
 	if err != nil {
 		response.Error(c, 500, "Failed to get user usage stats")
 		return
 	}
 
-	payload := gin.H{"stats": stats}
-	dashboardBatchUsersUsageCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	response.Success(c, entry.Payload)
 }
 
 // BatchAPIKeysUsageRequest represents the request body for batch api key usage stats
@@ -469,27 +468,28 @@ func (h *DashboardHandler) GetBatchAPIKeysUsage(c *gin.Context) {
 	}
 
 	keyRaw, _ := json.Marshal(struct {
+		Day       string  `json:"day"`
 		APIKeyIDs []int64 `json:"api_key_ids"`
 	}{
+		Day:       timezone.Today().Format("2006-01-02"),
 		APIKeyIDs: apiKeyIDs,
 	})
-	cacheKey := string(keyRaw)
-	if cached, ok := dashboardBatchAPIKeysUsageCache.Get(cacheKey); ok {
-		c.Header("X-Snapshot-Cache", "hit")
-		response.Success(c, cached.Payload)
-		return
-	}
-
-	stats, err := h.dashboardService.GetBatchAPIKeyUsageStats(c.Request.Context(), apiKeyIDs, time.Time{}, time.Time{})
+	ctx := queryContext(c)
+	cacheKey := scopedUsageCacheKey(ctx, string(keyRaw))
+	entry, hit, err := dashboardBatchAPIKeysUsageCache.GetOrLoadContext(ctx, cacheKey, func(work context.Context) (any, error) {
+		stats, err := h.dashboardService.GetBatchAPIKeyUsageStats(work, apiKeyIDs, time.Time{}, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"stats": stats}, nil
+	})
 	if err != nil {
 		response.Error(c, 500, "Failed to get API key usage stats")
 		return
 	}
 
-	payload := gin.H{"stats": stats}
-	dashboardBatchAPIKeysUsageCache.Set(cacheKey, payload)
-	c.Header("X-Snapshot-Cache", "miss")
-	response.Success(c, payload)
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	response.Success(c, entry.Payload)
 }
 
 // GetUserBreakdown handles getting per-user usage breakdown within a dimension.

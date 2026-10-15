@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/shopspring/decimal"
 )
 
 // getPerformanceStats 获取 RPM 和 TPM（近5分钟平均值，可选按用户过滤）
@@ -269,7 +270,7 @@ func (r *usageLogRepository) fillDashboardUsageStatsAggregated(ctx context.Conte
 		FROM usage_dashboard_hourly
 		WHERE bucket_start = $1
 	`
-	hourStart := now.In(timezone.Location()).Truncate(time.Hour)
+	hourStart := truncateToHour(now.In(timezone.Location()))
 	if err := scanSingleRow(ctx, r.sql, hourlyActiveQuery, []any{hourStart}, &stats.HourlyActiveUsers); err != nil {
 		if err != sql.ErrNoRows {
 			return err
@@ -378,150 +379,103 @@ type UserDashboardStats = usagestats.UserDashboardStats
 // PlatformDashboardStats 单平台用量明细
 type PlatformDashboardStats = usagestats.PlatformDashboardStats
 
+// userDashboardUsageQuery scans a user's history once for totals and platform rows.
+// Grand totals are combined from every platform cohort, including unknown ones.
+// Ordinary GROUP BY retains parallel partial aggregation eligibility. Only the
+// platform request counts exclude billed failures; their costs and tokens remain.
+const userDashboardUsageQuery = `
+	SELECT
+		` + usageLogEffectivePlatformExpr + ` as platform,
+		COUNT(*) as total_requests,
+		COALESCE(SUM(ul.input_tokens), 0) as total_input_tokens,
+		COALESCE(SUM(ul.output_tokens), 0) as total_output_tokens,
+		COALESCE(SUM(ul.cache_creation_tokens), 0) as total_cache_creation_tokens,
+		COALESCE(SUM(ul.cache_read_tokens), 0) as total_cache_read_tokens,
+		COALESCE(SUM(ul.total_cost) FILTER (WHERE ul.provider_cost_recorded), 0) as total_cost,
+		COALESCE(SUM(ul.actual_cost), 0) as total_actual_cost,
+		COALESCE(SUM(ul.duration_ms), 0) as total_duration_ms,
+		COUNT(ul.duration_ms) as duration_count,
+		COUNT(*) FILTER (WHERE ul.created_at >= $2) as today_requests,
+		COALESCE(SUM(ul.input_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_input_tokens,
+		COALESCE(SUM(ul.output_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_output_tokens,
+		COALESCE(SUM(ul.cache_creation_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_cache_creation_tokens,
+		COALESCE(SUM(ul.cache_read_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_cache_read_tokens,
+		COALESCE(SUM(ul.total_cost) FILTER (WHERE ul.created_at >= $2 AND ul.provider_cost_recorded), 0) as today_cost,
+		COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2), 0) as today_actual_cost,
+		COUNT(*) FILTER (WHERE ` + usageLogSuccessFilterUL + `) as successful_requests,
+		COUNT(*) FILTER (WHERE ul.created_at >= $2 AND ` + usageLogSuccessFilterUL + `) as today_successful_requests
+	FROM usage_logs ul
+	LEFT JOIN groups g ON g.id = ul.group_id
+	LEFT JOIN accounts a ON a.id = ul.account_id
+	WHERE ul.user_id = $1
+	GROUP BY ` + usageLogEffectivePlatformExpr + `
+	ORDER BY total_actual_cost DESC
+`
+
 // GetUserDashboardStats 获取用户专属的仪表盘统计
 func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID int64) (*UserDashboardStats, error) {
 	stats := &UserDashboardStats{}
-	today := timezone.Today()
-
-	// API Key 统计
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		"SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND deleted_at IS NULL",
-		[]any{userID},
-		&stats.TotalAPIKeys,
-	); err != nil {
-		return nil, err
-	}
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		"SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = $2 AND deleted_at IS NULL",
-		[]any{userID, service.StatusActive},
-		&stats.ActiveAPIKeys,
+	if err := scanSingleRow(ctx, r.sql, `
+		SELECT COUNT(*), COUNT(*) FILTER (WHERE status = $2)
+		FROM api_keys WHERE user_id = $1 AND deleted_at IS NULL`,
+		[]any{userID, service.StatusActive}, &stats.TotalAPIKeys, &stats.ActiveAPIKeys,
 	); err != nil {
 		return nil, err
 	}
 
-	// 累计 Token 统计
-	totalStatsQuery := `
-		SELECT
-			COUNT(*) as total_requests,
-			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
-			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
-		FROM usage_logs
-		WHERE user_id = $1
-	`
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		totalStatsQuery,
-		[]any{userID},
-		&stats.TotalRequests,
-		&stats.TotalInputTokens,
-		&stats.TotalOutputTokens,
-		&stats.TotalCacheCreationTokens,
-		&stats.TotalCacheReadTokens,
-		&stats.TotalCost,
-		&stats.TotalActualCost,
-		&stats.AverageDurationMs,
-	); err != nil {
-		return nil, err
-	}
-	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
-
-	// 今日 Token 统计
-	todayStatsQuery := `
-		SELECT
-			COUNT(*) as today_requests,
-			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as today_cost,
-			COALESCE(SUM(actual_cost), 0) as today_actual_cost
-		FROM usage_logs
-		WHERE user_id = $1 AND created_at >= $2
-	`
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		todayStatsQuery,
-		[]any{userID, today},
-		&stats.TodayRequests,
-		&stats.TodayInputTokens,
-		&stats.TodayOutputTokens,
-		&stats.TodayCacheCreationTokens,
-		&stats.TodayCacheReadTokens,
-		&stats.TodayCost,
-		&stats.TodayActualCost,
-	); err != nil {
-		return nil, err
-	}
-	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
-
-	// 性能指标：RPM 和 TPM（最近1分钟，仅统计该用户的请求）
-	rpm, tpm, err := r.getPerformanceStats(ctx, userID)
+	rows, err := r.sql.QueryContext(ctx, userDashboardUsageQuery, userID, timezone.Today())
 	if err != nil {
 		return nil, err
 	}
-	stats.Rpm = rpm
-	stats.Tpm = tpm
-
-	// 按"有效平台"维度拆分（group.platform 优先，否则 account.platform）。
-	// 与 ops 路径口径一致；HAVING 过滤掉无法确定平台的行（避免出现空字符串平台）。
-	//
-	// usageLogSuccessFilterUL 不拼进 WHERE，而是以 FILTER (WHERE ...) 的形式只施加在
-	// total_requests/today_requests 两个计数列上：被计费的失败行产生了真实的上游费用，
-	// total_tokens/total_actual_cost/today_tokens/today_actual_cost 必须包含它们，否则会与
-	// 不做该过滤的 totalStatsQuery/todayStatsQuery、usage_dashboard_daily 对不上账；但这些行
-	// 不算"成功请求"，因此不计入请求数。
-	//
-	// 与上面 totalStatsQuery/todayStatsQuery 的请求数仍可能有差异，原因有二：
-	//   1) 无平台归属的极少数行（group/account 都没 platform）会被 HAVING 排除；
-	//   2) 被计费的失败行会被 totalStatsQuery/todayStatsQuery（未做成功过滤）计入请求数，
-	//      但不计入 platformQuery 的 total_requests/today_requests。
-	platformQuery := `
-		SELECT
-			` + usageLogEffectivePlatformExpr + ` as platform,
-			COUNT(*) FILTER (WHERE ` + usageLogSuccessFilterUL + `) as total_requests,
-			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
-			COALESCE(SUM(ul.actual_cost), 0) as total_actual_cost,
-			COUNT(*) FILTER (WHERE ul.created_at >= $2 AND ` + usageLogSuccessFilterUL + `) as today_requests,
-			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_tokens,
-			COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2), 0) as today_actual_cost
-		FROM usage_logs ul
-		LEFT JOIN groups g ON g.id = ul.group_id
-		LEFT JOIN accounts a ON a.id = ul.account_id
-		WHERE ul.user_id = $1
-		GROUP BY ` + usageLogEffectivePlatformExpr + `
-		HAVING ` + usageLogEffectivePlatformExpr + ` IS NOT NULL AND ` + usageLogEffectivePlatformExpr + ` <> ''
-		ORDER BY total_actual_cost DESC
-	`
-	rows, err := r.sql.QueryContext(ctx, platformQuery, userID, today)
-	if err != nil {
-		return nil, err
-	}
+	var byPlatform []PlatformDashboardStats
+	var totalDuration, durationCount int64
+	var totalCost, totalActualCost, todayCost, todayActualCost decimal.Decimal
 	for rows.Next() {
-		var p PlatformDashboardStats
+		var row UserDashboardStats
+		var platform sql.NullString
+		var successfulRequests, todaySuccessfulRequests, rowDuration, rowDurationCount int64
+		var rowTotalCost, rowActualCost, rowTodayCost, rowTodayActualCost decimal.Decimal
 		if err := rows.Scan(
-			&p.Platform,
-			&p.TotalRequests,
-			&p.TotalTokens,
-			&p.TotalActualCost,
-			&p.TodayRequests,
-			&p.TodayTokens,
-			&p.TodayActualCost,
+			&platform,
+			&row.TotalRequests, &row.TotalInputTokens, &row.TotalOutputTokens,
+			&row.TotalCacheCreationTokens, &row.TotalCacheReadTokens,
+			&rowTotalCost, &rowActualCost, &rowDuration, &rowDurationCount,
+			&row.TodayRequests, &row.TodayInputTokens, &row.TodayOutputTokens,
+			&row.TodayCacheCreationTokens, &row.TodayCacheReadTokens,
+			&rowTodayCost, &rowTodayActualCost,
+			&successfulRequests, &todaySuccessfulRequests,
 		); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		stats.ByPlatform = append(stats.ByPlatform, p)
+		row.TotalTokens = row.TotalInputTokens + row.TotalOutputTokens + row.TotalCacheCreationTokens + row.TotalCacheReadTokens
+		row.TodayTokens = row.TodayInputTokens + row.TodayOutputTokens + row.TodayCacheCreationTokens + row.TodayCacheReadTokens
+		stats.TotalRequests += row.TotalRequests
+		stats.TotalInputTokens += row.TotalInputTokens
+		stats.TotalOutputTokens += row.TotalOutputTokens
+		stats.TotalCacheCreationTokens += row.TotalCacheCreationTokens
+		stats.TotalCacheReadTokens += row.TotalCacheReadTokens
+		stats.TodayRequests += row.TodayRequests
+		stats.TodayInputTokens += row.TodayInputTokens
+		stats.TodayOutputTokens += row.TodayOutputTokens
+		stats.TodayCacheCreationTokens += row.TodayCacheCreationTokens
+		stats.TodayCacheReadTokens += row.TodayCacheReadTokens
+		totalDuration += rowDuration
+		durationCount += rowDurationCount
+		// Database costs are NUMERIC. Preserve exact decimal sums across cohorts
+		// before the final float conversion used by the existing response contract.
+		totalCost = totalCost.Add(rowTotalCost)
+		totalActualCost = totalActualCost.Add(rowActualCost)
+		todayCost = todayCost.Add(rowTodayCost)
+		todayActualCost = todayActualCost.Add(rowTodayActualCost)
+		if platform.Valid && platform.String != "" {
+			byPlatform = append(byPlatform, PlatformDashboardStats{
+				Platform: platform.String, TotalRequests: successfulRequests,
+				TotalTokens: row.TotalTokens, TotalActualCost: rowActualCost.InexactFloat64(),
+				TodayRequests: todaySuccessfulRequests, TodayTokens: row.TodayTokens,
+				TodayActualCost: rowTodayActualCost.InexactFloat64(),
+			})
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -529,7 +483,21 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	stats.ByPlatform = byPlatform
+	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
+	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
+	stats.TotalCost, stats.TotalActualCost = totalCost.InexactFloat64(), totalActualCost.InexactFloat64()
+	stats.TodayCost, stats.TodayActualCost = todayCost.InexactFloat64(), todayActualCost.InexactFloat64()
+	if durationCount > 0 {
+		stats.AverageDurationMs = float64(totalDuration) / float64(durationCount)
+	}
 
+	// Keep the recent five-minute index range independent of the all-time scan.
+	rpm, tpm, err := r.getPerformanceStats(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	stats.Rpm, stats.Tpm = rpm, tpm
 	return stats, nil
 }
 

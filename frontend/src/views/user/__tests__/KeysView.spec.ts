@@ -10,6 +10,7 @@ const {
   listKeys,
   updateKey,
   getPublicSettings,
+  fetchPublicSettings,
   getDashboardApiKeysUsage,
   getAvailableGroups,
   getUserGroupRates,
@@ -22,6 +23,7 @@ const {
   listKeys: vi.fn(),
   updateKey: vi.fn(),
   getPublicSettings: vi.fn(),
+  fetchPublicSettings: vi.fn(),
   getDashboardApiKeysUsage: vi.fn(),
   getAvailableGroups: vi.fn(),
   getUserGroupRates: vi.fn(),
@@ -87,6 +89,8 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess,
+    cachedPublicSettings: { api_base_url: 'https://cached.example.test', site_name: 'Cached site' },
+    fetchPublicSettings,
   }),
 }))
 
@@ -161,7 +165,7 @@ const TablePageLayoutStub = {
 
 const DataTableStub = {
   name: 'DataTable',
-  props: { columns: Array, data: Array, selectedKeys: Array, selectable: Boolean },
+  props: { columns: Array, data: Array, selectedKeys: Array, selectable: Boolean, loading: Boolean },
   emits: ['sort', 'update:selectedKeys'],
   template: `
     <div>
@@ -283,6 +287,7 @@ describe('user KeysView column settings', () => {
     updateKey.mockReset()
     vi.mocked(keysAPI.create).mockReset()
     getPublicSettings.mockReset()
+    fetchPublicSettings.mockReset()
     getDashboardApiKeysUsage.mockReset()
     getAvailableGroups.mockReset()
     getUserGroupRates.mockReset()
@@ -300,6 +305,7 @@ describe('user KeysView column settings', () => {
       pages: 1,
     })
     getPublicSettings.mockResolvedValue({})
+    fetchPublicSettings.mockResolvedValue({ api_base_url: 'https://cached.example.test', site_name: 'Cached site' })
     getDashboardApiKeysUsage.mockResolvedValue({
       stats: {
         '1': { api_key_id: 1, today_actual_cost: 0, total_actual_cost: 0 },
@@ -308,6 +314,14 @@ describe('user KeysView column settings', () => {
     getAvailableGroups.mockResolvedValue([])
     getUserGroupRates.mockResolvedValue({})
     isCurrentStep.mockReturnValue(false)
+  })
+
+  it('reuses injected public settings through the shared store when opening API keys', async () => {
+    const wrapper = await mountView()
+    expect(fetchPublicSettings).toHaveBeenCalledOnce()
+    expect(getPublicSettings).not.toHaveBeenCalled()
+    expect(wrapper.findComponent({ name: 'EndpointPopover' }).props('apiBaseUrl')).toBe('https://cached.example.test')
+    wrapper.unmount()
   })
 
   it.each([
@@ -550,6 +564,50 @@ describe('user KeysView column settings', () => {
     expect(wrapper.get('[data-test="usage"]').text()).toContain('Today: $0.0000')
     expect(wrapper.get('[data-test="usage"]').text()).toContain('Last 30d: $0.0000')
     expect(wrapper.find('[data-test="usage-unavailable"]').exists()).toBe(false)
+  })
+
+  it('shows the key list while usage is pending and aborts it on navigation', async () => {
+    getDashboardApiKeysUsage.mockReturnValueOnce(new Promise(() => {}))
+    const wrapper = await mountView()
+    const table = wrapper.findComponent({ name: 'DataTable' })
+    expect(table.props('data')).toHaveLength(1)
+    expect(table.props('loading')).toBe(false)
+    expect(wrapper.get('[data-test="usage"]').text()).not.toContain('$0.0000')
+    const signal = getDashboardApiKeysUsage.mock.calls[0][1].signal as AbortSignal
+    expect(signal.aborted).toBe(false)
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+  })
+
+  it('skips hidden usage and loads it when the column is enabled', async () => {
+    localStorage.setItem('api-key-hidden-columns', JSON.stringify(['usage']))
+    localStorage.setItem('api-key-column-settings-version', '3')
+    const wrapper = await mountView()
+    expect(getDashboardApiKeysUsage).not.toHaveBeenCalled()
+    await wrapper.get('button[title="Column Settings"]').trigger('click')
+    await getButtonByText(wrapper, 'Usage').trigger('click')
+    await flushPromises()
+    expect(getDashboardApiKeysUsage).toHaveBeenCalledWith([1], expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    wrapper.unmount()
+  })
+
+  it('ignores old usage that resolves after a new filtered list', async () => {
+    let resolveOld!: (value: unknown) => void
+    getDashboardApiKeysUsage.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+    const wrapper = await mountView()
+    const oldSignal = getDashboardApiKeysUsage.mock.calls[0][1].signal as AbortSignal
+    listKeys.mockResolvedValueOnce({ items: [createApiKey(2)], total: 1, pages: 1 })
+    getDashboardApiKeysUsage.mockResolvedValueOnce({ stats: {
+      '2': { api_key_id: 2, today_actual_cost: 2, total_actual_cost: 20 },
+    } })
+    wrapper.findComponent({ name: 'SearchInput' }).vm.$emit('search')
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    resolveOld({ stats: { '2': { api_key_id: 2, today_actual_cost: 99, total_actual_cost: 99 } } })
+    await flushPromises()
+    expect(wrapper.get('[data-test="usage"]').text()).toContain('$2.0000')
+    expect(wrapper.get('[data-test="usage"]').text()).not.toContain('$99.0000')
+    wrapper.unmount()
   })
 
   it('shows an unavailable state instead of zero when usage loading fails', async () => {

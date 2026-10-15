@@ -275,8 +275,11 @@ export async function toggleStatus(id: number, status: 'active' | 'disabled'): P
  * @param id - User ID
  * @returns List of user's API keys
  */
-export async function getUserApiKeys(id: number): Promise<PaginatedResponse<ApiKey>> {
-  const { data } = await apiClient.get<PaginatedResponse<ApiKey>>(`/admin/users/${id}/api-keys`)
+export async function getUserApiKeys(
+  id: number,
+  options?: { signal?: AbortSignal }
+): Promise<PaginatedResponse<ApiKey>> {
+  const { data } = await apiClient.get<PaginatedResponse<ApiKey>>(`/admin/users/${id}/api-keys`, options)
   return data
 }
 
@@ -421,9 +424,11 @@ export interface PlatformQuotasResponse {
 /**
  * Get user's platform quotas
  */
-export async function getPlatformQuotas(id: number): Promise<PlatformQuotasResponse> {
+export async function getPlatformQuotas(
+  id: number, options?: { signal?: AbortSignal }
+): Promise<PlatformQuotasResponse> {
   const { data } = await apiClient.get<PlatformQuotasResponse>(
-    `/admin/users/${id}/platform-quotas`
+    `/admin/users/${id}/platform-quotas`, { signal: options?.signal }
   )
   return data
 }

@@ -2,7 +2,7 @@
   <AppLayout>
     <div class="space-y-6">
       <!-- Loading State -->
-      <div v-if="loading" class="flex items-center justify-center py-12">
+      <div v-if="loading && !stats" class="flex items-center justify-center py-12">
         <LoadingSpinner />
       </div>
 
@@ -216,6 +216,9 @@
           </div>
         </div>
 
+      </template>
+      <button v-else class="btn btn-secondary" @click="loadBasicStats">{{ t('common.retry') }}</button>
+
         <!-- Quick Actions -->
         <div class="card p-4">
           <div class="mb-3 flex items-center justify-between">
@@ -342,13 +345,12 @@
             </div>
           </div>
         </div>
-      </template>
     </div>
   </AppLayout>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
@@ -655,36 +657,54 @@ const onDateRangeChange = (range: {
 }
 
 // Load data
-const loadDashboardSnapshot = async (includeStats: boolean) => {
-  const currentSeq = ++chartLoadSeq
-  if (includeStats && !stats.value) {
-    loading.value = true
+let statsController: AbortController | null = null
+let chartController: AbortController | null = null
+let usersTrendController: AbortController | null = null
+let rankingController: AbortController | null = null
+
+const loadBasicStats = async () => {
+  statsController?.abort()
+  const controller = new AbortController()
+  statsController = controller
+  if (!stats.value) loading.value = true
+  try {
+    const response = await adminAPI.dashboard.getStats({ signal: controller.signal })
+    if (!controller.signal.aborted) stats.value = response
+  } catch (error) {
+    if (controller.signal.aborted) return
+    appStore.showError(t('admin.dashboard.failedToLoad'))
+    console.error('Error loading dashboard stats:', error)
+  } finally {
+    if (statsController === controller) loading.value = false
   }
+}
+
+const loadDashboardSnapshot = async () => {
+  const currentSeq = ++chartLoadSeq
+  chartController?.abort()
+  const controller = new AbortController()
+  chartController = controller
   chartsLoading.value = true
   try {
     const response = await adminAPI.dashboard.getSnapshotV2({
       start_date: startDate.value,
       end_date: endDate.value,
       granularity: granularity.value,
-      include_stats: includeStats,
+      include_stats: false,
       include_trend: true,
       include_model_stats: true,
       include_group_stats: false,
       include_users_trend: false
-    })
-    if (currentSeq !== chartLoadSeq) return
-    if (includeStats && response.stats) {
-      stats.value = response.stats
-    }
+    }, { signal: controller.signal })
+    if (controller.signal.aborted || currentSeq !== chartLoadSeq) return
     trendData.value = response.trend || []
     modelStats.value = response.models || []
   } catch (error) {
-    if (currentSeq !== chartLoadSeq) return
+    if (controller.signal.aborted || currentSeq !== chartLoadSeq) return
     appStore.showError(t('admin.dashboard.failedToLoad'))
     console.error('Error loading dashboard snapshot:', error)
   } finally {
     if (currentSeq === chartLoadSeq) {
-      loading.value = false
       chartsLoading.value = false
     }
   }
@@ -699,6 +719,9 @@ const setUserTrendMetric = (metric: 'tokens' | 'actual_cost') => {
 
 const loadUsersTrend = async () => {
   const currentSeq = ++usersTrendLoadSeq
+  usersTrendController?.abort()
+  const controller = new AbortController()
+  usersTrendController = controller
   userTrendLoading.value = true
   try {
     const response = await adminAPI.dashboard.getUserUsageTrend({
@@ -707,11 +730,11 @@ const loadUsersTrend = async () => {
       granularity: granularity.value,
       limit: 12,
       metric: userTrendMetric.value
-    })
-    if (currentSeq !== usersTrendLoadSeq) return
+    }, { signal: controller.signal })
+    if (controller.signal.aborted || currentSeq !== usersTrendLoadSeq) return
     userTrend.value = response.trend || []
   } catch (error) {
-    if (currentSeq !== usersTrendLoadSeq) return
+    if (controller.signal.aborted || currentSeq !== usersTrendLoadSeq) return
     console.error('Error loading users trend:', error)
     userTrend.value = []
   } finally {
@@ -723,6 +746,9 @@ const loadUsersTrend = async () => {
 
 const loadUserSpendingRanking = async () => {
   const currentSeq = ++rankingLoadSeq
+  rankingController?.abort()
+  const controller = new AbortController()
+  rankingController = controller
   rankingLoading.value = true
   rankingError.value = false
   try {
@@ -730,14 +756,14 @@ const loadUserSpendingRanking = async () => {
       start_date: startDate.value,
       end_date: endDate.value,
       limit: rankingLimit
-    })
-    if (currentSeq !== rankingLoadSeq) return
+    }, { signal: controller.signal })
+    if (controller.signal.aborted || currentSeq !== rankingLoadSeq) return
     rankingItems.value = response.ranking || []
     rankingTotalActualCost.value = response.total_actual_cost || 0
     rankingTotalRequests.value = response.total_requests || 0
     rankingTotalTokens.value = response.total_tokens || 0
   } catch (error) {
-    if (currentSeq !== rankingLoadSeq) return
+    if (controller.signal.aborted || currentSeq !== rankingLoadSeq) return
     console.error('Error loading user spending ranking:', error)
     rankingItems.value = []
     rankingTotalActualCost.value = 0
@@ -753,7 +779,8 @@ const loadUserSpendingRanking = async () => {
 
 const loadDashboardStats = async () => {
   await Promise.all([
-    loadDashboardSnapshot(true),
+    loadBasicStats(),
+    loadDashboardSnapshot(),
     loadUsersTrend(),
     loadUserSpendingRanking()
   ])
@@ -761,7 +788,7 @@ const loadDashboardStats = async () => {
 
 const loadChartData = async () => {
   await Promise.all([
-    loadDashboardSnapshot(false),
+    loadDashboardSnapshot(),
     loadUsersTrend(),
     loadUserSpendingRanking()
   ])
@@ -770,6 +797,13 @@ const loadChartData = async () => {
 onMounted(() => {
   void refreshBatchImageAccess()
   loadDashboardStats()
+})
+
+onUnmounted(() => {
+  statsController?.abort()
+  chartController?.abort()
+  usersTrendController?.abort()
+  rankingController?.abort()
 })
 </script>
 

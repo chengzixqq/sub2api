@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -15,6 +17,38 @@ import (
 )
 
 var userUsageCache = usagequery.NewCache(30 * time.Second)
+
+// Presentation-only summaries have a 30-second cache lifetime. The
+// server day is part of the key so yesterday's "today" never crosses midnight.
+// Ownership checks run before loading; quota/balance decisions never use this cache.
+func apiKeyUsageCacheKind(ids []int64) string {
+	canonical := slices.Clone(ids)
+	slices.Sort(canonical)
+	canonical = slices.Compact(canonical)
+	return fmt.Sprintf("api-keys-usage:%s:%v", timezone.Today().Format(time.DateOnly), canonical)
+}
+
+func cloneUserDashboardStats(stats *usagestats.UserDashboardStats) *usagestats.UserDashboardStats {
+	if stats == nil {
+		return nil
+	}
+	copy := *stats
+	copy.ByPlatform = slices.Clone(stats.ByPlatform)
+	return &copy
+}
+
+func cloneAPIKeyUsageStats(stats map[int64]*usagestats.BatchAPIKeyUsageStats) map[int64]*usagestats.BatchAPIKeyUsageStats {
+	copy := make(map[int64]*usagestats.BatchAPIKeyUsageStats, len(stats))
+	for id, entry := range stats {
+		if entry != nil {
+			value := *entry
+			copy[id] = &value
+		} else {
+			copy[id] = nil
+		}
+	}
+	return copy
+}
 
 func userQueryContext(c *gin.Context) context.Context {
 	user, _ := middleware.GetAuthSubjectFromContext(c)

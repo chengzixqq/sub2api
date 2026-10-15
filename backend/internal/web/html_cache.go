@@ -49,16 +49,35 @@ func (c *HTMLCache) Invalidate() {
 
 // Get returns the cached HTML or nil if cache is stale
 func (c *HTMLCache) Get() *CachedHTML {
+	cached, _ := c.snapshot()
+	return cached
+}
+
+// snapshot binds a cache read to the settings generation that produced it.
+func (c *HTMLCache) snapshot() (*CachedHTML, uint64) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	if c.cachedHTML == nil {
-		return nil
+		return nil, c.settingsVersion
 	}
 	return &CachedHTML{
 		Content: c.cachedHTML,
 		ETag:    c.etag,
+	}, c.settingsVersion
+}
+
+// publish rejects settings fetched before an invalidation. A slow old read must
+// never replace newer settings or make a stale cache valid again.
+func (c *HTMLCache) publish(html, settingsJSON []byte, version uint64) *CachedHTML {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.settingsVersion != version {
+		return nil
 	}
+	c.cachedHTML = html
+	c.etag = c.generateETag(settingsJSON)
+	return &CachedHTML{Content: c.cachedHTML, ETag: c.etag}
 }
 
 // Set updates the cache with new rendered HTML
