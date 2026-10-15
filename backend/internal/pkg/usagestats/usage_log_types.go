@@ -75,8 +75,9 @@ type DashboardStats struct {
 	AverageDurationMs float64 `json:"average_duration_ms"` // 平均响应时间
 
 	// 性能指标
-	Rpm int64 `json:"rpm"` // 近5分钟平均每分钟请求数
-	Tpm int64 `json:"tpm"` // 近5分钟平均每分钟Token数
+	Rpm          int64 `json:"rpm"`                     // 近 60 秒成功上游请求数，由实时缓存覆盖
+	RPMAvailable *bool `json:"rpm_available,omitempty"` // false 表示实时计数不可用，不代表真实零值
+	Tpm          int64 `json:"tpm"`                     // 近5分钟平均每分钟Token数
 }
 
 // TrendDataPoint represents a single point in trend data
@@ -253,8 +254,9 @@ type UserDashboardStats struct {
 	AverageDurationMs float64 `json:"average_duration_ms"`
 
 	// 性能指标
-	Rpm int64 `json:"rpm"` // 近5分钟平均每分钟请求数
-	Tpm int64 `json:"tpm"` // 近5分钟平均每分钟Token数
+	Rpm          int64 `json:"rpm"`                     // 当前用户或 API Key 近 60 秒成功上游请求数
+	RPMAvailable *bool `json:"rpm_available,omitempty"` // false 表示实时计数不可用
+	Tpm          int64 `json:"tpm"`                     // 近5分钟平均每分钟Token数
 
 	// 按"有效平台"维度拆分（与 ops 路径口径一致：group.platform 优先，否则 account.platform）
 	ByPlatform []PlatformDashboardStats `json:"by_platform,omitempty"`

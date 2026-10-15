@@ -84,6 +84,11 @@ func (c *RPMCacheImpl) IncrementRPM(ctx context.Context, accountID int64) (int, 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return 0, fmt.Errorf("rpm increment: %w", err)
 	}
+	// Keep scheduling's natural-minute counter intact. The independent display
+	// window records this same successful forward with Redis server time.
+	if err := c.recordRollingRPM(ctx, accountID); err != nil {
+		return int(incrCmd.Val()), fmt.Errorf("rolling rpm increment: %w", err)
+	}
 
 	return int(incrCmd.Val()), nil
 }

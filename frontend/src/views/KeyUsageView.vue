@@ -282,6 +282,7 @@
                 v-for="(cell, i) in usageStatCells"
                 :key="i"
                 class="bg-white px-6 py-4 dark:bg-dark-900"
+                :title="cell.hint"
               >
                 <div class="text-xs text-gray-500 dark:text-dark-400 mb-1">{{ cell.label }}</div>
                 <div class="text-sm font-semibold tabular-nums text-gray-900 dark:text-white">{{ cell.value }}</div>
@@ -781,6 +782,7 @@ const detailRows = computed<DetailRow[]>(() => {
 interface StatCell {
   label: string
   value: string
+  hint?: string
 }
 
 const usageStatCells = computed<StatCell[]>(() => {
@@ -798,7 +800,11 @@ const usageStatCells = computed<StatCell[]>(() => {
     { label: t('keyUsage.todayCacheCreation'), value: fmtNum(today.cache_creation_tokens) },
     { label: t('keyUsage.todayCacheRead'), value: fmtNum(today.cache_read_tokens) },
     { label: t('keyUsage.todayCost'), value: usd(today.actual_cost) },
-    { label: t('keyUsage.rpmTpm'), value: `${usage.rpm || 0} / ${usage.tpm || 0}` },
+    {
+      label: t(usage.rpm_available === undefined ? 'keyUsage.rpmTpm' : 'keyUsage.rpmTpmRolling'),
+      value: `${usage.rpm_available === false ? t('common.notAvailable') : usage.rpm ?? 0} / ${usage.tpm ?? 0}`,
+      hint: usage.rpm_available === undefined ? undefined : t('keyUsage.rpmTpmHint')
+    },
     { label: t('keyUsage.totalRequests'), value: fmtNum(total.requests) },
     { label: t('keyUsage.totalInputTokens'), value: fmtNum(total.input_tokens) },
     { label: t('keyUsage.totalOutputTokens'), value: fmtNum(total.output_tokens) },

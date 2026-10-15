@@ -43,6 +43,7 @@ type DashboardService struct {
 	usageRepo      UsageLogRepository
 	aggRepo        DashboardAggregationRepository
 	cache          DashboardStatsCache
+	rollingRPM     RollingRPMCache
 	cacheFreshTTL  time.Duration
 	cacheTTL       time.Duration
 	refreshTimeout time.Duration
@@ -110,7 +111,7 @@ func (s *DashboardService) GetDashboardStats(ctx context.Context) (*usagestats.D
 			if !fresh {
 				s.refreshDashboardStatsAsync()
 			}
-			return cached, nil
+			return s.WithRuntimeRPM(ctx, cached), nil
 		}
 		if err != nil && !errors.Is(err, ErrDashboardStatsCacheMiss) {
 			logger.LegacyPrintf("service.dashboard", "[Dashboard] 仪表盘缓存读取失败: %v", err)
@@ -121,7 +122,7 @@ func (s *DashboardService) GetDashboardStats(ctx context.Context) (*usagestats.D
 	if err != nil {
 		return nil, fmt.Errorf("get dashboard stats: %w", err)
 	}
-	return stats, nil
+	return s.WithRuntimeRPM(ctx, stats), nil
 }
 
 // GetDashboardStatsFresh supplies snapshots without nesting the dashboard cache TTL.
@@ -130,7 +131,7 @@ func (s *DashboardService) GetDashboardStatsFresh(ctx context.Context) (*usagest
 	if err != nil {
 		return nil, fmt.Errorf("get fresh dashboard stats: %w", err)
 	}
-	return stats, nil
+	return s.WithRuntimeRPM(ctx, stats), nil
 }
 
 func (s *DashboardService) GetUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, userID, apiKeyID, accountID, groupID int64, model string, requestType *int16, stream *bool, billingType *int8) ([]usagestats.TrendDataPoint, error) {

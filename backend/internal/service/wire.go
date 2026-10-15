@@ -381,6 +381,26 @@ func ProvideGrokTokenProvider(
 	return p
 }
 
+// ProvideUsageService attaches the per-user/key live counter while preserving
+// the constructor used by tests and other standalone callers.
+func ProvideUsageService(usageRepo UsageLogRepository, userRepo UserRepository, entClient *dbent.Client, authCacheInvalidator APIKeyAuthCacheInvalidator, rpmCache RPMCache) *UsageService {
+	svc := NewUsageService(usageRepo, userRepo, entClient, authCacheInvalidator)
+	if rolling, ok := rpmCache.(ScopedRollingRPMCache); ok {
+		svc.SetScopedRollingRPMCache(rolling)
+	}
+	return svc
+}
+
+// ProvideDashboardService attaches the live counter without changing the
+// constructor used by standalone service consumers and tests.
+func ProvideDashboardService(usageRepo UsageLogRepository, aggRepo DashboardAggregationRepository, cache DashboardStatsCache, cfg *config.Config, rpmCache RPMCache) *DashboardService {
+	svc := NewDashboardService(usageRepo, aggRepo, cache, cfg)
+	if rolling, ok := rpmCache.(RollingRPMCache); ok {
+		svc.SetRollingRPMCache(rolling)
+	}
+	return svc
+}
+
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
 func ProvideDashboardAggregationService(repo DashboardAggregationRepository, timingWheel *TimingWheelService, lockCache LeaderLockCache, db *sql.DB, cfg *config.Config, settingRepo SettingRepository) *DashboardAggregationService {
 	svc := NewDashboardAggregationService(repo, timingWheel, cfg)
@@ -869,8 +889,8 @@ var ProviderSet = wire.NewSet(
 	NewProxyService,
 	NewRedeemService,
 	NewPromoService,
-	NewUsageService,
-	NewDashboardService,
+	ProvideUsageService,
+	ProvideDashboardService,
 	ProvidePricingService,
 	NewBillingService,
 	ProvideBillingCacheService,

@@ -87,6 +87,24 @@ afterEach(() => {
   resetPlatformCatalog()
 })
 
+describe('UserDashboardStats rolling RPM', () => {
+  it.each([
+    { available: true, rpm: 1200, expected: '1.2K' },
+    { available: true, rpm: 0, expected: '0' },
+    { available: false, rpm: 0, expected: 'common.notAvailable' },
+    { available: undefined, rpm: 500, expected: '500' }
+  ])('renders RPM availability=$available while preserving TPM', ({ available, rpm, expected }) => {
+    const wrapper = mountStats(makeStats({ rpm, rpm_available: available, tpm: 900 }))
+    const value = wrapper.get('[data-testid="user-dashboard-rpm"]')
+    expect(value.text()).toBe(expected)
+    expect(value.element.parentElement?.getAttribute('title')).toBe(
+      available === undefined ? null : 'dashboard.rpmLast60sHint'
+    )
+    expect(wrapper.get('[data-testid="user-dashboard-tpm"]').text()).toBe('900')
+    wrapper.unmount()
+  })
+})
+
 describe('UserDashboardStats 按平台拆分', () => {
   it('只有用量的平台才产生卡片；三档全空的限额记录不产生卡片', () => {
     const w = mountStats(

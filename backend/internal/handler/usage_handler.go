@@ -462,7 +462,9 @@ func (h *UsageHandler) DashboardStats(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, cloneUserDashboardStats(stats))
+	// Historical summary fields may be cached for 30 seconds; the live RPM
+	// is refreshed independently without mutating that shared summary.
+	response.Success(c, h.usageService.WithUserRuntimeRPM(c.Request.Context(), stats, subject.UserID))
 }
 
 // DashboardTrend handles getting user usage trend data

@@ -150,6 +150,22 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		response.Error(c, 500, err.Error())
 		return
 	}
+	// Snapshot totals/charts may remain cached while RPM must be observed for
+	// this response. Copy both levels so concurrent readers never mutate the
+	// shared snapshot, then build the validator from the final response.
+	payload, err := snapshotPayloadAs[*dashboardSnapshotV2Response](cached.Payload)
+	if err != nil {
+		response.Error(c, 500, "failed to read dashboard snapshot")
+		return
+	}
+	if payload != nil && payload.Stats != nil {
+		current := *payload
+		stats := *payload.Stats
+		stats.DashboardStats = *h.dashboardService.WithRuntimeRPM(ctx, &stats.DashboardStats)
+		current.Stats = &stats
+		cached.Payload = &current
+		cached.ETag = usagequery.CacheETag(&current)
+	}
 	if cached.ETag != "" {
 		c.Header("ETag", cached.ETag)
 		c.Header("Vary", "If-None-Match")

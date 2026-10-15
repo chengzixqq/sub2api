@@ -126,8 +126,9 @@ func (h *DashboardHandler) GetStats(c *gin.Context) {
 		"uptime":              uptime,
 
 		// 性能指标
-		"rpm": stats.Rpm,
-		"tpm": stats.Tpm,
+		"rpm":           stats.Rpm,
+		"rpm_available": stats.RPMAvailable,
+		"tpm":           stats.Tpm,
 
 		// 预聚合新鲜度
 		"hourly_active_users": stats.HourlyActiveUsers,

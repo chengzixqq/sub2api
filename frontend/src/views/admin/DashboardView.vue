@@ -179,14 +179,14 @@
                 <p class="text-xs font-medium text-gray-500 dark:text-gray-400">
                   {{ t('admin.dashboard.performance') }}
                 </p>
-                <div class="flex items-baseline gap-2">
-                  <p class="text-xl font-bold text-gray-900 dark:text-white">
-                    {{ formatTokens(stats.rpm) }}
+                <div class="flex items-baseline gap-2" :title="stats.rpm_available === undefined ? undefined : t('admin.dashboard.rpmLast60sHint')">
+                  <p data-testid="dashboard-rpm" class="text-xl font-bold text-gray-900 dark:text-white">
+                    {{ stats.rpm_available === false ? t('common.notAvailable') : formatTokens(stats.rpm) }}
                   </p>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">RPM</span>
+                  <span class="text-xs text-gray-500 dark:text-gray-400">{{ stats.rpm_available === undefined ? 'RPM' : t('admin.dashboard.rpmLast60s') }}</span>
                 </div>
-                <div class="flex items-baseline gap-2">
-                  <p class="text-sm font-semibold text-violet-600 dark:text-violet-400">
+                <div class="flex items-baseline gap-2" :title="t('admin.dashboard.tpmFiveMinuteHint')">
+                  <p data-testid="dashboard-tpm" class="text-sm font-semibold text-violet-600 dark:text-violet-400">
                     {{ formatTokens(stats.tpm) }}
                   </p>
                   <span class="text-xs text-gray-500 dark:text-gray-400">TPM</span>

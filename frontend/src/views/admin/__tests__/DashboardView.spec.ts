@@ -257,4 +257,52 @@ describe('admin DashboardView', () => {
     wrapper.unmount()
     consoleError.mockRestore()
   })
+
+  it.each([
+    { available: true, rpm: 2067, display: '2.07K' },
+    { available: true, rpm: 0, display: '0' },
+    { available: false, rpm: 0, display: 'common.notAvailable' },
+    { available: undefined, rpm: 2000, display: '2.00K' }
+  ])('renders RPM availability=$available without changing TPM', async ({ available, rpm, display }) => {
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), rpm, rpm_available: available, tpm: 12500 })
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+
+    const value = wrapper.get('[data-testid="dashboard-rpm"]')
+    expect(value.text()).toBe(display)
+    expect(wrapper.get('[data-testid="dashboard-tpm"]').text()).toBe('12.50K')
+    if (available === undefined) {
+      expect(value.element.parentElement?.textContent).not.toContain('admin.dashboard.rpmLast60s')
+      expect(value.element.parentElement?.getAttribute('title')).toBeNull()
+    } else {
+      expect(value.element.parentElement?.textContent).toContain('admin.dashboard.rpmLast60s')
+      expect(value.element.parentElement?.getAttribute('title')).toBe('admin.dashboard.rpmLast60sHint')
+    }
+    wrapper.unmount()
+  })
+
+  it('replaces unavailable RPM with a newly available rolling count on refresh', async () => {
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), rpm: 0, rpm_available: false })
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dashboard-rpm"]').text()).toBe('common.notAvailable')
+
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), rpm: 1753, rpm_available: true })
+    await wrapper.findAll('button').find(button => button.text() === 'common.refresh')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="dashboard-rpm"]').text()).toBe('1.75K')
+    wrapper.unmount()
+  })
 })

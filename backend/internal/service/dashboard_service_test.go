@@ -144,6 +144,17 @@ func (c *dashboardCacheStub) readLastEntry(t *testing.T) dashboardStatsCacheEntr
 	return entry
 }
 
+// Existing aggregate/cache checks still compare all historical fields while
+// asserting that an unconfigured live counter is explicitly unavailable.
+func requireDashboardStatsWithoutRuntime(t *testing.T, want, got *usagestats.DashboardStats) {
+	t.Helper()
+	require.NotNil(t, got.RPMAvailable)
+	require.False(t, *got.RPMAvailable)
+	copy := *got
+	copy.RPMAvailable = nil
+	require.Equal(t, want, &copy)
+}
+
 func TestDashboardService_CacheHitFresh(t *testing.T) {
 	stats := &usagestats.DashboardStats{
 		TotalUsers:     10,
@@ -176,7 +187,7 @@ func TestDashboardService_CacheHitFresh(t *testing.T) {
 
 	got, err := svc.GetDashboardStats(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, stats, got)
+	requireDashboardStatsWithoutRuntime(t, stats, got)
 	require.Equal(t, int32(0), atomic.LoadInt32(&repo.calls))
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.getCalls))
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.setCalls))
@@ -205,7 +216,7 @@ func TestDashboardService_CacheMiss_StoresCache(t *testing.T) {
 
 	got, err := svc.GetDashboardStats(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, stats, got)
+	requireDashboardStatsWithoutRuntime(t, stats, got)
 	require.Equal(t, int32(1), atomic.LoadInt32(&repo.calls))
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.getCalls))
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.setCalls))
@@ -237,7 +248,7 @@ func TestDashboardService_CacheDisabled_SkipsCache(t *testing.T) {
 
 	got, err := svc.GetDashboardStats(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, stats, got)
+	requireDashboardStatsWithoutRuntime(t, stats, got)
 	require.Equal(t, int32(1), atomic.LoadInt32(&repo.calls))
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.getCalls))
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.setCalls))
@@ -277,7 +288,7 @@ func TestDashboardService_CacheHitStale_TriggersAsyncRefresh(t *testing.T) {
 
 	got, err := svc.GetDashboardStats(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, staleStats, got)
+	requireDashboardStatsWithoutRuntime(t, staleStats, got)
 
 	select {
 	case <-refreshCh:
@@ -308,7 +319,7 @@ func TestDashboardService_CacheParseError_EvictsAndRefetches(t *testing.T) {
 
 	got, err := svc.GetDashboardStats(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, stats, got)
+	requireDashboardStatsWithoutRuntime(t, stats, got)
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.delCalls))
 	require.Equal(t, int32(1), atomic.LoadInt32(&repo.calls))
 }

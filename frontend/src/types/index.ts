@@ -1384,7 +1384,8 @@ export interface Account {
   // 运行时状态（窗口费用、活跃会话仅当启用对应限制时返回）
   current_window_cost?: number | null // 当前窗口费用
   active_sessions?: number | null // 当前活跃会话数
-  current_rpm?: number | null // 当前分钟请求计数；读取失败或旧版后端未返回时缺失
+  current_rpm?: number | null // 最近滚动 60 秒成功转发数；读取失败或旧版后端未返回时缺失
+  scheduling_rpm?: number | null // 当前自然分钟调度计数；仅供容量和 RPM 限制使用
 
   // 影子账号关系（spark 维度影子）
   parent_account_id?: number | null
@@ -2016,7 +2017,8 @@ export interface DashboardStats {
   uptime: number // 系统运行时间(秒)
 
   // 性能指标
-  rpm: number // 近5分钟平均每分钟请求数
+  rpm: number // 最近滚动 60 秒成功转发数（新版后端）
+  rpm_available?: boolean // false 表示计数不可用；缺失时兼容旧版统计响应
   tpm: number // 近5分钟平均每分钟Token数
 }
 

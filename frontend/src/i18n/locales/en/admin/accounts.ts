@@ -264,7 +264,7 @@ export default {
         platform: 'Platform',
         type: 'Type',
         capacity: 'Capacity',
-        currentRpm: 'Current RPM',
+        currentRpm: 'RPM (last 60s)',
         notes: 'Notes',
         priority: 'Priority',
         billingRateMultiplier: 'Billing Rate',
@@ -282,7 +282,7 @@ export default {
         expiresAt: 'Expires At',
         actions: 'Actions'
       },
-      currentRpmHint: 'Successfully forwarded requests in the current calendar minute, reset each minute and updated with list refreshes. This is not the RPM limit. Missing counts display N/A.',
+      currentRpmHint: 'Successfully forwarded requests in the rolling last 60 seconds, updated with list refreshes without resetting at minute boundaries. The capacity RPM limit still uses calendar minutes. Missing counts display N/A.',
       schedulerScore: {
         baseShort: 'Base',
         stickyShort: 'Sticky',
@@ -401,6 +401,7 @@ export default {
           normal: 'Active sessions normal (idle timeout: {idle} min)'
         },
         rpm: {
+          calendarMinute: 'Calendar-minute rate-limit count',
           full: 'RPM limit reached',
           warning: 'RPM approaching limit',
           normal: 'RPM normal',

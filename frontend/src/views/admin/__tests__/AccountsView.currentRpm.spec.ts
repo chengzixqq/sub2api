@@ -50,6 +50,7 @@ const DataTableStub = {
       <template v-if="columns.some(column => column.key === 'current_rpm')">
         <div v-for="row in data" :key="row.id" :data-rpm-account="row.id">
           <slot name="cell-current_rpm" :row="row" />
+          <span :data-scheduling-account="row.id">{{ row.scheduling_rpm }}</span>
         </div>
       </template>
     </div>
@@ -150,7 +151,7 @@ describe('admin AccountsView current RPM column', () => {
 
   it('shows current values for every provider and preserves zero without substituting RPM limits', async () => {
     listAccounts.mockResolvedValue(page([
-      { ...apiKeyAccount, id: 1, current_rpm: 37 },
+      { ...apiKeyAccount, id: 1, current_rpm: 37, scheduling_rpm: 1 },
       { ...apiKeyAccount, id: 2, platform: 'anthropic', current_rpm: 0 },
       { ...apiKeyAccount, id: 3, platform: 'gemini', current_rpm: 9, base_rpm: null },
       { ...apiKeyAccount, id: 4, current_rpm: null },
@@ -159,7 +160,7 @@ describe('admin AccountsView current RPM column', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.get('[data-rpm-account="1"]').text()).toBe('37')
+    expect(wrapper.get('[data-rpm-account="1"] > span').text()).toBe('37')
     expect(wrapper.get('[data-rpm-account="2"]').text()).toBe('0')
     expect(wrapper.get('[data-rpm-account="3"]').text()).toBe('9')
     expect(wrapper.get('[data-rpm-account="4"]').text()).toBe('common.notAvailable')
@@ -177,14 +178,14 @@ describe('admin AccountsView current RPM column', () => {
     expect(wrapper.get('[data-rpm-account="1"]').text()).toBe('12')
   })
 
-  it('applies RPM-only automatic updates, minute resets, and unavailable counters', async () => {
+  it('applies rolling RPM growth, expiration, zero, and unavailable counters', async () => {
     vi.useFakeTimers()
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
     localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
     const wrapper = mountView()
     await flushPromises()
 
-    for (const count of [38, 0, null]) {
+    for (const count of [38, 26, 0, null]) {
       listWithEtag.mockResolvedValue({
         notModified: false,
         etag: `rpm-${count}`,
@@ -196,5 +197,25 @@ describe('admin AccountsView current RPM column', () => {
       expect(wrapper.get('[data-rpm-account="1"]').text()).toBe(count == null ? 'common.notAvailable' : String(count))
     }
     expect(listWithEtag).toHaveBeenCalledWith(1, 20, expect.objectContaining({ lite: '1' }), expect.any(Object))
+  })
+
+  it('refreshes a scheduling-only change without replacing the rolling display value', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    localStorage.setItem('account-auto-refresh', JSON.stringify({ enabled: true, interval_seconds: 5 }))
+    listAccounts.mockResolvedValue(page([{ ...apiKeyAccount, current_rpm: 37, scheduling_rpm: 20 }]))
+    const wrapper = mountView()
+    await flushPromises()
+
+    listWithEtag.mockResolvedValue({
+      notModified: false,
+      etag: 'scheduling-minute-reset',
+      data: page([{ ...apiKeyAccount, current_rpm: 37, scheduling_rpm: 0 }])
+    })
+    await vi.advanceTimersByTimeAsync(6000)
+    await flushPromises()
+
+    expect(wrapper.get('[data-scheduling-account="1"]').text()).toBe('0')
+    expect(wrapper.get('[data-rpm-account="1"] > span').text()).toBe('37')
   })
 })

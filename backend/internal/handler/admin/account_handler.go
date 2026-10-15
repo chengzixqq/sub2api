@@ -217,10 +217,11 @@ type AccountWithConcurrency struct {
 	ProbeConcurrency   int                          `json:"probe_concurrency"`
 	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
 	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
-	// 以下字段仅对 Anthropic OAuth/SetupToken 账号有效，且仅在启用相应功能时返回
+	// 窗口费用和会话数仅在 Anthropic OAuth/SetupToken 账号启用时返回。
 	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
-	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 当前分钟 RPM 计数
+	CurrentRPM        *int     `json:"current_rpm,omitempty"`         // 近 60 秒成功上游请求数
+	SchedulingRPM     *int     `json:"scheduling_rpm,omitempty"`      // 调度限流使用的自然分钟计数
 }
 
 // AccountListItemWithConcurrency is the compact account-list envelope used
@@ -234,6 +235,7 @@ type AccountListItemWithConcurrency struct {
 	CurrentWindowCost  *float64                     `json:"current_window_cost,omitempty"`
 	ActiveSessions     *int                         `json:"active_sessions,omitempty"`
 	CurrentRPM         *int                         `json:"current_rpm,omitempty"`
+	SchedulingRPM      *int                         `json:"scheduling_rpm,omitempty"`
 }
 
 type simpleModeGroupReference struct {
@@ -419,6 +421,11 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 	// Runtime RPM is observed for every account, independently of RPM limits.
 	if h.rpmCache != nil {
 		if rpm, err := h.rpmCache.GetRPM(ctx, account.ID); err == nil {
+			item.SchedulingRPM = &rpm
+		}
+	}
+	if rolling, ok := h.rpmCache.(service.RollingRPMCache); ok {
+		if rpm, err := rolling.GetRollingRPM(ctx, account.ID); err == nil {
 			item.CurrentRPM = &rpm
 		}
 	}
@@ -727,6 +734,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	var windowCosts map[int64]float64
 	var activeSessions map[int64]int
 	var rpmCounts map[int64]int
+	var rollingRPMCounts map[int64]int
 	// 双重门控：用户要看该列，且当前页确实有 OpenAI 账号，才进入昂贵的候选池打分路径。
 	var schedulerScores map[int64]*AccountSchedulerScore
 	var schedulerGroupScores map[int64][]AccountSchedulerGroupScore
@@ -773,6 +781,9 @@ func (h *AccountHandler) List(c *gin.Context) {
 	// 读取失败的账号不在返回 map 中，保持 current_rpm 缺省而非伪造为零。
 	if len(accountIDs) > 0 && h.rpmCache != nil {
 		rpmCounts, _ = h.rpmCache.GetRPMBatch(c.Request.Context(), accountIDs)
+		if rolling, ok := h.rpmCache.(service.RollingRPMCache); ok {
+			rollingRPMCounts, _ = rolling.GetRollingRPMBatch(c.Request.Context(), accountIDs)
+		}
 	}
 
 	// 始终获取活跃会话数（Redis ZCARD，低开销）
@@ -845,9 +856,14 @@ func (h *AccountHandler) List(c *gin.Context) {
 			}
 		}
 
-		// 添加成功读取的当前分钟 RPM（包括真实的零值）。
+		// Keep display rates and scheduling limits on their respective windows.
 		if rpmCounts != nil {
 			if rpm, ok := rpmCounts[acc.ID]; ok {
+				item.SchedulingRPM = &rpm
+			}
+		}
+		if rollingRPMCounts != nil {
+			if rpm, ok := rollingRPMCounts[acc.ID]; ok {
 				item.CurrentRPM = &rpm
 			}
 		}
@@ -869,6 +885,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 				CurrentWindowCost:  item.CurrentWindowCost,
 				ActiveSessions:     item.ActiveSessions,
 				CurrentRPM:         item.CurrentRPM,
+				SchedulingRPM:      item.SchedulingRPM,
 			}
 		}
 		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true)

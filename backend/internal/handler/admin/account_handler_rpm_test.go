@@ -15,11 +15,15 @@ import (
 )
 
 type accountRuntimeRPMCacheStub struct {
-	counts     map[int64]int
-	err        error
-	batchErr   error
-	getIDs     []int64
-	batchCalls [][]int64
+	counts            map[int64]int
+	schedulingCounts  map[int64]int
+	err               error
+	rollingErr        error
+	batchErr          error
+	getIDs            []int64
+	batchCalls        [][]int64
+	rollingIDs        []int64
+	rollingBatchCalls [][]int64
 }
 
 func (s *accountRuntimeRPMCacheStub) IncrementRPM(context.Context, int64) (int, error) {
@@ -28,12 +32,38 @@ func (s *accountRuntimeRPMCacheStub) IncrementRPM(context.Context, int64) (int, 
 
 func (s *accountRuntimeRPMCacheStub) GetRPM(_ context.Context, id int64) (int, error) {
 	s.getIDs = append(s.getIDs, id)
+	if s.schedulingCounts != nil {
+		return s.schedulingCounts[id], s.err
+	}
 	return s.counts[id], s.err
 }
 
 func (s *accountRuntimeRPMCacheStub) GetRPMBatch(_ context.Context, ids []int64) (map[int64]int, error) {
 	s.batchCalls = append(s.batchCalls, append([]int64(nil), ids...))
+	if s.schedulingCounts != nil {
+		return s.schedulingCounts, s.batchErr
+	}
 	return s.counts, s.batchErr
+}
+
+func (s *accountRuntimeRPMCacheStub) GetRollingRPM(_ context.Context, id int64) (int, error) {
+	s.rollingIDs = append(s.rollingIDs, id)
+	if s.rollingErr != nil {
+		return 0, s.rollingErr
+	}
+	return s.counts[id], s.err
+}
+
+func (s *accountRuntimeRPMCacheStub) GetRollingRPMBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	s.rollingBatchCalls = append(s.rollingBatchCalls, append([]int64(nil), ids...))
+	if s.rollingErr != nil {
+		return nil, s.rollingErr
+	}
+	return s.counts, s.batchErr
+}
+
+func (s *accountRuntimeRPMCacheStub) GetTotalRollingRPM(context.Context) (int, error) {
+	panic("account read handlers must not query global RPM")
 }
 
 func setupAccountRuntimeRPMRouter(accounts []service.Account, cache service.RPMCache) (*gin.Engine, *stubAdminService) {
@@ -151,4 +181,75 @@ func TestAccountHandlerCurrentRPMMissingCacheRemainsUnavailable(t *testing.T) {
 		require.Equal(t, http.StatusOK, recorder.Code)
 		require.NotContains(t, recorder.Body.String(), `"current_rpm"`)
 	}
+}
+
+// Expose only the original scheduling contract even when its backing stub also
+// supports rolling reads. Old compositions must not mislabel a minute count.
+type accountMinuteOnlyRPMCache struct{ service.RPMCache }
+
+func TestAccountHandlerCurrentRPMMinuteOnlyCacheRemainsUnavailable(t *testing.T) {
+	account := service.Account{ID: 35, Name: "key", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	cache := accountMinuteOnlyRPMCache{&accountRuntimeRPMCacheStub{counts: map[int64]int{35: 700}}}
+	router, adminSvc := setupAccountRuntimeRPMRouter([]service.Account{account}, cache)
+	adminSvc.getAccountResult = &account
+	for _, url := range []string{
+		"/api/v1/admin/accounts?page=1&page_size=20",
+		"/api/v1/admin/accounts?page=1&page_size=20&lite=1",
+		"/api/v1/admin/accounts/35",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, url, nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.NotContains(t, recorder.Body.String(), `"current_rpm"`)
+		require.Contains(t, recorder.Body.String(), `"scheduling_rpm":700`)
+	}
+}
+
+func TestAccountHandlerCurrentRPMKeepsSchedulingWindowSeparate(t *testing.T) {
+	account := service.Account{ID: 41, Name: "key", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	cache := &accountRuntimeRPMCacheStub{counts: map[int64]int{41: 2000}, schedulingCounts: map[int64]int{41: 1000}}
+	router, adminSvc := setupAccountRuntimeRPMRouter([]service.Account{account}, cache)
+	adminSvc.getAccountResult = &account
+	for _, url := range []string{
+		"/api/v1/admin/accounts?page=1&page_size=20",
+		"/api/v1/admin/accounts?page=1&page_size=20&lite=1",
+		"/api/v1/admin/accounts/41",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, url, nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.Contains(t, recorder.Body.String(), `"current_rpm":2000`)
+		require.Contains(t, recorder.Body.String(), `"scheduling_rpm":1000`)
+	}
+
+	cache.rollingErr = errors.New("rolling counter unavailable")
+	for _, url := range []string{
+		"/api/v1/admin/accounts?page=1&page_size=20&lite=1",
+		"/api/v1/admin/accounts/41",
+	} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, url, nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.NotContains(t, recorder.Body.String(), `"current_rpm"`, "must not silently substitute the natural-minute count")
+		require.Contains(t, recorder.Body.String(), `"scheduling_rpm":1000`)
+	}
+}
+
+func TestAccountHandlerCurrentRPMChangesETagWithoutAccountUpdate(t *testing.T) {
+	account := service.Account{ID: 51, Name: "key", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	cache := &accountRuntimeRPMCacheStub{counts: map[int64]int{51: 100}, schedulingCounts: map[int64]int{51: 10}}
+	router, _ := setupAccountRuntimeRPMRouter([]service.Account{account}, cache)
+	url := "/api/v1/admin/accounts?page=1&page_size=20&lite=1"
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodGet, url, nil))
+	require.Equal(t, http.StatusOK, first.Code)
+
+	cache.counts[51] = 101
+	request := httptest.NewRequest(http.MethodGet, url, nil)
+	request.Header.Set("If-None-Match", first.Header().Get("ETag"))
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, request)
+	require.Equal(t, http.StatusOK, second.Code)
+	require.NotEqual(t, first.Header().Get("ETag"), second.Header().Get("ETag"))
+	require.Contains(t, second.Body.String(), `"current_rpm":101`)
 }

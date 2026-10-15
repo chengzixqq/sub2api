@@ -51,7 +51,8 @@ export interface UserDashboardStats {
   today_cost: number // 今日标准计费
   today_actual_cost: number // 今日实际扣除
   average_duration_ms: number
-  rpm: number // 近5分钟平均每分钟请求数
+  rpm: number // 最近滚动 60 秒成功转发数（新版后端）
+  rpm_available?: boolean // false 表示计数不可用；缺失时兼容旧版统计响应
   tpm: number // 近5分钟平均每分钟Token数
   by_platform?: PlatformDashboardStats[]
 }

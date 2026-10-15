@@ -60,6 +60,7 @@ type UsageService struct {
 	userRepo             UserRepository
 	entClient            *dbent.Client
 	authCacheInvalidator APIKeyAuthCacheInvalidator
+	rollingRPM           ScopedRollingRPMCache
 }
 
 // NewUsageService 创建使用统计服务实例
@@ -295,7 +296,7 @@ func (s *UsageService) GetUserDashboardStats(ctx context.Context, userID int64) 
 	if err != nil {
 		return nil, fmt.Errorf("get user dashboard stats: %w", err)
 	}
-	return stats, nil
+	return s.WithUserRuntimeRPM(ctx, stats, userID), nil
 }
 
 // GetAPIKeyDashboardStats returns dashboard summary stats filtered by API Key.
@@ -304,7 +305,7 @@ func (s *UsageService) GetAPIKeyDashboardStats(ctx context.Context, apiKeyID int
 	if err != nil {
 		return nil, fmt.Errorf("get api key dashboard stats: %w", err)
 	}
-	return stats, nil
+	return s.WithAPIKeyRuntimeRPM(ctx, stats, apiKeyID), nil
 }
 
 // GetUserUsageTrendByUserID returns per-user usage trend.

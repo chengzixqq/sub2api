@@ -105,12 +105,12 @@
         </div>
         <div class="flex-1">
           <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('dashboard.performance') }}</p>
-          <div class="flex items-baseline gap-2">
-            <p class="text-xl font-bold text-gray-900 dark:text-white">{{ formatTokens(stats?.rpm || 0) }}</p>
-            <span class="text-xs text-gray-500 dark:text-gray-400">RPM</span>
+          <div class="flex items-baseline gap-2" :title="stats?.rpm_available === undefined ? undefined : t('dashboard.rpmLast60sHint')">
+            <p data-testid="user-dashboard-rpm" class="text-xl font-bold text-gray-900 dark:text-white">{{ stats?.rpm_available === false ? t('common.notAvailable') : formatTokens(stats?.rpm ?? 0) }}</p>
+            <span class="text-xs text-gray-500 dark:text-gray-400">{{ stats?.rpm_available === undefined ? 'RPM' : t('dashboard.rpmLast60s') }}</span>
           </div>
-          <div class="flex items-baseline gap-2">
-            <p class="text-sm font-semibold text-violet-600 dark:text-violet-400">{{ formatTokens(stats?.tpm || 0) }}</p>
+          <div class="flex items-baseline gap-2" :title="t('dashboard.tpmFiveMinuteHint')">
+            <p data-testid="user-dashboard-tpm" class="text-sm font-semibold text-violet-600 dark:text-violet-400">{{ formatTokens(stats?.tpm || 0) }}</p>
             <span class="text-xs text-gray-500 dark:text-gray-400">TPM</span>
           </div>
         </div>

@@ -1417,6 +1417,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
     current.current_concurrency !== next.current_concurrency ||
     current.probe_concurrency !== next.probe_concurrency ||
     current.current_rpm !== next.current_rpm ||
+    current.scheduling_rpm !== next.scheduling_rpm ||
     current.current_window_cost !== next.current_window_cost ||
     current.active_sessions !== next.active_sessions ||
     current.schedulable !== next.schedulable ||

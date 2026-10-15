@@ -1736,6 +1736,7 @@ func (h *GatewayHandler) buildUsageData(ctx context.Context, apiKeyID int64) gin
 		},
 		"average_duration_ms": dashStats.AverageDurationMs,
 		"rpm":                 dashStats.Rpm,
+		"rpm_available":       dashStats.RPMAvailable,
 		"tpm":                 dashStats.Tpm,
 	}
 }

@@ -174,6 +174,8 @@ export default {
     todayCacheRead: '今日缓存读取',
     todayCost: '今日费用',
     rpmTpm: 'RPM / TPM',
+    rpmTpmRolling: 'RPM（近60秒） / TPM（近5分钟均值）',
+    rpmTpmHint: 'RPM 为此密钥最近滚动 60 秒内成功转发的请求数；TPM 为近 5 分钟平均每分钟 Token 数。RPM 计数读取失败时显示“不可用”。',
     totalRequests: '累计请求',
     totalInputTokens: '累计输入',
     totalOutputTokens: '累计输出',

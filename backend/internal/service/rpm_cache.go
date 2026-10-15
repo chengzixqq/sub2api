@@ -21,6 +21,21 @@ type RPMCache interface {
 	GetRPMBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error)
 }
 
+// RollingRPMCache reports successful forwards in (Redis time - 60s, Redis time].
+// It is separate from RPMCache so display windows cannot alter scheduling limits.
+type RollingRPMCache interface {
+	GetRollingRPM(ctx context.Context, accountID int64) (int, error)
+	GetRollingRPMBatch(ctx context.Context, accountIDs []int64) (map[int64]int, error)
+	GetTotalRollingRPM(ctx context.Context) (int, error)
+}
+
+// ScopedRollingRPMCache keeps user/key views on the same successful-forward
+// event stream without exposing other users' traffic.
+type ScopedRollingRPMCache interface {
+	GetUserRollingRPM(ctx context.Context, userID int64) (int, error)
+	GetAPIKeyRollingRPM(ctx context.Context, apiKeyID int64) (int, error)
+}
+
 // incrementAccountRPM shares the same bounded, best-effort counter write across
 // gateway protocols. Request cancellation remains authoritative; a disconnected
 // request may not be counted, and cache failures must never fail a forward.

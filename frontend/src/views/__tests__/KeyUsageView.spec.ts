@@ -56,6 +56,9 @@ const messages: Record<string, string> = {
   'keyUsage.todayCacheRead': 'Today Cache Read',
   'keyUsage.todayCost': 'Today Cost',
   'keyUsage.rpmTpm': 'RPM / TPM',
+  'keyUsage.rpmTpmRolling': 'RPM (last 60s) / TPM (5-min avg)',
+  'keyUsage.rpmTpmHint': 'Rolling successful requests / five-minute average tokens',
+  'common.notAvailable': 'N/A',
   'keyUsage.totalRequests': 'Total Requests',
   'keyUsage.totalInputTokens': 'Total Input',
   'keyUsage.totalOutputTokens': 'Total Output',
@@ -211,6 +214,32 @@ describe('KeyUsageView daily detail', () => {
     expect(text).toContain('10')
     expect(text).toContain('$0.12')
 
+    wrapper.unmount()
+  })
+
+  it.each([
+    { available: true, rpm: 125, expected: '125 / 900' },
+    { available: true, rpm: 0, expected: '0 / 900' },
+    { available: false, rpm: 0, expected: 'N/A / 900' },
+    { available: undefined, rpm: 15, expected: '15 / 900' }
+  ])('renders RPM availability=$available with distinct RPM and TPM windows', async ({ available, rpm, expected }) => {
+    vi.mocked(fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ mode: 'wallet', usage: { rpm, rpm_available: available, tpm: 900 } })
+    } as Response)
+    const wrapper = mount(KeyUsageView, {
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' }, LocaleSwitcher: true, Icon: true } }
+    })
+    await wrapper.find('input').setValue('sk-test-key')
+    await wrapper.find('input').trigger('keydown.enter')
+    await flushPromises()
+
+    const label = available === undefined ? messages['keyUsage.rpmTpm'] : messages['keyUsage.rpmTpmRolling']
+    const labelElement = wrapper.findAll('div').find(element => element.text() === label)!
+    expect(labelElement.element.parentElement?.textContent).toContain(expected)
+    expect(labelElement.element.parentElement?.getAttribute('title')).toBe(
+      available === undefined ? null : messages['keyUsage.rpmTpmHint']
+    )
     wrapper.unmount()
   })
 

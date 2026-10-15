@@ -110,7 +110,7 @@ export default {
         platform: '平台',
         type: '类型',
         capacity: '容量',
-        currentRpm: '在用 RPM',
+        currentRpm: 'RPM（近60秒）',
         notes: '备注',
         priority: '优先级',
         billingRateMultiplier: '账号倍率',
@@ -128,7 +128,7 @@ export default {
         expiresAt: '过期时间',
         actions: '操作'
       },
-      currentRpmHint: '当前自然分钟内成功转发的请求数，每分钟重新计数，随列表刷新更新；不是 RPM 限额。未返回计数时显示“不可用”。',
+      currentRpmHint: '最近滚动 60 秒内成功转发的请求数，随列表刷新更新，不在整分钟归零；容量栏的 RPM 限制仍按自然分钟计算。未返回计数时显示“不可用”。',
       schedulerScore: {
         baseShort: '普通',
         stickyShort: '粘性',
@@ -247,6 +247,7 @@ export default {
           normal: '活跃会话正常（空闲超时：{idle}分钟）'
         },
         rpm: {
+          calendarMinute: '自然分钟限流计数',
           full: '已达 RPM 上限',
           warning: 'RPM 接近上限',
           normal: 'RPM 正常',

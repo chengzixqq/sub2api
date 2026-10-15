@@ -174,6 +174,8 @@ export default {
     todayCacheRead: 'Today Cache Read',
     todayCost: 'Today Cost',
     rpmTpm: 'RPM / TPM',
+    rpmTpmRolling: 'RPM (last 60s) / TPM (5-min avg)',
+    rpmTpmHint: 'RPM counts successful forwards for this key in the rolling last 60 seconds. TPM is the average tokens per minute over the last 5 minutes. Failed RPM counter reads display N/A.',
     totalRequests: 'Total Requests',
     totalInputTokens: 'Total Input',
     totalOutputTokens: 'Total Output',
