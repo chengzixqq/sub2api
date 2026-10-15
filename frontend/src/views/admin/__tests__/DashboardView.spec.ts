@@ -78,6 +78,7 @@ const createDashboardStats = (): DashboardStats => ({
   total_tokens: 0,
   total_cost: 0,
   total_actual_cost: 0,
+  total_account_cost: 0,
   today_requests: 0,
   today_input_tokens: 0,
   today_output_tokens: 0,
@@ -86,6 +87,7 @@ const createDashboardStats = (): DashboardStats => ({
   today_tokens: 0,
   today_cost: 0,
   today_actual_cost: 0,
+  today_account_cost: 0,
   average_duration_ms: 0,
   uptime: 0,
   rpm: 0,
@@ -178,7 +180,12 @@ describe('admin DashboardView', () => {
 
   it('renders basic stats while charts are pending without duplicating stats work', async () => {
     getSnapshotV2.mockReturnValueOnce(new Promise(() => {}))
-    getStats.mockResolvedValueOnce({ ...createDashboardStats(), total_api_keys: 42 })
+    getStats.mockResolvedValueOnce({
+      ...createDashboardStats(),
+      total_api_keys: 42,
+      today_account_cost: 3.75,
+      total_account_cost: 125.5
+    })
     const wrapper = mount(DashboardView, {
       global: { stubs: {
         AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
@@ -188,12 +195,45 @@ describe('admin DashboardView', () => {
     })
     await flushPromises()
     expect(wrapper.text()).toContain('42')
+    expect(wrapper.findAll('.text-orange-500').map(cost => cost.text())).toEqual(['$3.75', '$125.50'])
     expect(getStats).toHaveBeenCalledTimes(1)
     expect(getSnapshotV2.mock.calls[0][0].include_stats).toBe(false)
     expect(wrapper.findComponent({ name: 'TokenUsageTrend' }).attributes('loading')).toBe('true')
     const signal = getSnapshotV2.mock.calls[0][1].signal as AbortSignal
     wrapper.unmount()
     expect(signal.aborted).toBe(true)
+  })
+
+  it('refreshes stats while charts are pending and keeps previous cards visible during refresh', async () => {
+    let resolveStats!: (value: DashboardStats) => void
+    getSnapshotV2.mockImplementation(() => new Promise(() => {}))
+    getStats.mockResolvedValueOnce({ ...createDashboardStats(), total_api_keys: 42 })
+    getStats.mockReturnValueOnce(new Promise(resolve => { resolveStats = resolve }))
+    const wrapper = mount(DashboardView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' }, LoadingSpinner: true,
+        Icon: true, DateRangePicker: true, Select: true, ModelDistributionChart: true,
+        TokenUsageTrend: true
+      } }
+    })
+    await flushPromises()
+
+    const refresh = wrapper.findAll('button').find(button => button.text() === 'common.refresh')!
+    expect(wrapper.findComponent({ name: 'TokenUsageTrend' }).attributes('loading')).toBe('true')
+    expect(refresh.element.disabled).toBe(false)
+    await refresh.trigger('click')
+
+    expect(getStats).toHaveBeenCalledTimes(2)
+    expect(refresh.element.disabled).toBe(true)
+    expect(wrapper.text()).toContain('42')
+    expect(wrapper.findComponent({ name: 'LoadingSpinner' }).exists()).toBe(false)
+
+    resolveStats({ ...createDashboardStats(), total_api_keys: 43 })
+    await flushPromises()
+    expect(wrapper.text()).toContain('43')
+    expect(refresh.element.disabled).toBe(false)
+    expect(wrapper.findComponent({ name: 'TokenUsageTrend' }).attributes('loading')).toBe('true')
+    wrapper.unmount()
   })
 
   it('keeps charts and their controls visible if the initial basic stats fail', async () => {

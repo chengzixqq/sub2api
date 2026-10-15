@@ -282,7 +282,7 @@
                   @change="onDateRangeChange"
                 />
               </div>
-              <button @click="loadDashboardStats" :disabled="chartsLoading" class="btn btn-secondary">
+              <button @click="loadDashboardStats" :disabled="loading" class="btn btn-secondary">
                 {{ t('common.refresh') }}
               </button>
               <div class="ml-auto flex items-center gap-2">
@@ -666,7 +666,7 @@ const loadBasicStats = async () => {
   statsController?.abort()
   const controller = new AbortController()
   statsController = controller
-  if (!stats.value) loading.value = true
+  loading.value = true
   try {
     const response = await adminAPI.dashboard.getStats({ signal: controller.signal })
     if (!controller.signal.aborted) stats.value = response
