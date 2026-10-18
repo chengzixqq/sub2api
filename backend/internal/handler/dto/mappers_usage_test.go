@@ -353,3 +353,15 @@ func TestUsageLogFromService_PreservesHistoricalMissingImageSize(t *testing.T) {
 func f64Ptr(value float64) *float64 {
 	return &value
 }
+
+func TestUsageLogFromServiceAdmin_AccountCost(t *testing.T) {
+	half := 0.5
+	got := UsageLogFromServiceAdmin(&service.UsageLog{TotalCost: 1.2, AccountRateMultiplier: &half, ProviderCostRecorded: true})
+	require.InDelta(t, 0.6, got.AccountCost, 1e-12)
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"account_cost":0.6`)
+
+	follower := UsageLogFromServiceAdmin(&service.UsageLog{TotalCost: 1.2, ProviderCostRecorded: false})
+	require.Zero(t, follower.AccountCost)
+}

@@ -231,6 +231,25 @@ type UsageLog struct {
 	Subscription *UserSubscription
 }
 
+// AccountCost is what the request cost the upstream account:
+// COALESCE(account_stats_cost, total_cost) × COALESCE(account_rate_multiplier, 1)
+// when provider_cost_recorded, else 0. The SQL aggregates (account today-stats,
+// trend, dashboard, account ranking) use the same formula.
+func (u *UsageLog) AccountCost() float64 {
+	if u == nil || !u.ProviderCostRecorded {
+		return 0
+	}
+	cost := u.TotalCost
+	if u.AccountStatsCost != nil {
+		cost = *u.AccountStatsCost
+	}
+	multiplier := 1.0
+	if u.AccountRateMultiplier != nil {
+		multiplier = *u.AccountRateMultiplier
+	}
+	return cost * multiplier
+}
+
 func (u *UsageLog) TotalTokens() int {
 	return u.InputTokens + u.OutputTokens + u.CacheCreationTokens + u.CacheReadTokens
 }
