@@ -148,6 +148,8 @@ func TestDashboardHourlyInvalidation_LateChangesAndEmptyHour(t *testing.T) {
 					require.EqualValues(t, change.requests, trend[0].Requests)
 					require.EqualValues(t, change.tokens, trend[0].TotalTokens)
 					require.InDelta(t, change.cost, trend[0].Cost, 1e-9)
+					require.NotNil(t, trend[0].AccountCost)
+					require.InDelta(t, change.cost, *trend[0].AccountCost, 1e-9, "no stats cost or multiplier: account cost equals recorded cost")
 				}
 				require.NoError(t, repo.RepairInvalidatedBuckets(ctx, 1))
 				trend, err = usage.getUsageTrendFromAggregates(ctx, hour, hour.Add(time.Hour), "hour")
@@ -156,6 +158,8 @@ func TestDashboardHourlyInvalidation_LateChangesAndEmptyHour(t *testing.T) {
 				require.EqualValues(t, change.requests, trend[0].Requests)
 				require.EqualValues(t, change.tokens, trend[0].TotalTokens)
 				require.InDelta(t, change.cost, trend[0].Cost, 1e-9)
+				require.NotNil(t, trend[0].AccountCost)
+				require.InDelta(t, change.cost, *trend[0].AccountCost, 1e-9, "the hourly aggregate carries the same account cost")
 			}
 		})
 	}

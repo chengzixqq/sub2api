@@ -69,3 +69,44 @@ func (s *UsageLogRepoSuite) TestGetAccountSpendingRanking() {
 	s.Require().Equal(small.ID, byPlatform.Ranking[0].AccountID)
 	s.Require().InDelta(1.0, byPlatform.TotalActualCost, 1e-9)
 }
+
+func (s *UsageLogRepoSuite) TestUsageTrendAccountCostMatchesStats() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "trend-acct-cost@test.com"})
+	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-trend-acct-cost", Name: "k"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "trend-acct-cost"})
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	half, stats := 0.5, 3.0
+	for i, row := range []struct {
+		total    float64
+		stats    *float64
+		recorded bool
+	}{{2, nil, true}, {4, &stats, true}, {8, nil, false}} {
+		_, err := s.repo.Create(s.ctx, &service.UsageLog{
+			UserID: user.ID, APIKeyID: apiKey.ID, AccountID: account.ID, RequestID: uuid.NewString(), Model: "m",
+			TotalCost: row.total, ActualCost: row.total, AccountStatsCost: row.stats, AccountRateMultiplier: &half,
+			ProviderCostRecorded: row.recorded, ProbeCoalesced: !row.recorded, CreatedAt: start.Add(time.Duration(i) * 25 * time.Hour),
+		})
+		s.Require().NoError(err)
+	}
+	end := start.Add(4 * 24 * time.Hour)
+	filters := usagestats.UsageLogFilters{AccountID: account.ID}
+	trend, err := s.repo.GetUsageTrendWithUsageFilters(s.ctx, start, end, "day", filters)
+	s.Require().NoError(err)
+	var sum float64
+	for _, point := range trend {
+		s.Require().NotNil(point.AccountCost)
+		sum += *point.AccountCost
+	}
+	// 2×0.5 + 3×0.5 + 0 (follower) = 2.5
+	s.Require().InDelta(2.5, sum, 1e-9)
+
+	filters.StartTime, filters.EndTime = &start, &end
+	stats2, err := s.repo.GetStatsWithFilters(s.ctx, filters)
+	s.Require().NoError(err)
+	s.Require().NotNil(stats2.TotalAccountCost)
+	s.Require().InDelta(*stats2.TotalAccountCost, sum, 1e-9, "trend account cost sums to usage/stats total_account_cost")
+
+	userTrend, err := s.repo.GetUserUsageTrendByUserID(s.ctx, user.ID, start, end, "day")
+	s.Require().NoError(err)
+	s.Require().NotEmpty(userTrend)
+}

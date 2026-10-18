@@ -314,7 +314,19 @@ func (s *UsageService) GetUserUsageTrendByUserID(ctx context.Context, userID int
 	if err != nil {
 		return nil, fmt.Errorf("get user usage trend: %w", err)
 	}
-	return trend, nil
+	return withoutTrendAccountCost(trend), nil
+}
+
+// withoutTrendAccountCost drops the admin-only account cost from trend points.
+// UsageService serves end users; the admin dashboard reads trends through
+// DashboardService.
+func withoutTrendAccountCost(trend []usagestats.TrendDataPoint) []usagestats.TrendDataPoint {
+	out := make([]usagestats.TrendDataPoint, len(trend))
+	for i, point := range trend {
+		point.AccountCost = nil
+		out[i] = point
+	}
+	return out
 }
 
 // GetUsageTrendWithFilters returns trend data using the shared usage filter shape.
@@ -327,13 +339,13 @@ func (s *UsageService) GetUsageTrendWithFilters(ctx context.Context, startTime, 
 		if err != nil {
 			return nil, fmt.Errorf("get usage trend with filters: %w", err)
 		}
-		return trend, nil
+		return withoutTrendAccountCost(trend), nil
 	}
 	trend, err := s.usageRepo.GetUsageTrendWithFilters(ctx, startTime, endTime, granularity, filters.UserID, filters.APIKeyID, filters.AccountID, filters.GroupID, filters.Model, filters.RequestType, filters.Stream, filters.BillingType)
 	if err != nil {
 		return nil, fmt.Errorf("get usage trend with filters: %w", err)
 	}
-	return trend, nil
+	return withoutTrendAccountCost(trend), nil
 }
 
 // GetUserModelStats returns per-user model usage stats.

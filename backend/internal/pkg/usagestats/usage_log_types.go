@@ -91,6 +91,8 @@ type TrendDataPoint struct {
 	TotalTokens         int64   `json:"total_tokens"`
 	Cost                float64 `json:"cost"`        // 标准计费
 	ActualCost          float64 `json:"actual_cost"` // 实际扣除
+	// AccountCost 账号成本（仅管理端；用户侧接口置 nil 后字段不出现）
+	AccountCost *float64 `json:"account_cost,omitempty"`
 }
 
 // ModelStat represents usage statistics for a single model

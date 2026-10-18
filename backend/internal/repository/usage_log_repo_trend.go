@@ -296,7 +296,8 @@ func (r *usageLogRepository) GetUserUsageTrendByUserID(ctx context.Context, user
 			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
-			COALESCE(SUM(actual_cost), 0) as actual_cost
+			COALESCE(SUM(actual_cost), 0) as actual_cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as account_cost
 		FROM usage_logs
 		WHERE user_id = $1 AND created_at >= $2 AND created_at < $3
 		GROUP BY date
@@ -357,7 +358,8 @@ func (r *usageLogRepository) getUsageTrendWithFilters(ctx context.Context, start
 			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
 			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as cost,
-			COALESCE(SUM(actual_cost), 0) as actual_cost
+			COALESCE(SUM(actual_cost), 0) as actual_cost,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as account_cost
 		FROM usage_logs
 		WHERE created_at >= $1 AND created_at < $2
 	`, dateFormat)
@@ -483,17 +485,18 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 			SELECT COALESCE(MAX(bucket_start) + INTERVAL '1 hour',$1),$2 FROM valid_buckets
 		), pieces AS (
 			SELECT TO_CHAR(bucket_start, '%s') AS date,
-				total_requests AS requests,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost AS cost,actual_cost
+				total_requests AS requests,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,total_cost AS cost,actual_cost,account_cost
 			FROM valid_buckets
 			UNION ALL
 			SELECT TO_CHAR(created_at, '%s') AS date,
 				COUNT(*) AS requests,COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),
 				COALESCE(SUM(cache_creation_tokens),0),COALESCE(SUM(cache_read_tokens),0),
-				COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded),0),COALESCE(SUM(actual_cost),0)
+				COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded),0),COALESCE(SUM(actual_cost),0),
+				COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END),0)
 			FROM raw_ranges r
 			CROSS JOIN LATERAL (
 				SELECT created_at,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,
-					total_cost,actual_cost,provider_cost_recorded
+					total_cost,actual_cost,provider_cost_recorded,account_stats_cost,account_rate_multiplier
 				FROM usage_logs u
 				WHERE r.range_start < r.range_end
 				  AND u.created_at >= r.range_start AND u.created_at < r.range_end
@@ -502,7 +505,7 @@ func (r *usageLogRepository) getUsageTrendFromAggregates(ctx context.Context, st
 			GROUP BY date
 		)
 		SELECT date,SUM(requests),SUM(input_tokens),SUM(output_tokens),SUM(cache_creation_tokens),SUM(cache_read_tokens),
-			SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens),SUM(cost),SUM(actual_cost)
+			SUM(input_tokens+output_tokens+cache_creation_tokens+cache_read_tokens),SUM(cost),SUM(actual_cost),SUM(account_cost)
 		FROM pieces GROUP BY date ORDER BY date ASC
 	`, safeDateFormat(granularity), safeDateFormat(granularity))
 	args := []any{startTime, endTime}
@@ -962,6 +965,7 @@ func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 	results := make([]TrendDataPoint, 0)
 	for rows.Next() {
 		var row TrendDataPoint
+		var accountCost float64
 		if err := rows.Scan(
 			&row.Date,
 			&row.Requests,
@@ -972,9 +976,11 @@ func scanTrendRows(rows *sql.Rows) ([]TrendDataPoint, error) {
 			&row.TotalTokens,
 			&row.Cost,
 			&row.ActualCost,
+			&accountCost,
 		); err != nil {
 			return nil, err
 		}
+		row.AccountCost = &accountCost
 		results = append(results, row)
 	}
 	if err := rows.Err(); err != nil {
