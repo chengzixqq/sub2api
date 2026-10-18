@@ -11,6 +11,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -752,6 +753,21 @@ func (s *AccountRepoSuite) TestListSchedulable() {
 	ids := idsOfAccounts(sched)
 	s.Require().Contains(ids, okAcc.ID)
 	s.Require().NotContains(ids, overloaded.ID)
+}
+
+// An account created with schedulable=false (new account, not yet tested) is stored that way by the same INSERT and
+// never reaches the scheduling pool.
+func (s *AccountRepoSuite) TestCreate_UnschedulableAccountStaysOutOfPool() {
+	acc := &service.Account{Name: "untested", Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-x"}, Status: service.StatusActive, Schedulable: false, WorkspaceID: domain.DefaultWorkspaceID}
+	s.Require().NoError(s.repo.Create(s.ctx, acc))
+
+	got, err := s.repo.GetByID(s.ctx, acc.ID)
+	s.Require().NoError(err)
+	s.Require().False(got.Schedulable)
+	sched, err := s.repo.ListSchedulable(s.ctx)
+	s.Require().NoError(err)
+	s.Require().NotContains(idsOfAccounts(sched), acc.ID)
 }
 
 func (s *AccountRepoSuite) TestListSchedulableByGroupID_TimeBoundaries_And_StatusUpdates() {

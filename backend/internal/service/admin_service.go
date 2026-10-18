@@ -440,6 +440,8 @@ type CreateAccountInput struct {
 	// SkipMixedChannelCheck skips the mixed channel risk check when binding groups.
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
+	// Schedulable=false writes the account outside the scheduler in the same INSERT (nil keeps true).
+	Schedulable *bool
 }
 
 // ShadowOptions is the input for CreateShadow.

@@ -150,6 +150,10 @@ type CreateAccountRequest struct {
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	// Schedulable=false creates the account outside the scheduler (test first, enable after); default true.
+	Schedulable *bool `json:"schedulable"`
+	// SkipDefaultGroupBind=true does not auto-join the <platform>-default group when group_ids is empty.
+	SkipDefaultGroupBind *bool `json:"skip_default_group_bind"`
 }
 
 // UpdateAccountRequest represents update account request
@@ -1091,6 +1095,8 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			AutoPauseOnExpired:    req.AutoPauseOnExpired,
 			ProbeEnabled:          req.ProbeEnabled,
 			SkipMixedChannelCheck: skipCheck,
+			Schedulable:           req.Schedulable,
+			SkipDefaultGroupBind:  req.SkipDefaultGroupBind != nil && *req.SkipDefaultGroupBind,
 		})
 		if execErr != nil {
 			return nil, execErr
@@ -2194,6 +2200,8 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				ExpiresAt:             item.ExpiresAt,
 				AutoPauseOnExpired:    item.AutoPauseOnExpired,
 				SkipMixedChannelCheck: skipCheck,
+				Schedulable:           item.Schedulable,
+				SkipDefaultGroupBind:  item.SkipDefaultGroupBind != nil && *item.SkipDefaultGroupBind,
 			})
 			if err != nil {
 				failed++

@@ -505,7 +505,7 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
 		Priority:    input.Priority,
 		Status:      StatusActive,
-		Schedulable: true,
+		Schedulable: input.Schedulable == nil || *input.Schedulable,
 		WorkspaceID: resolveNewAccountWorkspaceID(ctx),
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
