@@ -743,6 +743,12 @@ func (r *apiKeyRepository) CountByGroupID(ctx context.Context, groupID int64) (i
 	return int64(count), err
 }
 
+// CountActiveByGroupID counts the group's live keys whose status is active.
+func (r *apiKeyRepository) CountActiveByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	count, err := r.activeQuery().Where(apikey.GroupIDEQ(groupID), apikey.StatusEQ(service.StatusAPIKeyActive)).Count(ctx)
+	return int64(count), err
+}
+
 func (r *apiKeyRepository) ListKeysByUserID(ctx context.Context, userID int64) ([]string, error) {
 	keys, err := r.activeQuery().
 		Where(apikey.UserIDEQ(userID)).

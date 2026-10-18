@@ -41,3 +41,11 @@ func TestVendorRoutesDenyGroupMemberBatch(t *testing.T) {
 		t.Fatal("vendor must not batch-edit group members")
 	}
 }
+
+// TestVendorRoutesDenyGroupStats: key and subscription counts are end-user data.
+func TestVendorRoutesDenyGroupStats(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/groups/:id/stats"), scope) {
+		t.Fatal("vendor must not read group stats")
+	}
+}

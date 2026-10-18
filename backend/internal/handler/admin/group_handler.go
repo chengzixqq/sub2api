@@ -924,19 +924,28 @@ func (h *GroupHandler) GetStats(c *gin.Context) {
 		return
 	}
 	groupID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || groupID <= 0 {
 		response.BadRequest(c, "Invalid group ID")
 		return
 	}
-
-	// Return mock data for now
-	response.Success(c, gin.H{
-		"total_api_keys":  0,
-		"active_api_keys": 0,
-		"total_requests":  0,
-		"total_cost":      0.0,
-	})
-	_ = groupID // TODO: implement actual stats
+	stats, err := h.adminService.GetGroupStats(c.Request.Context(), groupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	// All-time cost comes from the same rollup as usage-summary. The rollup
+	// carries no request count, so total_requests stays 0.
+	if h.dashboardService != nil {
+		if summaries, err := h.dashboardService.GetGroupUsageSummary(c.Request.Context(), service.GroupUsageTodayStart(time.Now())); err == nil {
+			for _, summary := range summaries {
+				if summary.GroupID == groupID {
+					stats.TotalCost = summary.TotalCost
+					break
+				}
+			}
+		}
+	}
+	response.Success(c, stats)
 }
 
 // GetUsageSummary returns today's, yesterday's, and cumulative cost for all groups.

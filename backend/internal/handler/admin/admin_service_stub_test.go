@@ -834,6 +834,13 @@ func (s *stubAdminService) AdminUpdateAPIKeyGroupIDWithOptions(ctx context.Conte
 	return result, nil
 }
 
+func (s *stubAdminService) GetGroupStats(ctx context.Context, groupID int64) (*service.GroupStats, error) {
+	if groupID == 404 {
+		return nil, service.ErrGroupNotFound
+	}
+	return &service.GroupStats{TotalAPIKeys: 3, ActiveAPIKeys: 2, SubscriptionsTotal: 5, SubscriptionsActive: 1}, nil
+}
+
 func (s *stubAdminService) UpdateGroupMembers(ctx context.Context, groupID int64, in service.UpdateGroupMembersInput) (*service.UpdateGroupMembersResult, error) {
 	s.lastGroupMembersInput = in
 	if s.updateGroupMembersErr != nil {

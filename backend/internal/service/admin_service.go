@@ -92,6 +92,7 @@ type AdminService interface {
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
 	// UpdateGroupMembers adds / removes accounts of a group, reporting per account.
 	UpdateGroupMembers(ctx context.Context, groupID int64, in UpdateGroupMembersInput) (*UpdateGroupMembersResult, error)
+	GetGroupStats(ctx context.Context, groupID int64) (*GroupStats, error)
 	ReplaceUserGroupWithOptions(ctx context.Context, userID, oldGroupID, newGroupID int64, opts ReplaceUserGroupOptions) (*ReplaceUserGroupResult, error)
 
 	// Account management
