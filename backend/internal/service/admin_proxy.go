@@ -51,6 +51,32 @@ func (s *adminServiceImpl) GetProxy(ctx context.Context, id int64) (*Proxy, erro
 	return s.proxyRepo.GetByIDScoped(ctx, id)
 }
 
+// ProxyDetailCounter counts one proxy's accounts within the caller's scope.
+type ProxyDetailCounter interface {
+	CountProxyAccountsScoped(ctx context.Context, proxyID int64) (accounts int64, fallback int64, err error)
+}
+
+// GetProxyWithAccountCount returns one proxy with the same fields as the list:
+// scoped account count, accounts moved off it by expiry fallback, and the
+// cached latency / exit IP / quality. Inactive and expired proxies included.
+func (s *adminServiceImpl) GetProxyWithAccountCount(ctx context.Context, id int64) (*ProxyWithAccountCount, error) {
+	proxy, err := s.proxyRepo.GetByIDScoped(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := []ProxyWithAccountCount{{Proxy: *proxy}}
+	if counter, ok := s.proxyRepo.(ProxyDetailCounter); ok {
+		accounts, fallback, err := counter.CountProxyAccountsScoped(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out[0].AccountCount = accounts
+		out[0].FallbackAccountCount = fallback
+	}
+	s.attachProxyLatency(ctx, out)
+	return &out[0], nil
+}
+
 // requireProxyAccess 校验调用者有权操作该代理，越权按不存在处理。
 //
 // 写路径必须先过这道校验：Update/Delete 只拿到 id，

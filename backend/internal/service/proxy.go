@@ -75,6 +75,9 @@ type ProxyWithAccountCount struct {
 	// LatencyCheckedAt is the Unix time of the last connectivity probe
 	// (manual test, quality check or post-create probe); nil if never probed.
 	LatencyCheckedAt *int64
+	// FallbackAccountCount counts accounts moved off this proxy by expiry
+	// fallback (their proxy_fallback_origin_id is this proxy).
+	FallbackAccountCount int64
 }
 
 type ProxyAccountSummary struct {

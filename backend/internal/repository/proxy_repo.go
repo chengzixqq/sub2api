@@ -454,6 +454,10 @@ func (r *proxyRepository) buildProxyWithAccountCountResult(ctx context.Context, 
 	if err != nil {
 		return nil, nil, err
 	}
+	fallbackCounts, err := r.getFallbackAccountCountsForProxies(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	result := make([]service.ProxyWithAccountCount, 0, len(proxies))
 	for i := range proxies {
@@ -462,8 +466,9 @@ func (r *proxyRepository) buildProxyWithAccountCountResult(ctx context.Context, 
 			continue
 		}
 		result = append(result, service.ProxyWithAccountCount{
-			Proxy:        *proxyOut,
-			AccountCount: counts[proxyOut.ID],
+			Proxy:                *proxyOut,
+			AccountCount:         counts[proxyOut.ID],
+			FallbackAccountCount: fallbackCounts[proxyOut.ID],
 		})
 	}
 
@@ -666,6 +671,10 @@ func (r *proxyRepository) ListActiveWithAccountCount(ctx context.Context) ([]ser
 	if err != nil {
 		return nil, err
 	}
+	fallbackCounts, err := r.getFallbackAccountCountsForProxies(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build result with account counts
 	result := make([]service.ProxyWithAccountCount, 0, len(proxies))
@@ -675,8 +684,9 @@ func (r *proxyRepository) ListActiveWithAccountCount(ctx context.Context) ([]ser
 			continue
 		}
 		result = append(result, service.ProxyWithAccountCount{
-			Proxy:        *proxyOut,
-			AccountCount: counts[proxyOut.ID],
+			Proxy:                *proxyOut,
+			AccountCount:         counts[proxyOut.ID],
+			FallbackAccountCount: fallbackCounts[proxyOut.ID],
 		})
 	}
 

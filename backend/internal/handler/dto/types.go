@@ -482,6 +482,8 @@ type ProxyWithAccountCount struct {
 	QualityChecked *int64 `json:"quality_checked,omitempty"`
 	// LatencyCheckedAt 上次连通性探测时间（Unix 秒）；从未探测过时不返回
 	LatencyCheckedAt *int64 `json:"latency_checked_at,omitempty"`
+	// FallbackAccountCount 因本代理到期被回退走的账号数
+	FallbackAccountCount int64 `json:"fallback_account_count"`
 }
 
 // AdminProxy 是管理员接口使用的 proxy DTO（包含密码等敏感字段）。
@@ -510,6 +512,8 @@ type AdminProxyWithAccountCount struct {
 	QualityChecked *int64 `json:"quality_checked,omitempty"`
 	// LatencyCheckedAt 上次连通性探测时间（Unix 秒）；从未探测过时不返回
 	LatencyCheckedAt *int64 `json:"latency_checked_at,omitempty"`
+	// FallbackAccountCount 因本代理到期被回退走的账号数
+	FallbackAccountCount int64 `json:"fallback_account_count"`
 }
 
 type ProxyAccountSummary struct {

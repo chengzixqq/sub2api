@@ -124,13 +124,14 @@ func (h *ProxyHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	proxy, err := h.adminService.GetProxy(c.Request.Context(), proxyID)
+	proxy, err := h.adminService.GetProxyWithAccountCount(c.Request.Context(), proxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, dto.ProxyFromServiceAdmin(proxy))
+	// A superset of the old AdminProxy: same fields, plus counts, latency and quality.
+	response.Success(c, dto.ProxyWithAccountCountFromServiceAdmin(proxy))
 }
 
 // Create handles creating a new proxy
