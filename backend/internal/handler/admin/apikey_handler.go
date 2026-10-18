@@ -28,6 +28,21 @@ type AdminUpdateAPIKeyGroupRequest struct {
 	ResetRateLimitUsage *bool  `json:"reset_rate_limit_usage"` // true=重置 5h/1d/7d 限速用量
 }
 
+// Delete deletes an end user's API key on the admin's behalf. Deleting an already deleted key also succeeds.
+// DELETE /api/v1/admin/api-keys/:id
+func (h *AdminAPIKeyHandler) Delete(c *gin.Context) {
+	keyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || keyID <= 0 {
+		response.BadRequest(c, "Invalid API key ID")
+		return
+	}
+	if err := h.adminService.AdminDeleteAPIKey(c.Request.Context(), keyID); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"id": keyID, "deleted": true})
+}
+
 // UpdateGroup handles updating an API key's admin-managed fields.
 // PUT /api/v1/admin/api-keys/:id
 func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {

@@ -786,6 +786,16 @@ func (s *stubAdminService) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 	return nil, service.ErrAPIKeyNotFound
 }
 
+func (s *stubAdminService) AdminDeleteAPIKey(ctx context.Context, keyID int64) error {
+	for i := range s.apiKeys {
+		if s.apiKeys[i].ID == keyID {
+			s.apiKeys = append(s.apiKeys[:i], s.apiKeys[i+1:]...)
+			return nil
+		}
+	}
+	return service.ErrAPIKeyNotFound
+}
+
 func (s *stubAdminService) AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*service.APIKey, error) {
 	for i := range s.apiKeys {
 		if s.apiKeys[i].ID == keyID {
