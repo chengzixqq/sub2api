@@ -57,6 +57,7 @@ type APIKey struct {
 	ID          int64      `json:"id"`
 	UserID      int64      `json:"user_id"`
 	Key         string     `json:"key"`
+	KeyMasked   string     `json:"key_masked"` // 前 3 位 + "…" + 后 4 位；已删除的墓碑 Key 为空
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
 	Status      string     `json:"status"`

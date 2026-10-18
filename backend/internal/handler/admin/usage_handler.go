@@ -115,6 +115,10 @@ func (h *UsageHandler) List(c *gin.Context) {
 		groupID = id
 	}
 
+	maskedKeys, ok := parseAPIKeyMaskedView(c)
+	if !ok {
+		return
+	}
 	model := c.Query("model")
 	modelSource, err := parseModelFilterSource(c)
 	if err != nil {
@@ -221,6 +225,9 @@ func (h *UsageHandler) List(c *gin.Context) {
 		row := dto.UsageLogFromServiceAdmin(&records[i])
 		if vendor {
 			dto.RedactAdminUsageLogForVendor(row)
+		}
+		if maskedKeys {
+			row.APIKey.HideFullKey()
 		}
 		out = append(out, *row)
 	}

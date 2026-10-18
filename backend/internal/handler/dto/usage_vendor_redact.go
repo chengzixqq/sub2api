@@ -38,7 +38,7 @@ func RedactAdminUsageLogForVendor(l *AdminUsageLog) {
 		l.User = &User{ID: u.ID, Email: MaskEmail(u.Email), DeletedAt: u.DeletedAt}
 	}
 	if k := l.APIKey; k != nil {
-		l.APIKey = &APIKey{ID: k.ID, UserID: k.UserID, Name: k.Name}
+		l.APIKey = &APIKey{ID: k.ID, UserID: k.UserID, Name: k.Name, KeyMasked: k.KeyMasked}
 	}
 	l.Subscription = nil
 }

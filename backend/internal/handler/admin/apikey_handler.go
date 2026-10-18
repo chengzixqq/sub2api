@@ -170,12 +170,43 @@ func (h *AdminAPIKeyHandler) Get(c *gin.Context) {
 		response.BadRequest(c, "Invalid API key ID")
 		return
 	}
+	masked, ok := parseAPIKeyMaskedView(c)
+	if !ok {
+		return
+	}
 	key, err := h.adminService.AdminGetAPIKey(c.Request.Context(), keyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, dto.APIKeyFromService(key))
+	out := dto.APIKeyFromService(key)
+	if masked {
+		out.HideFullKey()
+	}
+	response.Success(c, out)
+}
+
+// Reveal returns one key's plaintext for an admin who passed step-up. It is a
+// POST so the audit log records it, and the response is never cached. Deleted
+// (tombstoned) keys have no plaintext left and answer 404.
+// POST /api/v1/admin/api-keys/:id/reveal
+func (h *AdminAPIKeyHandler) Reveal(c *gin.Context) {
+	keyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || keyID <= 0 {
+		response.BadRequest(c, "Invalid API key ID")
+		return
+	}
+	key, err := h.adminService.AdminGetAPIKey(c.Request.Context(), keyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if key == nil || dto.MaskAPIKey(key.Key) == "" {
+		response.ErrorFrom(c, service.ErrAPIKeyNotFound)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	response.Success(c, gin.H{"id": key.ID, "key": key.Key})
 }
 
 // Delete deletes an end user's API key on the admin's behalf. Deleting an already deleted key also succeeds.
@@ -202,6 +233,10 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		return
 	}
 
+	masked, ok := parseAPIKeyMaskedView(c)
+	if !ok {
+		return
+	}
 	var req AdminUpdateAPIKeyGroupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -241,5 +276,9 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		result.APIKey = resetKey
 	}
 
-	response.Success(c, adminAPIKeyResponse(result, previous))
+	out := adminAPIKeyResponse(result, previous)
+	if masked {
+		out.APIKey.HideFullKey()
+	}
+	response.Success(c, out)
 }

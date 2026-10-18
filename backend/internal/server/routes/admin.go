@@ -115,7 +115,7 @@ func RegisterAdminRoutes(
 		registerPluginRoutes(admin, h, stepUpAuth)
 
 		// API Key 管理
-		registerAdminAPIKeyRoutes(admin, h)
+		registerAdminAPIKeyRoutes(admin, h, stepUpAuth)
 
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
@@ -198,10 +198,11 @@ func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers
 	}
 }
 
-func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
 	apiKeys := admin.Group("/api-keys")
 	{
 		apiKeys.GET("/:id", h.Admin.APIKey.Get)
+		apiKeys.POST("/:id/reveal", gin.HandlerFunc(stepUpAuth), h.Admin.APIKey.Reveal)
 		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
 		apiKeys.DELETE("/:id", h.Admin.APIKey.Delete)
 	}

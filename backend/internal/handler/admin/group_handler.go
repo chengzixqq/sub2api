@@ -1044,6 +1044,10 @@ func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
 		return
 	}
 
+	masked, ok := parseAPIKeyMaskedView(c)
+	if !ok {
+		return
+	}
 	page, pageSize := response.ParsePagination(c)
 
 	keys, total, err := h.adminService.GetGroupAPIKeys(c.Request.Context(), groupID, page, pageSize)
@@ -1054,7 +1058,11 @@ func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
 
 	outKeys := make([]dto.APIKey, 0, len(keys))
 	for i := range keys {
-		outKeys = append(outKeys, *dto.APIKeyFromService(&keys[i]))
+		item := dto.APIKeyFromService(&keys[i])
+		if masked {
+			item.HideFullKey()
+		}
+		outKeys = append(outKeys, *item)
 	}
 	response.Paginated(c, outKeys, total, page, pageSize)
 }

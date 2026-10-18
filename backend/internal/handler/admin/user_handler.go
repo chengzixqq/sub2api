@@ -480,6 +480,10 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 		return
 	}
 
+	masked, ok := parseAPIKeyMaskedView(c)
+	if !ok {
+		return
+	}
 	page, pageSize := response.ParsePagination(c)
 	sortBy := c.DefaultQuery("sort_by", "created_at")
 	sortOrder := c.DefaultQuery("sort_order", "desc")
@@ -492,7 +496,11 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 
 	out := make([]dto.APIKey, 0, len(keys))
 	for i := range keys {
-		out = append(out, *dto.APIKeyFromService(&keys[i]))
+		item := dto.APIKeyFromService(&keys[i])
+		if masked {
+			item.HideFullKey()
+		}
+		out = append(out, *item)
 	}
 	response.Paginated(c, out, total, page, pageSize)
 }

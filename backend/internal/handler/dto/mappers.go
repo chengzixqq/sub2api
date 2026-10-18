@@ -85,6 +85,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		ID:                 k.ID,
 		UserID:             k.UserID,
 		Key:                k.Key,
+		KeyMasked:          MaskAPIKey(k.Key),
 		Name:               k.Name,
 		GroupID:            k.GroupID,
 		Status:             k.Status,

@@ -45,3 +45,18 @@ func TestAPIKeyFromService_MapsNilLastUsedAt(t *testing.T) {
 	require.Nil(t, out.LastUsedAt)
 	require.Nil(t, out.LastUsedIP)
 }
+
+func TestMaskAPIKey(t *testing.T) {
+	require.Equal(t, "sk-…3f9a", MaskAPIKey("sk-abcdefghijklmnop3f9a"))
+	require.Equal(t, "", MaskAPIKey("__deleted__12__1700000000"))
+	require.Equal(t, "", MaskAPIKey(""))
+	require.Equal(t, "…", MaskAPIKey("abcdef"), "keys too short to keep a prefix and suffix reveal nothing")
+
+	out := APIKeyFromService(&service.APIKey{ID: 1, Key: "sk-abcdefghijklmnop3f9a"})
+	require.Equal(t, "sk-…3f9a", out.KeyMasked)
+	require.Equal(t, "sk-abcdefghijklmnop3f9a", out.Key)
+
+	out.HideFullKey()
+	require.Empty(t, out.Key)
+	require.Equal(t, "sk-…3f9a", out.KeyMasked)
+}
