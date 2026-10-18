@@ -165,6 +165,37 @@ type UserSpendingRankingResponse struct {
 	TotalTokens     int64                     `json:"total_tokens"`
 }
 
+// AccountSpendingRankingParams selects the account spending ranking window.
+type AccountSpendingRankingParams struct {
+	Start    time.Time
+	End      time.Time
+	Limit    int
+	Platform string
+	GroupID  int64
+}
+
+// AccountSpendingRankingItem is one account's spend within the window. ActualCost
+// is what users were charged; AccountCost and StandardCost only include rows
+// with provider_cost_recorded, matching accounts/today-stats.
+type AccountSpendingRankingItem struct {
+	AccountID    int64   `json:"account_id"`
+	AccountName  string  `json:"account_name"`
+	Platform     string  `json:"platform"`
+	Status       string  `json:"status"`
+	Requests     int64   `json:"requests"`
+	Tokens       int64   `json:"tokens"`
+	ActualCost   float64 `json:"actual_cost"`
+	AccountCost  float64 `json:"account_cost"`
+	StandardCost float64 `json:"standard_cost"`
+}
+
+// AccountSpendingRankingResponse is the ranking page plus the total actual cost
+// across every matching account.
+type AccountSpendingRankingResponse struct {
+	Ranking         []AccountSpendingRankingItem `json:"ranking"`
+	TotalActualCost float64                      `json:"total_actual_cost"`
+}
+
 // UserBreakdownItem represents per-user usage breakdown within a dimension (group, model, endpoint).
 type UserBreakdownItem struct {
 	UserID       int64   `json:"user_id"`

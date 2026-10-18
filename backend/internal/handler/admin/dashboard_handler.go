@@ -407,6 +407,67 @@ func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 	response.Success(c, gin.H{"ranking": ranking.Ranking, "total_actual_cost": ranking.TotalActualCost, "total_requests": ranking.TotalRequests, "total_tokens": ranking.TotalTokens, "start_date": startTime.Format("2006-01-02"), "end_date": endTime.Add(-time.Nanosecond).Format("2006-01-02"), "query": dashboardQueryMetadata(c)})
 }
 
+var dashboardAccountsRankingCache = newSnapshotCache(30 * time.Second)
+
+const (
+	accountsRankingDefaultLimit = 10
+	accountsRankingMaxLimit     = 50
+)
+
+// GetAccountSpendingRanking ranks accounts by actual charged cost; the window
+// defaults to today in the requested timezone.
+// GET /api/v1/admin/dashboard/accounts-ranking
+func (h *DashboardHandler) GetAccountSpendingRanking(c *gin.Context) {
+	userTZ := c.Query("timezone")
+	todayStart := timezone.StartOfDayInUserLocation(timezone.NowInUserLocation(userTZ), userTZ)
+	todayEnd := todayStart.AddDate(0, 0, 1)
+	queryRange, err := usagequery.ParseRange(c.Request.URL.Query(), &todayStart, &todayEnd)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	c.Set("usage_query_range", queryRange)
+	startTime, endTime := *queryRange.Start, *queryRange.End
+
+	limit := accountsRankingDefaultLimit
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			response.BadRequest(c, "limit must be a positive integer")
+			return
+		}
+		limit = min(parsed, accountsRankingMaxLimit)
+	}
+	var groupID int64
+	if raw := strings.TrimSpace(c.Query("group_id")); raw != "" {
+		groupID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || groupID <= 0 {
+			response.BadRequest(c, "invalid group_id")
+			return
+		}
+	}
+	platform := strings.TrimSpace(c.Query("platform"))
+
+	params := usagestats.AccountSpendingRankingParams{Start: startTime, End: endTime, Limit: limit, Platform: platform, GroupID: groupID}
+	filters := usagestats.UsageLogFilters{GroupID: groupID}
+	dimension := "accounts:" + strconv.Itoa(limit) + ":" + platform
+	ranking, hit, err := loadDashboardQuery(queryContext(c), dashboardAccountsRankingCache, startTime, endTime, filters, dimension, func(work context.Context) (*usagestats.AccountSpendingRankingResponse, error) {
+		return h.dashboardService.GetAccountSpendingRanking(work, params)
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
+	response.Success(c, gin.H{
+		"ranking":           ranking.Ranking,
+		"total_actual_cost": ranking.TotalActualCost,
+		"start_date":        startTime.Format("2006-01-02"),
+		"end_date":          endTime.Add(-time.Nanosecond).Format("2006-01-02"),
+		"query":             dashboardQueryMetadata(c),
+	})
+}
+
 // GetBatchUsersUsage handles getting usage stats for multiple users
 // POST /api/v1/admin/dashboard/users-usage
 func (h *DashboardHandler) GetBatchUsersUsage(c *gin.Context) {

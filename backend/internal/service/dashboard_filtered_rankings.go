@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
@@ -30,4 +31,16 @@ func (s *DashboardService) GetUserSpendingRankingWithFilters(ctx context.Context
 		return repo.GetUserSpendingRankingWithFilters(ctx, start, end, limit, filters)
 	}
 	return s.GetUserSpendingRanking(ctx, start, end, limit)
+}
+
+// GetAccountSpendingRanking ranks accounts by actual charged cost. The usage
+// repository must support it; there is no slower fallback.
+func (s *DashboardService) GetAccountSpendingRanking(ctx context.Context, params usagestats.AccountSpendingRankingParams) (*usagestats.AccountSpendingRankingResponse, error) {
+	repo, ok := s.usageRepo.(interface {
+		GetAccountSpendingRanking(context.Context, usagestats.AccountSpendingRankingParams) (*usagestats.AccountSpendingRankingResponse, error)
+	})
+	if !ok {
+		return nil, errors.New("account spending ranking is not supported by the usage repository")
+	}
+	return repo.GetAccountSpendingRanking(ctx, params)
 }
