@@ -104,6 +104,11 @@ type AdminUserAdjustmentFilter struct {
 	Operator  string
 	StartTime *time.Time
 	EndTime   *time.Time
+	// Exact matches used to reconcile one write: RequestID is the client's X-Request-ID, ActionID the id returned in
+	// X-Admin-Adjustment-Action-ID, UserID the target user (keyword matching on user_id::text would also hit 10, 21, …).
+	RequestID string
+	ActionID  *uuid.UUID
+	UserID    *int64
 }
 
 type AdminUserAdjustmentSummary struct {

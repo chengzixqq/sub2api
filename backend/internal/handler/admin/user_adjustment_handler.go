@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type UserAdjustmentHandler struct {
@@ -165,6 +166,24 @@ func parseUserAdjustmentFilter(c *gin.Context) (service.AdminUserAdjustmentFilte
 			return filter, fmt.Errorf("end_time must be RFC3339")
 		}
 		filter.EndTime = &value
+	}
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
+	if len(filter.RequestID) > 64 {
+		return filter, fmt.Errorf("request_id cannot exceed 64 characters")
+	}
+	if raw := strings.TrimSpace(c.Query("action_id")); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return filter, fmt.Errorf("action_id must be a UUID")
+		}
+		filter.ActionID = &id
+	}
+	if raw := strings.TrimSpace(c.Query("user_id")); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			return filter, fmt.Errorf("user_id must be a positive integer")
+		}
+		filter.UserID = &id
 	}
 	if filter.StartTime != nil && filter.EndTime != nil && !filter.StartTime.Before(*filter.EndTime) {
 		return filter, fmt.Errorf("start_time must be before end_time")

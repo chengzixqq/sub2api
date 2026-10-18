@@ -18,3 +18,10 @@ func TestRedeemCodeBatchesMigration(t *testing.T) {
 	require.Contains(t, sql, "CREATE INDEX IF NOT EXISTS idx_redeem_codes_created_at ON redeem_codes (created_at DESC, id DESC)")
 	require.NotContains(t, sql, "+goose")
 }
+
+func TestAdminUserAdjustmentsRequestIDIndexMigration(t *testing.T) {
+	content, err := FS.ReadFile("249_admin_user_adjustments_request_id_index.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "CREATE INDEX IF NOT EXISTS idx_admin_user_adjustments_request_id ON admin_user_adjustments (request_id) WHERE request_id IS NOT NULL")
+}

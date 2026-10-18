@@ -622,3 +622,41 @@ func adjustmentValueOrEmpty(value *string) string {
 }
 
 func intPointer(value int) *int { return &value }
+
+// The App reconciles an unanswered top-up by its own request id (sent as X-Request-ID) and the action id from the
+// response header; user_id is an exact match (keyword's user_id::text ILIKE would also hit 10, 21, …).
+func TestAdminUserAdjustmentExactFilters(t *testing.T) {
+	client := testEntClient(t)
+	userRepo := NewUserRepository(client, integrationDB)
+	adjustmentRepo := NewAdminUserAdjustmentRepository(client)
+	adminService := newAdjustmentIntegrationAdminService(client, userRepo, NewRedeemCodeRepository(client), adjustmentRepo)
+	operator := mustCreateUser(t, client, &service.User{Email: "exact-owner-" + uuid.NewString() + "@example.com", Role: service.RoleAdmin})
+	target := mustCreateUser(t, client, &service.User{Email: "exact-target-" + uuid.NewString() + "@example.com", Balance: 1})
+	other := mustCreateUser(t, client, &service.User{Email: "exact-other-" + uuid.NewString() + "@example.com", Balance: 1})
+
+	requestID := "op-" + uuid.NewString()[:8]
+	actionID := uuid.New()
+	operatorID := operator.ID
+	ctx := service.WithAdminAdjustmentMetadata(service.WithScope(context.Background(), service.AdminScope()), service.AdminAdjustmentMetadata{
+		ActionID: actionID, Idempotent: true, OperatorID: &operatorID, OperatorEmail: operator.Email, RequestID: requestID,
+	})
+	_, err := adminService.UpdateUserBalance(ctx, target.ID, "5", service.AdjustmentOperationAdd, "补偿")
+	require.NoError(t, err)
+	_, err = adminService.UpdateUserBalance(adjustmentIntegrationContext(operator, "other"), other.ID, "1", service.AdjustmentOperationAdd, "other")
+	require.NoError(t, err)
+
+	byRequest, summary, err := adjustmentRepo.List(context.Background(), service.AdminUserAdjustmentFilter{RequestID: requestID}, 1, 20)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), summary.RecordCount)
+	require.Equal(t, actionID.String(), byRequest[0].ActionID)
+
+	_, summary, err = adjustmentRepo.List(context.Background(), service.AdminUserAdjustmentFilter{ActionID: &actionID}, 1, 20)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), summary.RecordCount)
+
+	targetID := target.ID
+	byUser, summary, err := adjustmentRepo.List(context.Background(), service.AdminUserAdjustmentFilter{UserID: &targetID}, 1, 20)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), summary.RecordCount)
+	require.Equal(t, target.ID, *byUser[0].UserID)
+}

@@ -100,6 +100,8 @@ type IdempotencyExecuteOptions struct {
 type IdempotencyExecuteResult struct {
 	Data     any
 	Replayed bool
+	// ExpiresAt is when the stored result stops replaying (zero when nothing was stored, e.g. no key was sent).
+	ExpiresAt time.Time
 }
 
 type IdempotencyCoordinator struct {
@@ -355,7 +357,7 @@ func (c *IdempotencyCoordinator) Execute(
 				}
 				recordIdempotencyReplay(opts.Route, opts.Scope, nil)
 				logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "succeeded->replayed", true, nil)
-				return &IdempotencyExecuteResult{Data: data, Replayed: true}, nil
+				return &IdempotencyExecuteResult{Data: data, Replayed: true, ExpiresAt: existing.ExpiresAt}, nil
 			case IdempotencyStatusProcessing:
 				leaseLapsed := existing.LockedUntil == nil || !existing.LockedUntil.After(now)
 				if opts.ReclaimStaleProcessing && opts.ExecutionTimeout > 0 && leaseLapsed {
@@ -482,7 +484,7 @@ func (c *IdempotencyCoordinator) Execute(
 	}
 	logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->succeeded", false, nil)
 
-	return &IdempotencyExecuteResult{Data: data}, nil
+	return &IdempotencyExecuteResult{Data: data, ExpiresAt: expiresAt}, nil
 }
 
 // renewProcessingLease uses the same repository lease primitive as system

@@ -197,9 +197,7 @@ func executeAdminOptionalIdempotentJSONWithOptions(
 		response.ErrorFrom(c, err)
 		return
 	}
-	if result != nil && result.Replayed {
-		c.Header("X-Idempotency-Replayed", "true")
-	}
+	writeAdminIdempotentSuccessHeaders(c, result)
 	response.Success(c, result.Data)
 }
 
@@ -266,8 +264,20 @@ func writeAdminIdempotentResult(
 		response.ErrorFrom(c, err)
 		return
 	}
-	if result != nil && result.Replayed {
+	writeAdminIdempotentSuccessHeaders(c, result)
+	response.Success(c, result.Data)
+}
+
+// writeAdminIdempotentSuccessHeaders marks replays and tells the client until when the key replays, after which only
+// the ledger (or other durable records) can answer whether the write happened.
+func writeAdminIdempotentSuccessHeaders(c *gin.Context, result *service.IdempotencyExecuteResult) {
+	if result == nil {
+		return
+	}
+	if result.Replayed {
 		c.Header("X-Idempotency-Replayed", "true")
 	}
-	response.Success(c, result.Data)
+	if !result.ExpiresAt.IsZero() {
+		c.Header("X-Idempotency-Expires-At", result.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 }

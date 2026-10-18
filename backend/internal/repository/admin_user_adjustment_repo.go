@@ -120,6 +120,15 @@ func adjustmentWhere(filter service.AdminUserAdjustmentFilter) (string, []any) {
 		n := len(args)
 		clauses = append(clauses, fmt.Sprintf("(operator_user_id::text ILIKE $%d ESCAPE '\\' OR COALESCE(operator_email, '') ILIKE $%d ESCAPE '\\' OR COALESCE(operator_name, '') ILIKE $%d ESCAPE '\\')", n, n, n))
 	}
+	if filter.RequestID != "" {
+		add("request_id = $%d", filter.RequestID)
+	}
+	if filter.ActionID != nil {
+		add("action_id = $%d", *filter.ActionID)
+	}
+	if filter.UserID != nil {
+		add("user_id = $%d", *filter.UserID)
+	}
 	if filter.StartTime != nil {
 		add("created_at >= $%d", *filter.StartTime)
 	}

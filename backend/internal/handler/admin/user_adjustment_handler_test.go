@@ -65,8 +65,22 @@ func TestParseUserAdjustmentFilterUsesRFC3339HalfOpenRange(t *testing.T) {
 	require.Equal(t, "2026-08-10T00:00:00+08:00", filter.EndTime.Format(time.RFC3339))
 }
 
+func TestParseUserAdjustmentFilterExactMatchFields(t *testing.T) {
+	c := adjustmentTestContext(t, "/api/v1/admin/user-adjustments?request_id=%207c0e2f1a-op%20&action_id=5b1d2c3e-4f50-4a6b-8c7d-9e0f1a2b3c4d&user_id=42")
+
+	filter, err := parseUserAdjustmentFilter(c)
+	require.NoError(t, err)
+	require.Equal(t, "7c0e2f1a-op", filter.RequestID)
+	require.Equal(t, "5b1d2c3e-4f50-4a6b-8c7d-9e0f1a2b3c4d", filter.ActionID.String())
+	require.Equal(t, int64(42), *filter.UserID)
+}
+
 func TestParseUserAdjustmentFilterRejectsInvalidValues(t *testing.T) {
 	tests := []string{
+		"?action_id=not-a-uuid",
+		"?user_id=0",
+		"?user_id=abc",
+		"?request_id=" + strings.Repeat("r", 65),
 		"?kind=other",
 		"?operation=delete",
 		"?direction=zero",

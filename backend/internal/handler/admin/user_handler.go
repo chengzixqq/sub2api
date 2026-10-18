@@ -454,6 +454,11 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		UserID: userID,
 		Body:   req,
 	}
+	// The ledger row's action id is derived from the Idempotency-Key, so first call and replay name the same action;
+	// the client looks it up in /admin/user-adjustments?action_id=… when a response was lost.
+	if actionID, derived := adminAdjustmentActionID(c, "admin.users.balance.update", idempotencyPayload); derived {
+		c.Header("X-Admin-Adjustment-Action-ID", actionID.String())
+	}
 	// Balance adjustments dedupe a re-run by action_id (derived from the Idempotency-Key), so a retry may take over
 	// an execution that died; the adjustment also survives the phone dropping the connection.
 	executeAdminMoneyWriteJSON(c, "admin.users.balance.update", idempotencyPayload, func(ctx context.Context) (any, error) {
