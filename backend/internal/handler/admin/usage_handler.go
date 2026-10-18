@@ -116,6 +116,11 @@ func (h *UsageHandler) List(c *gin.Context) {
 	}
 
 	model := c.Query("model")
+	modelSource, err := parseModelFilterSource(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 	requestID := strings.TrimSpace(c.Query("request_id"))
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
@@ -190,7 +195,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		GroupID:               groupID,
 		RequestID:             requestID,
 		Model:                 model,
-		ModelFilterSource:     usagestats.ModelSourceRequested,
+		ModelFilterSource:     modelSource,
 		RequestType:           requestType,
 		Stream:                stream,
 		NativeCompactionV2:    nativeCompactionV2,
@@ -269,6 +274,11 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 
 	model := c.Query("model")
+	modelSource, err := parseModelFilterSource(c)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
 	billingMode := strings.TrimSpace(c.Query("billing_mode"))
 
 	var requestType *int16
@@ -349,7 +359,7 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 		AccountID:             accountID,
 		GroupID:               groupID,
 		Model:                 model,
-		ModelFilterSource:     usagestats.ModelSourceRequested,
+		ModelFilterSource:     modelSource,
 		RequestType:           requestType,
 		Stream:                stream,
 		NativeCompactionV2:    nativeCompactionV2,

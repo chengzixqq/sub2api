@@ -110,3 +110,54 @@ func (s *UsageLogRepoSuite) TestUsageTrendAccountCostMatchesStats() {
 	s.Require().NoError(err)
 	s.Require().NotEmpty(userTrend)
 }
+
+func (s *UsageLogRepoSuite) TestModelSourceFilterMatchesModelStats() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "model-source@test.com"})
+	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-model-source", Name: "k"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "model-source"})
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	upstream := "claude-opus-4-20250514"
+	for i, requested := range []string{"claude-opus-4", "opus-alias", "claude-sonnet-4"} {
+		model := upstream
+		if requested == "claude-sonnet-4" {
+			model = "claude-sonnet-4-20250514"
+		}
+		_, err := s.repo.Create(s.ctx, &service.UsageLog{
+			UserID: user.ID, APIKeyID: apiKey.ID, AccountID: account.ID, RequestID: uuid.NewString(),
+			Model: requested, RequestedModel: requested, UpstreamModel: &model,
+			TotalCost: 1, ActualCost: 1, CreatedAt: start.Add(time.Duration(i) * time.Hour),
+		})
+		s.Require().NoError(err)
+	}
+
+	scope := usagestats.UsageLogFilters{AccountID: account.ID}
+	models, err := s.repo.GetModelStatsWithUsageFiltersBySource(s.ctx, start, end, scope, usagestats.ModelSourceUpstream)
+	s.Require().NoError(err)
+	var upstreamRow *usagestats.ModelStat
+	for i := range models {
+		if models[i].Model == upstream {
+			upstreamRow = &models[i]
+		}
+	}
+	s.Require().NotNil(upstreamRow)
+	s.Require().Equal(int64(2), upstreamRow.Requests)
+
+	filters := usagestats.UsageLogFilters{AccountID: account.ID, Model: upstream, ModelFilterSource: usagestats.ModelSourceUpstream, StartTime: &start, EndTime: &end}
+	stats, err := s.repo.GetStatsWithFilters(s.ctx, filters)
+	s.Require().NoError(err)
+	s.Require().Equal(upstreamRow.Requests, stats.TotalRequests, "usage/stats with model_source=upstream matches the upstream model row")
+
+	filters.ModelFilterSource = usagestats.ModelSourceRequested
+	stats, err = s.repo.GetStatsWithFilters(s.ctx, filters)
+	s.Require().NoError(err)
+	s.Require().Zero(stats.TotalRequests, "the upstream id is not a requested model")
+
+	trend, err := s.repo.GetUsageTrendWithUsageFilters(s.ctx, start, end, "day", usagestats.UsageLogFilters{AccountID: account.ID, Model: upstream, ModelFilterSource: usagestats.ModelSourceUpstream})
+	s.Require().NoError(err)
+	var trendRequests int64
+	for _, p := range trend {
+		trendRequests += p.Requests
+	}
+	s.Require().Equal(int64(2), trendRequests)
+}

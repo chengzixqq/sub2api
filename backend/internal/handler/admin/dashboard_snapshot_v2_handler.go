@@ -51,6 +51,8 @@ type dashboardSnapshotV2Filters struct {
 	NativeCompactionV2    *bool
 	BillingType           *int8
 	UpstreamModelMismatch *bool
+	// ModelSource selects how Model is matched: requested (default), upstream or mapping.
+	ModelSource string
 }
 
 type dashboardSnapshotV2CacheKey struct {
@@ -69,6 +71,7 @@ type dashboardSnapshotV2CacheKey struct {
 	NativeCompactionV2    *bool  `json:"native_compaction_v2"`
 	BillingType           *int8  `json:"billing_type"`
 	UpstreamModelMismatch *bool  `json:"upstream_model_mismatch"`
+	ModelSource           string `json:"model_source"`
 	IncludeStats          bool   `json:"include_stats"`
 	IncludeTrend          bool   `json:"include_trend"`
 	IncludeModels         bool   `json:"include_models"`
@@ -121,6 +124,7 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		NativeCompactionV2:    filters.NativeCompactionV2,
 		BillingType:           filters.BillingType,
 		UpstreamModelMismatch: filters.UpstreamModelMismatch,
+		ModelSource:           filters.ModelSource,
 		IncludeStats:          includeStats,
 		IncludeTrend:          includeTrend,
 		IncludeModels:         includeModels,
@@ -249,6 +253,11 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 	if filters.BillingMode != "" && !service.BillingMode(filters.BillingMode).IsValidUsageFilter() {
 		return nil, errors.New("invalid billing_mode")
 	}
+	source, err := parseModelFilterSource(c)
+	if err != nil {
+		return nil, err
+	}
+	filters.ModelSource = source
 
 	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
 		id, err := strconv.ParseInt(userIDStr, 10, 64)
@@ -322,6 +331,28 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 	return filters, nil
 }
 
+var errInvalidModelSource = errors.New("Invalid model_source, use requested/upstream/mapping")
+
+// parseModelFilterSource reads model_source, the matching rule for the model
+// filter. Empty means requested.
+func parseModelFilterSource(c *gin.Context) (string, error) {
+	source := strings.TrimSpace(c.Query("model_source"))
+	if source == "" {
+		return usagestats.ModelSourceRequested, nil
+	}
+	if !usagestats.IsValidModelSource(source) {
+		return "", errInvalidModelSource
+	}
+	return source, nil
+}
+
+func (f *dashboardSnapshotV2Filters) modelSource() string {
+	if f.ModelSource == "" {
+		return usagestats.ModelSourceRequested
+	}
+	return f.ModelSource
+}
+
 func (f *dashboardSnapshotV2Filters) usageFilters() usagestats.UsageLogFilters {
-	return usagestats.UsageLogFilters{UserID: f.UserID, APIKeyID: f.APIKeyID, AccountID: f.AccountID, GroupID: f.GroupID, Model: f.Model, ModelFilterSource: usagestats.ModelSourceRequested, RequestID: f.RequestID, BillingMode: f.BillingMode, RequestType: f.RequestType, Stream: f.Stream, NativeCompactionV2: f.NativeCompactionV2, BillingType: f.BillingType, UpstreamModelMismatch: f.UpstreamModelMismatch}
+	return usagestats.UsageLogFilters{UserID: f.UserID, APIKeyID: f.APIKeyID, AccountID: f.AccountID, GroupID: f.GroupID, Model: f.Model, ModelFilterSource: f.modelSource(), RequestID: f.RequestID, BillingMode: f.BillingMode, RequestType: f.RequestType, Stream: f.Stream, NativeCompactionV2: f.NativeCompactionV2, BillingType: f.BillingType, UpstreamModelMismatch: f.UpstreamModelMismatch}
 }
