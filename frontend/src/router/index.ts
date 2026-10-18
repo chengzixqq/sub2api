@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
 
   // ==================== Public Routes ====================
   {
+    path: '/mobile/verify',
+    name: 'MobileVerify',
+    component: () => import('@/views/public/MobileVerifyView.vue'),
+    meta: { requiresAuth: false, title: '手机端安全验证' }
+  },
+  {
     path: '/home',
     name: 'Home',
     component: () => import('@/views/HomeView.vue'),
@@ -838,6 +844,13 @@ function isBackendModePublicRouteAllowed(path: string, hasPendingAuthSession: bo
 router.beforeEach(async (to, _from, next) => {
   // 开始导航加载状态
   navigationLoading.startNavigation()
+
+  // The native captcha page must not restore a Web session or enter auth/backend-mode guards.
+  if (to.name === 'MobileVerify') {
+    document.title = '手机端安全验证'
+    next()
+    return
+  }
 
   const authStore = useAuthStore()
 

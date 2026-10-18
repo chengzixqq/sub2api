@@ -31,6 +31,16 @@ function initThemeClass() {
 }
 
 async function bootstrap() {
+  // Keep the native challenge outside the authenticated Web shell and its startup requests.
+  if (window.location.pathname === '/mobile/verify') {
+    document.documentElement.classList.toggle('dark', window.matchMedia('(prefers-color-scheme: dark)').matches)
+    document.title = '手机端安全验证'
+    await initI18n()
+    const { default: MobileVerifyView } = await import('@/views/public/MobileVerifyView.vue')
+    createApp(MobileVerifyView).use(i18n).mount('#app')
+    return
+  }
+
   // Apply theme class globally before app mount to keep all routes consistent.
   initThemeClass()
   initIOSViewportZoomFix()
