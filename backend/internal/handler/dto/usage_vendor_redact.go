@@ -24,13 +24,16 @@ func MaskEmail(email string) string {
 // RedactAdminUsageLogForVendor strips end-user data a vendor workspace must not see from an admin usage row.
 //
 // Users, API keys and subscriptions are station-owner data. The vendor keeps only what it needs to tell rows apart:
-// the user id with a masked email, and the key id with its name. The key plaintext, balances, notification settings and
-// the subscription body are dropped (the ids on the row itself are kept). The response shape is unchanged, so the Web
-// usage table keeps working for vendors.
+// the user id with a masked email, and the key id with its name. The key plaintext, balances, notification settings,
+// the subscription body and the end user's client IP address and User-Agent are dropped (the ids on the row itself are
+// kept). The response shape is unchanged, so the Web usage table keeps working for vendors.
 func RedactAdminUsageLogForVendor(l *AdminUsageLog) {
 	if l == nil {
 		return
 	}
+	l.IPAddress = nil
+	l.UsageLog.IPAddress = nil
+	l.UserAgent = nil
 	if u := l.User; u != nil {
 		l.User = &User{ID: u.ID, Email: MaskEmail(u.Email), DeletedAt: u.DeletedAt}
 	}

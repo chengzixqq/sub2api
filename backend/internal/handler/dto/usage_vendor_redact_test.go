@@ -60,6 +60,26 @@ func TestRedactAdminUsageLogForVendor_StripsKeyAndUserProfile(t *testing.T) {
 	}
 }
 
+// The end user's IP address and User-Agent identify a person; vendors run upstream accounts and do not need them.
+func TestRedactAdminUsageLogForVendor_StripsClientIPAndUserAgent(t *testing.T) {
+	t.Parallel()
+
+	ip, ua := "203.0.113.24", "claude-cli/1.0 (macOS)"
+	log := UsageLogFromServiceAdmin(&service.UsageLog{ID: 5, IPAddress: &ip, UserAgent: &ua})
+	require.NotNil(t, log.IPAddress)
+	require.NotNil(t, log.UserAgent)
+
+	RedactAdminUsageLogForVendor(log)
+
+	require.Nil(t, log.IPAddress)
+	require.Nil(t, log.UsageLog.IPAddress)
+	require.Nil(t, log.UserAgent)
+	raw, err := json.Marshal(log)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), ip)
+	require.NotContains(t, string(raw), ua)
+}
+
 func TestRedactAdminUsageLogForVendor_NilSafe(t *testing.T) {
 	t.Parallel()
 
