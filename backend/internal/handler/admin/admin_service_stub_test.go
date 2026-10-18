@@ -13,6 +13,7 @@ import (
 type stubAdminService struct {
 	users                               []service.User
 	apiKeys                             []service.APIKey
+	lastAPIKeyFieldsInput               *service.AdminUpdateAPIKeyInput
 	groups                              []service.Group
 	accounts                            []service.Account
 	accountSchedulerScoreFilterAccounts []service.Account
@@ -781,6 +782,26 @@ func (s *stubAdminService) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 				}
 			}
 			return &service.AdminUpdateAPIKeyGroupIDResult{APIKey: &k}, nil
+		}
+	}
+	return nil, service.ErrAPIKeyNotFound
+}
+
+func (s *stubAdminService) AdminUpdateAPIKeyFields(ctx context.Context, keyID int64, in service.AdminUpdateAPIKeyInput) (*service.AdminUpdateAPIKeyResult, error) {
+	s.lastAPIKeyFieldsInput = &in
+	for i := range s.apiKeys {
+		if s.apiKeys[i].ID == keyID {
+			previous := map[string]any{}
+			if in.Status != nil {
+				previous["status"] = s.apiKeys[i].Status
+				s.apiKeys[i].Status = *in.Status
+			}
+			if in.Name != nil {
+				previous["name"] = s.apiKeys[i].Name
+				s.apiKeys[i].Name = *in.Name
+			}
+			k := s.apiKeys[i]
+			return &service.AdminUpdateAPIKeyResult{APIKey: &k, Previous: previous}, nil
 		}
 	}
 	return nil, service.ErrAPIKeyNotFound

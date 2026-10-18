@@ -8,7 +8,10 @@ import (
 
 // API Key status constants
 const (
-	StatusAPIKeyActive         = "active"
+	StatusAPIKeyActive = "active"
+	// StatusAPIKeyInactive is what the user and admin edit paths write to disable a key (the gateway rejects any
+	// status other than active, expired and quota_exhausted).
+	StatusAPIKeyInactive       = "inactive"
 	StatusAPIKeyDisabled       = "disabled"
 	StatusAPIKeyQuotaExhausted = "quota_exhausted"
 	StatusAPIKeyExpired        = "expired"

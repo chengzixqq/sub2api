@@ -1666,6 +1666,111 @@ func (s *adminServiceImpl) AdminResetAPIKeyRateLimitUsage(ctx context.Context, k
 	return apiKey, nil
 }
 
+// AdminUpdateAPIKeyInput holds the key fields an admin can change besides the group (nil = unchanged).
+type AdminUpdateAPIKeyInput struct {
+	Name   *string
+	Status *string // active | inactive
+	Quota  *float64
+	// ResetQuota zeroes quota_used.
+	ResetQuota      bool
+	ExpiresAt       *time.Time
+	ClearExpiration bool
+	IPWhitelist     *[]string // empty slice clears
+	IPBlacklist     *[]string
+	RateLimit5h     *float64
+	RateLimit1d     *float64
+	RateLimit7d     *float64
+}
+
+// AdminUpdateAPIKeyResult carries the updated key and the previous values of every column this call changed
+// (including an implied status change), so the client can undo by writing them back.
+type AdminUpdateAPIKeyResult struct {
+	APIKey   *APIKey
+	Previous map[string]any
+}
+
+// AdminUpdateAPIKeyFields edits an end user's key on the admin's behalf with the same field rules as the user path
+// (applyAPIKeyUpdate): name escaping, quota / expiry reactivation, IP rule validation. Vendors are refused.
+func (s *adminServiceImpl) AdminUpdateAPIKeyFields(ctx context.Context, keyID int64, in AdminUpdateAPIKeyInput) (*AdminUpdateAPIKeyResult, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
+	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
+		return nil, infraerrors.BadRequest("API_KEY_NAME_REQUIRED", "API key name must not be empty")
+	}
+	if in.Status != nil && *in.Status != StatusAPIKeyActive && *in.Status != StatusAPIKeyInactive {
+		return nil, infraerrors.BadRequest("INVALID_API_KEY_STATUS", "status must be active or inactive")
+	}
+	for _, limit := range []*float64{in.Quota, in.RateLimit5h, in.RateLimit1d, in.RateLimit7d} {
+		if limit != nil {
+			if err := validateAPIKeyLimit(*limit); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := validateAPIKeyIPRules(in.IPWhitelist, in.IPBlacklist); err != nil {
+		return nil, err
+	}
+
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+	before := *apiKey
+	req := UpdateAPIKeyRequest{
+		Name: in.Name, Status: in.Status, Quota: in.Quota, ExpiresAt: in.ExpiresAt, ClearExpiration: in.ClearExpiration,
+		IPWhitelist: in.IPWhitelist, IPBlacklist: in.IPBlacklist, RateLimit5h: in.RateLimit5h, RateLimit1d: in.RateLimit1d, RateLimit7d: in.RateLimit7d,
+	}
+	if in.ResetQuota {
+		reset := true
+		req.ResetQuota = &reset
+	}
+	fields := applyAPIKeyUpdate(apiKey, req)
+
+	previous := map[string]any{}
+	if fields.Name {
+		previous["name"] = before.Name
+	}
+	if fields.Status {
+		previous["status"] = before.Status
+	}
+	if fields.Quota {
+		previous["quota"] = before.Quota
+	}
+	if fields.QuotaUsed {
+		previous["quota_used"] = before.QuotaUsed
+	}
+	if fields.ExpiresAt {
+		previous["expires_at"] = before.ExpiresAt
+	}
+	if in.IPWhitelist != nil {
+		previous["ip_whitelist"] = before.IPWhitelist
+	}
+	if in.IPBlacklist != nil {
+		previous["ip_blacklist"] = before.IPBlacklist
+	}
+	if in.RateLimit5h != nil {
+		previous["rate_limit_5h"] = before.RateLimit5h
+	}
+	if in.RateLimit1d != nil {
+		previous["rate_limit_1d"] = before.RateLimit1d
+	}
+	if in.RateLimit7d != nil {
+		previous["rate_limit_7d"] = before.RateLimit7d
+	}
+	if len(previous) == 0 {
+		return &AdminUpdateAPIKeyResult{APIKey: apiKey, Previous: previous}, nil
+	}
+
+	if err := s.apiKeyRepo.Update(ctx, apiKey, fields); err != nil {
+		return nil, fmt.Errorf("update api key: %w", err)
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+	}
+	return &AdminUpdateAPIKeyResult{APIKey: apiKey, Previous: previous}, nil
+}
+
 // AdminDeleteAPIKey deletes an end user's API key on the admin's behalf (tombstone + soft delete, like the user path).
 //
 // End-user keys are station-owner data: vendors are refused here as well as at the route layer. Deleting a key that was

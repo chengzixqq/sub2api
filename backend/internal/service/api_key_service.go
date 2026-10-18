@@ -807,33 +807,11 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		return nil, ErrInsufficientPerms
 	}
 
-	// 验证 IP 白名单格式
-	if req.IPWhitelist != nil && len(*req.IPWhitelist) > 0 {
-		if invalid := ip.ValidateIPPatterns(*req.IPWhitelist); len(invalid) > 0 {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidIPPattern, invalid)
-		}
+	if err := validateAPIKeyIPRules(req.IPWhitelist, req.IPBlacklist); err != nil {
+		return nil, err
 	}
 
-	// 验证 IP 黑名单格式
-	if req.IPBlacklist != nil && len(*req.IPBlacklist) > 0 {
-		if invalid := ip.ValidateIPPatterns(*req.IPBlacklist); len(invalid) > 0 {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidIPPattern, invalid)
-		}
-	}
-
-	// fields 只登记本次请求真正要改的列。quota_used 与 usage_5h/1d/7d 由计费热路径
-	// 原子递增，除非用户显式点了"重置"，否则这里不用快照把它们写回去。
-	var fields APIKeyUpdateFields
-	// 下面若干分支会顺带把 Status 改回 active（配额扩容、清除过期等），
-	// 所以用原始值比对来决定是否写 status，而不是只看 req.Status。
-	originalStatus := apiKey.Status
-
-	// 更新字段
-	if req.Name != nil {
-		apiKey.Name = html.EscapeString(*req.Name)
-		fields.Name = true
-	}
-
+	groupChanged := false
 	if req.GroupID != nil {
 		// 验证分组权限
 		user, err := s.userRepo.GetByID(ctx, userID)
@@ -851,7 +829,52 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		}
 
 		apiKey.GroupID = req.GroupID
-		fields.GroupID = true
+		groupChanged = true
+	}
+
+	fields := applyAPIKeyUpdate(apiKey, req)
+	fields.GroupID = groupChanged
+
+	if err := s.apiKeyRepo.Update(ctx, apiKey, fields); err != nil {
+		return nil, fmt.Errorf("update api key: %w", err)
+	}
+
+	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+	s.compileAPIKeyIPRules(apiKey)
+
+	// Invalidate Redis rate limit cache so reset takes effect immediately
+	if fields.RateLimitUsage && s.rateLimitCacheInvalid != nil {
+		_ = s.rateLimitCacheInvalid.InvalidateAPIKeyRateLimit(ctx, apiKey.ID)
+	}
+
+	return apiKey, nil
+}
+
+// validateAPIKeyIPRules checks IP allow / deny patterns (nil = unchanged, empty = clear).
+func validateAPIKeyIPRules(whitelist, blacklist *[]string) error {
+	for _, list := range []*[]string{whitelist, blacklist} {
+		if list != nil && len(*list) > 0 {
+			if invalid := ip.ValidateIPPatterns(*list); len(invalid) > 0 {
+				return fmt.Errorf("%w: %v", ErrInvalidIPPattern, invalid)
+			}
+		}
+	}
+	return nil
+}
+
+// applyAPIKeyUpdate applies every field of req except GroupID (the user and admin paths check groups differently) and
+// returns the columns to write. Shared by the user (Update) and admin (AdminUpdateAPIKeyFields) edit paths.
+//
+// fields 只登记本次请求真正要改的列。quota_used 与 usage_5h/1d/7d 由计费热路径原子递增，
+// 除非显式点了“重置”，否则不用快照把它们写回去。若干分支会顺带把 Status 改回 active
+// （配额扩容、清除过期等），所以最后用原始值比对来决定是否写 status。
+func applyAPIKeyUpdate(apiKey *APIKey, req UpdateAPIKeyRequest) APIKeyUpdateFields {
+	var fields APIKeyUpdateFields
+	originalStatus := apiKey.Status
+
+	if req.Name != nil {
+		apiKey.Name = html.EscapeString(*req.Name)
+		fields.Name = true
 	}
 
 	if req.Status != nil {
@@ -930,20 +953,7 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	if apiKey.Status != originalStatus {
 		fields.Status = true
 	}
-
-	if err := s.apiKeyRepo.Update(ctx, apiKey, fields); err != nil {
-		return nil, fmt.Errorf("update api key: %w", err)
-	}
-
-	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
-	s.compileAPIKeyIPRules(apiKey)
-
-	// Invalidate Redis rate limit cache so reset takes effect immediately
-	if resetRateLimit && s.rateLimitCacheInvalid != nil {
-		_ = s.rateLimitCacheInvalid.InvalidateAPIKeyRateLimit(ctx, apiKey.ID)
-	}
-
-	return apiKey, nil
+	return fields
 }
 
 // Delete 删除API Key
