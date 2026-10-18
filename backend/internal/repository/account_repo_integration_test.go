@@ -1779,3 +1779,48 @@ func idsOfAccounts(accounts []service.Account) []int64 {
 	}
 	return out
 }
+
+func (s *AccountRepoSuite) TestErrorAt_SetOnErrorAndClearedOnRecovery() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-error-at", Status: service.StatusActive, Schedulable: true})
+	s.repo.schedulerCache = &schedulerCacheRecorder{}
+	before := time.Now().Add(-time.Minute)
+
+	s.Require().NoError(s.repo.SetError(s.ctx, account.ID, "Authentication failed (401): invalid x-api-key"))
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.ErrorAt)
+	s.Require().True(got.ErrorAt.After(before))
+
+	// Saving an account that stays in error keeps the original timestamp.
+	firstErrorAt := *got.ErrorAt
+	got.Name = "acc-error-at-renamed"
+	s.Require().NoError(s.repo.Update(s.ctx, got))
+	got, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.ErrorAt)
+	s.Require().WithinDuration(firstErrorAt, *got.ErrorAt, time.Millisecond)
+
+	s.Require().NoError(s.repo.ClearError(s.ctx, account.ID))
+	got, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Nil(got.ErrorAt)
+}
+
+func (s *AccountRepoSuite) TestErrorAt_BulkStatusUpdate() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-error-at-bulk", Status: service.StatusActive, Schedulable: true})
+	s.repo.schedulerCache = &schedulerCacheRecorder{}
+
+	errorStatus := service.StatusError
+	_, err := s.repo.BulkUpdate(s.ctx, []int64{account.ID}, service.AccountBulkUpdate{Status: &errorStatus})
+	s.Require().NoError(err)
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.ErrorAt)
+
+	activeStatus := service.StatusActive
+	_, err = s.repo.BulkUpdate(s.ctx, []int64{account.ID}, service.AccountBulkUpdate{Status: &activeStatus})
+	s.Require().NoError(err)
+	got, err = s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Nil(got.ErrorAt)
+}

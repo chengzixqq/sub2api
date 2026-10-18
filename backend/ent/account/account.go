@@ -52,6 +52,8 @@ const (
 	FieldStatus = "status"
 	// FieldErrorMessage holds the string denoting the error_message field in the database.
 	FieldErrorMessage = "error_message"
+	// FieldErrorAt holds the string denoting the error_at field in the database.
+	FieldErrorAt = "error_at"
 	// FieldLastUsedAt holds the string denoting the last_used_at field in the database.
 	FieldLastUsedAt = "last_used_at"
 	// FieldExpiresAt holds the string denoting the expires_at field in the database.
@@ -151,6 +153,7 @@ var Columns = []string{
 	FieldWorkspaceID,
 	FieldStatus,
 	FieldErrorMessage,
+	FieldErrorAt,
 	FieldLastUsedAt,
 	FieldExpiresAt,
 	FieldAutoPauseOnExpired,
@@ -339,6 +342,11 @@ func ByStatus(opts ...sql.OrderTermOption) OrderOption {
 // ByErrorMessage orders the results by the error_message field.
 func ByErrorMessage(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldErrorMessage, opts...).ToFunc()
+}
+
+// ByErrorAt orders the results by the error_at field.
+func ByErrorAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldErrorAt, opts...).ToFunc()
 }
 
 // ByLastUsedAt orders the results by the last_used_at field.

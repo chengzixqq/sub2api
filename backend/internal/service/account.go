@@ -40,6 +40,7 @@ type Account struct {
 	LoadFactor         *int // 调度负载因子；nil 表示使用 Concurrency
 	Status             string
 	ErrorMessage       string
+	ErrorAt            *time.Time // 当前 error_message 记录的时间；非 error 状态为 nil
 	LastUsedAt         *time.Time
 	ExpiresAt          *time.Time
 	AutoPauseOnExpired bool

@@ -131,6 +131,12 @@ func (Account) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
 
+		// error_at: 账户进入 error 状态的时间；离开 error 状态时清空
+		field.Time("error_at").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+
 		// last_used_at: 最后使用时间，用于统计和调度
 		field.Time("last_used_at").
 			Optional().

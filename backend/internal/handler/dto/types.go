@@ -231,6 +231,10 @@ type Account struct {
 	RateMultiplier          float64                        `json:"rate_multiplier"`
 	Status                  string                         `json:"status"`
 	ErrorMessage            string                         `json:"error_message"`
+	ErrorAt                 *time.Time                     `json:"error_at"`
+	ErrorStatusCode         *int                           `json:"error_status_code,omitempty"`
+	ErrorKind               string                         `json:"error_kind,omitempty"`
+	ErrorSummary            string                         `json:"error_summary,omitempty"`
 	LastUsedAt              *time.Time                     `json:"last_used_at"`
 	ExpiresAt               *int64                         `json:"expires_at"`
 	AutoPauseOnExpired      bool                           `json:"auto_pause_on_expired"`
@@ -357,6 +361,10 @@ type AccountListItem struct {
 	RateMultiplier          float64    `json:"rate_multiplier"`
 	Status                  string     `json:"status"`
 	ErrorMessage            string     `json:"error_message"`
+	ErrorAt                 *time.Time `json:"error_at"`
+	ErrorStatusCode         *int       `json:"error_status_code,omitempty"`
+	ErrorKind               string     `json:"error_kind,omitempty"`
+	ErrorSummary            string     `json:"error_summary,omitempty"`
 	LastUsedAt              *time.Time `json:"last_used_at"`
 	ExpiresAt               *int64     `json:"expires_at"`
 	AutoPauseOnExpired      bool       `json:"auto_pause_on_expired"`

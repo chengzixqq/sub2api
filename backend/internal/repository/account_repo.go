@@ -171,6 +171,9 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 	if account.ExpiresAt != nil {
 		builder.SetExpiresAt(*account.ExpiresAt)
 	}
+	if account.Status == service.StatusError {
+		builder.SetErrorAt(time.Now())
+	}
 	if account.RateLimitedAt != nil {
 		builder.SetRateLimitedAt(*account.RateLimitedAt)
 	}
@@ -586,6 +589,16 @@ func (r *accountRepository) updateLockedAccount(
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+
+	if account.Status == service.StatusError {
+		errorAt := time.Now()
+		if account.ErrorAt != nil {
+			errorAt = *account.ErrorAt
+		}
+		builder.SetErrorAt(errorAt)
+	} else {
+		builder.ClearErrorAt()
+	}
 
 	if explicitRateMultiplier != nil {
 		builder.SetRateMultiplier(*explicitRateMultiplier)
@@ -1516,6 +1529,7 @@ func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg str
 		Where(dbaccount.IDEQ(id)).
 		SetStatus(service.StatusError).
 		SetErrorMessage(errorMsg).
+		SetErrorAt(time.Now()).
 		SetSchedulable(false).
 		Save(ctx)
 	if err != nil {
@@ -1539,6 +1553,7 @@ func (r *accountRepository) SetGrokCredentialErrorIfMatch(
 		UPDATE accounts AS a
 		SET status = $1,
 			error_message = $2,
+			error_at = NOW(),
 			schedulable = false,
 			updated_at = NOW()
 		WHERE a.id = $3
@@ -1599,6 +1614,7 @@ func (r *accountRepository) SetGrokOAuthErrorIfCredentialsUnchanged(
 		UPDATE accounts AS a
 		SET status = $1,
 			error_message = $2,
+			error_at = NOW(),
 			schedulable = FALSE,
 			updated_at = NOW()
 		WHERE a.id = $3
@@ -1720,6 +1736,7 @@ func (r *accountRepository) SetGrokOAuthRefreshErrorIfCredentialsUnchanged(
 		UPDATE accounts AS a
 		SET status = $1,
 			error_message = $2,
+			error_at = NOW(),
 			schedulable = FALSE,
 			updated_at = NOW()
 		WHERE a.id = $3
@@ -1902,6 +1919,7 @@ func (r *accountRepository) ClearError(ctx context.Context, id int64) error {
 		Where(dbaccount.IDEQ(id)).
 		SetStatus(service.StatusActive).
 		SetErrorMessage("").
+		ClearErrorAt().
 		Save(ctx)
 	if err != nil {
 		return err
@@ -3147,6 +3165,11 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		setClauses = append(setClauses, "status = $"+itoa(idx))
 		args = append(args, *updates.Status)
 		idx++
+		if *updates.Status == service.StatusError {
+			setClauses = append(setClauses, "error_at = COALESCE(error_at, NOW())")
+		} else {
+			setClauses = append(setClauses, "error_at = NULL")
+		}
 	}
 	if updates.Schedulable != nil {
 		setClauses = append(setClauses, "schedulable = $"+itoa(idx))
@@ -3722,6 +3745,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		LoadFactor:              m.LoadFactor,
 		Status:                  m.Status,
 		ErrorMessage:            derefString(m.ErrorMessage),
+		ErrorAt:                 m.ErrorAt,
 		LastUsedAt:              m.LastUsedAt,
 		ExpiresAt:               m.ExpiresAt,
 		AutoPauseOnExpired:      m.AutoPauseOnExpired,

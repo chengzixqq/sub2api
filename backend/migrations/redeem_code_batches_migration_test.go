@@ -25,3 +25,12 @@ func TestAdminUserAdjustmentsRequestIDIndexMigration(t *testing.T) {
 	sql := strings.Join(strings.Fields(string(content)), " ")
 	require.Contains(t, sql, "CREATE INDEX IF NOT EXISTS idx_admin_user_adjustments_request_id ON admin_user_adjustments (request_id) WHERE request_id IS NOT NULL")
 }
+
+func TestAccountErrorAtMigration(t *testing.T) {
+	content, err := FS.ReadFile("250_add_account_error_at.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS error_at TIMESTAMPTZ NULL")
+	require.NotContains(t, sql, "UPDATE accounts")
+	require.NotContains(t, sql, "+goose")
+}
