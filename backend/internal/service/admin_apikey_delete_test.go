@@ -58,3 +58,16 @@ func TestAdminDeleteAPIKey_VendorScopeIsRefused(t *testing.T) {
 	require.ErrorIs(t, svc.AdminDeleteAPIKey(vendor, 4087), domain.ErrWorkspaceScopeViolation)
 	require.Empty(t, repo.deletedIDs)
 }
+
+func TestAdminGetAPIKey(t *testing.T) {
+	repo := &apiKeyRepoStub{apiKey: &APIKey{ID: 4087, UserID: 1, Key: "sk-live", Name: "脚本"}}
+	svc := &adminServiceImpl{apiKeyRepo: repo}
+
+	key, err := svc.AdminGetAPIKey(adminCtx(), 4087)
+	require.NoError(t, err)
+	require.Equal(t, "脚本", key.Name)
+
+	vendor := WithScope(context.Background(), VendorScope(3, WorkspacePermissions{AccountManage: true}))
+	_, err = svc.AdminGetAPIKey(vendor, 4087)
+	require.ErrorIs(t, err, domain.ErrWorkspaceScopeViolation)
+}

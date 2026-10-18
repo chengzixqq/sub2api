@@ -1771,6 +1771,14 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyFields(ctx context.Context, keyID in
 	return &AdminUpdateAPIKeyResult{APIKey: apiKey, Previous: previous}, nil
 }
 
+// AdminGetAPIKey reads one end-user key for the admin (used to refresh a key card after an action). Vendors are refused.
+func (s *adminServiceImpl) AdminGetAPIKey(ctx context.Context, keyID int64) (*APIKey, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
+	return s.apiKeyRepo.GetByID(ctx, keyID)
+}
+
 // AdminDeleteAPIKey deletes an end user's API key on the admin's behalf (tombstone + soft delete, like the user path).
 //
 // End-user keys are station-owner data: vendors are refused here as well as at the route layer. Deleting a key that was

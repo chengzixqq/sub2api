@@ -162,6 +162,22 @@ func (r AdminUpdateAPIKeyGroupRequest) fieldsInput() (in service.AdminUpdateAPIK
 	return in, ok, nil
 }
 
+// Get reads one end-user API key (to refresh a key card after an action).
+// GET /api/v1/admin/api-keys/:id
+func (h *AdminAPIKeyHandler) Get(c *gin.Context) {
+	keyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || keyID <= 0 {
+		response.BadRequest(c, "Invalid API key ID")
+		return
+	}
+	key, err := h.adminService.AdminGetAPIKey(c.Request.Context(), keyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.APIKeyFromService(key))
+}
+
 // Delete deletes an end user's API key on the admin's behalf. Deleting an already deleted key also succeeds.
 // DELETE /api/v1/admin/api-keys/:id
 func (h *AdminAPIKeyHandler) Delete(c *gin.Context) {

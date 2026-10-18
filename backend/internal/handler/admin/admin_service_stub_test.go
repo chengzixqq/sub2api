@@ -807,6 +807,16 @@ func (s *stubAdminService) AdminUpdateAPIKeyFields(ctx context.Context, keyID in
 	return nil, service.ErrAPIKeyNotFound
 }
 
+func (s *stubAdminService) AdminGetAPIKey(ctx context.Context, keyID int64) (*service.APIKey, error) {
+	for i := range s.apiKeys {
+		if s.apiKeys[i].ID == keyID {
+			k := s.apiKeys[i]
+			return &k, nil
+		}
+	}
+	return nil, service.ErrAPIKeyNotFound
+}
+
 func (s *stubAdminService) AdminDeleteAPIKey(ctx context.Context, keyID int64) error {
 	for i := range s.apiKeys {
 		if s.apiKeys[i].ID == keyID {

@@ -83,6 +83,7 @@ type AdminService interface {
 	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
 	AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*APIKey, error)
 	AdminDeleteAPIKey(ctx context.Context, keyID int64) error
+	AdminGetAPIKey(ctx context.Context, keyID int64) (*APIKey, error)
 	AdminUpdateAPIKeyFields(ctx context.Context, keyID int64, in AdminUpdateAPIKeyInput) (*AdminUpdateAPIKeyResult, error)
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
