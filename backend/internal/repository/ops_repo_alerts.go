@@ -738,6 +738,139 @@ LIMIT 1`
 	return true, nil
 }
 
+// opsSilenceSelectColumns reads a silence row aliased as s, plus the creator's display name.
+const opsSilenceSelectColumns = `s.id, s.rule_id, s.platform, s.group_id, s.region, s.until, COALESCE(s.reason,''), s.created_by, s.created_at,
+  COALESCE((SELECT COALESCE(NULLIF(TRIM(u.username),''), u.email) FROM users u WHERE u.id = s.created_by), '')`
+
+// opsSilenceSameScope matches silences o in the scope of silence t (same rule, platform, group and region).
+const opsSilenceSameScope = `o.rule_id = t.rule_id AND o.platform = t.platform
+    AND o.group_id IS NOT DISTINCT FROM t.group_id AND o.region IS NOT DISTINCT FROM t.region`
+
+func scanOpsAlertSilence(row opsAlertEventRow) (*service.OpsAlertSilence, error) {
+	var out service.OpsAlertSilence
+	var groupID, createdBy sql.NullInt64
+	var region sql.NullString
+	if err := row.Scan(&out.ID, &out.RuleID, &out.Platform, &groupID, &region, &out.Until, &out.Reason, &createdBy, &out.CreatedAt, &out.CreatedByName); err != nil {
+		return nil, err
+	}
+	if groupID.Valid {
+		v := groupID.Int64
+		out.GroupID = &v
+	}
+	if region.Valid {
+		if v := strings.TrimSpace(region.String); v != "" {
+			out.Region = &v
+		}
+	}
+	if createdBy.Valid {
+		v := createdBy.Int64
+		out.CreatedBy = &v
+	}
+	return &out, nil
+}
+
+func (r *opsRepository) ListAlertSilences(ctx context.Context, filter *service.OpsAlertSilenceFilter) ([]*service.OpsAlertSilence, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("nil ops repository")
+	}
+	if filter == nil {
+		filter = &service.OpsAlertSilenceFilter{}
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	if filter.RuleID != nil {
+		args = append(args, *filter.RuleID)
+		where = append(where, "s.rule_id = $"+itoa(len(args)))
+	}
+	if filter.ActiveOnly {
+		now := filter.Now
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		args = append(args, now)
+		where = append(where, "s.until > $"+itoa(len(args)))
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	args = append(args, limit)
+	q := `SELECT ` + opsSilenceSelectColumns + `
+FROM ops_alert_silences s
+WHERE ` + strings.Join(where, " AND ") + `
+ORDER BY s.until DESC, s.id DESC
+LIMIT $` + itoa(len(args))
+
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []*service.OpsAlertSilence{}
+	for rows.Next() {
+		silence, err := scanOpsAlertSilence(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, silence)
+	}
+	return out, rows.Err()
+}
+
+func (r *opsRepository) UpdateAlertSilenceUntil(ctx context.Context, id int64, until time.Time, reason *string) (*service.OpsAlertSilence, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("nil ops repository")
+	}
+	// Data-modifying CTEs always run to completion; the shortened rows and the target are distinct rows.
+	q := `
+WITH target AS (
+  SELECT id, rule_id, platform, group_id, region FROM ops_alert_silences WHERE id = $1
+), shortened AS (
+  UPDATE ops_alert_silences o SET until = $2
+  FROM target t
+  WHERE o.id <> t.id AND ` + opsSilenceSameScope + ` AND o.until > $2
+  RETURNING o.id
+)
+UPDATE ops_alert_silences s SET until = $2, reason = COALESCE($3, s.reason)
+FROM target t
+WHERE s.id = t.id
+RETURNING ` + opsSilenceSelectColumns
+
+	silence, err := scanOpsAlertSilence(r.db.QueryRowContext(ctx, q, id, until, opsNullString(reason)))
+	if err != nil {
+		return nil, err
+	}
+	return silence, nil
+}
+
+func (r *opsRepository) EndAlertSilence(ctx context.Context, id int64, now time.Time) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("nil ops repository")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	q := `
+WITH target AS (
+  SELECT id, rule_id, platform, group_id, region FROM ops_alert_silences WHERE id = $1
+), ended AS (
+  UPDATE ops_alert_silences o SET until = $2
+  FROM target t
+  WHERE ` + opsSilenceSameScope + ` AND o.until > $2
+  RETURNING o.id
+)
+SELECT EXISTS (SELECT 1 FROM target)`
+
+	var found bool
+	if err := r.db.QueryRowContext(ctx, q, id, now).Scan(&found); err != nil {
+		return err
+	}
+	if !found {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func scanOpsAlertEvent(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
 	var ev service.OpsAlertEvent
 	var metricValue sql.NullFloat64

@@ -16,6 +16,30 @@ type opsRepoMock struct {
 	InsertSystemLogCleanupAuditFn func(ctx context.Context, input *OpsSystemLogCleanupAudit) error
 	CreateAlertSilenceFn          func(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error)
 	IsAlertSilencedFn             func(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error)
+	ListAlertSilencesFn           func(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error)
+	UpdateAlertSilenceUntilFn     func(ctx context.Context, id int64, until time.Time, reason *string) (*OpsAlertSilence, error)
+	EndAlertSilenceFn             func(ctx context.Context, id int64, now time.Time) error
+}
+
+func (m *opsRepoMock) ListAlertSilences(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error) {
+	if m.ListAlertSilencesFn != nil {
+		return m.ListAlertSilencesFn(ctx, filter)
+	}
+	return []*OpsAlertSilence{}, nil
+}
+
+func (m *opsRepoMock) UpdateAlertSilenceUntil(ctx context.Context, id int64, until time.Time, reason *string) (*OpsAlertSilence, error) {
+	if m.UpdateAlertSilenceUntilFn != nil {
+		return m.UpdateAlertSilenceUntilFn(ctx, id, until, reason)
+	}
+	return &OpsAlertSilence{ID: id, Until: until}, nil
+}
+
+func (m *opsRepoMock) EndAlertSilence(ctx context.Context, id int64, now time.Time) error {
+	if m.EndAlertSilenceFn != nil {
+		return m.EndAlertSilenceFn(ctx, id, now)
+	}
+	return nil
 }
 
 func (m *opsRepoMock) InsertErrorLog(ctx context.Context, input *OpsInsertErrorLogInput) (int64, error) {

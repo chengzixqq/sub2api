@@ -514,6 +514,98 @@ func (h *OpsHandler) CreateAlertSilence(c *gin.Context) {
 	response.Success(c, created)
 }
 
+// ListAlertSilences lists alert silences, active ones by default.
+// GET /api/v1/admin/ops/alert-silences?active=true&rule_id=41&limit=100
+func (h *OpsHandler) ListAlertSilences(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	filter := &service.OpsAlertSilenceFilter{ActiveOnly: true}
+	if raw := strings.TrimSpace(c.Query("active")); raw != "" {
+		active, err := strconv.ParseBool(raw)
+		if err != nil {
+			response.BadRequest(c, "Invalid active")
+			return
+		}
+		filter.ActiveOnly = active
+	}
+	if raw := strings.TrimSpace(c.Query("rule_id")); raw != "" {
+		ruleID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "Invalid rule_id")
+			return
+		}
+		filter.RuleID = &ruleID
+	}
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 0 {
+			response.BadRequest(c, "Invalid limit")
+			return
+		}
+		filter.Limit = limit
+	}
+	silences, err := h.opsService.ListAlertSilences(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, silences)
+}
+
+// UpdateAlertSilence moves a silence's end; other silences of the same scope are capped at the same time.
+// PUT /api/v1/admin/ops/alert-silences/:id  {"until": RFC3339, "reason": optional}
+func (h *OpsHandler) UpdateAlertSilence(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid silence ID")
+		return
+	}
+	var payload struct {
+		Until  string  `json:"until"`
+		Reason *string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+	until, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.Until))
+	if err != nil {
+		response.BadRequest(c, "Invalid until")
+		return
+	}
+	updated, err := h.opsService.UpdateAlertSilenceUntil(c.Request.Context(), id, until, payload.Reason)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, updated)
+}
+
+// DeleteAlertSilence revokes a silence: every active silence in its scope ends now (rows are kept for audit).
+// DELETE /api/v1/admin/ops/alert-silences/:id
+func (h *OpsHandler) DeleteAlertSilence(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid silence ID")
+		return
+	}
+	if err := h.opsService.EndAlertSilence(c.Request.Context(), id); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"deleted": true})
+}
+
 func (h *OpsHandler) ListAlertEvents(c *gin.Context) {
 	if h.opsService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")

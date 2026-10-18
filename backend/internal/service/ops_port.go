@@ -53,6 +53,13 @@ type OpsRepository interface {
 	// Alert silences
 	CreateAlertSilence(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error)
 	IsAlertSilenced(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error)
+	ListAlertSilences(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error)
+	// UpdateAlertSilenceUntil sets the silence's until (and reason when non-nil) and caps other silences of the same
+	// scope at the same time, so a shortened silence is not outlived by an older, longer one. sql.ErrNoRows if missing.
+	UpdateAlertSilenceUntil(ctx context.Context, id int64, until time.Time, reason *string) (*OpsAlertSilence, error)
+	// EndAlertSilence ends every active silence in the given silence's scope at now (rows are kept for audit).
+	// sql.ErrNoRows if the id does not exist; an already expired silence is not an error.
+	EndAlertSilence(ctx context.Context, id int64, now time.Time) error
 
 	// Pre-aggregation (hourly/daily) used for long-window dashboard performance.
 	UpsertHourlyMetrics(ctx context.Context, startTime, endTime time.Time) error

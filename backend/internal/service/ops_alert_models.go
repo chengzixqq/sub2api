@@ -72,6 +72,17 @@ type OpsAlertSilence struct {
 
 	CreatedBy *int64    `json:"created_by,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// CreatedByName is the creator's username (or email); filled by list queries only.
+	CreatedByName string `json:"created_by_name,omitempty"`
+}
+
+// OpsAlertSilenceFilter selects silences for GET /admin/ops/alert-silences.
+type OpsAlertSilenceFilter struct {
+	RuleID *int64
+	// ActiveOnly keeps silences whose until is after Now.
+	ActiveOnly bool
+	Limit      int
+	Now        time.Time
 }
 
 type OpsAlertEventFilter struct {

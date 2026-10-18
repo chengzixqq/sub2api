@@ -150,6 +150,91 @@ func (s *OpsService) CreateAlertSilence(ctx context.Context, input *OpsAlertSile
 	return created, nil
 }
 
+const (
+	opsAlertSilenceListDefault = 100
+	opsAlertSilenceListMax     = 500
+	// opsAlertSilenceMaxDuration bounds how far a silence can be moved by PUT; the App offers 1h / 24h / 7d.
+	opsAlertSilenceMaxDuration = 30 * 24 * time.Hour
+)
+
+var errOpsAlertSilenceNotFound = infraerrors.NotFound("OPS_ALERT_SILENCE_NOT_FOUND", "alert silence not found")
+
+func (s *OpsService) ListAlertSilences(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error) {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return nil, err
+	}
+	if s.opsRepo == nil {
+		return []*OpsAlertSilence{}, nil
+	}
+	f := OpsAlertSilenceFilter{}
+	if filter != nil {
+		f = *filter
+	}
+	if f.RuleID != nil && *f.RuleID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_RULE_ID", "invalid rule id")
+	}
+	switch {
+	case f.Limit <= 0:
+		f.Limit = opsAlertSilenceListDefault
+	case f.Limit > opsAlertSilenceListMax:
+		f.Limit = opsAlertSilenceListMax
+	}
+	if f.Now.IsZero() {
+		f.Now = time.Now().UTC()
+	}
+	return s.opsRepo.ListAlertSilences(ctx, &f)
+}
+
+// UpdateAlertSilenceUntil moves a silence's end (shorten or extend). Other silences of the same scope are capped at the
+// new time, so “silenced until” always reads from the one row the App edits.
+func (s *OpsService) UpdateAlertSilenceUntil(ctx context.Context, id int64, until time.Time, reason *string) (*OpsAlertSilence, error) {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return nil, err
+	}
+	if s.opsRepo == nil {
+		return nil, infraerrors.ServiceUnavailable("OPS_REPO_UNAVAILABLE", "Ops repository not available")
+	}
+	if id <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_SILENCE_ID", "invalid silence id")
+	}
+	now := time.Now().UTC()
+	if !until.After(now) || until.Sub(now) > opsAlertSilenceMaxDuration {
+		return nil, infraerrors.BadRequest("INVALID_UNTIL", "until must be in the future and within 30 days")
+	}
+	if reason != nil {
+		trimmed := strings.TrimSpace(*reason)
+		reason = &trimmed
+	}
+	updated, err := s.opsRepo.UpdateAlertSilenceUntil(ctx, id, until.UTC(), reason)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errOpsAlertSilenceNotFound
+		}
+		return nil, err
+	}
+	return updated, nil
+}
+
+// EndAlertSilence revokes a silence: every active silence in its scope ends now, so the next evaluation can fire.
+func (s *OpsService) EndAlertSilence(ctx context.Context, id int64) error {
+	if err := s.RequireMonitoringEnabled(ctx); err != nil {
+		return err
+	}
+	if s.opsRepo == nil {
+		return infraerrors.ServiceUnavailable("OPS_REPO_UNAVAILABLE", "Ops repository not available")
+	}
+	if id <= 0 {
+		return infraerrors.BadRequest("INVALID_SILENCE_ID", "invalid silence id")
+	}
+	if err := s.opsRepo.EndAlertSilence(ctx, id, time.Now().UTC()); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errOpsAlertSilenceNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *OpsService) IsAlertSilenced(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error) {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return false, err

@@ -222,7 +222,10 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/alert-events", h.Admin.Ops.ListAlertEvents)
 		ops.GET("/alert-events/:id", h.Admin.Ops.GetAlertEvent)
 		ops.PUT("/alert-events/:id/status", h.Admin.Ops.UpdateAlertEventStatus)
+		ops.GET("/alert-silences", h.Admin.Ops.ListAlertSilences)
 		ops.POST("/alert-silences", h.Admin.Ops.CreateAlertSilence)
+		ops.PUT("/alert-silences/:id", h.Admin.Ops.UpdateAlertSilence)
+		ops.DELETE("/alert-silences/:id", h.Admin.Ops.DeleteAlertSilence)
 
 		// Email notification config (DB-backed)
 		ops.GET("/email-notification/config", h.Admin.Ops.GetEmailNotificationConfig)
