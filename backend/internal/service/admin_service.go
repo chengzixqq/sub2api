@@ -637,6 +637,7 @@ type ProxyTestResult struct {
 	Region      string `json:"region,omitempty"`
 	Country     string `json:"country,omitempty"`
 	CountryCode string `json:"country_code,omitempty"`
+	CheckedAt   int64  `json:"checked_at,omitempty"` // Unix seconds, also on failure
 }
 
 type ProxyQualityCheckResult struct {

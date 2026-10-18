@@ -291,15 +291,17 @@ func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestR
 
 	proxyURL := proxy.URL()
 	exitInfo, latencyMs, err := s.proxyProber.ProbeProxy(ctx, proxyURL)
+	checkedAt := time.Now()
 	if err != nil {
 		s.saveProxyLatency(ctx, id, &ProxyLatencyInfo{
 			Success:   false,
 			Message:   err.Error(),
-			UpdatedAt: time.Now(),
+			UpdatedAt: checkedAt,
 		})
 		return &ProxyTestResult{
-			Success: false,
-			Message: err.Error(),
+			Success:   false,
+			Message:   err.Error(),
+			CheckedAt: checkedAt.Unix(),
 		}, nil
 	}
 
@@ -313,7 +315,7 @@ func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestR
 		CountryCode: exitInfo.CountryCode,
 		Region:      exitInfo.Region,
 		City:        exitInfo.City,
-		UpdatedAt:   time.Now(),
+		UpdatedAt:   checkedAt,
 	})
 	return &ProxyTestResult{
 		Success:     true,
@@ -324,6 +326,7 @@ func (s *adminServiceImpl) TestProxy(ctx context.Context, id int64) (*ProxyTestR
 		Region:      exitInfo.Region,
 		Country:     exitInfo.Country,
 		CountryCode: exitInfo.CountryCode,
+		CheckedAt:   checkedAt.Unix(),
 	}, nil
 }
 
@@ -659,6 +662,10 @@ func (s *adminServiceImpl) attachProxyLatency(ctx context.Context, proxies []Pro
 		proxies[i].QualityGrade = info.QualityGrade
 		proxies[i].QualitySummary = info.QualitySummary
 		proxies[i].QualityChecked = info.QualityCheckedAt
+		if !info.UpdatedAt.IsZero() {
+			checkedAt := info.UpdatedAt.Unix()
+			proxies[i].LatencyCheckedAt = &checkedAt
+		}
 	}
 }
 

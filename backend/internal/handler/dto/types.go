@@ -480,6 +480,8 @@ type ProxyWithAccountCount struct {
 	QualityGrade   string `json:"quality_grade,omitempty"`
 	QualitySummary string `json:"quality_summary,omitempty"`
 	QualityChecked *int64 `json:"quality_checked,omitempty"`
+	// LatencyCheckedAt 上次连通性探测时间（Unix 秒）；从未探测过时不返回
+	LatencyCheckedAt *int64 `json:"latency_checked_at,omitempty"`
 }
 
 // AdminProxy 是管理员接口使用的 proxy DTO（包含密码等敏感字段）。
@@ -506,6 +508,8 @@ type AdminProxyWithAccountCount struct {
 	QualityGrade   string `json:"quality_grade,omitempty"`
 	QualitySummary string `json:"quality_summary,omitempty"`
 	QualityChecked *int64 `json:"quality_checked,omitempty"`
+	// LatencyCheckedAt 上次连通性探测时间（Unix 秒）；从未探测过时不返回
+	LatencyCheckedAt *int64 `json:"latency_checked_at,omitempty"`
 }
 
 type ProxyAccountSummary struct {

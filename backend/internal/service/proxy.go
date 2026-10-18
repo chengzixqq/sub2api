@@ -72,6 +72,9 @@ type ProxyWithAccountCount struct {
 	QualityGrade   string
 	QualitySummary string
 	QualityChecked *int64
+	// LatencyCheckedAt is the Unix time of the last connectivity probe
+	// (manual test, quality check or post-create probe); nil if never probed.
+	LatencyCheckedAt *int64
 }
 
 type ProxyAccountSummary struct {
