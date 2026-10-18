@@ -14,6 +14,8 @@ type opsRepoMock struct {
 	ListSystemLogsFn              func(ctx context.Context, filter *OpsSystemLogFilter) (*OpsSystemLogList, error)
 	DeleteSystemLogsFn            func(ctx context.Context, filter *OpsSystemLogCleanupFilter) (int64, error)
 	InsertSystemLogCleanupAuditFn func(ctx context.Context, input *OpsSystemLogCleanupAudit) error
+	CreateAlertSilenceFn          func(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error)
+	IsAlertSilencedFn             func(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error)
 }
 
 func (m *opsRepoMock) InsertErrorLog(ctx context.Context, input *OpsInsertErrorLogInput) (int64, error) {
@@ -170,10 +172,16 @@ func (m *opsRepoMock) UpdateAlertEventEmailSent(ctx context.Context, eventID int
 }
 
 func (m *opsRepoMock) CreateAlertSilence(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error) {
+	if m.CreateAlertSilenceFn != nil {
+		return m.CreateAlertSilenceFn(ctx, input)
+	}
 	return input, nil
 }
 
 func (m *opsRepoMock) IsAlertSilenced(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) (bool, error) {
+	if m.IsAlertSilencedFn != nil {
+		return m.IsAlertSilencedFn(ctx, ruleID, platform, groupID, region, now)
+	}
 	return false, nil
 }
 

@@ -638,10 +638,8 @@ func (r *opsRepository) CreateAlertSilence(ctx context.Context, input *service.O
 	if input.RuleID <= 0 {
 		return nil, fmt.Errorf("invalid rule_id")
 	}
+	// Empty platform = the rule's scope has no platform; ops_alert_silences.platform is NOT NULL, so it stores "".
 	platform := strings.TrimSpace(input.Platform)
-	if platform == "" {
-		return nil, fmt.Errorf("invalid platform")
-	}
 	if input.Until.IsZero() {
 		return nil, fmt.Errorf("invalid until")
 	}
@@ -715,9 +713,6 @@ func (r *opsRepository) IsAlertSilenced(ctx context.Context, ruleID int64, platf
 		return false, fmt.Errorf("invalid rule id")
 	}
 	platform = strings.TrimSpace(platform)
-	if platform == "" {
-		return false, nil
-	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}

@@ -249,14 +249,8 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 			}
 
 			// Scoped silencing: if a matching silence exists, skip creating a firing event.
-			if s.opsService != nil {
-				platform := strings.TrimSpace(scopePlatform)
-				region := scopeRegion
-				if platform != "" {
-					if ok, err := s.opsService.IsAlertSilenced(ctx, rule.ID, platform, scopeGroupID, region, now); err == nil && ok {
-						continue
-					}
-				}
+			if s.scopedSilenceActive(ctx, rule.ID, scopePlatform, scopeGroupID, scopeRegion, now) {
+				continue
 			}
 
 			latestEvent, err := s.opsRepo.GetLatestAlertEvent(ctx, rule.ID)
@@ -853,6 +847,16 @@ func opsEmailSeverityForOps(severity string) string {
 	default:
 		return "info"
 	}
+}
+
+// scopedSilenceActive reports whether an admin-created silence covers the rule's scope. Rules without a platform
+// (group-only, server and global rules) are checked too: their silences are stored with an empty platform.
+func (s *OpsAlertEvaluatorService) scopedSilenceActive(ctx context.Context, ruleID int64, platform string, groupID *int64, region *string, now time.Time) bool {
+	if s.opsService == nil {
+		return false
+	}
+	ok, err := s.opsService.IsAlertSilenced(ctx, ruleID, strings.TrimSpace(platform), groupID, region, now)
+	return err == nil && ok
 }
 
 func isOpsAlertSilenced(now time.Time, rule *OpsAlertRule, event *OpsAlertEvent, silencing OpsAlertSilencingSettings) bool {

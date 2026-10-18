@@ -137,9 +137,8 @@ func (s *OpsService) CreateAlertSilence(ctx context.Context, input *OpsAlertSile
 	if input.RuleID <= 0 {
 		return nil, infraerrors.BadRequest("INVALID_RULE_ID", "invalid rule id")
 	}
-	if strings.TrimSpace(input.Platform) == "" {
-		return nil, infraerrors.BadRequest("INVALID_PLATFORM", "invalid platform")
-	}
+	// An empty platform means the rule's scope has no platform (group-only, server and global rules).
+	input.Platform = strings.TrimSpace(input.Platform)
 	if input.Until.IsZero() {
 		return nil, infraerrors.BadRequest("INVALID_UNTIL", "invalid until")
 	}
@@ -161,10 +160,7 @@ func (s *OpsService) IsAlertSilenced(ctx context.Context, ruleID int64, platform
 	if ruleID <= 0 {
 		return false, infraerrors.BadRequest("INVALID_RULE_ID", "invalid rule id")
 	}
-	if strings.TrimSpace(platform) == "" {
-		return false, nil
-	}
-	return s.opsRepo.IsAlertSilenced(ctx, ruleID, platform, groupID, region, now)
+	return s.opsRepo.IsAlertSilenced(ctx, ruleID, strings.TrimSpace(platform), groupID, region, now)
 }
 
 func (s *OpsService) GetLatestAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error) {
