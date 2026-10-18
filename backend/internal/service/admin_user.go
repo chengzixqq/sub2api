@@ -1787,6 +1787,10 @@ func (s *adminServiceImpl) ExpireRedeemCode(ctx context.Context, id int64) (*Red
 	if err != nil {
 		return nil, err
 	}
+	// A redeemed code is history, not inventory: expiring it would only open the way to renewing it as unused.
+	if code.Status == StatusUsed || code.UsedBy != nil {
+		return nil, ErrRedeemCodeUsed
+	}
 	code.Status = StatusExpired
 	if err := s.redeemCodeRepo.Update(ctx, code); err != nil {
 		return nil, err

@@ -326,7 +326,9 @@ func (r *redeemCodeRepository) batchUpdate(ctx context.Context, client *dbent.Cl
 	}
 	if fields.TouchesUsedSensitiveFields() {
 		for _, code := range existing {
-			if code.Status == service.StatusUsed {
+			// used_by stays set after a redeemed code's status changes (e.g. expired), so it counts as used too:
+			// otherwise the batch could turn it back into unused and let another user redeem it again.
+			if code.Status == service.StatusUsed || code.UsedBy != nil {
 				return 0, service.ErrRedeemCodeUsed
 			}
 		}
@@ -367,8 +369,9 @@ func (r *redeemCodeRepository) batchUpdate(ctx context.Context, client *dbent.Cl
 func (r *redeemCodeRepository) Use(ctx context.Context, id, userID int64) error {
 	now := time.Now()
 	client := clientFromContext(ctx, r.client)
+	// used_by IS NULL is defence in depth: a code that was ever redeemed can never be redeemed again, whatever its status.
 	affected, err := client.RedeemCode.Update().
-		Where(redeemcode.IDEQ(id), redeemcode.StatusEQ(service.StatusUnused)).
+		Where(redeemcode.IDEQ(id), redeemcode.StatusEQ(service.StatusUnused), redeemcode.UsedByIsNil()).
 		SetStatus(service.StatusUsed).
 		SetUsedBy(userID).
 		SetUsedAt(now).

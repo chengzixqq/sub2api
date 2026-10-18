@@ -359,6 +359,36 @@ func (s *RedeemCodeRepoSuite) TestBatchUpdate_UsedCodeRejectsSensitiveFields() {
 	s.Require().Equal(service.StatusUsed, got.Status)
 }
 
+// A code someone redeemed (used_by set) stays redeemed even if its status was changed away from used: a batch update
+// must not turn it back into unused, or another user could redeem it a second time.
+func (s *RedeemCodeRepoSuite) TestBatchUpdate_FormerlyUsedCodeRejectsSensitiveFields() {
+	user := s.createUser(uniqueTestValue(s.T(), "formerly-used") + "@example.com")
+	redeemed := &service.RedeemCode{Code: "FORMERLY-USED", Type: service.RedeemTypeBalance, Value: 10, Status: service.StatusExpired, UsedBy: &user.ID}
+	fresh := &service.RedeemCode{Code: "STILL-FRESH", Type: service.RedeemTypeBalance, Value: 10, Status: service.StatusUnused}
+	s.Require().NoError(s.repo.Create(s.ctx, redeemed))
+	s.Require().NoError(s.repo.Create(s.ctx, fresh))
+	unused := service.StatusUnused
+
+	_, err := s.repo.BatchUpdate(s.ctx, []int64{redeemed.ID, fresh.ID}, service.RedeemCodeBatchUpdateFields{Status: &unused})
+	s.Require().ErrorIs(err, service.ErrRedeemCodeUsed)
+	got, err := s.repo.GetByID(s.ctx, redeemed.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusExpired, got.Status, "the whole batch is refused")
+
+	notes := "补发说明"
+	_, err = s.repo.BatchUpdate(s.ctx, []int64{redeemed.ID}, service.RedeemCodeBatchUpdateFields{Notes: &notes})
+	s.Require().NoError(err, "notes stay editable")
+}
+
+func (s *RedeemCodeRepoSuite) TestUse_RefusesCodeWithUsedBy() {
+	first := s.createUser(uniqueTestValue(s.T(), "first") + "@example.com")
+	second := s.createUser(uniqueTestValue(s.T(), "second") + "@example.com")
+	code := &service.RedeemCode{Code: "USED-BY-SET", Type: service.RedeemTypeBalance, Value: 10, Status: service.StatusUnused, UsedBy: &first.ID}
+	s.Require().NoError(s.repo.Create(s.ctx, code))
+
+	s.Require().ErrorIs(s.repo.Use(s.ctx, code.ID, second.ID), service.ErrRedeemCodeUsed)
+}
+
 // --- Use ---
 
 func (s *RedeemCodeRepoSuite) TestUse() {
