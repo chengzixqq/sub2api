@@ -15,6 +15,8 @@ type stubAdminService struct {
 	users                               []service.User
 	apiKeys                             []service.APIKey
 	lastAPIKeyFieldsInput               *service.AdminUpdateAPIKeyInput
+	lastRevokeGroupAccessID             int64
+	lastReplaceOptions                  service.ReplaceUserGroupOptions
 	groups                              []service.Group
 	accounts                            []service.Account
 	accountSchedulerScoreFilterAccounts []service.Account
@@ -816,6 +818,23 @@ func (s *stubAdminService) AdminUpdateAPIKeyFields(ctx context.Context, keyID in
 		}
 	}
 	return nil, service.ErrAPIKeyNotFound
+}
+
+func (s *stubAdminService) AdminUpdateAPIKeyGroupIDWithOptions(ctx context.Context, keyID int64, groupID *int64, opts service.AdminUpdateAPIKeyGroupOptions) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+	s.lastRevokeGroupAccessID = opts.RevokeGroupAccessID
+	result, err := s.AdminUpdateAPIKeyGroupID(ctx, keyID, groupID)
+	if err != nil {
+		return nil, err
+	}
+	revoked := opts.RevokeGroupAccessID
+	result.RevokedGroupAccess = true
+	result.RevokedGroupID = &revoked
+	return result, nil
+}
+
+func (s *stubAdminService) ReplaceUserGroupWithOptions(ctx context.Context, userID, oldGroupID, newGroupID int64, opts service.ReplaceUserGroupOptions) (*service.ReplaceUserGroupResult, error) {
+	s.lastReplaceOptions = opts
+	return &service.ReplaceUserGroupResult{MigratedKeys: int64(len(opts.KeyIDs)), MigratedKeyIDs: opts.KeyIDs, NewGroupNewlyGranted: true}, nil
 }
 
 func (s *stubAdminService) AdminGetAPIKey(ctx context.Context, keyID int64) (*service.APIKey, error) {

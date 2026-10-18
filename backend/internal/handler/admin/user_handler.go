@@ -570,6 +570,10 @@ func (h *UserHandler) GetBalanceHistory(c *gin.Context) {
 type ReplaceGroupRequest struct {
 	OldGroupID int64 `json:"old_group_id" binding:"required,gt=0"`
 	NewGroupID int64 `json:"new_group_id" binding:"required,gt=0"`
+	// KeyIDs migrates only these keys (exact undo); each must be bound to old_group_id.
+	KeyIDs []int64 `json:"key_ids"`
+	// KeepOldGroupAccess keeps old_group_id in the user's allowed groups.
+	KeepOldGroupAccess bool `json:"keep_old_group_access"`
 }
 
 // ReplaceGroup handles replacing a user's exclusive group
@@ -587,14 +591,26 @@ func (h *UserHandler) ReplaceGroup(c *gin.Context) {
 		return
 	}
 
-	result, err := h.adminService.ReplaceUserGroup(c.Request.Context(), userID, req.OldGroupID, req.NewGroupID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	response.Success(c, gin.H{
-		"migrated_keys": result.MigratedKeys,
+	payload := struct {
+		UserID int64               `json:"user_id"`
+		Body   ReplaceGroupRequest `json:"body"`
+	}{userID, req}
+	executeAdminOptionalIdempotentJSON(c, "admin.users.replace_group", payload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		result, err := h.adminService.ReplaceUserGroupWithOptions(ctx, userID, req.OldGroupID, req.NewGroupID, service.ReplaceUserGroupOptions{
+			KeyIDs: req.KeyIDs, KeepOldGroupAccess: req.KeepOldGroupAccess,
+		})
+		if err != nil {
+			return nil, err
+		}
+		migratedIDs := result.MigratedKeyIDs
+		if migratedIDs == nil {
+			migratedIDs = []int64{}
+		}
+		return gin.H{
+			"migrated_keys":           result.MigratedKeys,
+			"migrated_key_ids":        migratedIDs,
+			"new_group_newly_granted": result.NewGroupNewlyGranted,
+		}, nil
 	})
 }
 

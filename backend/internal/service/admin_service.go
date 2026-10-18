@@ -82,6 +82,7 @@ type AdminService interface {
 
 	// API Key management (admin)
 	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
+	AdminUpdateAPIKeyGroupIDWithOptions(ctx context.Context, keyID int64, groupID *int64, opts AdminUpdateAPIKeyGroupOptions) (*AdminUpdateAPIKeyGroupIDResult, error)
 	AdminResetAPIKeyRateLimitUsage(ctx context.Context, keyID int64) (*APIKey, error)
 	AdminDeleteAPIKey(ctx context.Context, keyID int64) error
 	AdminGetAPIKey(ctx context.Context, keyID int64) (*APIKey, error)
@@ -89,6 +90,7 @@ type AdminService interface {
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
+	ReplaceUserGroupWithOptions(ctx context.Context, userID, oldGroupID, newGroupID int64, opts ReplaceUserGroupOptions) (*ReplaceUserGroupResult, error)
 
 	// Account management
 	ListAccounts(ctx context.Context, page, pageSize int, platform, accountType, status, search string, groupID int64, privacyMode string, sortBy, sortOrder string) ([]Account, int64, error)
@@ -527,11 +529,17 @@ type AdminUpdateAPIKeyGroupIDResult struct {
 	AutoGrantedGroupAccess bool   // true if a new exclusive group permission was auto-added
 	GrantedGroupID         *int64 // the group ID that was auto-granted
 	GrantedGroupName       string // the group name that was auto-granted
+	RevokedGroupAccess     bool   // true if RevokeGroupAccessID was removed from the user's allowed groups
+	RevokedGroupID         *int64
 }
 
 // ReplaceUserGroupResult 分组替换操作的结果
 type ReplaceUserGroupResult struct {
 	MigratedKeys int64 // 迁移的 Key 数量
+	// MigratedKeyIDs lists the moved keys; NewGroupNewlyGranted is false when
+	// the user already had the new group (an undo must then keep it).
+	MigratedKeyIDs       []int64
+	NewGroupNewlyGranted bool
 }
 
 // UserRPMStatus describes a user's current per-minute RPM usage.

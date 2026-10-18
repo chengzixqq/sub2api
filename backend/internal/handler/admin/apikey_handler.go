@@ -105,6 +105,8 @@ type adminAPIKeyResult struct {
 	AutoGrantedGroupAccess bool        `json:"auto_granted_group_access"`
 	GrantedGroupID         *int64      `json:"granted_group_id,omitempty"`
 	GrantedGroupName       string      `json:"granted_group_name,omitempty"`
+	RevokedGroupAccess     bool        `json:"revoked_group_access,omitempty"`
+	RevokedGroupID         *int64      `json:"revoked_group_id,omitempty"`
 	// Previous holds the old values of the fields an update changed, for the client's undo.
 	Previous map[string]any `json:"previous,omitempty"`
 }
@@ -115,6 +117,8 @@ func adminAPIKeyResponse(result *service.AdminUpdateAPIKeyGroupIDResult, previou
 		AutoGrantedGroupAccess: result.AutoGrantedGroupAccess,
 		GrantedGroupID:         result.GrantedGroupID,
 		GrantedGroupName:       result.GrantedGroupName,
+		RevokedGroupAccess:     result.RevokedGroupAccess,
+		RevokedGroupID:         result.RevokedGroupID,
 		Previous:               previous,
 	}
 }
@@ -124,6 +128,9 @@ func adminAPIKeyResponse(result *service.AdminUpdateAPIKeyGroupIDResult, previou
 type AdminUpdateAPIKeyGroupRequest struct {
 	GroupID             *int64 `json:"group_id"`               // nil=不修改, 0=解绑, >0=绑定到目标分组
 	ResetRateLimitUsage *bool  `json:"reset_rate_limit_usage"` // true=重置 5h/1d/7d 限速用量
+	// RevokeGroupAccessID withdraws this exclusive group from the user in the same
+	// transaction (undo of an auto-grant); 409 GROUP_STILL_IN_USE if another key uses it.
+	RevokeGroupAccessID *int64 `json:"revoke_group_access_id"`
 
 	Name        *string   `json:"name"`
 	Status      *string   `json:"status"` // active | inactive
@@ -267,7 +274,17 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		}
 	}
 
-	result, err := h.adminService.AdminUpdateAPIKeyGroupID(c.Request.Context(), keyID, req.GroupID)
+	if req.RevokeGroupAccessID != nil && *req.RevokeGroupAccessID <= 0 {
+		response.BadRequest(c, "revoke_group_access_id must be positive")
+		return
+	}
+	var result *service.AdminUpdateAPIKeyGroupIDResult
+	if req.RevokeGroupAccessID != nil {
+		opts := service.AdminUpdateAPIKeyGroupOptions{RevokeGroupAccessID: *req.RevokeGroupAccessID}
+		result, err = h.adminService.AdminUpdateAPIKeyGroupIDWithOptions(c.Request.Context(), keyID, req.GroupID, opts)
+	} else {
+		result, err = h.adminService.AdminUpdateAPIKeyGroupID(c.Request.Context(), keyID, req.GroupID)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
