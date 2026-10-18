@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -596,6 +597,74 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
 	s.compileAPIKeyIPRules(apiKey)
 
+	return apiKey, nil
+}
+
+// AdminCreate creates an API key for a user on the admin's behalf.
+//
+// Same field rules as Create, except: no custom key (the key is always generated), the active-key cap still applies
+// but the user's hourly creation allowance is neither checked nor consumed, and the group must be bound afterwards
+// through the admin group rules (AdminUpdateAPIKeyGroupID: active group, subscription check, exclusive-group grant).
+// Vendors are refused.
+func (s *APIKeyService) AdminCreate(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, domain.ErrWorkspaceScopeViolation
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, infraerrors.BadRequest("API_KEY_NAME_REQUIRED", "API key name must not be empty")
+	}
+	if req.CustomKey != nil && *req.CustomKey != "" {
+		return nil, infraerrors.BadRequest("CUSTOM_KEY_NOT_ALLOWED", "admins cannot set a custom key; it is generated")
+	}
+	if req.GroupID != nil {
+		return nil, infraerrors.BadRequest("GROUP_BIND_SEPARATELY", "bind the group with the admin group rules after creating the key")
+	}
+	if err := validateCreateAPIKeyRequest(req); err != nil {
+		return nil, err
+	}
+	if err := validateAPIKeyIPRules(&req.IPWhitelist, &req.IPBlacklist); err != nil {
+		return nil, err
+	}
+	if _, err := s.userRepo.GetByID(ctx, userID); err != nil {
+		return nil, err
+	}
+	if s.cfg != nil {
+		if maxActive := s.cfg.APIKeyCreate.MaxActivePerUser; maxActive > 0 {
+			count, err := s.apiKeyRepo.CountByUserID(ctx, userID)
+			if err != nil {
+				return nil, fmt.Errorf("count api keys: %w", err)
+			}
+			if count >= int64(maxActive) {
+				return nil, ErrAPIKeyCountExceeded
+			}
+		}
+	}
+
+	key, err := s.GenerateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+	apiKey := &APIKey{
+		UserID:      userID,
+		Key:         key,
+		Name:        html.EscapeString(req.Name),
+		Status:      StatusActive,
+		IPWhitelist: req.IPWhitelist,
+		IPBlacklist: req.IPBlacklist,
+		Quota:       req.Quota,
+		RateLimit5h: req.RateLimit5h,
+		RateLimit1d: req.RateLimit1d,
+		RateLimit7d: req.RateLimit7d,
+	}
+	if req.ExpiresInDays != nil && *req.ExpiresInDays > 0 {
+		expiresAt := time.Now().AddDate(0, 0, *req.ExpiresInDays)
+		apiKey.ExpiresAt = &expiresAt
+	}
+	if err := s.apiKeyRepo.Create(ctx, apiKey); err != nil {
+		return nil, fmt.Errorf("create api key: %w", err)
+	}
+	s.InvalidateAuthCacheByKey(ctx, apiKey.Key)
+	s.compileAPIKeyIPRules(apiKey)
 	return apiKey, nil
 }
 

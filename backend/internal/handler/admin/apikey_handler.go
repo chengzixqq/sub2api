@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -12,15 +14,108 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// adminAPIKeyCreator generates a key for a user on the admin's behalf (implemented by *service.APIKeyService).
+type adminAPIKeyCreator interface {
+	AdminCreate(ctx context.Context, userID int64, req service.CreateAPIKeyRequest) (*service.APIKey, error)
+}
+
 // AdminAPIKeyHandler handles admin API key management
 type AdminAPIKeyHandler struct {
 	adminService service.AdminService
+	creator      adminAPIKeyCreator
 }
 
 // NewAdminAPIKeyHandler creates a new admin API key handler
-func NewAdminAPIKeyHandler(adminService service.AdminService) *AdminAPIKeyHandler {
-	return &AdminAPIKeyHandler{
-		adminService: adminService,
+func NewAdminAPIKeyHandler(adminService service.AdminService, apiKeyService *service.APIKeyService) *AdminAPIKeyHandler {
+	h := &AdminAPIKeyHandler{adminService: adminService}
+	if apiKeyService != nil {
+		h.creator = apiKeyService
+	}
+	return h
+}
+
+// AdminCreateAPIKeyRequest is the body of POST /admin/users/:id/api-keys (0 = unlimited; no custom key).
+type AdminCreateAPIKeyRequest struct {
+	Name          string   `json:"name" binding:"required"`
+	GroupID       *int64   `json:"group_id"`
+	Quota         float64  `json:"quota"`
+	ExpiresInDays *int     `json:"expires_in_days"`
+	IPWhitelist   []string `json:"ip_whitelist"`
+	IPBlacklist   []string `json:"ip_blacklist"`
+	RateLimit5h   float64  `json:"rate_limit_5h"`
+	RateLimit1d   float64  `json:"rate_limit_1d"`
+	RateLimit7d   float64  `json:"rate_limit_7d"`
+}
+
+// CreateForUser creates an API key for a user on the admin's behalf. The key is generated, then bound to group_id
+// through the admin group rules (active group, subscription check, exclusive-group grant); if the binding fails the
+// new key is deleted again. The full key is returned only here. Idempotency-Key is honoured when sent.
+// POST /api/v1/admin/users/:id/api-keys
+func (h *AdminAPIKeyHandler) CreateForUser(c *gin.Context) {
+	if h.creator == nil {
+		response.Error(c, http.StatusServiceUnavailable, "API key service not available")
+		return
+	}
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || userID <= 0 {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+	var req AdminCreateAPIKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.GroupID != nil && *req.GroupID < 0 {
+		response.BadRequest(c, "group_id must be non-negative")
+		return
+	}
+
+	payload := struct {
+		UserID int64                    `json:"user_id"`
+		Body   AdminCreateAPIKeyRequest `json:"body"`
+	}{userID, req}
+	executeAdminOptionalIdempotentJSON(c, "admin.api_keys.create", payload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		created, err := h.creator.AdminCreate(ctx, userID, service.CreateAPIKeyRequest{
+			Name: req.Name, Quota: req.Quota, ExpiresInDays: req.ExpiresInDays, IPWhitelist: req.IPWhitelist, IPBlacklist: req.IPBlacklist,
+			RateLimit5h: req.RateLimit5h, RateLimit1d: req.RateLimit1d, RateLimit7d: req.RateLimit7d,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result := &service.AdminUpdateAPIKeyGroupIDResult{APIKey: created}
+		if req.GroupID != nil && *req.GroupID > 0 {
+			bound, err := h.adminService.AdminUpdateAPIKeyGroupID(ctx, created.ID, req.GroupID)
+			if err != nil {
+				// Do not leave behind a key the admin did not ask for.
+				_ = h.adminService.AdminDeleteAPIKey(ctx, created.ID)
+				return nil, err
+			}
+			result = bound
+			if result.APIKey != nil {
+				result.APIKey.Key = created.Key
+			}
+		}
+		return adminAPIKeyResponse(result, nil), nil
+	})
+}
+
+type adminAPIKeyResult struct {
+	APIKey                 *dto.APIKey `json:"api_key"`
+	AutoGrantedGroupAccess bool        `json:"auto_granted_group_access"`
+	GrantedGroupID         *int64      `json:"granted_group_id,omitempty"`
+	GrantedGroupName       string      `json:"granted_group_name,omitempty"`
+	// Previous holds the old values of the fields an update changed, for the client's undo.
+	Previous map[string]any `json:"previous,omitempty"`
+}
+
+func adminAPIKeyResponse(result *service.AdminUpdateAPIKeyGroupIDResult, previous map[string]any) adminAPIKeyResult {
+	return adminAPIKeyResult{
+		APIKey:                 dto.APIKeyFromService(result.APIKey),
+		AutoGrantedGroupAccess: result.AutoGrantedGroupAccess,
+		GrantedGroupID:         result.GrantedGroupID,
+		GrantedGroupName:       result.GrantedGroupName,
+		Previous:               previous,
 	}
 }
 
@@ -130,19 +225,5 @@ func (h *AdminAPIKeyHandler) UpdateGroup(c *gin.Context) {
 		result.APIKey = resetKey
 	}
 
-	resp := struct {
-		APIKey                 *dto.APIKey `json:"api_key"`
-		AutoGrantedGroupAccess bool        `json:"auto_granted_group_access"`
-		GrantedGroupID         *int64      `json:"granted_group_id,omitempty"`
-		GrantedGroupName       string      `json:"granted_group_name,omitempty"`
-		// Previous holds the old values of the fields this call changed, for the client's undo.
-		Previous map[string]any `json:"previous,omitempty"`
-	}{
-		APIKey:                 dto.APIKeyFromService(result.APIKey),
-		AutoGrantedGroupAccess: result.AutoGrantedGroupAccess,
-		GrantedGroupID:         result.GrantedGroupID,
-		GrantedGroupName:       result.GrantedGroupName,
-		Previous:               previous,
-	}
-	response.Success(c, resp)
+	response.Success(c, adminAPIKeyResponse(result, previous))
 }

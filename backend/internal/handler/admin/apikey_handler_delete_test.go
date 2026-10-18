@@ -14,7 +14,7 @@ import (
 func setupAPIKeyDeleteHandler(adminSvc service.AdminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := NewAdminAPIKeyHandler(adminSvc)
+	h := NewAdminAPIKeyHandler(adminSvc, nil)
 	router.DELETE("/api/v1/admin/api-keys/:id", h.Delete)
 	return router
 }
