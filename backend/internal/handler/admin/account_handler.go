@@ -70,6 +70,7 @@ type AccountHandler struct {
 	settingService          *service.SettingService
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
+	statusSummary           *service.AccountStatusSummaryService
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.

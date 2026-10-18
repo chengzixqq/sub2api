@@ -54,12 +54,14 @@ func ProvideAdminHandlers(
 	opencodeGoUsage *service.OpenCodeGoUsageService,
 	settingService *service.SettingService,
 	claudeResetCredits *service.ClaudeResetCreditService,
+	accountStatusSummary *service.AccountStatusSummaryService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	accountHandler.SetClaudeCustomizationService(settingService)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
+	accountHandler.SetAccountStatusSummaryService(accountStatusSummary)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,

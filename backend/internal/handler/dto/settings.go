@@ -364,6 +364,9 @@ type SystemSettings struct {
 
 	// 失败请求仅按上游明确 usage/可计费动作结算；关闭时保留估算兜底。
 	FailureBillingUpstreamUsageOnly bool `json:"failure_billing_upstream_usage_only"`
+
+	// 分组无告警规则时的“可用不足”占比阈值（0–1）
+	GroupShortageMinRatio float64 `json:"group_shortage_min_ratio"`
 }
 
 type DefaultSubscriptionSetting struct {

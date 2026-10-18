@@ -275,6 +275,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 
 		SettingKeyAllowUserViewErrorRequests:      "false",
 		SettingKeyFailureBillingUpstreamUsageOnly: "false",
+		SettingKeyGroupShortageMinRatio:           "0.5",
 	}
 
 	return s.settingRepo.SetMultiple(ctx, defaults)
@@ -1002,6 +1003,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 
 	result.AllowUserViewErrorRequests = settings[SettingKeyAllowUserViewErrorRequests] == "true"           // default false
 	result.FailureBillingUpstreamUsageOnly = settings[SettingKeyFailureBillingUpstreamUsageOnly] == "true" // default false
+	result.GroupShortageMinRatio = GroupShortageMinRatioDefault
+	if ratio, err := ParseGroupShortageMinRatio(settings[SettingKeyGroupShortageMinRatio]); err == nil {
+		result.GroupShortageMinRatio = ratio
+	}
 
 	// Publish Grok default model_mapping options for accounts with empty mapping.
 	xai.SetRuntimeModelMappingOptions(xai.ModelMappingOptions{

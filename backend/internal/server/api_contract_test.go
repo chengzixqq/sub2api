@@ -1042,7 +1042,8 @@ func TestAPIContracts(t *testing.T) {
 					"wechat_connect_frontend_redirect_url": "/auth/wechat/callback",
 					"wechat_connect_scopes": "snsapi_login",
 						"allow_user_view_error_requests": false,
-						"failure_billing_upstream_usage_only": false
+						"failure_billing_upstream_usage_only": false,
+						"group_shortage_min_ratio": 0.5
 				}
 			}`,
 		},
@@ -1405,7 +1406,8 @@ func TestAPIContracts(t *testing.T) {
 					"auth_source_default_dingtalk_grant_on_first_bind": false,
 					"force_email_on_third_party_signup": false,
 						"allow_user_view_error_requests": false,
-						"failure_billing_upstream_usage_only": false
+						"failure_billing_upstream_usage_only": false,
+						"group_shortage_min_ratio": 0.5
 				}
 			}`,
 		},

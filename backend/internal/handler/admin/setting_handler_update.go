@@ -28,6 +28,7 @@ type UpdateSettingsRequest struct {
 	RegistrationEmailSuffixWhitelist    []string                     `json:"registration_email_suffix_whitelist"`
 	RegistrationEmailDomainQuotaEnabled *bool                        `json:"registration_email_domain_quota_enabled"` // 非白名单域名限量注册开关（省略=保持现值）
 	FailureBillingUpstreamUsageOnly     *bool                        `json:"failure_billing_upstream_usage_only"`     // 失败计费仅允许上游明确 usage/动作（省略=保持现值）
+	GroupShortageMinRatio               *float64                     `json:"group_shortage_min_ratio"`                // 分组“可用不足”占比阈值 0–1（省略=保持现值）
 	PromoCodeEnabled                    bool                         `json:"promo_code_enabled"`
 	PasswordResetEnabled                bool                         `json:"password_reset_enabled"`
 	FrontendURL                         string                       `json:"frontend_url"`
@@ -1708,6 +1709,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.FailureBillingUpstreamUsageOnly
 		}(),
+		GroupShortageMinRatio: func() float64 {
+			if req.GroupShortageMinRatio != nil {
+				return *req.GroupShortageMinRatio
+			}
+			return previousSettings.GroupShortageMinRatio
+		}(),
 		OpsMonitoringEnabled: func() bool {
 			if req.OpsMonitoringEnabled != nil {
 				return *req.OpsMonitoringEnabled
@@ -2513,6 +2520,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AccountSchedulingThresholds:     updatedSettings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:      updatedSettings.AllowUserViewErrorRequests,
 		FailureBillingUpstreamUsageOnly: updatedSettings.FailureBillingUpstreamUsageOnly,
+		GroupShortageMinRatio:           updatedSettings.GroupShortageMinRatio,
 	}
 	if fastPolicy, err := h.settingService.GetOpenAIFastPolicySettings(c.Request.Context()); err != nil {
 		slog.Error("openai_fast_policy_settings_get_failed", "error", err)

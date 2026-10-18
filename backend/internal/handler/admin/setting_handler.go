@@ -415,6 +415,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AccountSchedulingThresholds:     settings.AccountSchedulingThresholds,
 		AllowUserViewErrorRequests:      settings.AllowUserViewErrorRequests,
 		FailureBillingUpstreamUsageOnly: settings.FailureBillingUpstreamUsageOnly,
+		GroupShortageMinRatio:           settings.GroupShortageMinRatio,
 	}
 	if !settingActorIsOwner(c) {
 		// Probe coalescing is an owner-controlled operational switch. Keep the

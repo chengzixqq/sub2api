@@ -62,6 +62,8 @@ var vendorDeniedRoutes = []vendorRoute{
 	// 导入/导出与跨账号同步：整库级数据搬运，且 CRS 同步会按上游返回
 	// 批量建号，无法归属到发起方工作区。导出另有 step-up 2FA，但那道门
 	// 只防凭证泄露，不防越权读取别家账号。
+	// 账号状态汇总列出全站分组名、状态与运维告警阈值，没有按工作区收窄，站长专属。
+	{prefix: "/api/v1/admin/accounts/status-summary", methods: allMethods, exact: true},
 	{prefix: "/api/v1/admin/accounts/data", methods: allMethods, exact: true},
 	{prefix: "/api/v1/admin/accounts/sync/crs", methods: allMethods},
 	{prefix: "/api/v1/admin/accounts/import/codex-session", methods: allMethods, exact: true},

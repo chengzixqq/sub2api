@@ -326,6 +326,9 @@ type SystemSettings struct {
 
 	// 失败请求仅按上游明确 usage/可计费动作结算；关闭时保留已投递流的估算兜底。
 	FailureBillingUpstreamUsageOnly bool
+
+	// 分组没有可用账号告警规则时，可用占比低于此值（0–1）即判为“可用不足”；可用为 0 恒为不足。
+	GroupShortageMinRatio float64
 }
 
 type DefaultSubscriptionSetting struct {

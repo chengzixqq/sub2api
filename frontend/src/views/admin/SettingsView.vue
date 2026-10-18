@@ -10159,6 +10159,8 @@ const form = reactive<SettingsForm>({
   allow_user_view_error_requests: false,
   // Failure billing policy (site owner only; visible to all admins)
   failure_billing_upstream_usage_only: false,
+  // Group shortage ratio for accounts/status-summary (edited by the mobile app)
+  group_shortage_min_ratio: 0.5,
 });
 
 // 人机验证 UI 状态：单卡片「总开关 + 服务商单选」，落库仍是三个独立

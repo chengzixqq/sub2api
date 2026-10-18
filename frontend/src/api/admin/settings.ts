@@ -864,6 +864,10 @@ export interface SystemSettings {
 
   // Failure billing policy; owner-controlled, visible to all administrators.
   failure_billing_upstream_usage_only: boolean;
+
+  // Share of available accounts (0-1) below which a group without an
+  // availability alert rule counts as short in accounts/status-summary.
+  group_shortage_min_ratio: number;
 }
 
 export interface UpdateSettingsRequest {
@@ -1180,6 +1184,7 @@ export interface UpdateSettingsRequest {
 
   allow_user_view_error_requests?: boolean;
   failure_billing_upstream_usage_only?: boolean;
+  group_shortage_min_ratio?: number;
 }
 
 /**

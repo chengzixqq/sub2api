@@ -622,6 +622,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.FailureBillingUpstreamUsageOnly != after.FailureBillingUpstreamUsageOnly {
 		changed = append(changed, service.SettingKeyFailureBillingUpstreamUsageOnly)
 	}
+	if before.GroupShortageMinRatio != after.GroupShortageMinRatio {
+		changed = append(changed, service.SettingKeyGroupShortageMinRatio)
+	}
 	changed = appendAuthSourceDefaultChanges(changed, beforeAuthSourceDefaults, afterAuthSourceDefaults)
 	return changed
 }

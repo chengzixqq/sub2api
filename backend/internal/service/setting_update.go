@@ -563,6 +563,10 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	updates[SettingKeyAllowUserViewErrorRequests] = strconv.FormatBool(settings.AllowUserViewErrorRequests)
 	updates[SettingKeyFailureBillingUpstreamUsageOnly] = strconv.FormatBool(settings.FailureBillingUpstreamUsageOnly)
+	if settings.GroupShortageMinRatio < 0 || settings.GroupShortageMinRatio > 1 {
+		return nil, infraerrors.BadRequest("INVALID_GROUP_SHORTAGE_MIN_RATIO", "group_shortage_min_ratio must be between 0 and 1")
+	}
+	updates[SettingKeyGroupShortageMinRatio] = strconv.FormatFloat(settings.GroupShortageMinRatio, 'f', -1, 64)
 
 	return updates, nil
 }
