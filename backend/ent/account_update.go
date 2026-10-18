@@ -323,6 +323,27 @@ func (_u *AccountUpdate) ClearErrorMessage() *AccountUpdate {
 	return _u
 }
 
+// SetConfigVersion sets the "config_version" field.
+func (_u *AccountUpdate) SetConfigVersion(v int64) *AccountUpdate {
+	_u.mutation.ResetConfigVersion()
+	_u.mutation.SetConfigVersion(v)
+	return _u
+}
+
+// SetNillableConfigVersion sets the "config_version" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableConfigVersion(v *int64) *AccountUpdate {
+	if v != nil {
+		_u.SetConfigVersion(*v)
+	}
+	return _u
+}
+
+// AddConfigVersion adds value to the "config_version" field.
+func (_u *AccountUpdate) AddConfigVersion(v int64) *AccountUpdate {
+	_u.mutation.AddConfigVersion(v)
+	return _u
+}
+
 // SetErrorAt sets the "error_at" field.
 func (_u *AccountUpdate) SetErrorAt(v time.Time) *AccountUpdate {
 	_u.mutation.SetErrorAt(v)
@@ -924,6 +945,12 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if _u.mutation.ErrorMessageCleared() {
 		_spec.ClearField(account.FieldErrorMessage, field.TypeString)
 	}
+	if value, ok := _u.mutation.ConfigVersion(); ok {
+		_spec.SetField(account.FieldConfigVersion, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedConfigVersion(); ok {
+		_spec.AddField(account.FieldConfigVersion, field.TypeInt64, value)
+	}
 	if value, ok := _u.mutation.ErrorAt(); ok {
 		_spec.SetField(account.FieldErrorAt, field.TypeTime, value)
 	}
@@ -1513,6 +1540,27 @@ func (_u *AccountUpdateOne) SetNillableErrorMessage(v *string) *AccountUpdateOne
 // ClearErrorMessage clears the value of the "error_message" field.
 func (_u *AccountUpdateOne) ClearErrorMessage() *AccountUpdateOne {
 	_u.mutation.ClearErrorMessage()
+	return _u
+}
+
+// SetConfigVersion sets the "config_version" field.
+func (_u *AccountUpdateOne) SetConfigVersion(v int64) *AccountUpdateOne {
+	_u.mutation.ResetConfigVersion()
+	_u.mutation.SetConfigVersion(v)
+	return _u
+}
+
+// SetNillableConfigVersion sets the "config_version" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableConfigVersion(v *int64) *AccountUpdateOne {
+	if v != nil {
+		_u.SetConfigVersion(*v)
+	}
+	return _u
+}
+
+// AddConfigVersion adds value to the "config_version" field.
+func (_u *AccountUpdateOne) AddConfigVersion(v int64) *AccountUpdateOne {
+	_u.mutation.AddConfigVersion(v)
 	return _u
 }
 
@@ -2146,6 +2194,12 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 	}
 	if _u.mutation.ErrorMessageCleared() {
 		_spec.ClearField(account.FieldErrorMessage, field.TypeString)
+	}
+	if value, ok := _u.mutation.ConfigVersion(); ok {
+		_spec.SetField(account.FieldConfigVersion, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedConfigVersion(); ok {
+		_spec.AddField(account.FieldConfigVersion, field.TypeInt64, value)
 	}
 	if value, ok := _u.mutation.ErrorAt(); ok {
 		_spec.SetField(account.FieldErrorAt, field.TypeTime, value)

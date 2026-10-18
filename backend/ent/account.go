@@ -55,6 +55,8 @@ type Account struct {
 	Status string `json:"status,omitempty"`
 	// ErrorMessage holds the value of the "error_message" field.
 	ErrorMessage *string `json:"error_message,omitempty"`
+	// ConfigVersion holds the value of the "config_version" field.
+	ConfigVersion int64 `json:"config_version,omitempty"`
 	// ErrorAt holds the value of the "error_at" field.
 	ErrorAt *time.Time `json:"error_at,omitempty"`
 	// LastUsedAt holds the value of the "last_used_at" field.
@@ -179,7 +181,7 @@ func (*Account) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case account.FieldRateMultiplier:
 			values[i] = new(sql.NullFloat64)
-		case account.FieldID, account.FieldProxyID, account.FieldProxyFallbackOriginID, account.FieldConcurrency, account.FieldLoadFactor, account.FieldPriority, account.FieldWorkspaceID, account.FieldParentAccountID:
+		case account.FieldID, account.FieldProxyID, account.FieldProxyFallbackOriginID, account.FieldConcurrency, account.FieldLoadFactor, account.FieldPriority, account.FieldWorkspaceID, account.FieldConfigVersion, account.FieldParentAccountID:
 			values[i] = new(sql.NullInt64)
 		case account.FieldName, account.FieldNotes, account.FieldPlatform, account.FieldType, account.FieldStatus, account.FieldErrorMessage, account.FieldTempUnschedulableReason, account.FieldSessionWindowStatus, account.FieldQuotaDimension:
 			values[i] = new(sql.NullString)
@@ -323,6 +325,12 @@ func (_m *Account) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.ErrorMessage = new(string)
 				*_m.ErrorMessage = value.String
+			}
+		case account.FieldConfigVersion:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field config_version", values[i])
+			} else if value.Valid {
+				_m.ConfigVersion = value.Int64
 			}
 		case account.FieldErrorAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
@@ -557,6 +565,9 @@ func (_m *Account) String() string {
 		builder.WriteString("error_message=")
 		builder.WriteString(*v)
 	}
+	builder.WriteString(", ")
+	builder.WriteString("config_version=")
+	builder.WriteString(fmt.Sprintf("%v", _m.ConfigVersion))
 	builder.WriteString(", ")
 	if v := _m.ErrorAt; v != nil {
 		builder.WriteString("error_at=")

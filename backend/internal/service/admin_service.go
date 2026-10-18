@@ -109,6 +109,7 @@ type AdminService interface {
 	// It never creates an account.
 	RecoverDuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*Account, error)
 	UpdateAccount(ctx context.Context, id int64, input *UpdateAccountInput) (*Account, error)
+	PatchAccount(ctx context.Context, id int64, input *PatchAccountInput) (*Account, error)
 	// UpdateAccountExtra 仅对 Extra 做 JSONB 增量合并（key 级覆盖），不会影响其它字段或运行态键。
 	// 用于刷新流程持久化 account_uuid / org_uuid 等少量键，避免被全量快照覆盖。
 	UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error
@@ -471,6 +472,16 @@ type UpdateAccountInput struct {
 	ProbeEnabled          *bool
 	RateSyncEnabled       *bool
 	SkipMixedChannelCheck bool // 跳过混合渠道检查（用户已确认风险）
+}
+
+// PatchAccountInput is a sparse account edit. Fields carries the top-level
+// fields exactly like UpdateAccountInput; its Credentials / Extra are ignored in
+// favor of the key-level patches.
+type PatchAccountInput struct {
+	Fields                UpdateAccountInput
+	CredentialsPatch      map[string]any
+	ExtraPatch            map[string]any
+	ExpectedConfigVersion *int64
 }
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.

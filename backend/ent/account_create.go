@@ -237,6 +237,20 @@ func (_c *AccountCreate) SetNillableErrorMessage(v *string) *AccountCreate {
 	return _c
 }
 
+// SetConfigVersion sets the "config_version" field.
+func (_c *AccountCreate) SetConfigVersion(v int64) *AccountCreate {
+	_c.mutation.SetConfigVersion(v)
+	return _c
+}
+
+// SetNillableConfigVersion sets the "config_version" field if the given value is not nil.
+func (_c *AccountCreate) SetNillableConfigVersion(v *int64) *AccountCreate {
+	if v != nil {
+		_c.SetConfigVersion(*v)
+	}
+	return _c
+}
+
 // SetErrorAt sets the "error_at" field.
 func (_c *AccountCreate) SetErrorAt(v time.Time) *AccountCreate {
 	_c.mutation.SetErrorAt(v)
@@ -601,6 +615,10 @@ func (_c *AccountCreate) defaults() error {
 		v := account.DefaultStatus
 		_c.mutation.SetStatus(v)
 	}
+	if _, ok := _c.mutation.ConfigVersion(); !ok {
+		v := account.DefaultConfigVersion
+		_c.mutation.SetConfigVersion(v)
+	}
 	if _, ok := _c.mutation.AutoPauseOnExpired(); !ok {
 		v := account.DefaultAutoPauseOnExpired
 		_c.mutation.SetAutoPauseOnExpired(v)
@@ -673,6 +691,9 @@ func (_c *AccountCreate) check() error {
 		if err := account.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "Account.status": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.ConfigVersion(); !ok {
+		return &ValidationError{Name: "config_version", err: errors.New(`ent: missing required field "Account.config_version"`)}
 	}
 	if _, ok := _c.mutation.AutoPauseOnExpired(); !ok {
 		return &ValidationError{Name: "auto_pause_on_expired", err: errors.New(`ent: missing required field "Account.auto_pause_on_expired"`)}
@@ -787,6 +808,10 @@ func (_c *AccountCreate) createSpec() (*Account, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.ErrorMessage(); ok {
 		_spec.SetField(account.FieldErrorMessage, field.TypeString, value)
 		_node.ErrorMessage = &value
+	}
+	if value, ok := _c.mutation.ConfigVersion(); ok {
+		_spec.SetField(account.FieldConfigVersion, field.TypeInt64, value)
+		_node.ConfigVersion = value
 	}
 	if value, ok := _c.mutation.ErrorAt(); ok {
 		_spec.SetField(account.FieldErrorAt, field.TypeTime, value)
@@ -1255,6 +1280,24 @@ func (u *AccountUpsert) UpdateErrorMessage() *AccountUpsert {
 // ClearErrorMessage clears the value of the "error_message" field.
 func (u *AccountUpsert) ClearErrorMessage() *AccountUpsert {
 	u.SetNull(account.FieldErrorMessage)
+	return u
+}
+
+// SetConfigVersion sets the "config_version" field.
+func (u *AccountUpsert) SetConfigVersion(v int64) *AccountUpsert {
+	u.Set(account.FieldConfigVersion, v)
+	return u
+}
+
+// UpdateConfigVersion sets the "config_version" field to the value that was provided on create.
+func (u *AccountUpsert) UpdateConfigVersion() *AccountUpsert {
+	u.SetExcluded(account.FieldConfigVersion)
+	return u
+}
+
+// AddConfigVersion adds v to the "config_version" field.
+func (u *AccountUpsert) AddConfigVersion(v int64) *AccountUpsert {
+	u.Add(account.FieldConfigVersion, v)
 	return u
 }
 
@@ -1874,6 +1917,27 @@ func (u *AccountUpsertOne) UpdateErrorMessage() *AccountUpsertOne {
 func (u *AccountUpsertOne) ClearErrorMessage() *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.ClearErrorMessage()
+	})
+}
+
+// SetConfigVersion sets the "config_version" field.
+func (u *AccountUpsertOne) SetConfigVersion(v int64) *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetConfigVersion(v)
+	})
+}
+
+// AddConfigVersion adds v to the "config_version" field.
+func (u *AccountUpsertOne) AddConfigVersion(v int64) *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.AddConfigVersion(v)
+	})
+}
+
+// UpdateConfigVersion sets the "config_version" field to the value that was provided on create.
+func (u *AccountUpsertOne) UpdateConfigVersion() *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdateConfigVersion()
 	})
 }
 
@@ -2701,6 +2765,27 @@ func (u *AccountUpsertBulk) UpdateErrorMessage() *AccountUpsertBulk {
 func (u *AccountUpsertBulk) ClearErrorMessage() *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.ClearErrorMessage()
+	})
+}
+
+// SetConfigVersion sets the "config_version" field.
+func (u *AccountUpsertBulk) SetConfigVersion(v int64) *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetConfigVersion(v)
+	})
+}
+
+// AddConfigVersion adds v to the "config_version" field.
+func (u *AccountUpsertBulk) AddConfigVersion(v int64) *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.AddConfigVersion(v)
+	})
+}
+
+// UpdateConfigVersion sets the "config_version" field to the value that was provided on create.
+func (u *AccountUpsertBulk) UpdateConfigVersion() *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdateConfigVersion()
 	})
 }
 

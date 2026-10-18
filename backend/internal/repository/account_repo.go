@@ -549,6 +549,7 @@ func (r *accountRepository) updateAccount(
 	}
 
 	account.UpdatedAt = updated.UpdatedAt
+	account.ConfigVersion = updated.ConfigVersion
 	// 普通账号编辑（如 model_mapping / credentials）也需要立即刷新单账号快照，
 	// 否则网关在 outbox worker 延迟或异常时仍可能读到旧配置。
 	if contextTx == nil {
@@ -565,6 +566,11 @@ func (r *accountRepository) updateLockedAccount(
 	explicitRateSyncEnabled *bool,
 	explicitRateMultiplier *float64,
 ) (*dbent.Account, error) {
+	if base, ok := service.AccountPatchBaseFromContext(ctx, account.ID); ok {
+		if err := replayAccountPatchOnLockedRow(ctx, client, account, base); err != nil {
+			return nil, err
+		}
+	}
 	extra, err := lockAndMergeAccountProbeExtra(ctx, client, account, explicitProbeEnabled, explicitRateSyncEnabled)
 	if err != nil {
 		return nil, err
@@ -588,7 +594,8 @@ func (r *accountRepository) updateLockedAccount(
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(schedulable).
-		SetAutoPauseOnExpired(account.AutoPauseOnExpired)
+		SetAutoPauseOnExpired(account.AutoPauseOnExpired).
+		AddConfigVersion(1)
 
 	if account.Status == service.StatusError {
 		errorAt := time.Now()
@@ -662,6 +669,88 @@ func (r *accountRepository) updateLockedAccount(
 	builder.SetNillableParentAccountID(account.ParentAccountID)
 
 	return builder.Save(ctx)
+}
+
+// replayAccountPatchOnLockedRow locks the account row, enforces the PATCH
+// If-Match version and rebases the edit onto the row's current state: edited
+// credentials / extra keys are replayed over the current maps, and runtime
+// columns (status unless the patch sets it, rate limits, overload, session
+// window, last use) keep their current values. Writes that landed after the edit
+// was computed -- token refreshes, model rate limits, an account entering
+// error -- are therefore not rolled back.
+func replayAccountPatchOnLockedRow(ctx context.Context, client *dbent.Client, account *service.Account, base *service.AccountPatchBase) error {
+	rows, err := client.QueryContext(ctx, `
+		SELECT config_version, COALESCE(credentials, '{}'::jsonb), COALESCE(extra, '{}'::jsonb),
+			status, COALESCE(error_message, ''), error_at, schedulable,
+			last_used_at, rate_limited_at, rate_limit_reset_at, overload_until,
+			session_window_start, session_window_end, COALESCE(session_window_status, '')
+		FROM accounts
+		WHERE id = $1 AND deleted_at IS NULL
+		FOR NO KEY UPDATE
+	`, account.ID)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		return service.ErrAccountNotFound
+	}
+	var (
+		version            int64
+		rawCredentials     []byte
+		rawExtra           []byte
+		status             string
+		errorMessage       string
+		errorAt            sql.NullTime
+		schedulable        bool
+		lastUsedAt         sql.NullTime
+		rateLimitedAt      sql.NullTime
+		rateLimitResetAt   sql.NullTime
+		overloadUntil      sql.NullTime
+		sessionWindowStart sql.NullTime
+		sessionWindowEnd   sql.NullTime
+		sessionWindowState string
+	)
+	if err := rows.Scan(
+		&version, &rawCredentials, &rawExtra,
+		&status, &errorMessage, &errorAt, &schedulable,
+		&lastUsedAt, &rateLimitedAt, &rateLimitResetAt, &overloadUntil,
+		&sessionWindowStart, &sessionWindowEnd, &sessionWindowState,
+	); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if base.ExpectedConfigVersion != nil && *base.ExpectedConfigVersion != version {
+		return service.ErrAccountVersionConflict(version)
+	}
+	var currentCredentials, currentExtra map[string]any
+	if err := json.Unmarshal(rawCredentials, &currentCredentials); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(rawExtra, &currentExtra); err != nil {
+		return err
+	}
+	account.Credentials = service.ApplyAccountMapDiff(currentCredentials, base.Credentials, account.Credentials)
+	account.Extra = service.ApplyAccountMapDiff(currentExtra, base.Extra, account.Extra)
+	if !base.StatusEdited {
+		account.Status = status
+		account.ErrorMessage = errorMessage
+		account.ErrorAt = batchImageNullTimePtr(errorAt)
+	}
+	account.Schedulable = schedulable
+	account.LastUsedAt = batchImageNullTimePtr(lastUsedAt)
+	account.RateLimitedAt = batchImageNullTimePtr(rateLimitedAt)
+	account.RateLimitResetAt = batchImageNullTimePtr(rateLimitResetAt)
+	account.OverloadUntil = batchImageNullTimePtr(overloadUntil)
+	account.SessionWindowStart = batchImageNullTimePtr(sessionWindowStart)
+	account.SessionWindowEnd = batchImageNullTimePtr(sessionWindowEnd)
+	account.SessionWindowStatus = sessionWindowState
+	return nil
 }
 
 func lockAndMergeAccountProbeExtra(
@@ -3327,7 +3416,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		return 0, nil
 	}
 
-	setClauses = append(setClauses, "updated_at = NOW()")
+	setClauses = append(setClauses, "config_version = config_version + 1", "updated_at = NOW()")
 
 	whereClause := " WHERE id = ANY($" + itoa(idx) + ") AND deleted_at IS NULL"
 	args = append(args, pq.Array(ids))
@@ -3746,6 +3835,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		Status:                  m.Status,
 		ErrorMessage:            derefString(m.ErrorMessage),
 		ErrorAt:                 m.ErrorAt,
+		ConfigVersion:           m.ConfigVersion,
 		LastUsedAt:              m.LastUsedAt,
 		ExpiresAt:               m.ExpiresAt,
 		AutoPauseOnExpired:      m.AutoPauseOnExpired,

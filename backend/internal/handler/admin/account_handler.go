@@ -178,6 +178,33 @@ type UpdateAccountRequest struct {
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
+// PatchAccountRequest is a sparse account edit (PATCH /admin/accounts/:id).
+// Top-level fields behave like UpdateAccountRequest; credentials / extra are
+// changed by key through the *_patch maps (null deletes a key). Whole
+// credentials / extra objects are rejected: they belong to PUT.
+type PatchAccountRequest struct {
+	Name                    string         `json:"name"`
+	Notes                   *string        `json:"notes"`
+	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
+	Credentials             map[string]any `json:"credentials"`
+	Extra                   map[string]any `json:"extra"`
+	CredentialsPatch        map[string]any `json:"credentials_patch"`
+	ExtraPatch              map[string]any `json:"extra_patch"`
+	ProxyID                 *int64         `json:"proxy_id"`
+	Concurrency             *int           `json:"concurrency"`
+	Priority                *int           `json:"priority"`
+	RateMultiplier          *float64       `json:"rate_multiplier"`
+	LoadFactor              *int           `json:"load_factor"`
+	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
+	GroupIDs                *[]int64       `json:"group_ids"`
+	ExpiresAt               *int64         `json:"expires_at"`
+	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
+	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
+	RateSyncEnabled         *bool          `json:"upstream_billing_rate_sync_enabled"`
+	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"`
+	ExpectedConfigVersion   *int64         `json:"expected_config_version"`
+}
+
 // BulkUpdateAccountsRequest represents the payload for bulk editing accounts
 type BulkUpdateAccountsRequest struct {
 	AccountIDs              []int64                   `json:"account_ids"`
@@ -1000,6 +1027,7 @@ func (h *AccountHandler) GetByID(c *gin.Context) {
 		}
 	}
 
+	c.Header("ETag", service.AccountConfigVersionTag(account.ConfigVersion))
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
@@ -1253,6 +1281,91 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		h.scheduleOpenAIResponsesProbe(account)
 	}
 
+	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+}
+
+// Patch applies a sparse account edit with key-level credentials / extra merge
+// and optional optimistic concurrency (If-Match: the ETag from GET, or
+// expected_config_version in the body).
+// PATCH /api/v1/admin/accounts/:id
+func (h *AccountHandler) Patch(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+
+	var req PatchAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.Credentials != nil || req.Extra != nil {
+		response.ErrorFrom(c, infraerrors.BadRequest("INVALID_PATCH", "use credentials_patch / extra_patch; whole objects are only accepted by PUT"))
+		return
+	}
+	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
+		response.BadRequest(c, "rate_multiplier must be >= 0")
+		return
+	}
+	expectedVersion := req.ExpectedConfigVersion
+	if ifMatch := strings.TrimSpace(c.GetHeader("If-Match")); ifMatch != "" {
+		version, err := service.ParseAccountConfigVersionTag(ifMatch)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if expectedVersion != nil && *expectedVersion != version {
+			response.ErrorFrom(c, infraerrors.BadRequest("INVALID_PATCH", "If-Match and expected_config_version disagree"))
+			return
+		}
+		expectedVersion = &version
+	}
+	sanitizeExtraBaseRPM(req.ExtraPatch)
+	if err := service.ValidateUpstreamRequestIDHeaderExtra(req.ExtraPatch); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	account, err := h.adminService.PatchAccount(c.Request.Context(), accountID, &service.PatchAccountInput{
+		Fields: service.UpdateAccountInput{
+			Name:                  req.Name,
+			Notes:                 req.Notes,
+			Type:                  req.Type,
+			ProxyID:               req.ProxyID,
+			Concurrency:           req.Concurrency,
+			Priority:              req.Priority,
+			RateMultiplier:        req.RateMultiplier,
+			LoadFactor:            req.LoadFactor,
+			Status:                req.Status,
+			GroupIDs:              req.GroupIDs,
+			ExpiresAt:             req.ExpiresAt,
+			AutoPauseOnExpired:    req.AutoPauseOnExpired,
+			ProbeEnabled:          req.ProbeEnabled,
+			RateSyncEnabled:       req.RateSyncEnabled,
+			SkipMixedChannelCheck: req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk,
+		},
+		CredentialsPatch:      req.CredentialsPatch,
+		ExtraPatch:            req.ExtraPatch,
+		ExpectedConfigVersion: expectedVersion,
+	})
+	if err != nil {
+		var mixedErr *service.MixedChannelError
+		if errors.As(err, &mixedErr) {
+			c.JSON(409, gin.H{
+				"error":   "mixed_channel_warning",
+				"message": mixedErr.Error(),
+			})
+			return
+		}
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if len(req.CredentialsPatch) > 0 {
+		h.scheduleOpenAIResponsesProbe(account)
+	}
+	c.Header("ETag", service.AccountConfigVersionTag(account.ConfigVersion))
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 

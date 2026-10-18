@@ -135,6 +135,11 @@ func ErrorMessage(v string) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldErrorMessage, v))
 }
 
+// ConfigVersion applies equality check predicate on the "config_version" field. It's identical to ConfigVersionEQ.
+func ConfigVersion(v int64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldConfigVersion, v))
+}
+
 // ErrorAt applies equality check predicate on the "error_at" field. It's identical to ErrorAtEQ.
 func ErrorAt(v time.Time) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldErrorAt, v))
@@ -1033,6 +1038,46 @@ func ErrorMessageEqualFold(v string) predicate.Account {
 // ErrorMessageContainsFold applies the ContainsFold predicate on the "error_message" field.
 func ErrorMessageContainsFold(v string) predicate.Account {
 	return predicate.Account(sql.FieldContainsFold(FieldErrorMessage, v))
+}
+
+// ConfigVersionEQ applies the EQ predicate on the "config_version" field.
+func ConfigVersionEQ(v int64) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldConfigVersion, v))
+}
+
+// ConfigVersionNEQ applies the NEQ predicate on the "config_version" field.
+func ConfigVersionNEQ(v int64) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldConfigVersion, v))
+}
+
+// ConfigVersionIn applies the In predicate on the "config_version" field.
+func ConfigVersionIn(vs ...int64) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldConfigVersion, vs...))
+}
+
+// ConfigVersionNotIn applies the NotIn predicate on the "config_version" field.
+func ConfigVersionNotIn(vs ...int64) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldConfigVersion, vs...))
+}
+
+// ConfigVersionGT applies the GT predicate on the "config_version" field.
+func ConfigVersionGT(v int64) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldConfigVersion, v))
+}
+
+// ConfigVersionGTE applies the GTE predicate on the "config_version" field.
+func ConfigVersionGTE(v int64) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldConfigVersion, v))
+}
+
+// ConfigVersionLT applies the LT predicate on the "config_version" field.
+func ConfigVersionLT(v int64) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldConfigVersion, v))
+}
+
+// ConfigVersionLTE applies the LTE predicate on the "config_version" field.
+func ConfigVersionLTE(v int64) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldConfigVersion, v))
 }
 
 // ErrorAtEQ applies the EQ predicate on the "error_at" field.

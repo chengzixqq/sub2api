@@ -34,3 +34,11 @@ func TestAccountErrorAtMigration(t *testing.T) {
 	require.NotContains(t, sql, "UPDATE accounts")
 	require.NotContains(t, sql, "+goose")
 }
+
+func TestAccountConfigVersionMigration(t *testing.T) {
+	content, err := FS.ReadFile("251_add_account_config_version.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS config_version BIGINT NOT NULL DEFAULT 0")
+	require.NotContains(t, sql, "+goose")
+}

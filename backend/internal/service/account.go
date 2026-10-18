@@ -41,6 +41,7 @@ type Account struct {
 	Status             string
 	ErrorMessage       string
 	ErrorAt            *time.Time // 当前 error_message 记录的时间；非 error 状态为 nil
+	ConfigVersion      int64      // 配置版本号：整行更新、PATCH、批量编辑时递增，用作 ETag / If-Match
 	LastUsedAt         *time.Time
 	ExpiresAt          *time.Time
 	AutoPauseOnExpired bool

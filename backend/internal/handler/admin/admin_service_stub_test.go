@@ -559,6 +559,10 @@ func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *s
 	return &account, nil
 }
 
+func (s *stubAdminService) PatchAccount(ctx context.Context, id int64, input *service.PatchAccountInput) (*service.Account, error) {
+	return s.UpdateAccount(ctx, id, &input.Fields)
+}
+
 func (s *stubAdminService) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
 	s.updateAccountExtraCalls++
 	return nil

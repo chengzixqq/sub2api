@@ -695,6 +695,53 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
+	return s.updateLoadedAccount(ctx, id, account, input)
+}
+
+// PatchAccount applies a sparse edit: credentials / extra are merged by top-level
+// key (nil deletes) on top of the stored values, then the result goes through the
+// same validation and normalization as UpdateAccount. Only the edited keys are
+// written over the locked row, and ExpectedConfigVersion (If-Match) is checked
+// under that lock.
+func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *PatchAccountInput) (*Account, error) {
+	if input == nil {
+		return nil, ErrAccountNilInput
+	}
+	if err := validateAccountCredentialsPatch(input.CredentialsPatch); err != nil {
+		return nil, err
+	}
+	if err := validateAccountExtraPatch(input.ExtraPatch); err != nil {
+		return nil, err
+	}
+	update := input.Fields
+	if err := applyAccountFieldScope(ctx, "update", &update.RateMultiplier); err != nil {
+		return nil, err
+	}
+	account, err := s.accountRepo.GetByIDScoped(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if input.ExpectedConfigVersion != nil && *input.ExpectedConfigVersion != account.ConfigVersion {
+		return nil, ErrAccountVersionConflict(account.ConfigVersion)
+	}
+	base := &AccountPatchBase{
+		AccountID:             id,
+		ExpectedConfigVersion: input.ExpectedConfigVersion,
+		Credentials:           deepCloneAccountMap(account.Credentials),
+		Extra:                 deepCloneAccountMap(account.Extra),
+		StatusEdited:          update.Status != "",
+	}
+	if len(input.CredentialsPatch) > 0 {
+		update.Credentials = mergeAccountMapPatch(account.Credentials, input.CredentialsPatch)
+	}
+	if len(input.ExtraPatch) > 0 {
+		update.Extra = mergeAccountMapPatch(withoutManagedAccountExtra(account.Extra, input.ExtraPatch), input.ExtraPatch)
+	}
+	return s.updateLoadedAccount(withAccountPatchBase(ctx, base), id, account, &update)
+}
+
+func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, account *Account, input *UpdateAccountInput) (*Account, error) {
+	var err error
 	if account.Platform == PlatformTypeSafe && input.Type != "" && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}

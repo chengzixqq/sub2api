@@ -52,6 +52,8 @@ const (
 	FieldStatus = "status"
 	// FieldErrorMessage holds the string denoting the error_message field in the database.
 	FieldErrorMessage = "error_message"
+	// FieldConfigVersion holds the string denoting the config_version field in the database.
+	FieldConfigVersion = "config_version"
 	// FieldErrorAt holds the string denoting the error_at field in the database.
 	FieldErrorAt = "error_at"
 	// FieldLastUsedAt holds the string denoting the last_used_at field in the database.
@@ -153,6 +155,7 @@ var Columns = []string{
 	FieldWorkspaceID,
 	FieldStatus,
 	FieldErrorMessage,
+	FieldConfigVersion,
 	FieldErrorAt,
 	FieldLastUsedAt,
 	FieldExpiresAt,
@@ -222,6 +225,8 @@ var (
 	DefaultStatus string
 	// StatusValidator is a validator for the "status" field. It is called by the builders before save.
 	StatusValidator func(string) error
+	// DefaultConfigVersion holds the default value on creation for the "config_version" field.
+	DefaultConfigVersion int64
 	// DefaultAutoPauseOnExpired holds the default value on creation for the "auto_pause_on_expired" field.
 	DefaultAutoPauseOnExpired bool
 	// DefaultSchedulable holds the default value on creation for the "schedulable" field.
@@ -342,6 +347,11 @@ func ByStatus(opts ...sql.OrderTermOption) OrderOption {
 // ByErrorMessage orders the results by the error_message field.
 func ByErrorMessage(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldErrorMessage, opts...).ToFunc()
+}
+
+// ByConfigVersion orders the results by the config_version field.
+func ByConfigVersion(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldConfigVersion, opts...).ToFunc()
 }
 
 // ByErrorAt orders the results by the error_at field.

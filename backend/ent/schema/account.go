@@ -131,6 +131,10 @@ func (Account) Fields() []ent.Field {
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
 
+		// config_version: 配置版本号，仅配置写入（整行更新、PATCH、批量编辑）递增，供 If-Match 乐观并发
+		field.Int64("config_version").
+			Default(0),
+
 		// error_at: 账户进入 error 状态的时间；离开 error 状态时清空
 		field.Time("error_at").
 			Optional().
