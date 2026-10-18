@@ -535,6 +535,9 @@ type AdminRedeemCode struct {
 	RedeemCode
 
 	Notes string `json:"notes"`
+	// BatchID / CreatedBy identify the generate call and its admin (admin view only; absent for older codes).
+	BatchID   *string `json:"batch_id,omitempty"`
+	CreatedBy *int64  `json:"created_by,omitempty"`
 }
 
 type NullableTimeField struct {

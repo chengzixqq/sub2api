@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/schema/edge"
 	"entgo.io/ent/schema/field"
 	"entgo.io/ent/schema/index"
+	"github.com/google/uuid"
 )
 
 // RedeemCode holds the schema definition for the RedeemCode entity.
@@ -72,6 +73,14 @@ func (RedeemCode) Fields() []ent.Field {
 			Nillable(),
 		field.Int("validity_days").
 			Default(30),
+		// batch_id groups the codes of one generate call (migration 248); NULL for older codes and admin records.
+		field.UUID("batch_id", uuid.UUID{}).
+			Optional().
+			Nillable(),
+		// created_by is the admin who generated the code.
+		field.Int64("created_by").
+			Optional().
+			Nillable(),
 	}
 }
 

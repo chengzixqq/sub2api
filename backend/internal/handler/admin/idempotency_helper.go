@@ -148,6 +148,13 @@ func executeAdminOptionalMoneyWriteJSON(c *gin.Context, scope string, payload an
 	executeAdminOptionalIdempotentJSONWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), adminMoneyWriteExecutionTimeout, false, execute)
 }
 
+// executeAdminOptionalBatchMoneyWrite is the optional-key money write for redeem-code generation once the batch id
+// dedupes a re-run: execution is detached and a retry may take over a dead execution. It does not write the response,
+// so the handler can post-process a replay (reload values the stored response redacted); use writeAdminIdempotentResult.
+func executeAdminOptionalBatchMoneyWrite(c *gin.Context, scope string, payload any, execute func(context.Context) (any, error)) (*service.IdempotencyExecuteResult, error) {
+	return executeAdminIdempotentWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), adminMoneyWriteExecutionTimeout, false, true, execute)
+}
+
 func executeAdminOptionalIdempotentJSONWithOptions(
 	c *gin.Context,
 	scope string,

@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
 	entsql "entgo.io/ent/dialect/sql"
@@ -36,6 +37,8 @@ func (r *redeemCodeRepository) Create(ctx context.Context, code *service.RedeemC
 		SetNillableUsedBy(code.UsedBy).
 		SetNillableUsedAt(code.UsedAt).
 		SetNillableGroupID(code.GroupID).
+		SetNillableBatchID(code.BatchID).
+		SetNillableCreatedBy(code.CreatedBy).
 		Save(ctx)
 	if err == nil {
 		code.ID = created.ID
@@ -156,6 +159,21 @@ func (r *redeemCodeRepository) ListWithFilters(ctx context.Context, params pagin
 	}
 	if len(filter.ExcludeTypes) > 0 {
 		q = q.Where(redeemcode.TypeNotIn(filter.ExcludeTypes...))
+	}
+	if filter.BatchID != nil {
+		q = q.Where(redeemcode.BatchIDEQ(*filter.BatchID))
+	}
+	if filter.CreatedBy != nil {
+		q = q.Where(redeemcode.CreatedByEQ(*filter.CreatedBy))
+	}
+	if filter.CreatedFrom != nil {
+		q = q.Where(redeemcode.CreatedAtGTE(*filter.CreatedFrom))
+	}
+	if filter.CreatedTo != nil {
+		q = q.Where(redeemcode.CreatedAtLT(*filter.CreatedTo))
+	}
+	if filter.Notes != "" {
+		q = q.Where(redeemcode.NotesContainsFold(filter.Notes))
 	}
 	status, search := filter.Status, filter.Search
 	if status != "" {
@@ -373,6 +391,25 @@ func (r *redeemCodeRepository) batchUpdate(ctx context.Context, client *dbent.Cl
 	return int64(affected), nil
 }
 
+// LockBatch serialises generate calls for one batch id within the caller's transaction (released on commit).
+func (r *redeemCodeRepository) LockBatch(ctx context.Context, batchID uuid.UUID) error {
+	_, err := clientFromContext(ctx, r.client).ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, "redeem_batch:"+batchID.String())
+	return err
+}
+
+// ListByBatchID returns every code of one generated batch, ordered by id.
+func (r *redeemCodeRepository) ListByBatchID(ctx context.Context, batchID uuid.UUID) ([]service.RedeemCode, error) {
+	models, err := clientFromContext(ctx, r.client).RedeemCode.Query().
+		Where(redeemcode.BatchIDEQ(batchID)).
+		Order(dbent.Asc(redeemcode.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return redeemCodeEntitiesToService(models), nil
+}
+
 func (r *redeemCodeRepository) Use(ctx context.Context, id, userID int64) error {
 	now := time.Now()
 	client := clientFromContext(ctx, r.client)
@@ -478,6 +515,8 @@ func redeemCodeEntityToService(m *dbent.RedeemCode) *service.RedeemCode {
 		ExpiresAt:    m.ExpiresAt,
 		GroupID:      m.GroupID,
 		ValidityDays: m.ValidityDays,
+		BatchID:      m.BatchID,
+		CreatedBy:    m.CreatedBy,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)

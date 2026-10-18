@@ -9,6 +9,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/google/uuid"
 )
 
 // AdminService interface defines admin management operations
@@ -153,6 +154,8 @@ type AdminService interface {
 	ListRedeemCodes(ctx context.Context, page, pageSize int, filter RedeemCodeListFilter, sortBy, sortOrder string) ([]RedeemCode, int64, error)
 	GetRedeemCode(ctx context.Context, id int64) (*RedeemCode, error)
 	GenerateRedeemCodes(ctx context.Context, input *GenerateRedeemCodesInput) ([]RedeemCode, error)
+	// ListRedeemCodeBatch returns the codes of one generated batch (real code values), ordered by id.
+	ListRedeemCodeBatch(ctx context.Context, batchID uuid.UUID) ([]RedeemCode, error)
 	DeleteRedeemCode(ctx context.Context, id int64) error
 	BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (int64, error)
 	ExpireRedeemCode(ctx context.Context, id int64) (*RedeemCode, error)
@@ -582,6 +585,12 @@ type GenerateRedeemCodesInput struct {
 	GroupID      *int64 // 订阅类型专用：关联的分组ID
 	ValidityDays int    // 订阅类型专用：有效天数
 	ExpiresAt    *time.Time
+	// Notes is written to every code of the batch.
+	Notes string
+	// BatchID makes the call idempotent at the business level: a second call with the same batch id and parameters
+	// returns the existing codes; different parameters fail with ErrRedeemBatchConflict. Nil keeps the old behaviour.
+	BatchID   *uuid.UUID
+	CreatedBy *int64
 }
 
 type ProxyBatchDeleteResult struct {

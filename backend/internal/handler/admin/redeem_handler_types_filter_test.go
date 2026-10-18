@@ -39,6 +39,23 @@ func TestRedeemHandler_List_TypesAndExcludeTypes(t *testing.T) {
 	require.Empty(t, stub.lastListRedeemCodes.filter.ExcludeTypes)
 }
 
+func TestRedeemHandler_List_BatchAndCreationFilters(t *testing.T) {
+	stub := newStubAdminService()
+
+	rec := listRedeemCodes(t, stub, "?batch_id=2f6c9a0e-8f1b-4c43-9d0e-6a1b2c3d4e5f&created_by=5&created_from=2026-10-18T00:00:00Z&created_to=2026-10-19T00:00:00Z&notes=%E5%8F%8C%2011")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	f := stub.lastListRedeemCodes.filter
+	require.Equal(t, "2f6c9a0e-8f1b-4c43-9d0e-6a1b2c3d4e5f", f.BatchID.String())
+	require.Equal(t, int64(5), *f.CreatedBy)
+	require.Equal(t, 18, f.CreatedFrom.Day())
+	require.Equal(t, 19, f.CreatedTo.Day())
+	require.Equal(t, "双 11", f.Notes)
+
+	require.Equal(t, http.StatusBadRequest, listRedeemCodes(t, stub, "?batch_id=nope").Code)
+	require.Equal(t, http.StatusBadRequest, listRedeemCodes(t, stub, "?created_from=yesterday").Code)
+	require.Equal(t, http.StatusBadRequest, listRedeemCodes(t, stub, "?created_by=-1").Code)
+}
+
 func TestRedeemHandler_List_RejectsBadTypes(t *testing.T) {
 	stub := newStubAdminService()
 

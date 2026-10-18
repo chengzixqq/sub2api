@@ -16,6 +16,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 )
@@ -1739,6 +1740,67 @@ func (s *adminServiceImpl) GenerateRedeemCodes(ctx context.Context, input *Gener
 		}
 	}
 
+	validityDays := 0
+	if input.Type == RedeemTypeSubscription {
+		validityDays = input.ValidityDays
+		if validityDays <= 0 {
+			validityDays = 30 // 默认30天
+		}
+	}
+
+	// With a batch id the whole batch is one transaction, serialised per batch id: a repeat returns the stored batch
+	// instead of generating a second one (independent of the 24-hour idempotency record).
+	batchRepo, batched := s.redeemCodeRepo.(RedeemCodeBatchRepository)
+	if input.BatchID != nil && batched && s.entClient != nil {
+		tx, err := s.entClient.Tx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		opCtx := dbent.NewTxContext(ctx, tx)
+		if err := batchRepo.LockBatch(opCtx, *input.BatchID); err != nil {
+			return nil, err
+		}
+		existing, err := batchRepo.ListByBatchID(opCtx, *input.BatchID)
+		if err != nil {
+			return nil, err
+		}
+		if len(existing) > 0 {
+			if !redeemBatchMatches(existing, input, validityDays) {
+				return nil, ErrRedeemBatchConflict
+			}
+			return existing, nil
+		}
+		codes, err := s.createRedeemCodes(opCtx, input, validityDays)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return codes, nil
+	}
+	return s.createRedeemCodes(ctx, input, validityDays)
+}
+
+func (s *adminServiceImpl) ListRedeemCodeBatch(ctx context.Context, batchID uuid.UUID) ([]RedeemCode, error) {
+	batchRepo, ok := s.redeemCodeRepo.(RedeemCodeBatchRepository)
+	if !ok {
+		return nil, infraerrors.ServiceUnavailable("REDEEM_BATCH_UNSUPPORTED", "redeem code batches are not supported by this repository")
+	}
+	return batchRepo.ListByBatchID(ctx, batchID)
+}
+
+// redeemBatchMatches reports whether a stored batch was generated with the same parameters.
+func redeemBatchMatches(existing []RedeemCode, input *GenerateRedeemCodesInput, validityDays int) bool {
+	first := existing[0]
+	sameGroup := (first.GroupID == nil) == (input.GroupID == nil) && (first.GroupID == nil || *first.GroupID == *input.GroupID)
+	sameCreator := (first.CreatedBy == nil) == (input.CreatedBy == nil) && (first.CreatedBy == nil || *first.CreatedBy == *input.CreatedBy)
+	return len(existing) == input.Count && first.Type == input.Type && first.Value == input.Value &&
+		first.ValidityDays == validityDays && sameGroup && sameCreator
+}
+
+func (s *adminServiceImpl) createRedeemCodes(ctx context.Context, input *GenerateRedeemCodesInput, validityDays int) ([]RedeemCode, error) {
 	codes := make([]RedeemCode, 0, input.Count)
 	for i := 0; i < input.Count; i++ {
 		codeValue, err := GenerateRedeemCode()
@@ -1751,14 +1813,14 @@ func (s *adminServiceImpl) GenerateRedeemCodes(ctx context.Context, input *Gener
 			Value:     input.Value,
 			Status:    StatusUnused,
 			ExpiresAt: input.ExpiresAt,
+			Notes:     input.Notes,
+			BatchID:   input.BatchID,
+			CreatedBy: input.CreatedBy,
 		}
 		// 订阅类型专用字段
 		if input.Type == RedeemTypeSubscription {
 			code.GroupID = input.GroupID
-			code.ValidityDays = input.ValidityDays
-			if code.ValidityDays <= 0 {
-				code.ValidityDays = 30 // 默认30天
-			}
+			code.ValidityDays = validityDays
 		}
 		if err := s.redeemCodeRepo.Create(ctx, &code); err != nil {
 			return nil, err

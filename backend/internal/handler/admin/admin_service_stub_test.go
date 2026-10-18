@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 )
 
 type stubAdminService struct {
@@ -747,6 +748,10 @@ func (s *stubAdminService) GetRedeemCode(ctx context.Context, id int64) (*servic
 }
 
 func (s *stubAdminService) GenerateRedeemCodes(ctx context.Context, input *service.GenerateRedeemCodesInput) ([]service.RedeemCode, error) {
+	return s.redeems, nil
+}
+
+func (s *stubAdminService) ListRedeemCodeBatch(ctx context.Context, batchID uuid.UUID) ([]service.RedeemCode, error) {
 	return s.redeems, nil
 }
 

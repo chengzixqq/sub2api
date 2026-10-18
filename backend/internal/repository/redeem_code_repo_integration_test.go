@@ -228,23 +228,23 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_GroupPreload() {
 // Admin balance / concurrency adjustments leave admin_* rows in redeem_codes; the App's code list excludes them.
 func (s *RedeemCodeRepoSuite) TestListWithFilters_TypesAndExcludeTypes() {
 	for i, typ := range []string{service.RedeemTypeBalance, service.RedeemTypeBalance, service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency} {
-		s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: fmt.Sprintf("TYPES-%d", i), Type: typ, Value: 1, Status: service.StatusUnused}))
+		s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: fmt.Sprintf("TYPESFILTER-%d", i), Type: typ, Value: 1, Status: service.StatusUnused}))
 	}
 	page := pagination.PaginationParams{Page: 1, PageSize: 20}
 
-	_, res, err := s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Types: []string{service.RedeemTypeBalance, service.RedeemTypeConcurrency, service.RedeemTypeSubscription, service.RedeemTypeInvitation}})
+	_, res, err := s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Search: "TYPESFILTER-", Types: []string{service.RedeemTypeBalance, service.RedeemTypeConcurrency, service.RedeemTypeSubscription, service.RedeemTypeInvitation}})
 	s.Require().NoError(err)
 	s.Require().Equal(int64(2), res.Total)
 
-	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{ExcludeTypes: []string{service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency}})
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Search: "TYPESFILTER-", ExcludeTypes: []string{service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency}})
 	s.Require().NoError(err)
 	s.Require().Equal(int64(2), res.Total)
 
-	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{})
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Search: "TYPESFILTER-"})
 	s.Require().NoError(err)
 	s.Require().Equal(int64(5), res.Total, "no filter keeps the old behaviour")
 
-	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Type: service.AdjustmentTypeAdminBalance})
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Search: "TYPESFILTER-", Type: service.AdjustmentTypeAdminBalance})
 	s.Require().NoError(err)
 	s.Require().Equal(int64(2), res.Total)
 }

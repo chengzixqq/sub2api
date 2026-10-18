@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type RedeemCode struct {
@@ -23,6 +25,10 @@ type RedeemCode struct {
 
 	GroupID      *int64
 	ValidityDays int
+
+	// BatchID groups the codes of one generate call; CreatedBy is the admin who generated them. Nil for older codes.
+	BatchID   *uuid.UUID
+	CreatedBy *int64
 
 	User  *User
 	Group *Group

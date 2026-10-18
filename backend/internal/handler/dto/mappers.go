@@ -636,10 +636,16 @@ func RedeemCodeFromServiceAdmin(rc *service.RedeemCode) *AdminRedeemCode {
 	if rc == nil {
 		return nil
 	}
-	return &AdminRedeemCode{
+	out := &AdminRedeemCode{
 		RedeemCode: redeemCodeFromServiceBase(rc),
 		Notes:      rc.Notes,
+		CreatedBy:  rc.CreatedBy,
 	}
+	if rc.BatchID != nil {
+		batch := rc.BatchID.String()
+		out.BatchID = &batch
+	}
+	return out
 }
 
 func redeemCodeFromServiceBase(rc *service.RedeemCode) RedeemCode {

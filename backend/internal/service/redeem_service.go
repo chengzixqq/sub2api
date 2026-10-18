@@ -13,6 +13,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/google/uuid"
 )
 
 var (
@@ -22,6 +23,7 @@ var (
 	ErrInsufficientBalance = infraerrors.BadRequest("INSUFFICIENT_BALANCE", "insufficient balance")
 	ErrRedeemRateLimited   = infraerrors.TooManyRequests("REDEEM_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrRedeemCodeLocked    = infraerrors.Conflict("REDEEM_CODE_LOCKED", "redeem code is being processed, please try again")
+	ErrRedeemBatchConflict = infraerrors.Conflict("REDEEM_BATCH_CONFLICT", "batch_id already used with different parameters")
 )
 
 const (
@@ -106,6 +108,19 @@ type RedeemCodeListFilter struct {
 	ExcludeTypes []string // type NOT IN (...)
 	Status       string
 	Search       string
+	// BatchID, CreatedBy, CreatedFrom / CreatedTo and Notes (contains, case-insensitive) find one generated batch.
+	BatchID     *uuid.UUID
+	CreatedBy   *int64
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+	Notes       string
+}
+
+// RedeemCodeBatchRepository is implemented by repositories that support batch generation: an advisory lock on the
+// batch id inside the generating transaction, and reading a batch back (ordered by id).
+type RedeemCodeBatchRepository interface {
+	LockBatch(ctx context.Context, batchID uuid.UUID) error
+	ListByBatchID(ctx context.Context, batchID uuid.UUID) ([]RedeemCode, error)
 }
 
 // redeemCodeListTypes are the values accepted by the types / exclude_types filters: the four codes admins issue plus

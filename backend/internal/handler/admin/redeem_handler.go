@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // RedeemHandler handles admin redeem code management
@@ -41,6 +42,10 @@ type GenerateRedeemCodesRequest struct {
 	ValidityDays  int        `json:"validity_days"` // 订阅类型使用，正数增加/负数退款扣减
 	ExpiresAt     *time.Time `json:"expires_at"`
 	ExpiresInDays *int       `json:"expires_in_days" binding:"omitempty,min=1,max=3650"`
+	// Notes is written to every code; BatchID (UUID, the client's operation id) makes the call repeatable without
+	// creating a second batch. Without it the batch id is derived from the Idempotency-Key, or random.
+	Notes   string `json:"notes" binding:"max=1000"`
+	BatchID string `json:"batch_id"`
 }
 
 // CreateAndRedeemCodeRequest represents creating a fixed code and redeeming it for a target user.
@@ -94,6 +99,33 @@ func parseRedeemCodeListFilter(c *gin.Context) (service.RedeemCodeListFilter, er
 	}
 	if filter.Type != "" && len(filter.Types) > 0 {
 		return filter, infraerrors.BadRequest("REDEEM_CODE_TYPE_CONFLICT", "use either type or types, not both")
+	}
+	if raw := strings.TrimSpace(c.Query("batch_id")); raw != "" {
+		id, parseErr := uuid.Parse(raw)
+		if parseErr != nil {
+			return filter, infraerrors.BadRequest("REDEEM_BATCH_ID_INVALID", "batch_id must be a UUID")
+		}
+		filter.BatchID = &id
+	}
+	if raw := strings.TrimSpace(c.Query("created_by")); raw != "" {
+		id, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || id <= 0 {
+			return filter, infraerrors.BadRequest("INVALID_CREATED_BY", "created_by must be a positive admin id")
+		}
+		filter.CreatedBy = &id
+	}
+	for name, dst := range map[string]**time.Time{"created_from": &filter.CreatedFrom, "created_to": &filter.CreatedTo} {
+		if raw := strings.TrimSpace(c.Query(name)); raw != "" {
+			t, parseErr := time.Parse(time.RFC3339, raw)
+			if parseErr != nil {
+				return filter, infraerrors.BadRequest("INVALID_TIME_RANGE", name+" must be RFC3339")
+			}
+			*dst = &t
+		}
+	}
+	filter.Notes = strings.TrimSpace(c.Query("notes"))
+	if len([]rune(filter.Notes)) > 100 {
+		filter.Notes = string([]rune(filter.Notes)[:100])
 	}
 	// 标准化和验证 search 参数
 	filter.Search = strings.TrimSpace(c.Query("search"))
@@ -161,9 +193,22 @@ func (h *RedeemHandler) Generate(c *gin.Context) {
 		return
 	}
 
+	batchID, err := resolveRedeemBatchID(c, req)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	createdBy := getAdminIDFromContext(c)
+	var createdByPtr *int64
+	if createdBy > 0 {
+		createdByPtr = &createdBy
+	}
+	c.Header("X-Redeem-Batch-ID", batchID.String())
+
 	// The Web generates codes without an Idempotency-Key; the optional-key variant keeps that working when keys are
-	// enforced, and still detaches execution for clients that send one.
-	executeAdminOptionalMoneyWriteJSON(c, "admin.redeem_codes.generate", req, func(ctx context.Context) (any, error) {
+	// enforced, and still detaches execution for clients that send one. The batch id dedupes a re-run, so a retry
+	// may also take over an execution that died.
+	result, err := executeAdminOptionalBatchMoneyWrite(c, "admin.redeem_codes.generate", req, func(ctx context.Context) (any, error) {
 		codes, execErr := h.adminService.GenerateRedeemCodes(ctx, &service.GenerateRedeemCodesInput{
 			Count:        req.Count,
 			Type:         req.Type,
@@ -171,17 +216,45 @@ func (h *RedeemHandler) Generate(c *gin.Context) {
 			GroupID:      req.GroupID,
 			ValidityDays: req.ValidityDays,
 			ExpiresAt:    expiresAt,
+			Notes:        strings.TrimSpace(req.Notes),
+			BatchID:      &batchID,
+			CreatedBy:    createdByPtr,
 		})
 		if execErr != nil {
 			return nil, execErr
 		}
-
-		out := make([]dto.AdminRedeemCode, 0, len(codes))
-		for i := range codes {
-			out = append(out, *dto.RedeemCodeFromServiceAdmin(&codes[i]))
-		}
-		return out, nil
+		return adminRedeemCodesFromService(codes), nil
 	})
+	if err == nil && result != nil && result.Replayed {
+		// Stored replays redact "code" (log redaction): reload the batch so the client gets its real codes back.
+		codes, listErr := h.adminService.ListRedeemCodeBatch(c.Request.Context(), batchID)
+		if listErr == nil && len(codes) > 0 {
+			result.Data = adminRedeemCodesFromService(codes)
+		}
+	}
+	writeAdminIdempotentResult(c, "admin.redeem_codes.generate", result, err, idempotencyStoreUnavailableFailClose, nil)
+}
+
+func adminRedeemCodesFromService(codes []service.RedeemCode) []dto.AdminRedeemCode {
+	out := make([]dto.AdminRedeemCode, 0, len(codes))
+	for i := range codes {
+		out = append(out, *dto.RedeemCodeFromServiceAdmin(&codes[i]))
+	}
+	return out
+}
+
+// resolveRedeemBatchID uses the client's batch_id, else derives a stable one from the Idempotency-Key (so a retry with
+// the same key lands on the same batch), else a random one.
+func resolveRedeemBatchID(c *gin.Context, req GenerateRedeemCodesRequest) (uuid.UUID, error) {
+	if raw := strings.TrimSpace(req.BatchID); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return uuid.Nil, infraerrors.BadRequest("REDEEM_BATCH_ID_INVALID", "batch_id must be a UUID")
+		}
+		return id, nil
+	}
+	id, _ := adminAdjustmentActionID(c, "admin.redeem_codes.generate", req)
+	return id, nil
 }
 
 // CreateAndRedeem creates a fixed redeem code and redeems it for a target user in one step.
