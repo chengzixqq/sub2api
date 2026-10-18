@@ -20,7 +20,9 @@ func TestOpsAlertSilences_RealDatabase(t *testing.T) {
 	var adminID int64
 	require.NoError(t, integrationDB.QueryRowContext(ctx,
 		`INSERT INTO users (email, password_hash, role, status, username) VALUES ('silence-admin@example.com', 'x', 'admin', 'active', 'ops-admin') RETURNING id`).Scan(&adminID))
-	t.Cleanup(func() { _, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM users WHERE id = $1", adminID) })
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM users WHERE id = $1", adminID)
+	})
 
 	now := time.Now().UTC().Truncate(time.Second)
 	groupID := int64(2)
@@ -79,6 +81,58 @@ func TestOpsAlertSilences_RealDatabase(t *testing.T) {
 	_, err = repo.UpdateAlertSilenceUntil(ctx, 999999, oneHour, nil)
 	require.Error(t, err)
 	require.Error(t, repo.EndAlertSilence(ctx, 999999, now))
+}
+
+// Events report the silence that currently covers their scope: the rule, the platform and group from the event's
+// dimensions, and the region from the rule's filters.
+func TestOpsAlertEvents_CarryActiveSilence_RealDatabase(t *testing.T) {
+	ctx := context.Background()
+	_, _ = integrationDB.ExecContext(ctx, "TRUNCATE ops_alert_silences, ops_alert_events RESTART IDENTITY")
+	repo, ok := NewOpsRepository(integrationDB).(*opsRepository)
+	require.True(t, ok)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	groupID := int64(2)
+	insertEvent := func(ruleID int64, dims string) int64 {
+		var id int64
+		require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO ops_alert_events (rule_id, severity, status, title, description, dimensions, fired_at, email_sent, created_at)
+VALUES ($1, 'P1', 'firing', 't', '', $2::jsonb, NOW(), false, NOW()) RETURNING id`, ruleID, dims).Scan(&id))
+		return id
+	}
+	groupEvent := insertEvent(41, `{"group_id":2}`)
+	platformEvent := insertEvent(35, `{"platform":"gemini"}`)
+	plainEvent := insertEvent(36, `null`)
+
+	shortSilence, err := repo.CreateAlertSilence(ctx, &service.OpsAlertSilence{RuleID: 41, GroupID: &groupID, Until: now.Add(time.Hour)})
+	require.NoError(t, err)
+	longSilence, err := repo.CreateAlertSilence(ctx, &service.OpsAlertSilence{RuleID: 41, GroupID: &groupID, Until: now.Add(24 * time.Hour)})
+	require.NoError(t, err)
+	_, err = repo.CreateAlertSilence(ctx, &service.OpsAlertSilence{RuleID: 35, Platform: "openai", Until: now.Add(time.Hour)}) // other platform
+	require.NoError(t, err)
+	_, err = repo.CreateAlertSilence(ctx, &service.OpsAlertSilence{RuleID: 36, Until: now.Add(-time.Minute)}) // already over
+	require.NoError(t, err)
+
+	events, err := repo.ListAlertEvents(ctx, &service.OpsAlertEventFilter{Limit: 10, Status: "firing"})
+	require.NoError(t, err)
+	byID := map[int64]*service.OpsAlertEvent{}
+	for _, ev := range events {
+		byID[ev.ID] = ev
+	}
+	require.Len(t, byID, 3)
+	require.NotNil(t, byID[groupEvent].Silence)
+	require.Equal(t, longSilence.ID, byID[groupEvent].Silence.ID, "the latest-ending silence wins")
+	require.Nil(t, byID[platformEvent].Silence, "a silence on another platform does not cover the event")
+	require.Nil(t, byID[plainEvent].Silence, "an expired silence does not count")
+
+	ev, err := repo.GetAlertEventByID(ctx, groupEvent)
+	require.NoError(t, err)
+	require.NotNil(t, ev.Silence)
+	require.Equal(t, longSilence.ID, ev.Silence.ID)
+
+	require.NoError(t, repo.EndAlertSilence(ctx, shortSilence.ID, time.Now().UTC()))
+	ev, err = repo.GetAlertEventByID(ctx, groupEvent)
+	require.NoError(t, err)
+	require.Nil(t, ev.Silence, "after revoking, the event is no longer silenced")
 }
 
 func untilOf(t *testing.T, id int64) time.Time {

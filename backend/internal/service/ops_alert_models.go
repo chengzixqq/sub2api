@@ -57,6 +57,15 @@ type OpsAlertEvent struct {
 
 	EmailSent bool      `json:"email_sent"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Silence is the active silence covering this event's scope (null when none). Filled by event list and detail reads.
+	Silence *OpsAlertEventSilence `json:"silence"`
+}
+
+// OpsAlertEventSilence is the latest-ending active silence whose scope matches an event.
+type OpsAlertEventSilence struct {
+	ID    int64     `json:"id"`
+	Until time.Time `json:"until"`
 }
 
 type OpsAlertSilence struct {

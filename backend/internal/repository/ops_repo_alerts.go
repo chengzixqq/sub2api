@@ -351,8 +351,11 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  created_at
+  created_at,
+  silence_id,
+  silence_until
 FROM ops_alert_events
+` + opsAlertEventSilenceJoin + `
 ` + where + `
 ORDER BY fired_at DESC, id DESC
 LIMIT ` + limitArg
@@ -365,47 +368,11 @@ LIMIT ` + limitArg
 
 	out := []*service.OpsAlertEvent{}
 	for rows.Next() {
-		var ev service.OpsAlertEvent
-		var metricValue sql.NullFloat64
-		var thresholdValue sql.NullFloat64
-		var dimensionsRaw []byte
-		var resolvedAt sql.NullTime
-		if err := rows.Scan(
-			&ev.ID,
-			&ev.RuleID,
-			&ev.Severity,
-			&ev.Status,
-			&ev.Title,
-			&ev.Description,
-			&metricValue,
-			&thresholdValue,
-			&dimensionsRaw,
-			&ev.FiredAt,
-			&resolvedAt,
-			&ev.EmailSent,
-			&ev.CreatedAt,
-		); err != nil {
+		ev, err := scanOpsAlertEventWithSilence(rows)
+		if err != nil {
 			return nil, err
 		}
-		if metricValue.Valid {
-			v := metricValue.Float64
-			ev.MetricValue = &v
-		}
-		if thresholdValue.Valid {
-			v := thresholdValue.Float64
-			ev.ThresholdValue = &v
-		}
-		if resolvedAt.Valid {
-			v := resolvedAt.Time
-			ev.ResolvedAt = &v
-		}
-		if len(dimensionsRaw) > 0 && string(dimensionsRaw) != "null" {
-			var decoded map[string]any
-			if err := json.Unmarshal(dimensionsRaw, &decoded); err == nil {
-				ev.Dimensions = decoded
-			}
-		}
-		out = append(out, &ev)
+		out = append(out, ev)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -435,12 +402,15 @@ SELECT
   fired_at,
   resolved_at,
   email_sent,
-  created_at
+  created_at,
+  silence_id,
+  silence_until
 FROM ops_alert_events
+` + opsAlertEventSilenceJoin + `
 WHERE id = $1`
 
 	row := r.db.QueryRowContext(ctx, q, eventID)
-	ev, err := scanOpsAlertEvent(row)
+	ev, err := scanOpsAlertEventWithSilence(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -871,14 +841,49 @@ SELECT EXISTS (SELECT 1 FROM target)`
 	return nil
 }
 
+// opsAlertEventSilenceJoin attaches the latest-ending active silence covering an event: same rule, the platform and
+// group from the event's dimensions, the region from the rule's filters (events do not store a region). Only
+// silence_id / silence_until are exposed, so the unqualified columns of buildOpsAlertEventsWhere stay unambiguous.
+const opsAlertEventSilenceJoin = `LEFT JOIN LATERAL (
+  SELECT s.id AS silence_id, s.until AS silence_until
+  FROM ops_alert_silences s
+  WHERE s.rule_id = ops_alert_events.rule_id
+    AND s.platform = COALESCE(ops_alert_events.dimensions->>'platform', '')
+    AND s.group_id IS NOT DISTINCT FROM NULLIF(ops_alert_events.dimensions->>'group_id', '')::BIGINT
+    AND s.region IS NOT DISTINCT FROM (
+      SELECT NULLIF(TRIM(r.filters->>'region'), '') FROM ops_alert_rules r WHERE r.id = ops_alert_events.rule_id
+    )
+    AND s.until > NOW()
+  ORDER BY s.until DESC, s.id DESC
+  LIMIT 1
+) active_silence ON TRUE`
+
 func scanOpsAlertEvent(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
+	return scanOpsAlertEventColumns(row)
+}
+
+// scanOpsAlertEventWithSilence reads the event columns followed by silence_id and silence_until.
+func scanOpsAlertEventWithSilence(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
+	var silenceID sql.NullInt64
+	var silenceUntil sql.NullTime
+	ev, err := scanOpsAlertEventColumns(row, &silenceID, &silenceUntil)
+	if err != nil {
+		return nil, err
+	}
+	if silenceID.Valid && silenceUntil.Valid {
+		ev.Silence = &service.OpsAlertEventSilence{ID: silenceID.Int64, Until: silenceUntil.Time}
+	}
+	return ev, nil
+}
+
+func scanOpsAlertEventColumns(row opsAlertEventRow, extra ...any) (*service.OpsAlertEvent, error) {
 	var ev service.OpsAlertEvent
 	var metricValue sql.NullFloat64
 	var thresholdValue sql.NullFloat64
 	var dimensionsRaw []byte
 	var resolvedAt sql.NullTime
 
-	if err := row.Scan(
+	dest := []any{
 		&ev.ID,
 		&ev.RuleID,
 		&ev.Severity,
@@ -892,7 +897,8 @@ func scanOpsAlertEvent(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
 		&resolvedAt,
 		&ev.EmailSent,
 		&ev.CreatedAt,
-	); err != nil {
+	}
+	if err := row.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
 	if metricValue.Valid {
