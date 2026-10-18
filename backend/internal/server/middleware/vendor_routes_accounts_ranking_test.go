@@ -23,3 +23,12 @@ func TestVendorRoutesDenyAccountStatusSummary(t *testing.T) {
 		t.Fatal("vendor account reads must stay open")
 	}
 }
+
+// TestVendorRoutesDenyDashboardRates: the ops where clauses carry no account
+// scope, so the rates would be station-wide.
+func TestVendorRoutesDenyDashboardRates(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/dashboard/rates"), scope) {
+		t.Fatal("vendor must not read station-wide dashboard rates")
+	}
+}

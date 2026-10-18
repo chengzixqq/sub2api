@@ -1112,3 +1112,35 @@ func roundTo1DP(v float64) float64 {
 func roundTo4DP(v float64) float64 {
 	return math.Round(v*10000) / 10000
 }
+
+var _ service.OpsLiveRatesRepository = (*opsRepository)(nil)
+
+// GetLiveRateCounts returns raw success / token counts and, when includeErrors
+// is set, error counts for dashboard/rates. It reuses the overview queries so
+// the numbers match ops/dashboard/overview and throughput-trend.
+func (r *opsRepository) GetLiveRateCounts(ctx context.Context, filter *service.OpsDashboardFilter, includeErrors bool) (*service.OpsLiveRateCounts, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("nil ops repository")
+	}
+	if filter == nil {
+		return nil, fmt.Errorf("nil filter")
+	}
+	start, end := filter.StartTime.UTC(), filter.EndTime.UTC()
+	successCount, tokenConsumed, err := r.queryUsageCounts(ctx, filter, start, end)
+	if err != nil {
+		return nil, err
+	}
+	out := &service.OpsLiveRateCounts{SuccessCount: successCount, TokenConsumed: tokenConsumed}
+	if !includeErrors {
+		return out, nil
+	}
+	errorTotal, _, errorCountSLA, _, upstream429, upstream529, err := r.queryErrorCounts(ctx, filter, start, end)
+	if err != nil {
+		return nil, err
+	}
+	out.ErrorCount = errorTotal
+	out.ErrorCountSLA = errorCountSLA
+	out.Upstream429Count = upstream429
+	out.Upstream529Count = upstream529
+	return out, nil
+}
