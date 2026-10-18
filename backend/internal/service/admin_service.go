@@ -90,6 +90,8 @@ type AdminService interface {
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
+	// UpdateGroupMembers adds / removes accounts of a group, reporting per account.
+	UpdateGroupMembers(ctx context.Context, groupID int64, in UpdateGroupMembersInput) (*UpdateGroupMembersResult, error)
 	ReplaceUserGroupWithOptions(ctx context.Context, userID, oldGroupID, newGroupID int64, opts ReplaceUserGroupOptions) (*ReplaceUserGroupResult, error)
 
 	// Account management

@@ -32,3 +32,12 @@ func TestVendorRoutesDenyDashboardRates(t *testing.T) {
 		t.Fatal("vendor must not read station-wide dashboard rates")
 	}
 }
+
+// TestVendorRoutesDenyGroupMemberBatch: membership batch writes are POST under
+// /admin/groups, which the vendor whitelist only opens for GET / PUT / PATCH.
+func TestVendorRoutesDenyGroupMemberBatch(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("POST", "/api/v1/admin/groups/:id/accounts/batch"), scope) {
+		t.Fatal("vendor must not batch-edit group members")
+	}
+}

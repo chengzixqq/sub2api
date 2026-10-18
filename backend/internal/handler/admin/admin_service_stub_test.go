@@ -17,6 +17,8 @@ type stubAdminService struct {
 	lastAPIKeyFieldsInput               *service.AdminUpdateAPIKeyInput
 	lastRevokeGroupAccessID             int64
 	lastReplaceOptions                  service.ReplaceUserGroupOptions
+	lastGroupMembersInput               service.UpdateGroupMembersInput
+	updateGroupMembersErr               error
 	groups                              []service.Group
 	accounts                            []service.Account
 	accountSchedulerScoreFilterAccounts []service.Account
@@ -830,6 +832,14 @@ func (s *stubAdminService) AdminUpdateAPIKeyGroupIDWithOptions(ctx context.Conte
 	result.RevokedGroupAccess = true
 	result.RevokedGroupID = &revoked
 	return result, nil
+}
+
+func (s *stubAdminService) UpdateGroupMembers(ctx context.Context, groupID int64, in service.UpdateGroupMembersInput) (*service.UpdateGroupMembersResult, error) {
+	s.lastGroupMembersInput = in
+	if s.updateGroupMembersErr != nil {
+		return nil, s.updateGroupMembersErr
+	}
+	return &service.UpdateGroupMembersResult{GroupID: groupID, Added: len(in.Add), Results: []service.GroupMemberResult{}}, nil
 }
 
 func (s *stubAdminService) ReplaceUserGroupWithOptions(ctx context.Context, userID, oldGroupID, newGroupID int64, opts service.ReplaceUserGroupOptions) (*service.ReplaceUserGroupResult, error) {
