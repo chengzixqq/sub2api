@@ -123,6 +123,8 @@ type OpsInsertErrorLogInput struct {
 	UpstreamLatencyMs  *int64
 	ResponseLatencyMs  *int64
 	TimeToFirstTokenMs *int64
+	// DurationMs is the time from request start to the moment the error was logged.
+	DurationMs *int64
 
 	CreatedAt time.Time
 

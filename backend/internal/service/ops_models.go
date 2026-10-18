@@ -74,6 +74,11 @@ type OpsErrorLog struct {
 	// 关联 api_key 名称（LEFT JOIN api_keys 取得；软删只覆盖 key 列，name 保留，故已删 key 仍有原名）。
 	APIKeyName    string `json:"api_key_name,omitempty"`
 	APIKeyDeleted bool   `json:"api_key_deleted,omitempty"`
+
+	// DurationMs is the time from request start until the error was logged;
+	// both timings are null on rows written before they were recorded.
+	DurationMs         *int64 `json:"duration_ms"`
+	TimeToFirstTokenMs *int64 `json:"time_to_first_token_ms"`
 }
 
 type OpsErrorLogDetail struct {
@@ -92,7 +97,6 @@ type OpsErrorLogDetail struct {
 	RoutingLatencyMs   *int64 `json:"routing_latency_ms"`
 	UpstreamLatencyMs  *int64 `json:"upstream_latency_ms"`
 	ResponseLatencyMs  *int64 `json:"response_latency_ms"`
-	TimeToFirstTokenMs *int64 `json:"time_to_first_token_ms"`
 
 	// vNext metric semantics
 	IsBusinessLimited bool `json:"is_business_limited"`

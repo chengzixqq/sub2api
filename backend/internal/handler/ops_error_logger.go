@@ -1088,6 +1088,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			releaseOpsCaptureWriter(w)
 		}()
 		c.Writer = w
+		markOpsRequestStart(c)
 		c.Next()
 		w.finalizeCapture()
 
@@ -1680,6 +1681,43 @@ func applyOpsLatencyFieldsFromContext(c *gin.Context, entry *service.OpsInsertEr
 	entry.UpstreamLatencyMs = getContextLatencyMs(c, service.OpsUpstreamLatencyMsKey)
 	entry.ResponseLatencyMs = getContextLatencyMs(c, service.OpsResponseLatencyMsKey)
 	entry.TimeToFirstTokenMs = getContextLatencyMs(c, service.OpsTimeToFirstTokenMsKey)
+	entry.DurationMs = opsRequestDurationMs(c)
+}
+
+const opsRequestStartKey = "ops_request_start"
+
+// markOpsRequestStart records when the ops error logger saw the request, the
+// fallback start for routes that do not install gateway request timing.
+func markOpsRequestStart(c *gin.Context) {
+	if c != nil {
+		if _, exists := c.Get(opsRequestStartKey); !exists {
+			c.Set(opsRequestStartKey, time.Now())
+		}
+	}
+}
+
+// opsRequestDurationMs is the elapsed time from request start until now,
+// preferring the gateway request timing clock.
+func opsRequestDurationMs(c *gin.Context) *int64 {
+	if c == nil {
+		return nil
+	}
+	if c.Request != nil {
+		if timing := service.GatewayRequestTimingFromContext(c.Request.Context()); timing != nil {
+			ms := timing.ElapsedMS()
+			return &ms
+		}
+	}
+	if v, ok := c.Get(opsRequestStartKey); ok {
+		if started, ok := v.(time.Time); ok && !started.IsZero() {
+			ms := time.Since(started).Milliseconds()
+			if ms < 0 {
+				ms = 0
+			}
+			return &ms
+		}
+	}
+	return nil
 }
 
 // applyOpsUpstreamFieldsFromContext captures attempt-level upstream context.

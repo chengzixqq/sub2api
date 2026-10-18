@@ -55,9 +55,10 @@ INSERT INTO ops_error_logs (
   response_latency_ms,
   time_to_first_token_ms,
   created_at,
-  api_key_prefix
+  api_key_prefix,
+  duration_ms
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
 )`
 
 func NewOpsRepository(db *sql.DB) service.OpsRepository {
@@ -167,6 +168,7 @@ func opsInsertErrorLogArgs(input *service.OpsInsertErrorLogInput) []any {
 		opsNullInt64(input.TimeToFirstTokenMs),
 		input.CreatedAt,
 		opsNullString(input.APIKeyPrefix),
+		opsNullInt64(input.DurationMs),
 	}
 }
 
@@ -267,7 +269,9 @@ SELECT
   COALESCE(e.user_agent, ''),
   e.request_type,
   COALESCE(ak.name, ''),
-  ak.deleted_at
+  ak.deleted_at,
+  e.duration_ms,
+  e.time_to_first_token_ms
 FROM ops_error_logs e
 LEFT JOIN accounts a ON e.account_id = a.id
 LEFT JOIN groups g ON e.group_id = g.id
@@ -302,6 +306,7 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 		var requestType sql.NullInt64
 		var apiKeyName string
 		var apiKeyDeletedAt sql.NullTime
+		var durationMs, timeToFirstTokenMs sql.NullInt64
 		if err := rows.Scan(
 			&item.ID,
 			&item.CreatedAt,
@@ -338,9 +343,13 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 			&requestType,
 			&apiKeyName,
 			&apiKeyDeletedAt,
+			&durationMs,
+			&timeToFirstTokenMs,
 		); err != nil {
 			return nil, err
 		}
+		item.DurationMs = nullableInt64Ptr(durationMs)
+		item.TimeToFirstTokenMs = nullableInt64Ptr(timeToFirstTokenMs)
 		if resolvedAt.Valid {
 			t := resolvedAt.Time
 			item.ResolvedAt = &t
@@ -447,6 +456,7 @@ SELECT
   e.upstream_latency_ms,
   e.response_latency_ms,
   e.time_to_first_token_ms,
+  e.duration_ms,
   COALESCE(e.api_key_prefix, ''),
   COALESCE(ak.name, ''),
   ak.deleted_at
@@ -473,6 +483,7 @@ LIMIT 1`
 	var upstreamLatency sql.NullInt64
 	var responseLatency sql.NullInt64
 	var ttft sql.NullInt64
+	var detailDuration sql.NullInt64
 	var requestType sql.NullInt64
 	var detailAPIKeyName string
 	var detailAPIKeyDeletedAt sql.NullTime
@@ -521,6 +532,7 @@ LIMIT 1`
 		&upstreamLatency,
 		&responseLatency,
 		&ttft,
+		&detailDuration,
 		&out.APIKeyPrefix,
 		&detailAPIKeyName,
 		&detailAPIKeyDeletedAt,
@@ -582,6 +594,7 @@ LIMIT 1`
 		v := ttft.Int64
 		out.TimeToFirstTokenMs = &v
 	}
+	out.DurationMs = nullableInt64Ptr(detailDuration)
 	if requestType.Valid {
 		v := int16(requestType.Int64)
 		out.RequestType = &v

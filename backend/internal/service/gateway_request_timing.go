@@ -108,6 +108,11 @@ func (t *GatewayRequestTiming) Record(phase GatewayTimingPhase, elapsed time.Dur
 	}
 }
 
+// ElapsedMS is the time since the request started, without building a snapshot.
+func (t *GatewayRequestTiming) ElapsedMS() int64 {
+	return time.Since(t.started).Milliseconds()
+}
+
 func (t *GatewayRequestTiming) Snapshot() GatewayRequestTimingSnapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()
