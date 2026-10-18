@@ -117,19 +117,8 @@ func (h *OpsHandler) GetErrorLogs(c *gin.Context) {
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 	filter.UserQuery = strings.TrimSpace(c.Query("user_query"))
-	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
-	// buildOpsErrorLogsWhere 以 COALESCE(requested_model, model) 比对。
-	filter.Model = strings.TrimSpace(c.Query("model"))
-	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
-	for name, target := range map[string]**int64{"user_id": &filter.UserID, "api_key_id": &filter.APIKeyID} {
-		if raw := strings.TrimSpace(c.Query(name)); raw != "" {
-			id, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || id <= 0 {
-				response.BadRequest(c, "Invalid "+name)
-				return
-			}
-			*target = &id
-		}
+	if !parseOpsErrorIdentityFilters(c, filter) {
+		return
 	}
 
 	// 请求错误语义:client-visible status>=400 守卫恒生效（未设
@@ -257,19 +246,8 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
 	filter.UserQuery = strings.TrimSpace(c.Query("user_query"))
-	// Model 过滤：admin 走精确匹配（ModelFuzzy 默认 false，保持管理端语义）。
-	// buildOpsErrorLogsWhere 以 COALESCE(requested_model, model) 比对。
-	filter.Model = strings.TrimSpace(c.Query("model"))
-	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
-	for name, target := range map[string]**int64{"user_id": &filter.UserID, "api_key_id": &filter.APIKeyID} {
-		if raw := strings.TrimSpace(c.Query(name)); raw != "" {
-			id, err := strconv.ParseInt(raw, 10, 64)
-			if err != nil || id <= 0 {
-				response.BadRequest(c, "Invalid "+name)
-				return
-			}
-			*target = &id
-		}
+	if !parseOpsErrorIdentityFilters(c, filter) {
+		return
 	}
 
 	// 请求错误语义:client-visible status>=400 守卫恒生效（未设
@@ -498,6 +476,9 @@ func (h *OpsHandler) ListUpstreamErrors(c *gin.Context) {
 	filter.Owner = "provider"
 	filter.Source = strings.TrimSpace(c.Query("error_source"))
 	filter.Query = strings.TrimSpace(c.Query("q"))
+	if !parseOpsErrorIdentityFilters(c, filter) {
+		return
+	}
 
 	if platform := strings.TrimSpace(c.Query("platform")); platform != "" {
 		filter.Platform = platform
@@ -558,6 +539,32 @@ func (h *OpsHandler) ListUpstreamErrors(c *gin.Context) {
 		return
 	}
 	response.Paginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize)
+}
+
+// parseOpsErrorIdentityFilters reads the identity filters shared by the error
+// lists: model (exact, matched against COALESCE(requested_model, model)),
+// request_id and client_request_id (exact), user_id and api_key_id. It writes
+// a 400 and returns false on bad input.
+func parseOpsErrorIdentityFilters(c *gin.Context, filter *service.OpsErrorLogFilter) bool {
+	filter.Model = strings.TrimSpace(c.Query("model"))
+	filter.RequestID = strings.TrimSpace(c.Query("request_id"))
+	filter.ClientRequestID = strings.TrimSpace(c.Query("client_request_id"))
+	for _, item := range []struct {
+		name   string
+		target **int64
+	}{{"user_id", &filter.UserID}, {"api_key_id", &filter.APIKeyID}} {
+		raw := strings.TrimSpace(c.Query(item.name))
+		if raw == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || id <= 0 {
+			response.BadRequest(c, "Invalid "+item.name)
+			return false
+		}
+		*item.target = &id
+	}
+	return true
 }
 
 // GetUpstreamError returns upstream error detail.
