@@ -44,6 +44,13 @@ var vendorDeniedRoutes = []vendorRoute{
 	// V2 aggregates station-wide passive traffic and has no workspace predicate.
 	{prefix: "/api/v1/admin/channel-monitor-v2", methods: allMethods},
 
+	// /admin/usage 的 GET 前缀为监控档放行，但下面三条查的是全站：
+	// search-users 返回任意用户的邮箱、search-api-keys 返回任意 Key 的名称，
+	// 都没有工作区谓词；用量清理任务属站长运维。vendor 的 Web 筛选框搜索失败时返回空列表。
+	{prefix: "/api/v1/admin/usage/search-users", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/usage/search-api-keys", methods: allMethods, exact: true},
+	{prefix: "/api/v1/admin/usage/cleanup-tasks", methods: allMethods},
+
 	// 账号前缀下的全站级配置：这两条改的是探测器的全局开关与频率，
 	// 不带 :id，没有任何归属可校验 —— 一个 vendor 改动会影响所有工作区。
 	// 只拦写：GET 供账号编辑页读取当前值，对 vendor 无害。

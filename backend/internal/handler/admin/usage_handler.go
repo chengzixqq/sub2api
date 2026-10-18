@@ -209,9 +209,15 @@ func (h *UsageHandler) List(c *gin.Context) {
 		return
 	}
 
+	// Vendors share this endpoint (narrowed to their accounts) but must not see end users' key plaintext or profiles.
+	vendor := service.ScopeFromContextOrDeny(c.Request.Context()).IsVendor()
 	out := make([]dto.AdminUsageLog, 0, len(records))
 	for i := range records {
-		out = append(out, *dto.UsageLogFromServiceAdmin(&records[i]))
+		row := dto.UsageLogFromServiceAdmin(&records[i])
+		if vendor {
+			dto.RedactAdminUsageLogForVendor(row)
+		}
+		out = append(out, *row)
 	}
 	// The legacy explicit exact_total=false mode retains its lower-bound pagination contract.
 	if !exactTotal && !deferred {
