@@ -39,6 +39,19 @@ func executeAdminIdempotentWithTimeout(
 	executionTimeout time.Duration,
 	execute func(context.Context) (any, error),
 ) (*service.IdempotencyExecuteResult, error) {
+	return executeAdminIdempotentWithOptions(c, scope, payload, ttl, executionTimeout, true, false, execute)
+}
+
+func executeAdminIdempotentWithOptions(
+	c *gin.Context,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	executionTimeout time.Duration,
+	requireKey bool,
+	reclaimStale bool,
+	execute func(context.Context) (any, error),
+) (*service.IdempotencyExecuteResult, error) {
 	coordinator := service.DefaultIdempotencyCoordinator()
 	if coordinator == nil {
 		ctx := c.Request.Context()
@@ -55,15 +68,16 @@ func executeAdminIdempotentWithTimeout(
 	}
 
 	return coordinator.Execute(c.Request.Context(), service.IdempotencyExecuteOptions{
-		Scope:            scope,
-		ActorScope:       adminActorScope(c),
-		Method:           c.Request.Method,
-		Route:            c.FullPath(),
-		IdempotencyKey:   c.GetHeader("Idempotency-Key"),
-		Payload:          payload,
-		RequireKey:       true,
-		TTL:              ttl,
-		ExecutionTimeout: executionTimeout,
+		Scope:                  scope,
+		ActorScope:             adminActorScope(c),
+		Method:                 c.Request.Method,
+		Route:                  c.FullPath(),
+		IdempotencyKey:         c.GetHeader("Idempotency-Key"),
+		Payload:                payload,
+		RequireKey:             requireKey,
+		TTL:                    ttl,
+		ExecutionTimeout:       executionTimeout,
+		ReclaimStaleProcessing: reclaimStale,
 	}, execute)
 }
 
@@ -112,9 +126,46 @@ func executeAdminOptionalIdempotentJSON(
 	ttl time.Duration,
 	execute func(context.Context) (any, error),
 ) {
+	executeAdminOptionalIdempotentJSONWithOptions(c, scope, payload, ttl, 0, false, execute)
+}
+
+// adminMoneyWriteExecutionTimeout bounds money writes (balance adjustments, redeem-code generation, create-and-redeem)
+// once accepted: they keep running and store their result even if the client disconnects. Keep it below the reverse
+// proxy timeout; a client cut off earlier gets the stored result by retrying with the same Idempotency-Key.
+const adminMoneyWriteExecutionTimeout = 30 * time.Second
+
+// executeAdminMoneyWriteJSON runs a money write that requires an Idempotency-Key (when keys are enforced). Execution
+// is detached from the client, and a retry may take over a processing record whose executor died — callers must
+// dedupe a re-run in the business layer (balance: action_id; create-and-redeem: code).
+func executeAdminMoneyWriteJSON(c *gin.Context, scope string, payload any, execute func(context.Context) (any, error)) {
+	result, err := executeAdminIdempotentWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), adminMoneyWriteExecutionTimeout, true, true, execute)
+	writeAdminIdempotentResult(c, scope, result, err, idempotencyStoreUnavailableFailClose, execute)
+}
+
+// executeAdminOptionalMoneyWriteJSON is the optional-key variant for money writes the Web sends without a key
+// (redeem-code generation). It detaches execution but does not reclaim stale records: a re-run would create codes twice.
+func executeAdminOptionalMoneyWriteJSON(c *gin.Context, scope string, payload any, execute func(context.Context) (any, error)) {
+	executeAdminOptionalIdempotentJSONWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), adminMoneyWriteExecutionTimeout, false, execute)
+}
+
+func executeAdminOptionalIdempotentJSONWithOptions(
+	c *gin.Context,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	executionTimeout time.Duration,
+	reclaimStale bool,
+	execute func(context.Context) (any, error),
+) {
 	coordinator := service.DefaultIdempotencyCoordinator()
 	if coordinator == nil {
-		data, err := execute(c.Request.Context())
+		ctx := c.Request.Context()
+		if executionTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), executionTimeout)
+			defer cancel()
+		}
+		data, err := execute(ctx)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
@@ -125,6 +176,7 @@ func executeAdminOptionalIdempotentJSON(
 	result, err := coordinator.Execute(c.Request.Context(), service.IdempotencyExecuteOptions{
 		Scope: scope, ActorScope: adminActorScope(c), Method: c.Request.Method, Route: c.FullPath(),
 		IdempotencyKey: c.GetHeader("Idempotency-Key"), Payload: payload, RequireKey: false, TTL: ttl,
+		ExecutionTimeout: executionTimeout, ReclaimStaleProcessing: reclaimStale,
 	}, execute)
 	if idempotencyBusinessResultCommitted(result, err) {
 		c.Header("X-Idempotency-Degraded", "result-committed")
@@ -164,6 +216,19 @@ func executeAdminIdempotentJSONWithMode(
 	execute func(context.Context) (any, error),
 ) {
 	result, err := executeAdminIdempotentWithTimeout(c, scope, payload, ttl, executionTimeout, execute)
+	writeAdminIdempotentResult(c, scope, result, err, mode, execute)
+}
+
+// writeAdminIdempotentResult turns a coordinator outcome into the HTTP response (replay / degraded headers,
+// Retry-After on conflicts, optional fail-open re-execution when the store is unavailable).
+func writeAdminIdempotentResult(
+	c *gin.Context,
+	scope string,
+	result *service.IdempotencyExecuteResult,
+	err error,
+	mode idempotencyStoreUnavailableMode,
+	execute func(context.Context) (any, error),
+) {
 	if idempotencyBusinessResultCommitted(result, err) {
 		c.Header("X-Idempotency-Degraded", "result-committed")
 		response.Success(c, result.Data)

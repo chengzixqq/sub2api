@@ -142,7 +142,9 @@ func (h *RedeemHandler) Generate(c *gin.Context) {
 		return
 	}
 
-	executeAdminIdempotentJSON(c, "admin.redeem_codes.generate", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	// The Web generates codes without an Idempotency-Key; the optional-key variant keeps that working when keys are
+	// enforced, and still detaches execution for clients that send one.
+	executeAdminOptionalMoneyWriteJSON(c, "admin.redeem_codes.generate", req, func(ctx context.Context) (any, error) {
 		codes, execErr := h.adminService.GenerateRedeemCodes(ctx, &service.GenerateRedeemCodesInput{
 			Count:        req.Count,
 			Type:         req.Type,
@@ -200,7 +202,8 @@ func (h *RedeemHandler) CreateAndRedeem(c *gin.Context) {
 		return
 	}
 
-	executeAdminIdempotentJSON(c, "admin.redeem_codes.create_and_redeem", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	// create-and-redeem dedupes a re-run by code, so a retry may take over an execution that died.
+	executeAdminMoneyWriteJSON(c, "admin.redeem_codes.create_and_redeem", req, func(ctx context.Context) (any, error) {
 		existing, err := h.redeemService.GetByCode(ctx, req.Code)
 		if err == nil {
 			return h.resolveCreateAndRedeemExisting(ctx, existing, req.UserID)

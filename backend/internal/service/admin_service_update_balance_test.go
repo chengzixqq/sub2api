@@ -262,3 +262,30 @@ func TestAdminService_UpdateUserBalance_AffiliateFailureDoesNotRollbackRecharge(
 	require.Equal(t, []adminRechargeAffiliateAccrual{{userID: 7, amount: 5}}, affiliate.calls)
 	require.Len(t, redeemRepo.created, 1)
 }
+
+// ctxAwareAffiliateAccruerStub fails like a database call made with a cancelled context.
+type ctxAwareAffiliateAccruerStub struct {
+	adminRechargeAffiliateAccruerStub
+}
+
+func (s *ctxAwareAffiliateAccruerStub) AccrueInviteRebate(ctx context.Context, userID int64, amount float64) (float64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.adminRechargeAffiliateAccruerStub.AccrueInviteRebate(ctx, userID, amount)
+}
+
+// Post-commit side effects (referral rebate, auth cache) must not be lost when the client has gone away by the time
+// the balance transaction commits: the money is already moved.
+func TestAdminService_AfterBalanceCommit_SurvivesCancelledRequest(t *testing.T) {
+	affiliate := &ctxAwareAffiliateAccruerStub{}
+	svc := &adminServiceImpl{
+		settingService:   adminRechargeSettingService(true),
+		affiliateService: affiliate,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc.afterBalanceAdjustmentCommit(ctx, 7, "add", 5, 5)
+	require.Equal(t, []adminRechargeAffiliateAccrual{{userID: 7, amount: 5}}, affiliate.calls)
+}

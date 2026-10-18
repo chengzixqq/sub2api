@@ -454,7 +454,9 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		UserID: userID,
 		Body:   req,
 	}
-	executeAdminIdempotentJSON(c, "admin.users.balance.update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	// Balance adjustments dedupe a re-run by action_id (derived from the Idempotency-Key), so a retry may take over
+	// an execution that died; the adjustment also survives the phone dropping the connection.
+	executeAdminMoneyWriteJSON(c, "admin.users.balance.update", idempotencyPayload, func(ctx context.Context) (any, error) {
 		ctx = withAdminAdjustmentMetadata(c, ctx, req.Notes, "admin.users.balance.update", idempotencyPayload)
 		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, balance, req.Operation, req.Notes)
 		if execErr != nil {

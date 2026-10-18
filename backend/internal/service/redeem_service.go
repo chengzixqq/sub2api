@@ -546,12 +546,15 @@ func (s *RedeemService) redeem(ctx context.Context, userID int64, code string, r
 		return nil, fmt.Errorf("commit transaction: %w", err)
 	}
 
-	// 事务提交成功后失效缓存
-	s.invalidateRedeemCaches(ctx, userID, redeemCode)
+	// 事务提交成功后失效缓存。兑换已经提交，客户端断开也要把副作用做完：
+	// 保留请求上下文里的值（请求 ID、跳过返利标记），去掉它的取消，并限定时长。
+	afterCtx, cancelAfter := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancelAfter()
+	s.invalidateRedeemCaches(afterCtx, userID, redeemCode)
 
 	// 余额类正数兑换码触发邀请返利（best-effort，失败不影响兑换结果）
 	if redeemCode.Type == RedeemTypeBalance && redeemCode.Value > 0 {
-		s.tryAccrueAffiliateRebateForRedeem(ctx, userID, redeemCode.Value)
+		s.tryAccrueAffiliateRebateForRedeem(afterCtx, userID, redeemCode.Value)
 	}
 
 	// 重新获取更新后的兑换码

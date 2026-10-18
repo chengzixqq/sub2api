@@ -90,6 +90,11 @@ type IdempotencyExecuteOptions struct {
 	// ExecutionTimeout opts into bounded execution independent of client cancellation,
 	// with lease renewal and a separate short window to persist the final result.
 	ExecutionTimeout time.Duration
+	// ReclaimStaleProcessing lets a retry take over a processing record whose lease lapsed (the executor died before
+	// storing a result) instead of answering IDEMPOTENCY_IN_PROGRESS until the record expires. Only safe for scopes
+	// whose business layer dedupes a re-run (balance adjustments by action_id, create-and-redeem by code), and only
+	// honoured together with ExecutionTimeout: a live run renews its lease, so an expired lease means a dead one.
+	ReclaimStaleProcessing bool
 }
 
 type IdempotencyExecuteResult struct {
@@ -352,6 +357,25 @@ func (c *IdempotencyCoordinator) Execute(
 				logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "succeeded->replayed", true, nil)
 				return &IdempotencyExecuteResult{Data: data, Replayed: true}, nil
 			case IdempotencyStatusProcessing:
+				leaseLapsed := existing.LockedUntil == nil || !existing.LockedUntil.After(now)
+				if opts.ReclaimStaleProcessing && opts.ExecutionTimeout > 0 && leaseLapsed {
+					taken, reclaimErr := c.repo.TryReclaim(ctx, existing.ID, IdempotencyStatusProcessing, now, lockedUntil, expiresAt)
+					if reclaimErr != nil {
+						RecordIdempotencyStoreUnavailable(opts.Route, opts.Scope, "try_reclaim_stale_processing_error")
+						logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->store_unavailable", false, map[string]string{
+							"operation": "try_reclaim_stale_processing",
+						})
+						return nil, ErrIdempotencyStoreUnavail.WithCause(reclaimErr)
+					}
+					if taken {
+						recordIdempotencyClaim(opts.Route, opts.Scope, map[string]string{"mode": "stale_processing_reclaim"})
+						logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->processing", false, map[string]string{
+							"claim_mode": "stale_processing_reclaim",
+						})
+						record.ID = existing.ID
+						break
+					}
+				}
 				recordIdempotencyConflict(opts.Route, opts.Scope, map[string]string{"reason": "in_progress"})
 				logIdempotencyAudit(opts.Route, opts.Scope, keyHash, "processing->conflict", false, nil)
 				return nil, c.conflictWithRetryAfter(ErrIdempotencyInProgress, existing.LockedUntil, now)

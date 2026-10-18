@@ -819,6 +819,10 @@ func (s *adminServiceImpl) afterBalanceAdjustmentCommit(ctx context.Context, use
 	if delta == 0 {
 		return
 	}
+	// The balance is already committed: finish the side effects even if the client has gone away. Keep the request
+	// values (request id, actor) but not its cancellation, and bound the work.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
 	if s.authCacheInvalidator != nil {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
