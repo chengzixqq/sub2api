@@ -301,7 +301,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	workspaceMemberUserReader := service.NewWorkspaceMemberUserReader(userRepository)
 	workspaceAdminService := service.NewWorkspaceAdminService(workspaceAdminRepository, workspaceRepository, workspaceService, groupRepository, workspaceMemberUserReader)
 	workspaceHandler := admin.NewWorkspaceHandler(workspaceAdminService)
-	adminUserAdjustmentService := service.NewAdminUserAdjustmentService(adminUserAdjustmentRepository)
+	adminUserAdjustmentService := service.ProvideAdminUserAdjustmentService(adminUserAdjustmentRepository, settingRepository)
 	userAdjustmentHandler := admin.NewUserAdjustmentHandler(adminUserAdjustmentService)
 	upstreamBillingProbeService := service.ProvideUpstreamBillingProbeService(accountRepository, accountTestService, settingService, workspaceRepository, leaderLockCache, db)
 	openCodeGoUsageService := service.ProvideOpenCodeGoUsageService(accountRepository, httpUpstream, settingService, leaderLockCache, db)

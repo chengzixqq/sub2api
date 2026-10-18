@@ -130,7 +130,8 @@ type AdminUserAdjustmentRepository interface {
 }
 
 type AdminUserAdjustmentService struct {
-	repo AdminUserAdjustmentRepository
+	repo     AdminUserAdjustmentRepository
+	settings balanceNotifySettingsReader
 }
 
 func NewAdminUserAdjustmentService(repo AdminUserAdjustmentRepository) *AdminUserAdjustmentService {
