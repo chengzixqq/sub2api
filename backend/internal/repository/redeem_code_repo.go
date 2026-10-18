@@ -142,15 +142,22 @@ func (r *redeemCodeRepository) Delete(ctx context.Context, id int64) error {
 }
 
 func (r *redeemCodeRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.RedeemCode, *pagination.PaginationResult, error) {
-	return r.ListWithFilters(ctx, params, "", "", "")
+	return r.ListWithFilters(ctx, params, service.RedeemCodeListFilter{})
 }
 
-func (r *redeemCodeRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, codeType, status, search string) ([]service.RedeemCode, *pagination.PaginationResult, error) {
+func (r *redeemCodeRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filter service.RedeemCodeListFilter) ([]service.RedeemCode, *pagination.PaginationResult, error) {
 	q := r.client.RedeemCode.Query()
 
-	if codeType != "" {
-		q = q.Where(redeemcode.TypeEQ(codeType))
+	if filter.Type != "" {
+		q = q.Where(redeemcode.TypeEQ(filter.Type))
 	}
+	if len(filter.Types) > 0 {
+		q = q.Where(redeemcode.TypeIn(filter.Types...))
+	}
+	if len(filter.ExcludeTypes) > 0 {
+		q = q.Where(redeemcode.TypeNotIn(filter.ExcludeTypes...))
+	}
+	status, search := filter.Status, filter.Search
 	if status != "" {
 		now := time.Now()
 		switch status {

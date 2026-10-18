@@ -65,7 +65,7 @@ type RedeemCodeRepository interface {
 	Use(ctx context.Context, id, userID int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]RedeemCode, *pagination.PaginationResult, error)
-	ListWithFilters(ctx context.Context, params pagination.PaginationParams, codeType, status, search string) ([]RedeemCode, *pagination.PaginationResult, error)
+	ListWithFilters(ctx context.Context, params pagination.PaginationParams, filter RedeemCodeListFilter) ([]RedeemCode, *pagination.PaginationResult, error)
 	ListByUser(ctx context.Context, userID int64, limit int) ([]RedeemCode, error)
 	// ListByUserPaginated returns paginated balance/concurrency history for a specific user.
 	// codeType filter is optional - pass empty string to return all types.
@@ -97,6 +97,41 @@ type NullableTimeUpdate struct {
 type NullableInt64Update struct {
 	Set   bool
 	Value *int64
+}
+
+// RedeemCodeListFilter selects redeem codes for the admin list, export and stats. Empty fields do not filter.
+type RedeemCodeListFilter struct {
+	Type         string
+	Types        []string // type IN (...)
+	ExcludeTypes []string // type NOT IN (...)
+	Status       string
+	Search       string
+}
+
+// redeemCodeListTypes are the values accepted by the types / exclude_types filters: the four codes admins issue plus
+// the admin_* records that balance and concurrency adjustments leave in the same table.
+var redeemCodeListTypes = map[string]bool{
+	RedeemTypeBalance: true, RedeemTypeConcurrency: true, RedeemTypeSubscription: true, RedeemTypeInvitation: true,
+	AdjustmentTypeAdminBalance: true, AdjustmentTypeAdminConcurrency: true,
+}
+
+// ParseRedeemCodeTypeList parses a comma-separated types / exclude_types value: trimmed, de-duplicated and checked
+// against the accepted values (400 REDEEM_CODE_TYPE_INVALID otherwise). An empty value yields nil.
+func ParseRedeemCodeTypeList(raw string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		t := strings.TrimSpace(part)
+		if t == "" || seen[t] {
+			continue
+		}
+		if !redeemCodeListTypes[t] {
+			return nil, infraerrors.BadRequest("REDEEM_CODE_TYPE_INVALID", "unsupported redeem code type: "+t)
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 type RedeemCodeBatchUpdateFields struct {

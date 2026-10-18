@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -159,7 +160,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_Type() {
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "TYPE-BAL", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "TYPE-SUB", Type: service.RedeemTypeSubscription, Value: 0, Status: service.StatusUnused}))
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemTypeSubscription, "", "")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Type: service.RedeemTypeSubscription})
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().Equal(service.RedeemTypeSubscription, codes[0].Type)
@@ -169,7 +170,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_Status() {
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-UNUSED", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-USED", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUsed}))
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", service.StatusUsed, "STAT-")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Status: service.StatusUsed, Search: "STAT-"})
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().Equal(service.StatusUsed, codes[0].Status)
@@ -181,12 +182,12 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_StatusExpiredByExpiresAt() {
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-EXPIRED-BY-TIME", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused, ExpiresAt: &past}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "STAT-UNUSED-FUTURE", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused, ExpiresAt: &future}))
 
-	expired, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", service.StatusExpired, "")
+	expired, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Status: service.StatusExpired})
 	s.Require().NoError(err)
 	s.Require().Len(expired, 1)
 	s.Require().Equal("STAT-EXPIRED-BY-TIME", expired[0].Code)
 
-	unused, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", service.StatusUnused, "")
+	unused, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Status: service.StatusUnused})
 	s.Require().NoError(err)
 	s.Require().Len(unused, 1)
 	s.Require().Equal("STAT-UNUSED-FUTURE", unused[0].Code)
@@ -196,7 +197,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_Search() {
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "ALPHA-CODE", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 	s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: "BETA-CODE", Type: service.RedeemTypeBalance, Value: 0, Status: service.StatusUnused}))
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "alpha")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Search: "alpha"})
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().Contains(codes[0].Code, "ALPHA")
@@ -215,7 +216,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_GroupPreload() {
 		Save(s.ctx)
 	s.Require().NoError(err)
 
-	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, "", "", "WITH-GROUP")
+	codes, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Search: "WITH-GROUP"})
 	s.Require().NoError(err)
 	s.Require().Len(codes, 1)
 	s.Require().NotNil(codes[0].Group, "expected Group preload")
@@ -223,6 +224,30 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_GroupPreload() {
 }
 
 // --- Update ---
+
+// Admin balance / concurrency adjustments leave admin_* rows in redeem_codes; the App's code list excludes them.
+func (s *RedeemCodeRepoSuite) TestListWithFilters_TypesAndExcludeTypes() {
+	for i, typ := range []string{service.RedeemTypeBalance, service.RedeemTypeBalance, service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency} {
+		s.Require().NoError(s.repo.Create(s.ctx, &service.RedeemCode{Code: fmt.Sprintf("TYPES-%d", i), Type: typ, Value: 1, Status: service.StatusUnused}))
+	}
+	page := pagination.PaginationParams{Page: 1, PageSize: 20}
+
+	_, res, err := s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Types: []string{service.RedeemTypeBalance, service.RedeemTypeConcurrency, service.RedeemTypeSubscription, service.RedeemTypeInvitation}})
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), res.Total)
+
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{ExcludeTypes: []string{service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency}})
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), res.Total)
+
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{})
+	s.Require().NoError(err)
+	s.Require().Equal(int64(5), res.Total, "no filter keeps the old behaviour")
+
+	_, res, err = s.repo.ListWithFilters(s.ctx, page, service.RedeemCodeListFilter{Type: service.AdjustmentTypeAdminBalance})
+	s.Require().NoError(err)
+	s.Require().Equal(int64(2), res.Total)
+}
 
 func (s *RedeemCodeRepoSuite) TestUpdate() {
 	code := &service.RedeemCode{
@@ -528,7 +553,7 @@ func (s *RedeemCodeRepoSuite) TestCreateBatch_Filters_Use_Idempotency_ListByUser
 	}
 	s.Require().NoError(s.repo.CreateBatch(s.ctx, codes), "CreateBatch")
 
-	list, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemTypeSubscription, service.StatusUnused, "code")
+	list, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, service.RedeemCodeListFilter{Type: service.RedeemTypeSubscription, Status: service.StatusUnused, Search: "code"})
 	s.Require().NoError(err, "ListWithFilters")
 	s.Require().Equal(int64(1), page.Total)
 	s.Require().Len(list, 1)

@@ -18,7 +18,7 @@ func (s *RedeemCodeRepoSuite) TestListWithFilters_SortByValueAsc() {
 		PageSize:  10,
 		SortBy:    "value",
 		SortOrder: "asc",
-	}, "", "", "VALUE-")
+	}, service.RedeemCodeListFilter{Search: "VALUE-"})
 	s.Require().NoError(err)
 	s.Require().Len(codes, 2)
 	s.Require().Equal("VALUE-10", codes[0].Code)
