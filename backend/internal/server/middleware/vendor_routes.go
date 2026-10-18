@@ -41,6 +41,7 @@ var vendorDeniedRoutes = []vendorRoute{
 	{prefix: "/api/v1/admin/groups/:id/api-keys", methods: allMethods},
 	{prefix: "/api/v1/admin/groups/:id/rate-multipliers", methods: allMethods},
 	{prefix: "/api/v1/admin/groups/:id/rpm-overrides", methods: allMethods},
+	{prefix: "/api/v1/admin/groups/:id/subscriptions", methods: allMethods},
 	// V2 aggregates station-wide passive traffic and has no workspace predicate.
 	{prefix: "/api/v1/admin/channel-monitor-v2", methods: allMethods},
 

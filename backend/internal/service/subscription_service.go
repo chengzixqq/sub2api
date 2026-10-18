@@ -11,6 +11,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -804,7 +805,13 @@ func (s *SubscriptionService) ListActiveUserSubscriptions(ctx context.Context, u
 }
 
 // ListGroupSubscriptions 获取分组的所有订阅
+//
+// 订阅是站长统管的客户数据，vendor 一律不可读 —— 即便分组已授权给他。
+// 路由层已排除该端点，这里再挡一次（与 GetGroupAPIKeys 相同），避免日后复用时漏掉。
 func (s *SubscriptionService) ListGroupSubscriptions(ctx context.Context, groupID int64, page, pageSize int) ([]UserSubscription, *pagination.PaginationResult, error) {
+	if ScopeFromContextOrDeny(ctx).IsVendor() {
+		return nil, nil, domain.ErrWorkspaceScopeViolation
+	}
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
 	subs, pag, err := s.userSubRepo.ListByGroupID(ctx, groupID, params)
 	if err != nil {
