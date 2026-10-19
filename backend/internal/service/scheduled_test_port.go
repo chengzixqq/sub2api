@@ -31,6 +31,12 @@ type ScheduledTestResult struct {
 	StartedAt    time.Time `json:"started_at"`
 	FinishedAt   time.Time `json:"finished_at"`
 	CreatedAt    time.Time `json:"created_at"`
+	// UpstreamStatusCode is the upstream HTTP status the test saw (null when
+	// none was seen, e.g. network errors or results written before it existed).
+	UpstreamStatusCode *int `json:"upstream_status_code"`
+	// ErrorKind classifies failed results (C02 account error kinds plus
+	// rate_limit). It is derived on read and has no database column.
+	ErrorKind *string `json:"error_kind"`
 }
 
 // ScheduledTestPlanRepository defines the data access interface for test plans.

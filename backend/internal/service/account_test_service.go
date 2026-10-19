@@ -3358,13 +3358,16 @@ func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID in
 		}
 	}
 
+	upstreamStatus := accountTestRecordedUpstreamStatus(ginCtx, errMsg)
 	return &ScheduledTestResult{
-		Status:       status,
-		ResponseText: responseText,
-		ErrorMessage: errMsg,
-		LatencyMs:    finishedAt.Sub(startedAt).Milliseconds(),
-		StartedAt:    startedAt,
-		FinishedAt:   finishedAt,
+		Status:             status,
+		ResponseText:       responseText,
+		ErrorMessage:       errMsg,
+		LatencyMs:          finishedAt.Sub(startedAt).Milliseconds(),
+		StartedAt:          startedAt,
+		FinishedAt:         finishedAt,
+		UpstreamStatusCode: upstreamStatus,
+		ErrorKind:          AccountTestErrorKind(status, upstreamStatus, errMsg),
 	}, nil
 }
 

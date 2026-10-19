@@ -73,7 +73,14 @@ func (s *ScheduledTestService) ListResults(ctx context.Context, planID int64, li
 	if limit <= 0 {
 		limit = 50
 	}
-	return s.resultRepo.ListByPlanID(ctx, planID, limit)
+	results, err := s.resultRepo.ListByPlanID(ctx, planID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range results {
+		r.ErrorKind = AccountTestErrorKind(r.Status, r.UpstreamStatusCode, r.ErrorMessage)
+	}
+	return results, nil
 }
 
 // SaveResult inserts a result and prunes old entries beyond maxResults.

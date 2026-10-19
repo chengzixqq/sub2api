@@ -18,6 +18,7 @@ const (
 	AccountErrorKindStreamTimeout = "stream_timeout"
 	AccountErrorKindTokenRefresh  = "token_refresh"
 	AccountErrorKindPrivacy       = "privacy"
+	AccountErrorKindRateLimit     = "rate_limit"
 	AccountErrorKindOther         = "other"
 
 	accountErrorSummaryMaxRunes = 160

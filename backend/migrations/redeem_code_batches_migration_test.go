@@ -52,3 +52,12 @@ func TestOpsAlertEventRuleSnapshotMigration(t *testing.T) {
 	require.NotContains(t, sql, "UPDATE ")
 	require.NotContains(t, sql, "+goose")
 }
+
+func TestScheduledTestResultUpstreamStatusMigration(t *testing.T) {
+	content, err := FS.ReadFile("254_add_scheduled_test_result_upstream_status.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE scheduled_test_results ADD COLUMN IF NOT EXISTS upstream_status_code INT NULL")
+	require.NotContains(t, sql, "UPDATE ")
+	require.NotContains(t, sql, "+goose")
+}

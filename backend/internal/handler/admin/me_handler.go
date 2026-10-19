@@ -42,6 +42,7 @@ var adminMeCapabilities = []string{
 	"ops.system_metrics_history",
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",
+	"scheduled_tests.upstream_status",
 	"usage.model_source",
 	"users.quick_topup",
 }
