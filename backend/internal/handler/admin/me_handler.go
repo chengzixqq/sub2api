@@ -31,6 +31,7 @@ var adminMeCapabilities = []string{
 	"logs.since_id",
 	"ops.alert_event_counts",
 	"ops.alert_event_details",
+	"ops.alert_latency_metrics",
 	"ops.dashboard_model_filter",
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",

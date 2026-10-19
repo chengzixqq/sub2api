@@ -608,6 +608,18 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 			return 0, false
 		}
 		return overview.UpstreamErrorRate * 100, true
+	case "p95_latency_ms":
+		// nil means no successful sample in the window or the raw latency query timed out:
+		// not evaluable, never 0 ms.
+		if overview.Duration.P95 == nil {
+			return 0, false
+		}
+		return float64(*overview.Duration.P95), true
+	case "p99_latency_ms":
+		if overview.Duration.P99 == nil {
+			return 0, false
+		}
+		return float64(*overview.Duration.P99), true
 	default:
 		return 0, false
 	}

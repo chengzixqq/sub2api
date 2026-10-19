@@ -213,6 +213,31 @@ func TestOpsAlertRuleValidation(t *testing.T) {
 	require.False(t, isPercentOrRateMetric("concurrency_queue_depth"))
 }
 
+func TestOpsAlertRuleValidation_LatencyMetrics(t *testing.T) {
+	for _, metric := range []string{"p95_latency_ms", "p99_latency_ms"} {
+		t.Run(metric, func(t *testing.T) {
+			payload := func(threshold string) map[string]json.RawMessage {
+				return map[string]json.RawMessage{
+					"name":        json.RawMessage(`"latency"`),
+					"metric_type": json.RawMessage(`"` + metric + `"`),
+					"operator":    json.RawMessage(`">"`),
+					"threshold":   json.RawMessage(threshold),
+				}
+			}
+
+			// Milliseconds, not a percentage: values above 100 are valid.
+			validated, err := validateOpsAlertRulePayload(payload(`3000`))
+			require.NoError(t, err)
+			require.Equal(t, metric, validated.MetricType)
+			require.Equal(t, 3000.0, validated.Threshold)
+
+			_, err = validateOpsAlertRulePayload(payload(`-1`))
+			require.Error(t, err)
+			require.False(t, isPercentOrRateMetric(metric))
+		})
+	}
+}
+
 func TestOpsWSHelpers(t *testing.T) {
 	prefixes, invalid := parseTrustedProxyList("10.0.0.0/8,invalid")
 	require.Len(t, prefixes, 1)

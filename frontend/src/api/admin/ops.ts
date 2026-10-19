@@ -686,6 +686,8 @@ export type MetricType =
   | 'success_rate'
   | 'error_rate'
   | 'upstream_error_rate'
+  | 'p95_latency_ms'
+  | 'p99_latency_ms'
   | 'cpu_usage_percent'
   | 'memory_usage_percent'
   | 'concurrency_queue_depth'
