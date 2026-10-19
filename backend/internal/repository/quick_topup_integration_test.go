@@ -54,7 +54,9 @@ func TestQuickTopup_RecentAndLowBalance(t *testing.T) {
 
 	quick, ok := repo.(service.QuickTopupRepository)
 	require.True(t, ok)
-	got, err := quick.QuickTopup(ctx, service.QuickTopupQuery{RecentLimit: 20, LowLimit: 20, RecentDays: 30, GlobalEnabled: true, GlobalThreshold: 10})
+	// No cap here: the shared integration database keeps zero-balance users from
+	// other tests, which would crowd these fixtures out of a short list.
+	got, err := quick.QuickTopup(ctx, service.QuickTopupQuery{RecentLimit: 100000, LowLimit: 100000, RecentDays: 30, GlobalEnabled: true, GlobalThreshold: 10})
 	require.NoError(t, err)
 
 	recentIDs := []int64{}
@@ -89,7 +91,7 @@ func TestQuickTopup_RecentAndLowBalance(t *testing.T) {
 	require.NotContains(t, low, healthy.ID)
 	require.NotContains(t, low, disabled.ID)
 
-	off, err := quick.QuickTopup(ctx, service.QuickTopupQuery{RecentLimit: 0, LowLimit: 20, RecentDays: 30, GlobalEnabled: false, GlobalThreshold: 10})
+	off, err := quick.QuickTopup(ctx, service.QuickTopupQuery{RecentLimit: 0, LowLimit: 100000, RecentDays: 30, GlobalEnabled: false, GlobalThreshold: 10})
 	require.NoError(t, err)
 	offIDs := map[int64]bool{}
 	for _, l := range off.LowBalance {
