@@ -83,6 +83,19 @@ type LoginRequest struct {
 	TurnstileToken        string `json:"turnstile_token"`
 	TencentCaptchaTicket  string `json:"tencent_captcha_ticket"`
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr"`
+	// Client is declared by native apps; it selects the native session binding mode.
+	Client *service.SessionClient `json:"client,omitempty"`
+}
+
+// withDeclaredClient attaches a native client declaration to the request
+// context for token issuance; Web logins send none and keep IP + UA binding.
+func withDeclaredClient(c *gin.Context, client *service.SessionClient) {
+	if client == nil || !client.IsNative() {
+		return
+	}
+	declared := *client
+	declared.DeviceID = service.NormalizeSessionDeviceID(declared.DeviceID)
+	c.Request = c.Request.WithContext(service.WithSessionClient(c.Request.Context(), &declared))
 }
 
 func captchaProof(turnstileToken, tencentTicket, tencentRandstr string) service.CaptchaProof {
@@ -256,6 +269,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	withDeclaredClient(c, req.Client)
 
 	token, user, err := h.authService.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
@@ -419,6 +433,7 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 
 	// Delete the login session (only after all checks pass)
 	_ = h.totpService.DeleteLoginSession(c.Request.Context(), req.TempToken)
+	withDeclaredClient(c, session.Client)
 
 	if session.PendingOAuthBind == nil {
 		h.authService.RecordSuccessfulLogin(c.Request.Context(), user.ID)

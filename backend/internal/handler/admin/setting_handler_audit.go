@@ -65,6 +65,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.SessionBindingEnabled != after.SessionBindingEnabled {
 		changed = append(changed, "session_binding_enabled")
 	}
+	if before.SessionBindingNativeMode != after.SessionBindingNativeMode {
+		changed = append(changed, "session_binding_native_mode")
+	}
 	if before.StepUpEnabled != after.StepUpEnabled {
 		changed = append(changed, "step_up_enabled")
 	}

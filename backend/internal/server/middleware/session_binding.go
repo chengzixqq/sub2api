@@ -24,6 +24,7 @@ func SessionBindingContext(cfg *config.Config) gin.HandlerFunc {
 		binding := &service.SessionBinding{
 			IP:        ip.GetSecurityClientIP(c, forwardedIPSettings.TrustForwardedIP),
 			UserAgent: userAgent,
+			DeviceID:  service.NormalizeSessionDeviceID(c.GetHeader(SessionDeviceIDHeader)),
 		}
 		c.Request = c.Request.WithContext(service.WithSessionBinding(c.Request.Context(), binding))
 		c.Next()
@@ -39,8 +40,13 @@ func requestSessionBinding(c *gin.Context) *service.SessionBinding {
 	return &service.SessionBinding{
 		IP:        ip.GetTrustedClientIP(c),
 		UserAgent: normalizePersistentText(c.Request.UserAgent(), maxPersistentUserAgentBytes),
+		DeviceID:  service.NormalizeSessionDeviceID(c.GetHeader(SessionDeviceIDHeader)),
 	}
 }
+
+// SessionDeviceIDHeader carries a native app's device id on every request; it
+// is checked for sessions bound in device mode.
+const SessionDeviceIDHeader = "X-Device-ID"
 
 // SecurityClientIP 返回当前请求用于安全敏感记录（审计日志等）的客户端 IP。
 // 与会话绑定、API Key IP 限制共用同一套客户端 IP 来源。
@@ -72,8 +78,7 @@ func enforceSessionBinding(
 		return true
 	}
 	binding := requestSessionBinding(c)
-	current := binding.Hash()
-	if current == "" || current == claims.BindingHash {
+	if binding.Matches(claims.BindingHash) {
 		return true
 	}
 

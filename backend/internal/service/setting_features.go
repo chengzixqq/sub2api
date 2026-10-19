@@ -248,6 +248,20 @@ func (s *SettingService) IsSessionBindingEnabled(ctx context.Context) bool {
 	return value == "true"
 }
 
+// GetSessionBindingNativeMode returns how sessions of native apps are bound
+// while session binding is on: strict (IP + UA, default), device, ua_only or off.
+func (s *SettingService) GetSessionBindingNativeMode(ctx context.Context) string {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeySessionBindingNativeMode)
+	if err != nil {
+		return SessionBindingModeStrict
+	}
+	mode, err := ValidateSessionBindingNativeMode(value)
+	if err != nil {
+		return SessionBindingModeStrict
+	}
+	return mode
+}
+
 // IsStepUpEnabled 检查敏感操作 step-up 2FA 门控是否启用（默认关闭）。
 // 开启时账号/代理导出、备份创建/下载、S3 配置修改、提升管理员等操作
 // 要求当前会话在有效期内完成过 TOTP step-up 验证。

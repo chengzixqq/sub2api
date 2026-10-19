@@ -157,6 +157,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PasskeyRPID:                                            passkeyRPID,
 		PasskeyRPOrigins:                                       passkeyRPOrigins,
 		SessionBindingEnabled:                                  settings.SessionBindingEnabled,
+		SessionBindingNativeMode:                               settings.SessionBindingNativeMode,
 		StepUpEnabled:                                          settings.StepUpEnabled,
 		AuditLogRetentionDays:                                  settings.AuditLogRetentionDays,
 		LoginAgreementEnabled:                                  settings.LoginAgreementEnabled,

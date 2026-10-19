@@ -9871,6 +9871,7 @@ const form = reactive<SettingsForm>({
   passkey_rp_id: "",
   passkey_rp_origins: [],
   session_binding_enabled: false,
+  session_binding_native_mode: "strict",
   step_up_enabled: false,
   audit_log_retention_days: 180,
   login_agreement_enabled: false,

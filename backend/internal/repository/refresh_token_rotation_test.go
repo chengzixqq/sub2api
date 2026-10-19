@@ -131,3 +131,66 @@ func TestRefreshRotation_UnknownTokenIsInvalid(t *testing.T) {
 	_, err := svc.RefreshTokenPair(context.Background(), "rt_0000000000000000000000000000000000000000000000000000000000000000")
 	require.Equal(t, "REFRESH_TOKEN_INVALID", infraerrors.Reason(err))
 }
+
+type bindingSettingRepo struct {
+	service.SettingRepository
+	values map[string]string
+}
+
+func (r bindingSettingRepo) GetValue(_ context.Context, key string) (string, error) {
+	if v, ok := r.values[key]; ok {
+		return v, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
+func newBindingAuthService(t *testing.T, nativeMode string) (*service.AuthService, *service.User) {
+	t.Helper()
+	server := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	user := &service.User{ID: 9, Email: "b@example.com", Role: service.RoleAdmin, Status: service.StatusActive}
+	cfg := &config.Config{JWT: config.JWTConfig{Secret: "binding-test-secret", ExpireHour: 1, RefreshTokenExpireDays: 30, RefreshReuseGraceSeconds: 30}}
+	settings := service.NewSettingService(bindingSettingRepo{values: map[string]string{
+		service.SettingKeySessionBindingEnabled:    "true",
+		service.SettingKeySessionBindingNativeMode: nativeMode,
+	}}, cfg)
+	svc := service.NewAuthService(nil, rotationUserRepo{user: user}, nil, NewRefreshTokenCache(rdb), cfg, settings, nil, nil, nil, nil, nil, nil, nil)
+	return svc, user
+}
+
+func bindingCtx(ip, deviceID string, client *service.SessionClient) context.Context {
+	ctx := service.WithSessionBinding(context.Background(), &service.SessionBinding{IP: ip, UserAgent: "Sub2Mobile-iOS", DeviceID: deviceID})
+	return service.WithSessionClient(ctx, client)
+}
+
+func TestSessionBinding_NativeDeviceSessionSurvivesNetworkChange(t *testing.T) {
+	svc, user := newBindingAuthService(t, service.SessionBindingModeDevice)
+	ios := &service.SessionClient{Type: "ios", DeviceID: "6F1C2A7E"}
+	pair, err := svc.GenerateTokenPair(bindingCtx("198.51.100.1", "6F1C2A7E", ios), user, "")
+	require.NoError(t, err)
+
+	// New network, same device: refresh works and the successor stays device-bound.
+	next, err := svc.RefreshTokenPair(bindingCtx("203.0.113.9", "6F1C2A7E", nil), pair.RefreshToken)
+	require.NoError(t, err)
+	claims, err := svc.ValidateToken(next.AccessToken)
+	require.NoError(t, err)
+	require.Contains(t, claims.BindingHash, "d1:")
+
+	// Another device: mismatch, family revoked.
+	_, err = svc.RefreshTokenPair(bindingCtx("203.0.113.9", "OTHER", nil), next.RefreshToken)
+	require.Equal(t, "SESSION_BINDING_MISMATCH", infraerrors.Reason(err))
+}
+
+func TestSessionBinding_WebSessionStaysStrict(t *testing.T) {
+	svc, user := newBindingAuthService(t, service.SessionBindingModeDevice)
+	pair, err := svc.GenerateTokenPair(bindingCtx("198.51.100.1", "", nil), user, "")
+	require.NoError(t, err)
+	claims, err := svc.ValidateToken(pair.AccessToken)
+	require.NoError(t, err)
+	require.NotContains(t, claims.BindingHash, ":")
+
+	// Claiming a native client later cannot downgrade the Web session.
+	_, err = svc.RefreshTokenPair(bindingCtx("203.0.113.9", "6F1C2A7E", &service.SessionClient{Type: "ios", DeviceID: "6F1C2A7E"}), pair.RefreshToken)
+	require.Equal(t, "SESSION_BINDING_MISMATCH", infraerrors.Reason(err))
+}

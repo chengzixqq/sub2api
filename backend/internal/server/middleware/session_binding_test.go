@@ -151,3 +151,22 @@ func TestRequestSessionBindingPrefersInjectedBinding(t *testing.T) {
 
 	require.Equal(t, 200, w.Code)
 }
+
+func TestSessionBindingContextCapturesDeviceID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(SessionBindingContext(&config.Config{}))
+	r.GET("/t", func(c *gin.Context) {
+		binding := service.SessionBindingFromContext(c.Request.Context())
+		require.Equal(t, "6F1C2A7E", binding.DeviceID)
+		device := binding.HashFor(service.SessionBindingModeDevice)
+		moved := &service.SessionBinding{IP: "203.0.113.9", UserAgent: binding.UserAgent, DeviceID: binding.DeviceID}
+		require.True(t, moved.Matches(device), "device-bound tokens survive an IP change")
+		c.Status(200)
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/t", nil)
+	req.Header.Set(SessionDeviceIDHeader, " 6F1C2A7E ")
+	r.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code)
+}

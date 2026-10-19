@@ -66,6 +66,9 @@ type TotpLoginSession struct {
 	Email            string
 	TokenExpiry      time.Time
 	PendingOAuthBind *PendingOAuthBindLoginSession `json:"pending_oauth_bind,omitempty"`
+	// Client is the native client declared at the first login step, inherited
+	// by the 2FA step so the session gets the same binding mode.
+	Client *SessionClient `json:"client,omitempty"`
 }
 
 type PendingOAuthBindLoginSession struct {
@@ -457,6 +460,7 @@ func (s *TotpService) createLoginSession(
 		Email:            email,
 		TokenExpiry:      time.Now().Add(totpLoginTTL),
 		PendingOAuthBind: pendingOAuthBind,
+		Client:           sessionClientFromContext(ctx),
 	}
 
 	if err := s.cache.SetLoginSession(ctx, tempToken, session, totpLoginTTL); err != nil {

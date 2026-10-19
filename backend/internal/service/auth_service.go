@@ -1413,7 +1413,7 @@ func (s *AuthService) GenerateToken(ctx context.Context, user *User) (string, er
 	if err != nil {
 		return "", fmt.Errorf("generate session id: %w", err)
 	}
-	return s.generateAccessToken(user, sessionID, sessionBindingHashFromContext(ctx))
+	return s.generateAccessToken(user, sessionID, s.issueBindingHash(ctx))
 }
 
 // generateAccessToken 生成带会话 ID 与绑定指纹的 access token。
@@ -1505,13 +1505,16 @@ func (s *AuthService) RefreshToken(ctx context.Context, oldTokenString string) (
 
 	// 会话绑定检查：指纹变化的旧 token 不允许换发新 token。
 	if s.settingService != nil && s.settingService.IsSessionBindingEnabled(ctx) && claims.BindingHash != "" {
-		if current := sessionBindingHashFromContext(ctx); current != "" && current != claims.BindingHash {
+		if !sessionBindingMatches(ctx, claims.BindingHash) {
 			_ = s.RevokeSessionFamily(ctx, claims.SessionID)
 			return "", ErrSessionBindingMismatch
 		}
 	}
 
-	// 生成新token
+	// 生成新token（沿用会话签发时的绑定模式）
+	if claims.BindingHash != "" {
+		ctx = withInheritedBindingMode(ctx, claims.BindingHash)
+	}
 	return s.GenerateToken(ctx, user)
 }
 
@@ -1703,7 +1706,7 @@ func (s *AuthService) GenerateTokenPair(ctx context.Context, user *User, familyI
 	}
 
 	// 生成Access Token（携带会话ID与绑定指纹）
-	accessToken, err := s.generateAccessToken(user, familyID, sessionBindingHashFromContext(ctx))
+	accessToken, err := s.generateAccessToken(user, familyID, s.issueBindingHash(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
@@ -1749,7 +1752,7 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 		UserID:       user.ID,
 		TokenVersion: resolvedTokenVersion(user),
 		FamilyID:     familyID,
-		BindingHash:  sessionBindingHashFromContext(ctx),
+		BindingHash:  s.issueBindingHash(ctx),
 		CreatedAt:    now,
 		ExpiresAt:    now.Add(ttl),
 	}
@@ -1841,11 +1844,16 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	// 会话绑定检查：IP/UA 任一变化即撤销整个会话家族。
 	// data.BindingHash 为空表示功能开启前签发的旧会话，放行并在轮转时补齐绑定。
 	if s.settingService != nil && s.settingService.IsSessionBindingEnabled(ctx) && data.BindingHash != "" {
-		if current := sessionBindingHashFromContext(ctx); current != "" && current != data.BindingHash {
+		if !sessionBindingMatches(ctx, data.BindingHash) {
 			_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
 			logger.LegacyPrintf("service.auth", "[Auth] Session binding mismatch on refresh for user %d, family revoked", data.UserID)
 			return nil, ErrSessionBindingMismatch
 		}
+	}
+	// The successor keeps the session's binding mode (a native device session
+	// stays bound to its device, a Web session to IP + UA).
+	if data.BindingHash != "" {
+		ctx = withInheritedBindingMode(ctx, data.BindingHash)
 	}
 
 	if rotator, ok := s.refreshRotator(); ok {

@@ -160,7 +160,7 @@ func (s *AuthService) refreshFromRotated(ctx context.Context, rotator RefreshTok
 		return nil, ErrRefreshTokenReused
 	}
 	if s.settingService != nil && s.settingService.IsSessionBindingEnabled(ctx) && rotated.BindingHash != "" {
-		if current := sessionBindingHashFromContext(ctx); current != "" && current != rotated.BindingHash {
+		if !sessionBindingMatches(ctx, rotated.BindingHash) {
 			s.revokeReplayedFamily(ctx, rotated)
 			return nil, ErrSessionBindingMismatch
 		}

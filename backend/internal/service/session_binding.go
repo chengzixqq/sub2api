@@ -17,6 +17,8 @@ var ErrSessionBindingMismatch = infraerrors.Unauthorized("SESSION_BINDING_MISMAT
 type SessionBinding struct {
 	IP        string
 	UserAgent string
+	// DeviceID is the native client's X-Device-ID header (device binding mode).
+	DeviceID string
 }
 
 // Hash 计算绑定指纹哈希（IP 与 UA 合并，任一变化哈希即变化）。
