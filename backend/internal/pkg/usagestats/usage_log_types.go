@@ -367,7 +367,8 @@ type UsageLogFilters struct {
 	// DeferredTotal skips COUNT even for user/key/account-filtered queries.
 	DeferredTotal bool
 	// SinceID is an incremental cursor: only rows with id > SinceID. When set,
-	// the list is always the newest page by id DESC and never COUNTs.
+	// the list is always the newest page by id DESC and never COUNTs. Batched
+	// writers commit out of id order, so callers overlap the cursor.
 	SinceID *int64
 }
 

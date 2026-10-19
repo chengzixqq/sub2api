@@ -16,8 +16,11 @@ func UsagePaginated(c *gin.Context, items any, total int64, page, pageSize int, 
 }
 
 // UsageIncremental is the deferred envelope for since_id reads. latest_id is
-// the cursor for the next poll; has_more means rows were skipped between the
-// cursor and this page, so the client should reload page 1 instead.
+// the largest visible id, not a safe watermark: ids are allocated at INSERT
+// but rows become visible at COMMIT, and concurrent writers commit out of id
+// order, so a smaller id can appear after latest_id was returned. Clients
+// must poll with since_id rewound below latest_id and dedupe by id. has_more
+// means more new rows than one page, so the client should reload page 1.
 func UsageIncremental(c *gin.Context, items any, pageSize int, hasMore bool, sinceID, latestID int64, query usagequery.Metadata) {
 	Success(c, gin.H{"items": items, "total": nil, "page": 1, "page_size": pageSize, "pages": nil, "has_more": hasMore, "total_exact": false, "query": query, "since_id": sinceID, "latest_id": latestID})
 }

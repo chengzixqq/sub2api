@@ -170,7 +170,8 @@ type OpsErrorLogFilter struct {
 	SortOrder string
 
 	// SinceID is an incremental cursor: only rows with id > SinceID, newest
-	// first by id, without COUNT. Page and sort are ignored when set.
+	// first by id, without COUNT. Page and sort are ignored when set. Worker
+	// batches commit out of id order, so callers overlap the cursor.
 	SinceID *int64
 }
 

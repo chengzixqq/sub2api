@@ -40,8 +40,11 @@ func hasExplicitOpsTimeParams(c *gin.Context) bool {
 	return false
 }
 
-// incrementalLatestID is the next cursor: the largest returned id, or the
-// unchanged cursor when nothing new arrived.
+// incrementalLatestID is the largest returned id, or the unchanged cursor
+// when nothing new arrived. It is not a commit watermark (see
+// response.UsageIncremental); the server deliberately adds no lag because
+// pg_snapshot_xmin cannot map in-flight xids to ids and created_at is taken
+// before the async queue, so clients overlap the cursor instead.
 func incrementalLatestID(sinceID int64, ids ...int64) int64 {
 	latest := sinceID
 	for _, id := range ids {
