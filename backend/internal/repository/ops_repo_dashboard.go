@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -29,7 +30,8 @@ func (r *opsRepository) GetDashboardOverview(ctx context.Context, filter *servic
 	}
 
 	mode := filter.QueryMode
-	if !mode.IsValid() {
+	if !mode.IsValid() || opsFilterModel(filter) != "" {
+		// ops_metrics_hourly has no model dimension.
 		mode = service.OpsQueryModeRaw
 	}
 
@@ -1049,6 +1051,12 @@ func buildUsageWhere(filter *service.OpsDashboardFilter, start, end time.Time, s
 		clauses = append(clauses, fmt.Sprintf("COALESCE(NULLIF(g.platform,''), a.platform) = $%d", idx))
 		idx++
 	}
+	if model := opsFilterModel(filter); model != "" {
+		// Same expression as usage/stats so both endpoints count the same rows.
+		args = append(args, model)
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", resolveModelDimensionExpressionWithAlias(opsModelSource(filter.ModelSource), "ul"), idx))
+		idx++
+	}
 
 	where = "WHERE " + strings.Join(clauses, " AND ")
 	return join, where, args, idx
@@ -1085,9 +1093,39 @@ func buildErrorWhere(filter *service.OpsDashboardFilter, start, end time.Time, s
 		clauses = append(clauses, fmt.Sprintf("platform = $%d", idx))
 		idx++
 	}
+	if model := opsFilterModel(filter); model != "" {
+		args = append(args, model)
+		clauses = append(clauses, fmt.Sprintf("%s = $%d", opsErrorModelExpr(filter.ModelSource), idx))
+		idx++
+	}
 
 	where = "WHERE " + strings.Join(clauses, " AND ")
 	return where, args, idx
+}
+
+func opsFilterModel(filter *service.OpsDashboardFilter) string {
+	if filter == nil {
+		return ""
+	}
+	return strings.TrimSpace(filter.Model)
+}
+
+// opsModelSource maps model_source onto requested or upstream; mapping and
+// unknown values fall back to requested so they never reach SQL.
+func opsModelSource(source string) string {
+	if strings.TrimSpace(source) == usagestats.ModelSourceUpstream {
+		return usagestats.ModelSourceUpstream
+	}
+	return usagestats.ModelSourceRequested
+}
+
+// opsErrorModelExpr is the error-log counterpart of resolveModelDimensionExpression.
+// Error rows may carry only requested_model, so upstream falls back through it.
+func opsErrorModelExpr(source string) string {
+	if opsModelSource(source) == usagestats.ModelSourceUpstream {
+		return "COALESCE(NULLIF(TRIM(upstream_model), ''), NULLIF(TRIM(requested_model), ''), model)"
+	}
+	return "COALESCE(NULLIF(TRIM(requested_model), ''), model)"
 }
 
 func floatToIntPtr(v sql.NullFloat64) *int {

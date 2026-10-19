@@ -28,7 +28,7 @@ func (s *OpsService) GetDashboardOverview(ctx context.Context, filter *OpsDashbo
 	}
 
 	// Resolve query mode (requested via query param, or DB default).
-	filter.QueryMode = s.resolveOpsQueryMode(ctx, filter.QueryMode)
+	filter.QueryMode = opsQueryModeForFilter(filter, s.resolveOpsQueryMode(ctx, filter.QueryMode))
 
 	overview, err := s.opsRepo.GetDashboardOverview(ctx, filter)
 	if err != nil && shouldFallbackOpsPreagg(filter, err) {

@@ -64,3 +64,15 @@ func TestCloneOpsFilterWithMode(t *testing.T) {
 		require.Equal(t, original.GroupID, cloned.GroupID)
 	})
 }
+
+func TestOpsQueryModeForFilter_ModelForcesRaw(t *testing.T) {
+	withModel := &OpsDashboardFilter{Model: "claude-opus-4"}
+	for _, mode := range []OpsQueryMode{OpsQueryModeAuto, OpsQueryModePreagg, OpsQueryModeRaw} {
+		require.Equal(t, OpsQueryModeRaw, opsQueryModeForFilter(withModel, mode), mode)
+	}
+	for _, filter := range []*OpsDashboardFilter{nil, {}, {Model: "   "}} {
+		for _, mode := range []OpsQueryMode{OpsQueryModeAuto, OpsQueryModePreagg, OpsQueryModeRaw} {
+			require.Equal(t, mode, opsQueryModeForFilter(filter, mode))
+		}
+	}
+}

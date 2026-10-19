@@ -45,6 +45,15 @@ func shouldFallbackOpsPreagg(filter *OpsDashboardFilter, err error) bool {
 		errors.Is(err, ErrOpsPreaggregatedNotPopulated)
 }
 
+// opsQueryModeForFilter forces raw logs when the filter has a model:
+// ops_metrics_hourly has no model dimension.
+func opsQueryModeForFilter(filter *OpsDashboardFilter, mode OpsQueryMode) OpsQueryMode {
+	if filter != nil && strings.TrimSpace(filter.Model) != "" {
+		return OpsQueryModeRaw
+	}
+	return mode
+}
+
 func cloneOpsFilterWithMode(filter *OpsDashboardFilter, mode OpsQueryMode) *OpsDashboardFilter {
 	if filter == nil {
 		return nil

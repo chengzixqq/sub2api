@@ -27,6 +27,7 @@ var adminMeCapabilities = []string{
 	"dashboard.users_ranking_sort",
 	"dashboard.users_trend_filtered_metric",
 	"groups.member_batch",
+	"ops.dashboard_model_filter",
 	"proxies.fallback_accounts",
 	"usage.model_source",
 	"users.quick_topup",

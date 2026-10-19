@@ -29,6 +29,9 @@ func (r *opsRepository) GetOpenAITokenStats(ctx context.Context, filter *service
 		EndTime:   filter.EndTime.UTC(),
 		Platform:  strings.TrimSpace(strings.ToLower(filter.Platform)),
 		GroupID:   filter.GroupID,
+
+		Model:       strings.TrimSpace(filter.Model),
+		ModelSource: filter.ModelSource,
 	}
 
 	join, where, baseArgs, next := buildUsageWhere(dashboardFilter, dashboardFilter.StartTime, dashboardFilter.EndTime, 1)

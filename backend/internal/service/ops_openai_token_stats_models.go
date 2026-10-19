@@ -10,6 +10,10 @@ type OpsOpenAITokenStatsFilter struct {
 	Platform string
 	GroupID  *int64
 
+	// Model / ModelSource narrow the stats like OpsDashboardFilter.Model / ModelSource.
+	Model       string
+	ModelSource string
+
 	// Pagination mode (default): page/page_size
 	Page     int
 	PageSize int

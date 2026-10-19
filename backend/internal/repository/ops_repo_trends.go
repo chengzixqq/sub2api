@@ -161,13 +161,15 @@ ORDER BY bucket ASC`
 	// Drilldown helpers:
 	// - No platform/group: totals by platform
 	// - Platform selected but no group: top groups in that platform
-	if platform == "" && (groupID == nil || *groupID <= 0) {
+	// - Model selected: neither, the breakdowns are not filtered by model
+	noModel := opsFilterModel(filter) == ""
+	if noModel && platform == "" && (groupID == nil || *groupID <= 0) {
 		items, err := r.getThroughputBreakdownByPlatform(ctx, start, end)
 		if err != nil {
 			return nil, err
 		}
 		byPlatform = items
-	} else if platform != "" && (groupID == nil || *groupID <= 0) {
+	} else if noModel && platform != "" && (groupID == nil || *groupID <= 0) {
 		items, err := r.getThroughputTopGroupsByPlatform(ctx, start, end, platform, 10)
 		if err != nil {
 			return nil, err

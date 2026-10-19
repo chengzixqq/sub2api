@@ -104,6 +104,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "dashboard.request_types")
 	require.Contains(t, server["capabilities"], "dashboard.users_ranking_sort")
 	require.Contains(t, server["capabilities"], "dashboard.users_trend_filtered_metric")
+	require.Contains(t, server["capabilities"], "ops.dashboard_model_filter")
 }
 
 func TestAdminMe_AdminAPIKeyHasNoStepUp(t *testing.T) {

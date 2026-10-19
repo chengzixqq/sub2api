@@ -9,6 +9,12 @@ type OpsDashboardFilter struct {
 	Platform string
 	GroupID  *int64
 
+	// Model narrows usage and error rows to one model (exact match); empty means all models.
+	Model string
+	// ModelSource selects how Model is matched: requested (default) or upstream.
+	// Only meaningful when Model is set.
+	ModelSource string
+
 	// QueryMode controls whether dashboard queries should use raw logs or pre-aggregated tables.
 	// Expected values: auto/raw/preagg (see OpsQueryMode).
 	QueryMode OpsQueryMode
