@@ -25,12 +25,12 @@ type SystemSettings struct {
 	SessionBindingEnabled               bool // 会话 IP/UA 绑定（变更即失效）
 	// SessionBindingNativeMode 原生 App 会话的绑定方式：strict | device | ua_only | off
 	SessionBindingNativeMode string
-	StepUpEnabled                       bool // 敏感操作 step-up 2FA 门控
-	AuditLogRetentionDays               int  // 审计日志保留天数（<=0 永久保留）
-	LoginAgreementEnabled               bool
-	LoginAgreementMode                  string
-	LoginAgreementUpdatedAt             string
-	LoginAgreementDocuments             []LoginAgreementDocument
+	StepUpEnabled            bool // 敏感操作 step-up 2FA 门控
+	AuditLogRetentionDays    int  // 审计日志保留天数（<=0 永久保留）
+	LoginAgreementEnabled    bool
+	LoginAgreementMode       string
+	LoginAgreementUpdatedAt  string
+	LoginAgreementDocuments  []LoginAgreementDocument
 
 	SMTPHost               string
 	SMTPPort               int

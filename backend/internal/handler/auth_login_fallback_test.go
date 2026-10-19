@@ -16,7 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type failingStoreRefreshCache struct{ userHandlerRefreshTokenCacheStub }
+type failingStoreRefreshCache struct {
+	userHandlerRefreshTokenCacheStub
+}
 
 func (failingStoreRefreshCache) StoreRefreshToken(context.Context, string, *service.RefreshTokenData, time.Duration) error {
 	return errors.New("redis down")
