@@ -37,6 +37,8 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrAdminAccessTokenExpired, http.StatusUnauthorized, "ACCESS_TOKEN_EXPIRED"},
 		{ErrAdminAccessTokenReadOnly, http.StatusForbidden, "ACCESS_TOKEN_READ_ONLY"},
 		{ErrSessionNotFound, http.StatusNotFound, "SESSION_NOT_FOUND"},
+		{ErrTooManyUsageUserIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
+		{ErrTooManyUsageAPIKeyIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

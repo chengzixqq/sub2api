@@ -493,6 +493,10 @@ func (h *DashboardHandler) GetBatchUsersUsage(c *gin.Context) {
 		response.Success(c, gin.H{"stats": map[string]any{}})
 		return
 	}
+	if len(userIDs) > service.MaxBatchUsageIDs {
+		response.ErrorFrom(c, service.ErrTooManyUsageUserIDs)
+		return
+	}
 
 	// cacheKey 必须包含当日日期，否则跨午夜后 30s 内会复用昨天的 "today_*" 结果。
 	keyRaw, _ := json.Marshal(struct {
@@ -539,6 +543,10 @@ func (h *DashboardHandler) GetBatchAPIKeysUsage(c *gin.Context) {
 	apiKeyIDs := normalizeInt64IDList(req.APIKeyIDs)
 	if len(apiKeyIDs) == 0 {
 		response.Success(c, gin.H{"stats": map[string]any{}})
+		return
+	}
+	if len(apiKeyIDs) > service.MaxBatchUsageIDs {
+		response.ErrorFrom(c, service.ErrTooManyUsageAPIKeyIDs)
 		return
 	}
 

@@ -190,6 +190,35 @@ func TestDashboardAPIKeyCache_RechecksOwnershipAndSeparatesIDSets(t *testing.T) 
 	require.Equal(t, 7, keys.calls, "ownership must run on every request including cache hits")
 }
 
+func TestDashboardAPIKeysUsage_TooManyIDsCarriesStableReason(t *testing.T) {
+	repo := &dashboardSummaryRepo{value: 1}
+	keys := &dashboardOwnershipRepo{owners: map[int64]int64{}}
+	r := summaryTestRouter(t, repo, keys)
+	ids := make([]int64, 1001)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	body, err := json.Marshal(map[string][]int64{"api_key_ids": ids})
+	require.NoError(t, err)
+
+	w := summaryRequest(r, http.MethodPost, "/keys", string(body), 42)
+
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	var p struct {
+		Code     int               `json:"code"`
+		Message  string            `json:"message"`
+		Reason   string            `json:"reason"`
+		Metadata map[string]string `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &p))
+	require.Equal(t, http.StatusBadRequest, p.Code)
+	require.Equal(t, "Too many API key IDs (maximum 1000 allowed)", p.Message, "Web shows this text; it must not change")
+	require.Equal(t, "TOO_MANY_IDS", p.Reason)
+	require.Equal(t, map[string]string{"field": "api_key_ids", "max": "1000"}, p.Metadata)
+	require.Zero(t, keys.calls, "limit must be enforced before ownership checks")
+	require.Zero(t, repo.keyCalls, "limit must be enforced before aggregating usage_logs")
+}
+
 func TestDashboardAPIKeyCache_DoesNotCacheFailures(t *testing.T) {
 	repo := &dashboardSummaryRepo{err: errors.New("temporary key statistics failure")}
 	keys := &dashboardOwnershipRepo{owners: map[int64]int64{7: 42}}

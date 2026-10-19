@@ -90,7 +90,7 @@ func resetDashboardBatchCachesForTest() {
 	dashboardBatchAPIKeysUsageCache = newSnapshotCache(time.Minute)
 }
 
-func dashboardBatchCacheRouter(repo *dashboardCacheContextProbe, kind string) (*gin.Engine, string) {
+func dashboardBatchCacheRouter(repo service.UsageLogRepository, kind string) (*gin.Engine, string) {
 	gin.SetMode(gin.TestMode)
 	h := NewDashboardHandler(service.NewDashboardService(repo, nil, nil, nil), nil)
 	router := gin.New()
