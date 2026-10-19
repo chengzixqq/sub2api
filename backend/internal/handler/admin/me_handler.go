@@ -28,6 +28,7 @@ var adminMeCapabilities = []string{
 	"dashboard.users_trend_filtered_metric",
 	"groups.member_batch",
 	"ops.dashboard_model_filter",
+	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",
 	"usage.model_source",
 	"users.quick_topup",

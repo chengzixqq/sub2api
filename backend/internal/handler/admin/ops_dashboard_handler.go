@@ -233,16 +233,10 @@ func parseOpsOpenAITokenStatsFilter(c *gin.Context) (*service.OpsOpenAITokenStat
 		return nil, fmt.Errorf("invalid request")
 	}
 
-	timeRange := strings.TrimSpace(c.Query("time_range"))
-	if timeRange == "" {
-		timeRange = "30d"
+	timeRange, start, end, err := resolveOpsOpenAITokenStatsWindow(c)
+	if err != nil {
+		return nil, err
 	}
-	dur, ok := parseOpsOpenAITokenStatsDuration(timeRange)
-	if !ok {
-		return nil, fmt.Errorf("invalid time_range")
-	}
-	end := time.Now().UTC()
-	start := end.Add(-dur)
 
 	filter := &service.OpsOpenAITokenStatsFilter{
 		TimeRange: timeRange,

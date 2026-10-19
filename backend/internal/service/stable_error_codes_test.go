@@ -31,6 +31,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrBackendModeAdminOnly, http.StatusForbidden, "BACKEND_MODE_ADMIN_ONLY"},
 		{ErrBackendModeSelfServiceDisabled, http.StatusForbidden, "BACKEND_MODE_SELF_SERVICE_DISABLED"},
 		{ErrOpsDisabled, http.StatusNotFound, "OPS_DISABLED"},
+		{ErrOpsTokenStatsRangeTooLarge, http.StatusBadRequest, "OPS_TIME_RANGE_TOO_LARGE"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{ErrCaptchaProviderConflict, http.StatusServiceUnavailable, "CAPTCHA_PROVIDER_CONFLICT"},
 		{ErrAdminAccessTokenInvalid, http.StatusUnauthorized, "INVALID_ADMIN_KEY"},

@@ -22,6 +22,9 @@ func (s *OpsService) GetOpenAITokenStats(ctx context.Context, filter *OpsOpenAIT
 	if filter.StartTime.After(filter.EndTime) {
 		return nil, infraerrors.BadRequest("OPS_TIME_RANGE_INVALID", "start_time must be <= end_time")
 	}
+	if filter.EndTime.Sub(filter.StartTime) > opsOpenAITokenStatsMaxWindow {
+		return nil, ErrOpsTokenStatsRangeTooLarge
+	}
 
 	if filter.GroupID != nil && *filter.GroupID <= 0 {
 		return nil, infraerrors.BadRequest("OPS_GROUP_ID_INVALID", "group_id must be > 0")

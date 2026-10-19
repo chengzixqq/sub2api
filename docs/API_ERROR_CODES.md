@@ -35,6 +35,7 @@
 | 400 | TOTP_LOGIN_SESSION_EXPIRED | 登录第二步超时，回到密码页重新登录 |
 | 400 | INVALID_SORT_BY | 参数校验类：查询参数取值不受支持（`/admin/dashboard/users-ranking` 的 `sort_by` 只接受 actual_cost / requests / tokens），按 message 修正参数，不要原样重试 |
 | 400 | TOO_MANY_IDS | 批量查询的 ID 超过上限（`/admin/dashboard/users-usage`、`/admin/dashboard/api-keys-usage`、`/usage/dashboard/api-keys-usage`；`metadata.max` 为上限，当前 1000；`metadata.field` 指出是哪个字段），拆成更小的批次重试 |
+| 400 | OPS_TIME_RANGE_TOO_LARGE | 时间跨度超过接口上限：`/admin/ops/dashboard/openai-token-stats` 为 31 天（`metadata.max_days`=31，另有 1 小时夏令时容差），`/admin/ops/realtime-traffic` 为 1 小时（无 metadata）；缩短范围后重试 |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |
 | 503 | STEP_UP_UNAVAILABLE、SERVICE_UNAVAILABLE、CAPTCHA_PROVIDER_CONFLICT | 暂时性错误，保留会话，稍后重试 |
 

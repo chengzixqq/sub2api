@@ -160,3 +160,64 @@ func TestOpsServiceGetOpenAITokenStats_RepoUnavailable(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+func TestOpsServiceGetOpenAITokenStats_RangeTooLarge(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &openAITokenStatsRepoStub{}
+	svc := &OpsService{opsRepo: repo}
+
+	_, err := svc.GetOpenAITokenStats(context.Background(), &OpsOpenAITokenStatsFilter{
+		TimeRange: "custom",
+		StartTime: now.Add(-40 * 24 * time.Hour),
+		EndTime:   now,
+	})
+	require.Error(t, err)
+	require.Equal(t, 400, infraerrors.Code(err))
+	require.Equal(t, "OPS_TIME_RANGE_TOO_LARGE", infraerrors.Reason(err))
+	require.Equal(t, "31", infraerrors.FromError(err).Metadata["max_days"])
+	require.Nil(t, repo.captured)
+}
+
+func TestOpsServiceGetOpenAITokenStats_MaxWindowBoundary(t *testing.T) {
+	end := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	maxWindow := 31*24*time.Hour + time.Hour
+
+	t.Run("正好上限通过", func(t *testing.T) {
+		repo := &openAITokenStatsRepoStub{}
+		svc := &OpsService{opsRepo: repo}
+		_, err := svc.GetOpenAITokenStats(context.Background(), &OpsOpenAITokenStatsFilter{
+			TimeRange: "custom",
+			StartTime: end.Add(-maxWindow),
+			EndTime:   end,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, repo.captured)
+		require.Equal(t, "custom", repo.captured.TimeRange)
+	})
+
+	t.Run("超出一秒拒绝", func(t *testing.T) {
+		repo := &openAITokenStatsRepoStub{}
+		svc := &OpsService{opsRepo: repo}
+		_, err := svc.GetOpenAITokenStats(context.Background(), &OpsOpenAITokenStatsFilter{
+			TimeRange: "custom",
+			StartTime: end.Add(-maxWindow - time.Second),
+			EndTime:   end,
+		})
+		require.Error(t, err)
+		require.Equal(t, "OPS_TIME_RANGE_TOO_LARGE", infraerrors.Reason(err))
+		require.Equal(t, "31", infraerrors.FromError(err).Metadata["max_days"])
+		require.Nil(t, repo.captured)
+	})
+
+	t.Run("旧 30d 窗口仍通过", func(t *testing.T) {
+		repo := &openAITokenStatsRepoStub{}
+		svc := &OpsService{opsRepo: repo}
+		_, err := svc.GetOpenAITokenStats(context.Background(), &OpsOpenAITokenStatsFilter{
+			TimeRange: "30d",
+			StartTime: end.Add(-30 * 24 * time.Hour),
+			EndTime:   end,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, repo.captured)
+	})
+}
