@@ -45,13 +45,17 @@ func (s *AccountTestService) testCNProviderAdaptiveConnection(c *gin.Context, ac
 		return err
 	}
 
+	// Each endpoint reports its own status; a step that fails before getting a
+	// response must not inherit the previous endpoint's 200.
 	if account.providerSupportsProtocol(APIProtocolAnthropic) {
+		clearAccountTestUpstreamStatus(c)
 		if err := s.testCNProviderAdaptiveAnthropicConnection(c, account, testModelID, authToken); err != nil {
 			return err
 		}
 	}
 
 	if account.SupportsNativeCNResponses() {
+		clearAccountTestUpstreamStatus(c)
 		if err := s.testCNProviderAdaptiveResponsesConnection(c, account, testModelID, authToken); err != nil {
 			return err
 		}
@@ -97,6 +101,7 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Adaptive Anthropic endpoint request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -197,6 +202,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Adaptive Responses endpoint request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -288,6 +294,7 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 
 	resp, err := s.doCNProviderAdaptiveRequest(req, account)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Anthropic endpoint request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)

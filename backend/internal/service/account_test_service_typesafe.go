@@ -71,6 +71,7 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 	}
 	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", sanitizeUpstreamErrorMessage(err.Error())))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)

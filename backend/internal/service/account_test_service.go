@@ -619,6 +619,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -692,6 +693,7 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -779,6 +781,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, nil)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -970,6 +973,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1288,6 +1292,7 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1380,6 +1385,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 			break
 		}
 		if !isTransientGrokTransportError(doErr) || attempt == 1 {
+			clearAccountTestUpstreamStatus(c)
 			return s.sendErrorAndEnd(c, formatGrokImageTransportError(doErr, hasSourceImage, len(payloadBytes)))
 		}
 	}
@@ -1469,6 +1475,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1511,6 +1518,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		s.applyGrokTestRequestHeaders(statusReq, account, authToken, "application/json")
 		statusResp, err := s.httpUpstream.Do(statusReq, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 		if err != nil {
+			clearAccountTestUpstreamStatus(c)
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video status failed: %s", err.Error()))
 		}
 		noteAccountTestUpstreamStatus(c, statusResp.StatusCode)
@@ -1569,6 +1577,7 @@ func (s *AccountTestService) emitGrokVideoResult(c *gin.Context, ctx context.Con
 	s.applyGrokTestRequestHeaders(req, account, authToken, "video/*, application/octet-stream, */*")
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video content download failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1642,6 +1651,7 @@ User query:
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("standalone web_search probe failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1724,6 +1734,7 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 		s.applyGrokTestRequestHeaders(req, account, authToken, "audio/*, application/json, */*")
 		resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 		if err != nil {
+			clearAccountTestUpstreamStatus(c)
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok TTS failed: %s", err.Error()))
 		}
 		noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1816,6 +1827,7 @@ func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, ac
 
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok STT failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -1911,6 +1923,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 		if status > 0 {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Realtime WS handshake failed (HTTP %d): %s", status, detail))
 		}
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Realtime WS dial failed: %s", detail))
 	}
 	defer func() { _ = conn.Close() }()
@@ -2188,6 +2201,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -2322,6 +2336,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		if s.accountRepo != nil {
 			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, false, time.Now())
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
@@ -2471,6 +2486,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -3116,6 +3132,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 
 	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)
@@ -3252,6 +3269,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, false)
 	if err != nil {
+		clearAccountTestUpstreamStatus(c)
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Image upstream request failed: %s", err.Error()))
 	}
 	noteAccountTestUpstreamStatus(c, resp.StatusCode)

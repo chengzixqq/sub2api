@@ -98,6 +98,13 @@ func noteAccountTestUpstreamStatus(c *gin.Context, code int) {
 	withAccountTestTrace(c, func(t *accountTestTrace) { t.upstreamStatus = code })
 }
 
+// clearAccountTestUpstreamStatus is called when an upstream request got no
+// response (dial / TLS / transport error): the status of an earlier request in
+// the same test must not be reported for the failure.
+func clearAccountTestUpstreamStatus(c *gin.Context) {
+	withAccountTestTrace(c, func(t *accountTestTrace) { t.upstreamStatus = 0 })
+}
+
 // addAccountTestUsage accumulates usage; adaptive tests probe several endpoints.
 func addAccountTestUsage(c *gin.Context, input, output int64) {
 	withAccountTestTrace(c, func(t *accountTestTrace) {
