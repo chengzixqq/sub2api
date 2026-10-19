@@ -118,6 +118,9 @@ func RegisterAdminRoutes(
 		// API Key 管理
 		registerAdminAPIKeyRoutes(admin, h, stepUpAuth)
 
+		// 管理访问令牌（sat_，按设备签发）
+		registerAdminAccessTokenRoutes(admin, h, stepUpAuth)
+
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
 
@@ -196,6 +199,15 @@ func registerContentModerationRoutes(admin *gin.RouterGroup, h *handler.Handlers
 		risk.POST("/users/:user_id/unban", h.Admin.ContentModeration.UnbanUser)
 		risk.DELETE("/hashes", h.Admin.ContentModeration.DeleteFlaggedHash)
 		risk.DELETE("/hashes/all", h.Admin.ContentModeration.ClearFlaggedHashes)
+	}
+}
+
+func registerAdminAccessTokenRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+	tokens := admin.Group("/access-tokens")
+	{
+		tokens.GET("", h.Admin.AccessToken.List)
+		tokens.POST("", gin.HandlerFunc(stepUpAuth), h.Admin.AccessToken.Create)
+		tokens.DELETE("/:id", h.Admin.AccessToken.Revoke)
 	}
 }
 

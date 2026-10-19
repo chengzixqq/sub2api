@@ -46,6 +46,7 @@ type AdminHandlers struct {
 	Workspace              *admin.WorkspaceHandler
 	UserAdjustment         *admin.UserAdjustmentHandler
 	Me                     *admin.MeHandler
+	AccessToken            *admin.AccessTokenHandler
 }
 
 // Handlers contains all HTTP handlers

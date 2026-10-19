@@ -16,6 +16,7 @@ import (
 // string whenever a mobile-facing capability ships.
 var adminMeCapabilities = []string{
 	"accounts.patch",
+	"admin.access_tokens",
 	"accounts.status_summary",
 	"accounts.structured_error",
 	"api_keys.masked_view",
@@ -199,7 +200,7 @@ func (h *MeHandler) security(c *gin.Context, userID int64, authMethod string, us
 		sec.SessionBindingEnabled = h.deps.Settings.IsSessionBindingEnabled(ctx)
 	}
 	// Admin API keys can never pass step-up (the middleware rejects them).
-	sec.StepUpAvailable = authMethod != service.AuditAuthMethodAdminAPIKey && sec.TotpEnabled
+	sec.StepUpAvailable = !service.IsMachineCredential(authMethod) && sec.TotpEnabled
 	if sec.StepUpAvailable && h.deps.StepUp != nil {
 		granted, ttl, err := h.deps.StepUp.StepUpGrantTTL(ctx, userID, middleware.StepUpSessionKey(c, userID))
 		if err == nil && granted {

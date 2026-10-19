@@ -77,3 +77,18 @@ func TestVendorRoutesAllowAdminMe(t *testing.T) {
 		t.Fatal("every vendor may read /admin/me")
 	}
 }
+
+// TestVendorRoutesDenyAdminAccessTokens: sat_ tokens act as full admins, so
+// vendors can neither mint nor list them.
+func TestVendorRoutesDenyAdminAccessTokens(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, route := range [][2]string{
+		{"GET", "/api/v1/admin/access-tokens"},
+		{"POST", "/api/v1/admin/access-tokens"},
+		{"DELETE", "/api/v1/admin/access-tokens/:id"},
+	} {
+		if vendorRouteAllowed(newFullPathContext(route[0], route[1]), scope) {
+			t.Fatalf("vendor must not reach %s %s", route[0], route[1])
+		}
+	}
+}

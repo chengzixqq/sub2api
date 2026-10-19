@@ -17,19 +17,26 @@ func NewAdminAuthMiddleware(
 	userService *service.UserService,
 	settingService *service.SettingService,
 	auditService *service.AuditLogService,
+	accessTokens *service.AdminAccessTokenService,
 ) AdminAuthMiddleware {
-	return AdminAuthMiddleware(adminAuth(authService, userService, settingService, auditService))
+	var tokens adminAccessTokenAuthenticator
+	if accessTokens != nil {
+		tokens = accessTokens
+	}
+	return AdminAuthMiddleware(adminAuthWithAccessTokens(authService, userService, settingService, auditService, tokens))
 }
 
-// adminAuth 管理员认证中间件实现
-// 支持两种认证方式（通过不同的 header 区分）：
-// 1. Admin API Key: x-api-key: <admin-api-key>
-// 2. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)
-func adminAuth(
+// adminAuthWithAccessTokens 管理员认证中间件实现
+// 支持三种认证方式（通过不同的 header 区分）：
+// 1. Admin API Key: x-api-key: <admin-api-key>（以第一个管理员身份操作）
+// 2. 管理访问令牌: x-api-key: sat_...（以令牌所属管理员身份操作，可只读）
+// 3. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)
+func adminAuthWithAccessTokens(
 	authService *service.AuthService,
 	userService *service.UserService,
 	settingService *service.SettingService,
 	auditService *service.AuditLogService,
+	accessTokens adminAccessTokenAuthenticator,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// WebSocket upgrade requests cannot set Authorization headers in browsers.
@@ -48,6 +55,13 @@ func adminAuth(
 
 		// 检查 x-api-key header（Admin API Key 认证）
 		apiKey := c.GetHeader("x-api-key")
+		if service.IsAdminAccessToken(apiKey) {
+			if !validateAdminAccessToken(c, apiKey, accessTokens, userService) {
+				return
+			}
+			c.Next()
+			return
+		}
 		if apiKey != "" {
 			if !validateAdminAPIKey(c, apiKey, settingService, userService) {
 				return

@@ -50,6 +50,7 @@ func ProvideAdminHandlers(
 	workspaceHandler *admin.WorkspaceHandler,
 	userAdjustmentHandler *admin.UserAdjustmentHandler,
 	meHandler *admin.MeHandler,
+	accessTokenHandler *admin.AccessTokenHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
@@ -103,6 +104,7 @@ func ProvideAdminHandlers(
 		Workspace:              workspaceHandler,
 		UserAdjustment:         userAdjustmentHandler,
 		Me:                     meHandler,
+		AccessToken:            accessTokenHandler,
 	}
 }
 
@@ -341,6 +343,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAuditLogHandler,
 	admin.NewWorkspaceHandler,
 	admin.NewUserAdjustmentHandler,
+	admin.NewAccessTokenHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

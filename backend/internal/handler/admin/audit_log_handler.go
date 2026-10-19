@@ -113,7 +113,7 @@ type auditLogClearRequest struct {
 //  3. admin API key（机器凭证）不允许清空
 //  4. 清空完成后同步写入一条留痕记录（操作者、IP、UA、删除行数）
 func (h *AuditLogHandler) Clear(c *gin.Context) {
-	if c.GetString("auth_method") == service.AuditAuthMethodAdminAPIKey {
+	if service.IsMachineCredential(c.GetString("auth_method")) {
 		response.ErrorWithDetails(c, http.StatusForbidden,
 			"Admin API key cannot clear audit logs; a two-factor verified admin session is required",
 			"STEP_UP_ADMIN_API_KEY_FORBIDDEN", nil)
