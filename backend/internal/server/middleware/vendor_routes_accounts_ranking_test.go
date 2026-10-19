@@ -111,3 +111,11 @@ func TestVendorRoutesDenyOpsAlertEventCounts(t *testing.T) {
 		t.Fatal("vendor must not read ops alert event counts")
 	}
 }
+
+// TestVendorRoutesDenyOpsSystemMetricsHistory: server CPU / memory history is site-wide ops data.
+func TestVendorRoutesDenyOpsSystemMetricsHistory(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/ops/system-metrics/history"), scope) {
+		t.Fatal("vendor must not read ops system metrics history")
+	}
+}

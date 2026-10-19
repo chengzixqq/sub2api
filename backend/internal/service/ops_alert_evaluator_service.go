@@ -128,20 +128,22 @@ func (s *OpsAlertEvaluatorService) run() {
 }
 
 func (s *OpsAlertEvaluatorService) getInterval() time.Duration {
-	// Default.
-	interval := 60 * time.Second
-
 	if s == nil || s.opsService == nil {
-		return interval
+		return opsAlertEvaluatorIntervalFromSettings(nil, nil)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	cfg, err := s.opsService.GetOpsAlertRuntimeSettings(ctx)
+	return opsAlertEvaluatorIntervalFromSettings(s.opsService.GetOpsAlertRuntimeSettings(ctx))
+}
+
+// opsAlertEvaluatorIntervalFromSettings returns evaluation_interval_seconds
+// when it is within 1s..24h, otherwise 60s. Shared with the dashboard's job
+// heartbeat status.
+func opsAlertEvaluatorIntervalFromSettings(cfg *OpsAlertRuntimeSettings, err error) time.Duration {
+	// Default.
+	interval := 60 * time.Second
 	if err != nil || cfg == nil {
-		return interval
-	}
-	if cfg.EvaluationIntervalSeconds <= 0 {
 		return interval
 	}
 	if cfg.EvaluationIntervalSeconds < 1 {

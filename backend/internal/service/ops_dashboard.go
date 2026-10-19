@@ -59,13 +59,14 @@ func (s *OpsService) GetDashboardOverview(ctx context.Context, filter *OpsDashbo
 		log.Printf("[Ops] GetLatestSystemMetrics failed: %v", err)
 	}
 
+	now := time.Now().UTC()
 	if heartbeats, err := s.opsRepo.ListJobHeartbeats(ctx); err == nil {
-		overview.JobHeartbeats = heartbeats
+		overview.JobHeartbeats = s.annotateJobHeartbeats(ctx, now, heartbeats)
 	} else {
 		log.Printf("[Ops] ListJobHeartbeats failed: %v", err)
 	}
 
-	overview.HealthScore = computeDashboardHealthScore(time.Now().UTC(), overview)
+	overview.HealthScore = computeDashboardHealthScore(now, overview)
 
 	return overview, nil
 }

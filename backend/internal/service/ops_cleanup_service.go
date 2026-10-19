@@ -60,6 +60,10 @@ type OpsCleanupService struct {
 	stopped   bool
 	effective opsCleanupEffectiveConfig
 
+	// activeSpec / activeLoc describe the running cron (valid while cron != nil).
+	activeSpec string
+	activeLoc  *time.Location
+
 	warnNoRedisOnce sync.Once
 }
 
@@ -169,6 +173,7 @@ func (s *OpsCleanupService) applyScheduleLocked(ctx context.Context) error {
 	}
 	c.Start()
 	s.cron = c
+	s.activeSpec, s.activeLoc = schedule, loc
 	logger.LegacyPrintf("service.ops_cleanup",
 		"[OpsCleanup] scheduled (schedule=%q tz=%s retention_days=err:%d/system:%d/min:%d/hour:%d)",
 		schedule, loc.String(),
@@ -194,6 +199,21 @@ func (s *OpsCleanupService) Reload(ctx context.Context) error {
 		return nil
 	}
 	return s.applyScheduleLocked(ctx)
+}
+
+// CurrentSchedule reports the cron spec and location of the running cleanup
+// schedule; active is false when cleanup is not scheduled (disabled by
+// settings, not started, or stopped).
+func (s *OpsCleanupService) CurrentSchedule() (string, *time.Location, bool) {
+	if s == nil {
+		return "", nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cron == nil {
+		return "", nil, false
+	}
+	return s.activeSpec, s.activeLoc, true
 }
 
 // computeEffectiveLocked 计算"生效配置"并写入 s.effective。调用方持锁。

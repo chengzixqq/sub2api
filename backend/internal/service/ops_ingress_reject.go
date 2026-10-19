@@ -50,6 +50,18 @@ type OpsIngressRejectList struct {
 	Total    int                          `json:"total"`
 	Page     int                          `json:"page"`
 	PageSize int                          `json:"page_size"`
+
+	// RequestCountTotal sums request_count over every row matching the
+	// filters (not just this page); total stays the row count.
+	RequestCountTotal int64                         `json:"request_count_total"`
+	ByReason          []OpsIngressRejectReasonCount `json:"by_reason"`
+}
+
+// OpsIngressRejectReasonCount is the request total of one reject reason;
+// lists are ordered by request_count desc, then reason.
+type OpsIngressRejectReasonCount struct {
+	Reason       string `json:"reason"`
+	RequestCount int64  `json:"request_count"`
 }
 
 type OpsIngressRejectHealth struct {
@@ -445,7 +457,7 @@ func (s *OpsService) ListIngressRejects(ctx context.Context, filter *OpsIngressR
 	}
 	repo, ok := s.opsRepo.(OpsIngressRejectRepository)
 	if !ok {
-		return &OpsIngressRejectList{Items: []*OpsIngressRejectAggregate{}, Page: 1, PageSize: 50}, nil
+		return &OpsIngressRejectList{Items: []*OpsIngressRejectAggregate{}, Page: 1, PageSize: 50, ByReason: []OpsIngressRejectReasonCount{}}, nil
 	}
 	return repo.ListIngressRejects(ctx, filter)
 }

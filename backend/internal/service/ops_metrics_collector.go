@@ -128,16 +128,21 @@ func (c *OpsMetricsCollector) run() {
 }
 
 func (c *OpsMetricsCollector) getInterval() time.Duration {
-	interval := opsMetricsCollectorMinInterval
-
 	if c.settingRepo == nil {
-		return interval
+		return opsMetricsCollectorMinInterval
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	raw, err := c.settingRepo.GetValue(ctx, SettingKeyOpsMetricsIntervalSeconds)
+	return opsMetricsCollectorIntervalFromRaw(c.settingRepo.GetValue(ctx, SettingKeyOpsMetricsIntervalSeconds))
+}
+
+// opsMetricsCollectorIntervalFromRaw parses ops_metrics_interval_seconds,
+// clamped to 60s..1h; read errors and bad values fall back to 60s. Shared with
+// the dashboard's job heartbeat status.
+func opsMetricsCollectorIntervalFromRaw(raw string, err error) time.Duration {
+	interval := opsMetricsCollectorMinInterval
 	if err != nil {
 		return interval
 	}

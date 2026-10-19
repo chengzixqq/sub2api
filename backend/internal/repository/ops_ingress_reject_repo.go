@@ -120,8 +120,8 @@ func (r *opsRepository) ListIngressRejects(ctx context.Context, filter *service.
 	}
 	where := "WHERE " + strings.Join(clauses, " AND ")
 
-	var total int
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM ops_ingress_reject_aggregates "+where, args...).Scan(&total); err != nil {
+	total, requestCountTotal, byReason, err := r.ingressRejectTotals(ctx, where, args)
+	if err != nil {
 		return nil, err
 	}
 	args = append(args, pageSize, (page-1)*pageSize)
@@ -135,6 +135,7 @@ FROM ops_ingress_reject_aggregates %s ORDER BY bucket_start DESC,id DESC LIMIT $
 
 	result := &service.OpsIngressRejectList{
 		Items: make([]*service.OpsIngressRejectAggregate, 0, pageSize), Total: total, Page: page, PageSize: pageSize,
+		RequestCountTotal: requestCountTotal, ByReason: byReason,
 	}
 	for rows.Next() {
 		item := &service.OpsIngressRejectAggregate{}
@@ -155,4 +156,36 @@ FROM ops_ingress_reject_aggregates %s ORDER BY bucket_start DESC,id DESC LIMIT $
 		return nil, err
 	}
 	return result, nil
+}
+
+// ingressRejectTotals returns, under the list's filters, the row count (the
+// pagination total), the sum of request_count and per-reason sums ordered by
+// request_count desc, then reason.
+func (r *opsRepository) ingressRejectTotals(ctx context.Context, where string, args []any) (int, int64, []service.OpsIngressRejectReasonCount, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT reject_reason, COUNT(*), COALESCE(SUM(request_count), 0)
+FROM ops_ingress_reject_aggregates `+where+`
+GROUP BY reject_reason
+ORDER BY 3 DESC, reject_reason ASC`, args...)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	total := 0
+	var requestCountTotal int64
+	byReason := make([]service.OpsIngressRejectReasonCount, 0, 16)
+	for rows.Next() {
+		var item service.OpsIngressRejectReasonCount
+		var rowCount int
+		if err := rows.Scan(&item.Reason, &rowCount, &item.RequestCount); err != nil {
+			return 0, 0, nil, err
+		}
+		total += rowCount
+		requestCountTotal += item.RequestCount
+		byReason = append(byReason, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, nil, err
+	}
+	return total, requestCountTotal, byReason, nil
 }

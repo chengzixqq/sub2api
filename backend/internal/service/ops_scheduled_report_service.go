@@ -24,6 +24,7 @@ const (
 	opsScheduledReportLastRunKeyPrefix = "ops:scheduled_reports:last_run:"
 
 	opsScheduledReportTickInterval = 1 * time.Minute
+	opsScheduledReportRunTimeout   = 60 * time.Second
 )
 
 var opsScheduledReportCronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
@@ -151,7 +152,7 @@ func (s *OpsScheduledReportService) runOnce() {
 	startedAt := time.Now().UTC()
 	runAt := startedAt
 
-	ctx, cancel := context.WithTimeout(s.stopCtx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(s.stopCtx, opsScheduledReportRunTimeout)
 	defer cancel()
 
 	// Respect ops monitoring enabled switch.
@@ -242,20 +243,7 @@ func (s *OpsScheduledReportService) listScheduledReports(ctx context.Context, no
 
 	recipients := normalizeEmails(emailCfg.Report.Recipients)
 
-	type reportDef struct {
-		enabled   bool
-		name      string
-		kind      string
-		timeRange time.Duration
-		schedule  string
-	}
-
-	defs := []reportDef{
-		{enabled: emailCfg.Report.DailySummaryEnabled, name: "日报", kind: "daily_summary", timeRange: 24 * time.Hour, schedule: emailCfg.Report.DailySummarySchedule},
-		{enabled: emailCfg.Report.WeeklySummaryEnabled, name: "周报", kind: "weekly_summary", timeRange: 7 * 24 * time.Hour, schedule: emailCfg.Report.WeeklySummarySchedule},
-		{enabled: emailCfg.Report.ErrorDigestEnabled, name: "错误摘要", kind: "error_digest", timeRange: 24 * time.Hour, schedule: emailCfg.Report.ErrorDigestSchedule},
-		{enabled: emailCfg.Report.AccountHealthEnabled, name: "账号健康", kind: "account_health", timeRange: 24 * time.Hour, schedule: emailCfg.Report.AccountHealthSchedule},
-	}
+	defs := opsScheduledReportDefs(emailCfg)
 
 	out := make([]*opsScheduledReport, 0, len(defs))
 	for _, d := range defs {
@@ -308,6 +296,41 @@ func (s *OpsScheduledReportService) listScheduledReports(ctx context.Context, no
 	}
 
 	return out
+}
+
+type opsScheduledReportDef struct {
+	enabled   bool
+	name      string
+	kind      string
+	timeRange time.Duration
+	schedule  string
+}
+
+func opsScheduledReportDefs(emailCfg *OpsEmailNotificationConfig) []opsScheduledReportDef {
+	return []opsScheduledReportDef{
+		{enabled: emailCfg.Report.DailySummaryEnabled, name: "日报", kind: "daily_summary", timeRange: 24 * time.Hour, schedule: emailCfg.Report.DailySummarySchedule},
+		{enabled: emailCfg.Report.WeeklySummaryEnabled, name: "周报", kind: "weekly_summary", timeRange: 7 * 24 * time.Hour, schedule: emailCfg.Report.WeeklySummarySchedule},
+		{enabled: emailCfg.Report.ErrorDigestEnabled, name: "错误摘要", kind: "error_digest", timeRange: 24 * time.Hour, schedule: emailCfg.Report.ErrorDigestSchedule},
+		{enabled: emailCfg.Report.AccountHealthEnabled, name: "账号健康", kind: "account_health", timeRange: 24 * time.Hour, schedule: emailCfg.Report.AccountHealthSchedule},
+	}
+}
+
+// opsScheduledReportsConfigured reports whether listScheduledReports would
+// return any report, i.e. whether the scheduler writes heartbeats at all.
+func opsScheduledReportsConfigured(emailCfg *OpsEmailNotificationConfig) bool {
+	if emailCfg == nil || !emailCfg.Report.Enabled {
+		return false
+	}
+	for _, d := range opsScheduledReportDefs(emailCfg) {
+		spec := strings.TrimSpace(d.schedule)
+		if !d.enabled || spec == "" {
+			continue
+		}
+		if _, err := opsScheduledReportCronParser.Parse(spec); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *OpsScheduledReportService) runReport(ctx context.Context, report *opsScheduledReport, now time.Time) (int, error) {

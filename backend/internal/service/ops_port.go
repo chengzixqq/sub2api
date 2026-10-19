@@ -313,6 +313,12 @@ type OpsJobHeartbeat struct {
 	LastResult     *string    `json:"last_result"`
 
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Filled by the dashboard overview from the job's current schedule.
+	// Status is ok | failing | stale | unknown | disabled.
+	ExpectedIntervalSeconds *int64     `json:"expected_interval_seconds"`
+	NextExpectedAt          *time.Time `json:"next_expected_at"`
+	Status                  string     `json:"status"`
 }
 
 type OpsWindowStats struct {
