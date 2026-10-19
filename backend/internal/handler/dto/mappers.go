@@ -634,6 +634,17 @@ func ProxyAccountSummaryFromService(a *service.ProxyAccountSummary) *ProxyAccoun
 	}
 }
 
+func ProxyFallbackAccountFromService(a *service.ProxyAccountSummary) *ProxyFallbackAccount {
+	if a == nil {
+		return nil
+	}
+	return &ProxyFallbackAccount{
+		ProxyAccountSummary: *ProxyAccountSummaryFromService(a),
+		CurrentProxyID:      a.CurrentProxyID,
+		CurrentProxyName:    a.CurrentProxyName,
+	}
+}
+
 func RedeemCodeFromService(rc *service.RedeemCode) *RedeemCode {
 	if rc == nil {
 		return nil

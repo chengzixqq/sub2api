@@ -592,6 +592,8 @@ func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth
 		proxies.POST("/:id/quality-check", h.Admin.Proxy.CheckQuality)
 		proxies.GET("/:id/stats", h.Admin.Proxy.GetStats)
 		proxies.GET("/:id/accounts", h.Admin.Proxy.GetProxyAccounts)
+		proxies.GET("/:id/fallback-accounts", h.Admin.Proxy.GetProxyFallbackAccounts)
+		proxies.POST("/:id/fallback-accounts/revert", h.Admin.Proxy.RevertProxyFallbackAccounts)
 		proxies.POST("/batch-delete", h.Admin.Proxy.BatchDelete)
 		proxies.POST("/batch", h.Admin.Proxy.BatchCreate)
 	}

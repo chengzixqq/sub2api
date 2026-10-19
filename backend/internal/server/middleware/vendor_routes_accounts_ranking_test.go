@@ -1,6 +1,10 @@
 package middleware
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
+)
 
 // TestVendorRoutesDenyAccountsRanking keeps the station-wide account spending
 // ranking away from vendors. Opening it requires registering the path in both
@@ -47,5 +51,22 @@ func TestVendorRoutesDenyGroupStats(t *testing.T) {
 	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
 	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/groups/:id/stats"), scope) {
 		t.Fatal("vendor must not read group stats")
+	}
+}
+
+// TestVendorRoutesProxyFallbackRevertNeedsAccountManage: restoring rewrites
+// account proxy_id, so ProxyManage alone is not enough.
+func TestVendorRoutesProxyFallbackRevertNeedsAccountManage(t *testing.T) {
+	path := "/api/v1/admin/proxies/:id/fallback-accounts/revert"
+	proxyOnly := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{ProxyManage: true}}
+	if vendorRouteAllowed(newFullPathContext("POST", path), proxyOnly) {
+		t.Fatal("ProxyManage alone must not restore account proxies")
+	}
+	both := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{ProxyManage: true, AccountManage: true}}
+	if !vendorRouteAllowed(newFullPathContext("POST", path), both) {
+		t.Fatal("ProxyManage + AccountManage may restore")
+	}
+	if !vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/proxies/:id/fallback-accounts"), proxyOnly) {
+		t.Fatal("reading the fallback list follows proxy read")
 	}
 }

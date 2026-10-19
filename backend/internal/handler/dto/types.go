@@ -524,6 +524,14 @@ type ProxyAccountSummary struct {
 	Notes    *string `json:"notes,omitempty"`
 }
 
+// ProxyFallbackAccount is an account moved off a proxy by expiry fallback;
+// current_proxy_id null means it now connects directly.
+type ProxyFallbackAccount struct {
+	ProxyAccountSummary
+	CurrentProxyID   *int64  `json:"current_proxy_id"`
+	CurrentProxyName *string `json:"current_proxy_name"`
+}
+
 type RedeemCode struct {
 	ID        int64      `json:"id"`
 	Code      string     `json:"code"`

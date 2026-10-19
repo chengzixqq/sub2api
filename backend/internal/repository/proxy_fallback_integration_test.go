@@ -84,3 +84,47 @@ func TestProxyFallback_RevertRequiresUsableOrigin(t *testing.T) {
 	err = f.svc.RevertAccountProxyFallback(f.ctx, f.movedB.ID)
 	require.Equal(t, "PROXY_FALLBACK_ORIGIN_UNAVAILABLE", infraerrors.Reason(err), "a deleted origin is unavailable")
 }
+
+func TestProxyFallback_ListAndBatchRevert(t *testing.T) {
+	f := newProxyFallbackFixture(t)
+	list, err := f.svc.GetProxyFallbackAccounts(f.ctx, f.proxy.ID)
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	byID := map[int64]service.ProxyAccountSummary{}
+	for _, item := range list {
+		byID[item.ID] = item
+	}
+	require.Equal(t, f.backup.ID, *byID[f.movedA.ID].CurrentProxyID)
+	require.Equal(t, f.backup.Name, *byID[f.movedA.ID].CurrentProxyName)
+	require.Nil(t, byID[f.movedB.ID].CurrentProxyID, "direct connection")
+
+	_, err = f.svc.RevertProxyFallbackAccounts(f.ctx, f.proxy.ID, nil)
+	require.Equal(t, "PROXY_FALLBACK_ORIGIN_UNAVAILABLE", infraerrors.Reason(err), "still expired")
+
+	f.renew(t)
+	res, err := f.svc.RevertProxyFallbackAccounts(f.ctx, f.proxy.ID, []int64{f.movedA.ID, 999999999})
+	require.NoError(t, err)
+	require.Equal(t, []int64{f.movedA.ID}, res.RevertedIDs)
+	require.Len(t, res.Skipped, 1)
+	require.Equal(t, "ACCOUNT_NOT_FALLBACK_OF_PROXY", res.Skipped[0].Code)
+
+	all, err := f.svc.RevertProxyFallbackAccounts(f.ctx, f.proxy.ID, nil)
+	require.NoError(t, err)
+	require.Equal(t, []int64{f.movedB.ID}, all.RevertedIDs, "empty list means every remaining fallback account")
+
+	again, err := f.svc.RevertProxyFallbackAccounts(f.ctx, f.proxy.ID, []int64{f.movedA.ID, f.movedB.ID})
+	require.NoError(t, err)
+	require.Empty(t, again.RevertedIDs)
+	require.Len(t, again.Skipped, 2, "replay is safe")
+
+	remaining, err := f.svc.GetProxyFallbackAccounts(f.ctx, f.proxy.ID)
+	require.NoError(t, err)
+	require.Empty(t, remaining)
+	onProxy, err := f.svc.GetProxyAccounts(f.ctx, f.proxy.ID)
+	require.NoError(t, err)
+	require.Len(t, onProxy, 2)
+
+	vendor := service.WithScope(context.Background(), service.VendorScope(99999, service.WorkspacePermissions{ProxyManage: true}))
+	_, err = f.svc.GetProxyFallbackAccounts(vendor, f.proxy.ID)
+	require.Error(t, err, "another workspace's proxy is not found")
+}

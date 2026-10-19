@@ -19,6 +19,7 @@ type stubAdminService struct {
 	lastReplaceOptions                  service.ReplaceUserGroupOptions
 	lastGroupMembersInput               service.UpdateGroupMembersInput
 	updateGroupMembersErr               error
+	lastRevertAccountIDs                []int64
 	groups                              []service.Group
 	accounts                            []service.Account
 	accountSchedulerScoreFilterAccounts []service.Account
@@ -656,6 +657,16 @@ func (s *stubAdminService) GetProxyWithAccountCount(ctx context.Context, id int6
 		return nil, err
 	}
 	return &service.ProxyWithAccountCount{Proxy: *proxy, AccountCount: 3, FallbackAccountCount: 2}, nil
+}
+
+func (s *stubAdminService) GetProxyFallbackAccounts(ctx context.Context, proxyID int64) ([]service.ProxyAccountSummary, error) {
+	backup, name := int64(2), "sg-01"
+	return []service.ProxyAccountSummary{{ID: 12, Name: "claude-pro-03", CurrentProxyID: &backup, CurrentProxyName: &name}, {ID: 15, Name: "gpt-team-01"}}, nil
+}
+
+func (s *stubAdminService) RevertProxyFallbackAccounts(ctx context.Context, proxyID int64, accountIDs []int64) (*service.ProxyFallbackRevertResult, error) {
+	s.lastRevertAccountIDs = accountIDs
+	return &service.ProxyFallbackRevertResult{RevertedIDs: []int64{12}, Skipped: []service.ProxyFallbackRevertItem{}, Failed: []service.ProxyFallbackRevertItem{}}, nil
 }
 
 func (s *stubAdminService) GetProxy(ctx context.Context, id int64) (*service.Proxy, error) {

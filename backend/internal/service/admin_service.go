@@ -147,6 +147,8 @@ type AdminService interface {
 	GetAllProxiesWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error)
 	GetProxy(ctx context.Context, id int64) (*Proxy, error)
 	GetProxyWithAccountCount(ctx context.Context, id int64) (*ProxyWithAccountCount, error)
+	GetProxyFallbackAccounts(ctx context.Context, proxyID int64) ([]ProxyAccountSummary, error)
+	RevertProxyFallbackAccounts(ctx context.Context, proxyID int64, accountIDs []int64) (*ProxyFallbackRevertResult, error)
 	GetProxiesByIDs(ctx context.Context, ids []int64) ([]Proxy, error)
 	CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error)
 	UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error)

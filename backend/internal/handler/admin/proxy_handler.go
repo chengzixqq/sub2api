@@ -335,6 +335,55 @@ func (h *ProxyHandler) GetProxyAccounts(c *gin.Context) {
 	response.Success(c, out)
 }
 
+// GetProxyFallbackAccounts lists accounts moved off this proxy by expiry fallback.
+// GET /api/v1/admin/proxies/:id/fallback-accounts
+func (h *ProxyHandler) GetProxyFallbackAccounts(c *gin.Context) {
+	proxyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid proxy ID")
+		return
+	}
+	accounts, err := h.adminService.GetProxyFallbackAccounts(c.Request.Context(), proxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	out := make([]dto.ProxyFallbackAccount, 0, len(accounts))
+	for i := range accounts {
+		out = append(out, *dto.ProxyFallbackAccountFromService(&accounts[i]))
+	}
+	response.Success(c, out)
+}
+
+// RevertProxyFallbackAccountsRequest selects accounts to restore; empty means all.
+type RevertProxyFallbackAccountsRequest struct {
+	AccountIDs []int64 `json:"account_ids"`
+}
+
+// RevertProxyFallbackAccounts restores fallback accounts onto this proxy once
+// it is renewed and enabled. Each account is restored on its own.
+// POST /api/v1/admin/proxies/:id/fallback-accounts/revert
+func (h *ProxyHandler) RevertProxyFallbackAccounts(c *gin.Context) {
+	proxyID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid proxy ID")
+		return
+	}
+	var req RevertProxyFallbackAccountsRequest
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "Invalid request: "+err.Error())
+			return
+		}
+	}
+	result, err := h.adminService.RevertProxyFallbackAccounts(c.Request.Context(), proxyID, req.AccountIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // BatchCreateProxyItem represents a single proxy in batch create request
 type BatchCreateProxyItem struct {
 	Protocol string `json:"protocol" binding:"required,oneof=http https socks5 socks5h"`

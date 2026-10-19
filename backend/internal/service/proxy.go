@@ -89,4 +89,8 @@ type ProxyAccountSummary struct {
 	// WorkspaceID 供管理端按工作区过滤名单，站长直管为
 	// domain.DefaultWorkspaceID（1）。
 	WorkspaceID int64
+	// CurrentProxyID / CurrentProxyName are set for fallback listings: where the
+	// account points now (nil = direct connection).
+	CurrentProxyID   *int64
+	CurrentProxyName *string
 }

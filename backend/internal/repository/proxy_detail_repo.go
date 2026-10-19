@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -64,4 +65,49 @@ var _ service.ProxyFallbackCounter = (*proxyRepository)(nil)
 func (r *proxyRepository) CountAccountsByFallbackOriginProxyID(ctx context.Context, proxyID int64) (count int64, err error) {
 	err = scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM accounts WHERE proxy_fallback_origin_id = $1 AND deleted_at IS NULL", []any{proxyID}, &count)
 	return count, err
+}
+
+var _ service.ProxyFallbackLister = (*proxyRepository)(nil)
+
+// ListFallbackAccountSummariesByOriginProxyID lists live accounts moved off
+// proxyID by expiry fallback, with the proxy they use now.
+func (r *proxyRepository) ListFallbackAccountSummariesByOriginProxyID(ctx context.Context, proxyID int64) (out []service.ProxyAccountSummary, err error) {
+	rows, err := r.sql.QueryContext(ctx, `
+		SELECT a.id, a.name, a.platform, a.type, a.notes, a.workspace_id, a.proxy_id, p.name
+		FROM accounts a
+		LEFT JOIN proxies p ON p.id = a.proxy_id AND p.deleted_at IS NULL
+		WHERE a.proxy_fallback_origin_id = $1 AND a.deleted_at IS NULL
+		ORDER BY a.id DESC`, proxyID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+			out = nil
+		}
+	}()
+	out = []service.ProxyAccountSummary{}
+	for rows.Next() {
+		var (
+			item        service.ProxyAccountSummary
+			notes       sql.NullString
+			currentID   sql.NullInt64
+			currentName sql.NullString
+		)
+		if err = rows.Scan(&item.ID, &item.Name, &item.Platform, &item.Type, &notes, &item.WorkspaceID, &currentID, &currentName); err != nil {
+			return nil, err
+		}
+		if notes.Valid {
+			item.Notes = &notes.String
+		}
+		if currentID.Valid {
+			item.CurrentProxyID = &currentID.Int64
+		}
+		if currentName.Valid {
+			item.CurrentProxyName = &currentName.String
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }

@@ -145,6 +145,10 @@ var vendorAllowedRoutes = []vendorRoute{
 	{prefix: "/api/v1/admin/proxies", methods: []string{"GET"}, permit: permitProxyRead},
 	{prefix: "/api/v1/admin/proxies", methods: []string{"POST", "PUT", "PATCH", "DELETE"}, permit: func(p service.WorkspacePermissions) bool {
 		return p.ProxyManage
+	}, exclude: []string{"/api/v1/admin/proxies/:id/fallback-accounts/revert"}},
+	// 恢复原代理会改写账号的 proxy_id：同时需要代理与账号两档。
+	{prefix: "/api/v1/admin/proxies/:id/fallback-accounts/revert", methods: []string{"POST"}, exact: true, permit: func(p service.WorkspacePermissions) bool {
+		return p.ProxyManage && p.AccountManage
 	}},
 
 	// 分组：只读已授权分组；改动按运营/计费两档分别判定（service 层再按字段细分）。
