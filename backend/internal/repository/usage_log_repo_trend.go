@@ -613,7 +613,13 @@ func (r *usageLogRepository) getGroupStatsWithFilters(ctx context.Context, start
 		query += " AND g.deleted_at IS NULL"
 	}
 	if strings.TrimSpace(model) != "" {
-		modelExpr := resolveModelDimensionExpressionWithAlias(usagestats.ModelSourceRequested, "ul")
+		// Match the model by the caller's model_source, as usage/stats does;
+		// legacy callers and an empty source keep the requested-model match.
+		source := usagestats.ModelSourceRequested
+		if len(extra) > 0 {
+			source = extra[0].ModelFilterSource
+		}
+		modelExpr := resolveModelDimensionExpressionWithAlias(source, "ul")
 		query += fmt.Sprintf(" AND %s = $%d", modelExpr, len(args)+1)
 		args = append(args, model)
 	}
