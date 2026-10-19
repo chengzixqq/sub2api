@@ -49,15 +49,26 @@ func TestOpsJobHeartbeatStatus_IntervalJob(t *testing.T) {
 	require.Equal(t, OpsJobStatusStale, status)
 	require.True(t, next.Equal(now.Add(-3*time.Minute)), "next falls back to last_success_at + interval")
 
-	// A newer error wins over staleness, even if it just happened.
+	// A newer error is failing while the last success is still recent.
 	failing := &OpsJobHeartbeat{
+		JobName:       "j",
+		LastRunAt:     timePtr(now.Add(-time.Second)),
+		LastSuccessAt: timePtr(now.Add(-2 * time.Minute)),
+		LastErrorAt:   timePtr(now.Add(-time.Second)),
+	}
+	status, expected, _ = opsJobHeartbeatStatus(now, failing, sched, true)
+	require.Equal(t, OpsJobStatusFailing, status)
+	require.Equal(t, int64(60), *expected)
+
+	// Once the last success is overdue, staleness wins over a newer error.
+	failingTooLong := &OpsJobHeartbeat{
 		JobName:       "j",
 		LastRunAt:     timePtr(now.Add(-time.Second)),
 		LastSuccessAt: timePtr(now.Add(-10 * time.Minute)),
 		LastErrorAt:   timePtr(now.Add(-time.Second)),
 	}
-	status, expected, _ = opsJobHeartbeatStatus(now, failing, sched, true)
-	require.Equal(t, OpsJobStatusFailing, status)
+	status, expected, _ = opsJobHeartbeatStatus(now, failingTooLong, sched, true)
+	require.Equal(t, OpsJobStatusStale, status)
 	require.Equal(t, int64(60), *expected)
 
 	neverSucceeded := &OpsJobHeartbeat{JobName: "j", LastErrorAt: timePtr(now.Add(-time.Hour))}
@@ -75,6 +86,45 @@ func TestOpsJobHeartbeatStatus_IntervalJob(t *testing.T) {
 	require.Equal(t, OpsJobStatusOK, status)
 	status, _, _ = opsJobHeartbeatStatus(now, &OpsJobHeartbeat{LastSuccessAt: timePtr(now.Add(-27 * time.Minute))}, hourly, true)
 	require.Equal(t, OpsJobStatusStale, status)
+}
+
+// Every run fails after 11:59: the job reads failing first and turns stale
+// once no success has been seen for 2 x interval + grace.
+func TestOpsJobHeartbeatStatus_PersistentFailureTurnsStale(t *testing.T) {
+	lastSuccess := time.Date(2026, 10, 18, 11, 59, 0, 0, time.UTC)
+	sched := intervalJob(time.Minute, opsMetricsCollectorTimeout+opsJobStaleSlack)
+	failingAt := func(now time.Time) *OpsJobHeartbeat {
+		errAt := now.Add(-time.Second)
+		return &OpsJobHeartbeat{JobName: opsMetricsCollectorJobName, LastRunAt: &errAt, LastSuccessAt: &lastSuccess, LastErrorAt: &errAt}
+	}
+
+	for _, tc := range []struct {
+		now  time.Time
+		want string
+	}{
+		{time.Date(2026, 10, 18, 12, 1, 0, 0, time.UTC), OpsJobStatusFailing},
+		{time.Date(2026, 10, 18, 12, 2, 0, 0, time.UTC), OpsJobStatusFailing},
+		{time.Date(2026, 10, 18, 12, 5, 0, 0, time.UTC), OpsJobStatusStale},
+		{time.Date(2026, 10, 18, 12, 30, 0, 0, time.UTC), OpsJobStatusStale},
+		{time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC), OpsJobStatusStale},
+	} {
+		status, _, _ := opsJobHeartbeatStatus(tc.now, failingAt(tc.now), sched, true)
+		require.Equal(t, tc.want, status, "now=%s", tc.now.Format(time.TimeOnly))
+	}
+
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	require.NoError(t, err)
+	cleanup := cronJob(t, "0 2 * * *", shanghai, opsCleanupRunTimeout+opsJobStaleSlack)
+	cleanupFailed := &OpsJobHeartbeat{
+		JobName:       opsCleanupJobName,
+		LastRunAt:     timePtr(time.Date(2026, 10, 19, 2, 0, 0, 0, shanghai).UTC()),
+		LastSuccessAt: timePtr(time.Date(2026, 10, 18, 2, 5, 0, 0, shanghai).UTC()),
+		LastErrorAt:   timePtr(time.Date(2026, 10, 19, 2, 1, 0, 0, shanghai).UTC()),
+	}
+	status, _, _ := opsJobHeartbeatStatus(time.Date(2026, 10, 19, 2, 10, 0, 0, shanghai), cleanupFailed, cleanup, true)
+	require.Equal(t, OpsJobStatusFailing, status, "inside the run grace")
+	status, _, _ = opsJobHeartbeatStatus(time.Date(2026, 10, 19, 9, 0, 0, 0, shanghai), cleanupFailed, cleanup, true)
+	require.Equal(t, OpsJobStatusStale, status, "a failed nightly cleanup is stale by morning")
 }
 
 func TestOpsJobHeartbeatStatus_CronCleanupNotStaleDuringDay(t *testing.T) {
@@ -335,7 +385,8 @@ func TestGetDashboardOverview_AnnotatesJobHeartbeats(t *testing.T) {
 	now := time.Now().UTC()
 	repo := &overviewHeartbeatRepo{heartbeats: []*OpsJobHeartbeat{
 		{JobName: opsMetricsCollectorJobName, LastRunAt: timePtr(now.Add(-11 * time.Second)), LastSuccessAt: timePtr(now.Add(-10 * time.Second))},
-		{JobName: opsAlertEvaluatorJobName, LastSuccessAt: timePtr(now.Add(-20 * time.Minute)), LastErrorAt: timePtr(now.Add(-time.Minute)), LastError: stringPtr("boom")},
+		{JobName: opsAlertEvaluatorJobName, LastSuccessAt: timePtr(now.Add(-2 * time.Minute)), LastErrorAt: timePtr(now.Add(-time.Minute)), LastError: stringPtr("boom")},
+		{JobName: opsAggHourlyJobName, LastSuccessAt: timePtr(now.Add(-2 * time.Hour)), LastErrorAt: timePtr(now.Add(-time.Minute)), LastError: stringPtr("boom")},
 	}}
 	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
@@ -343,12 +394,13 @@ func TestGetDashboardOverview_AnnotatesJobHeartbeats(t *testing.T) {
 		StartTime: now.Add(-time.Hour), EndTime: now, QueryMode: OpsQueryModeRaw,
 	})
 	require.NoError(t, err)
-	require.Len(t, got.JobHeartbeats, 2)
+	require.Len(t, got.JobHeartbeats, 3)
 	require.Equal(t, OpsJobStatusOK, got.JobHeartbeats[0].Status)
 	require.Equal(t, int64(60), *got.JobHeartbeats[0].ExpectedIntervalSeconds)
 	require.NotNil(t, got.JobHeartbeats[0].NextExpectedAt)
 	require.Equal(t, OpsJobStatusFailing, got.JobHeartbeats[1].Status)
 	require.Equal(t, int64(60), *got.JobHeartbeats[1].ExpectedIntervalSeconds)
+	require.Equal(t, OpsJobStatusStale, got.JobHeartbeats[2].Status, "failing for longer than the stale window")
 	require.Empty(t, repo.heartbeats[0].Status, "repository rows are not mutated")
 
 	want := computeDashboardHealthScore(now, &OpsDashboardOverview{

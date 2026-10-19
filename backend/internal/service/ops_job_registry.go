@@ -134,9 +134,10 @@ func annotateOpsJobHeartbeats(now time.Time, heartbeats []*OpsJobHeartbeat, sche
 
 // opsJobHeartbeatStatus judges one heartbeat:
 //   - disabled: the job is registered but turned off by settings
-//   - failing: the latest error is newer than the latest success
 //   - stale: interval jobs without a success for 2 x interval + grace; cron
-//     jobs whose first run after the last success is overdue by grace
+//     jobs whose first run after the last success is overdue by grace. This
+//     wins over failing, so a job that keeps failing turns stale.
+//   - failing: the latest error is newer than the latest success
 //   - unknown: no success yet, or the job is not registered
 func opsJobHeartbeatStatus(now time.Time, hb *OpsJobHeartbeat, sched opsJobSchedule, registered bool) (string, *int64, *time.Time) {
 	failing := hb.LastErrorAt != nil && (hb.LastSuccessAt == nil || hb.LastErrorAt.After(*hb.LastSuccessAt))
@@ -153,12 +154,12 @@ func opsJobHeartbeatStatus(now time.Time, hb *OpsJobHeartbeat, sched opsJobSched
 	expected := sched.expectedIntervalSeconds(now)
 	next := sched.nextAfter(latestOpsTime(hb.LastRunAt, hb.LastSuccessAt))
 	switch {
+	case hb.LastSuccessAt != nil && sched.overdue(now, *hb.LastSuccessAt):
+		return OpsJobStatusStale, expected, next
 	case failing:
 		return OpsJobStatusFailing, expected, next
 	case hb.LastSuccessAt == nil:
 		return OpsJobStatusUnknown, expected, next
-	case sched.overdue(now, *hb.LastSuccessAt):
-		return OpsJobStatusStale, expected, next
 	default:
 		return OpsJobStatusOK, expected, next
 	}
