@@ -67,6 +67,10 @@ type CreateUsageCleanupTaskRequest struct {
 // GET /api/v1/admin/usage
 func (h *UsageHandler) List(c *gin.Context) {
 	page, pageSize := response.ParsePagination(c)
+	sinceID, ok := parseSinceIDQuery(c, page)
+	if !ok {
+		return
+	}
 	exactTotal := true
 	if exactTotalRaw := strings.TrimSpace(c.Query("exact_total")); exactTotalRaw != "" {
 		parsed, err := strconv.ParseBool(exactTotalRaw)
@@ -210,6 +214,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		EndTime:               endTime,
 		ExactTotal:            exactTotal,
 		DeferredTotal:         deferred,
+		SinceID:               sinceID,
 	}
 
 	records, result, err := h.usageService.ListWithFilters(c.Request.Context(), params, filters)
@@ -230,6 +235,15 @@ func (h *UsageHandler) List(c *gin.Context) {
 			row.APIKey.HideFullKey()
 		}
 		out = append(out, *row)
+	}
+	if sinceID != nil {
+		ids := make([]int64, len(records))
+		for i := range records {
+			ids[i] = records[i].ID
+		}
+		// The repository fetched one extra row, so a larger total means a gap.
+		response.UsageIncremental(c, out, pageSize, result.Total > int64(pageSize), *sinceID, incrementalLatestID(*sinceID, ids...), queryRange.Metadata())
+		return
 	}
 	// The legacy explicit exact_total=false mode retains its lower-bound pagination contract.
 	if !exactTotal && !deferred {

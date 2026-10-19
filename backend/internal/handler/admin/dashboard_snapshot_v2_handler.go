@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -167,16 +166,13 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		stats := *payload.Stats
 		stats.DashboardStats = *h.dashboardService.WithRuntimeRPM(ctx, &stats.DashboardStats)
 		current.Stats = &stats
-		cached.Payload = &current
-		cached.ETag = usagequery.CacheETag(&current)
+		payload = &current
+		cached.Payload = payload
 	}
-	if cached.ETag != "" {
-		c.Header("ETag", cached.ETag)
-		c.Header("Vary", "If-None-Match")
-		if ifNoneMatchMatched(c.GetHeader("If-None-Match"), cached.ETag) {
-			c.Status(http.StatusNotModified)
-			return
-		}
+	// The validator ignores rebuild timestamps so a refreshed but unchanged
+	// snapshot still revalidates.
+	if writeConditionalETag(c, stableSnapshotV2ETag(payload)) {
+		return
 	}
 	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 	response.Success(c, cached.Payload)

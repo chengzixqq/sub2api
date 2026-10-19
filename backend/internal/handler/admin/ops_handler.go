@@ -227,13 +227,17 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 	if pageSize > 500 {
 		pageSize = 500
 	}
-	startTime, endTime, err := parseOpsTimeRange(c, "1h")
+	sinceID, ok := parseSinceIDQuery(c, page)
+	if !ok {
+		return
+	}
+	startTime, endTime, err := parseRequestErrorsTimeRange(c, sinceID != nil)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 
-	filter := &service.OpsErrorLogFilter{Page: page, PageSize: pageSize}
+	filter := &service.OpsErrorLogFilter{Page: page, PageSize: pageSize, SinceID: sinceID}
 	if !startTime.IsZero() {
 		filter.StartTime = &startTime
 	}
@@ -321,7 +325,32 @@ func (h *OpsHandler) ListRequestErrors(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	if sinceID != nil {
+		ids := make([]int64, 0, len(result.Errors))
+		for _, item := range result.Errors {
+			if item != nil {
+				ids = append(ids, item.ID)
+			}
+		}
+		response.UsageIncremental(c, result.Errors, pageSize, result.HasMore, *sinceID, incrementalLatestID(*sinceID, ids...), dashboardQueryMetadata(c))
+		return
+	}
 	response.UsagePaginated(c, result.Errors, int64(result.Total), result.Page, result.PageSize, false, dashboardQueryMetadata(c))
+}
+
+// parseRequestErrorsTimeRange applies the default 1h window, except for
+// incremental reads without an explicit window: those are bounded by the id
+// cursor alone so a client returning after an hour misses nothing.
+func parseRequestErrorsTimeRange(c *gin.Context, incremental bool) (time.Time, time.Time, error) {
+	if !incremental || hasExplicitOpsTimeParams(c) {
+		return parseOpsTimeRange(c, "1h")
+	}
+	r, err := usagequery.ParseRange(c.Request.URL.Query(), nil, nil)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	c.Set("usage_query_range", r)
+	return time.Time{}, time.Time{}, nil
 }
 
 // GetRequestError returns request error detail.
@@ -724,7 +753,16 @@ func (h *OpsHandler) UpdateErrorResolution(c *gin.Context) {
 	response.Success(c, gin.H{"ok": true})
 }
 
+// opsNow is the clock for relative ops windows; tests pin it.
+var opsNow = time.Now
+
 func parseOpsTimeRange(c *gin.Context, defaultRange string) (time.Time, time.Time, error) {
+	return parseOpsTimeRangeAt(c, defaultRange, opsNow())
+}
+
+// parseOpsTimeRangeAt resolves time_range relative to end; an explicit
+// start_time/end_time (or dates) still wins.
+func parseOpsTimeRangeAt(c *gin.Context, defaultRange string, end time.Time) (time.Time, time.Time, error) {
 	tr := strings.TrimSpace(c.Query("time_range"))
 	if tr == "" {
 		tr = defaultRange
@@ -733,7 +771,6 @@ func parseOpsTimeRange(c *gin.Context, defaultRange string) (time.Time, time.Tim
 	if !ok {
 		dur, _ = parseOpsDuration(defaultRange)
 	}
-	end := time.Now()
 	start := end.Add(-dur)
 	r, err := usagequery.ParseRange(c.Request.URL.Query(), &start, &end)
 	if err != nil {

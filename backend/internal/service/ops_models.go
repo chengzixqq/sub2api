@@ -168,6 +168,10 @@ type OpsErrorLogFilter struct {
 	// falls back to created_at. SortOrder is "asc"/"desc" (default desc).
 	SortBy    string
 	SortOrder string
+
+	// SinceID is an incremental cursor: only rows with id > SinceID, newest
+	// first by id, without COUNT. Page and sort are ignored when set.
+	SinceID *int64
 }
 
 // SetSort normalizes raw sort_by/sort_order query values into the filter.
@@ -182,4 +186,6 @@ type OpsErrorLogList struct {
 	Total    int            `json:"total"`
 	Page     int            `json:"page"`
 	PageSize int            `json:"page_size"`
+	// HasMore is only set for SinceID reads: more new rows than one page.
+	HasMore bool `json:"-"`
 }

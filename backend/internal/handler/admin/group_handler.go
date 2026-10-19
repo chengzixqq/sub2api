@@ -392,14 +392,14 @@ func (h *GroupHandler) List(c *gin.Context) {
 				simpleGroups = append(simpleGroups, *groupForSimpleMode(&groups[i]))
 			}
 		}
-		response.Paginated(c, simpleGroups, total, page, pageSize)
+		writePaginatedWithETag(c, simpleGroups, total, page, pageSize)
 		return
 	}
 	outGroups := make([]dto.AdminGroup, 0, len(groups))
 	for i := range groups {
 		outGroups = append(outGroups, *dto.GroupFromServiceAdmin(&groups[i]))
 	}
-	response.Paginated(c, outGroups, total, page, pageSize)
+	writePaginatedWithETag(c, outGroups, total, page, pageSize)
 }
 
 // ListCompositeRoutes handles listing composite model routes for one group.

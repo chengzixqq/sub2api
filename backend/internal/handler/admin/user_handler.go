@@ -204,7 +204,7 @@ func (h *UserHandler) List(c *gin.Context) {
 		}
 	}
 
-	response.Paginated(c, out, total, page, pageSize)
+	writePaginatedWithETag(c, out, total, page, pageSize)
 }
 
 // parseAttributeFilters extracts attribute filters from query params

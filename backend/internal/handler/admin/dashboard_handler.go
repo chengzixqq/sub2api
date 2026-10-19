@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -84,7 +85,7 @@ func (h *DashboardHandler) GetStats(c *gin.Context) {
 	// Calculate uptime in seconds
 	uptime := int64(time.Since(h.startTime).Seconds())
 
-	response.Success(c, gin.H{
+	body := gin.H{
 		// 用户统计
 		"total_users":     stats.TotalUsers,
 		"today_new_users": stats.TodayNewUsers,
@@ -136,7 +137,11 @@ func (h *DashboardHandler) GetStats(c *gin.Context) {
 		"hourly_active_users": stats.HourlyActiveUsers,
 		"stats_updated_at":    stats.StatsUpdatedAt,
 		"stats_stale":         stats.StatsStale,
-	})
+	}
+	// uptime ticks every second; leave it out so unchanged stats revalidate.
+	basis := maps.Clone(body)
+	delete(basis, "uptime")
+	writeSuccessWithETag(c, basis, body)
 }
 
 type DashboardAggregationBackfillRequest struct {

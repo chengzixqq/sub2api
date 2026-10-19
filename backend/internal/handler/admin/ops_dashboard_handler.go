@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,16 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+)
+
+// Overview and throughput are polled on rolling windows; flooring the end to
+// opsDashboardBucket lets concurrent pollers share one short-lived entry
+// (same bucket as dashboard/rates).
+const opsDashboardBucket = dashboardRatesBucket
+
+var (
+	opsDashboardOverviewCache = newSnapshotCache(opsDashboardBucket)
+	opsThroughputTrendCache   = newSnapshotCache(opsDashboardBucket)
 )
 
 // GetDashboardOverview returns vNext ops dashboard overview (raw path).
@@ -26,17 +37,28 @@ func (h *OpsHandler) GetDashboardOverview(c *gin.Context) {
 		return
 	}
 
-	filter, err := parseOpsDashboardFilter(c)
+	filter, err := parseOpsDashboardFilterBucketed(c, opsDashboardBucket)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 
-	data, err := h.opsService.GetDashboardOverview(c.Request.Context(), filter)
+	ctx := c.Request.Context()
+	key := scopedUsageCacheKey(ctx, mustMarshalDashboardCacheKey(filter))
+	entry, hit, err := opsDashboardOverviewCache.GetOrLoadContext(ctx, key, func(work context.Context) (any, error) {
+		query := *filter // the service resolves QueryMode in place
+		return h.opsService.GetDashboardOverview(work, &query)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
+	data, err := snapshotPayloadAs[*service.OpsDashboardOverview](entry.Payload)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 	response.Success(c, data)
 }
 
@@ -52,18 +74,32 @@ func (h *OpsHandler) GetDashboardThroughputTrend(c *gin.Context) {
 		return
 	}
 
-	filter, err := parseOpsDashboardFilter(c)
+	filter, err := parseOpsDashboardFilterBucketed(c, opsDashboardBucket)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 
 	bucketSeconds := pickThroughputBucketSeconds(filter.EndTime.Sub(filter.StartTime))
-	data, err := h.opsService.GetThroughputTrend(c.Request.Context(), filter, bucketSeconds)
+	ctx := c.Request.Context()
+	key := scopedUsageCacheKey(ctx, mustMarshalDashboardCacheKey(struct {
+		Filter        *service.OpsDashboardFilter
+		BucketSeconds int
+	}{filter, bucketSeconds}))
+	entry, hit, err := opsThroughputTrendCache.GetOrLoadContext(ctx, key, func(work context.Context) (any, error) {
+		query := *filter
+		return h.opsService.GetThroughputTrend(work, &query, bucketSeconds)
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
+	data, err := snapshotPayloadAs[*service.OpsThroughputTrendResponse](entry.Payload)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 	response.Success(c, data)
 }
 
@@ -183,7 +219,17 @@ var (
 // parseOpsDashboardFilter reads the filter shared by the ops dashboard
 // endpoints: time range, platform, group_id, mode and model / model_source.
 func parseOpsDashboardFilter(c *gin.Context) (*service.OpsDashboardFilter, error) {
-	startTime, endTime, err := parseOpsTimeRange(c, "1h")
+	return parseOpsDashboardFilterAt(c, opsNow())
+}
+
+// parseOpsDashboardFilterBucketed floors the end of a relative window to
+// bucket so polling clients share one cache entry; explicit ranges are kept.
+func parseOpsDashboardFilterBucketed(c *gin.Context, bucket time.Duration) (*service.OpsDashboardFilter, error) {
+	return parseOpsDashboardFilterAt(c, opsNow().Truncate(bucket))
+}
+
+func parseOpsDashboardFilterAt(c *gin.Context, end time.Time) (*service.OpsDashboardFilter, error) {
+	startTime, endTime, err := parseOpsTimeRangeAt(c, "1h", end)
 	if err != nil {
 		return nil, err
 	}

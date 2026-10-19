@@ -224,15 +224,23 @@ func (r *opsRepository) ListErrorLogs(ctx context.Context, filter *service.OpsEr
 	}
 
 	where, args := buildOpsErrorLogsWhere(filter)
-	countSQL := "SELECT COUNT(*) FROM ops_error_logs e " + where
+	incremental := filter.SinceID != nil
+	orderBy := opsErrorLogsOrderBy(filter)
+	limit := pageSize
 
 	var total int
-	if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
-		return nil, err
+	if incremental {
+		// Newest rows after the cursor; one extra row detects a gap, no COUNT.
+		page, orderBy, limit = 1, "e.id DESC", pageSize+1
+	} else {
+		countSQL := "SELECT COUNT(*) FROM ops_error_logs e " + where
+		if err := r.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+			return nil, err
+		}
 	}
 
 	offset := (page - 1) * pageSize
-	argsWithLimit := append(args, pageSize, offset)
+	argsWithLimit := append(args, limit, offset)
 	selectSQL := `
 SELECT
   e.id,
@@ -279,7 +287,7 @@ LEFT JOIN users u ON e.user_id = u.id
 LEFT JOIN users u2 ON e.resolved_by_user_id = u2.id
 LEFT JOIN api_keys ak ON ak.id = e.api_key_id
 ` + where + `
-ORDER BY ` + opsErrorLogsOrderBy(filter) + `
+ORDER BY ` + orderBy + `
 LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 
 	rows, err := r.db.QueryContext(ctx, selectSQL, argsWithLimit...)
@@ -395,11 +403,19 @@ LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
 		return nil, err
 	}
 
+	hasMore := false
+	if incremental {
+		if len(out) > pageSize {
+			hasMore, out = true, out[:pageSize]
+		}
+		total = len(out)
+	}
 	return &service.OpsErrorLogList{
 		Errors:   out,
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
+		HasMore:  hasMore,
 	}, nil
 }
 
@@ -1050,6 +1066,10 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	if len(filter.ErrorTypesAny) > 0 {
 		args = append(args, pq.Array(filter.ErrorTypesAny))
 		clauses = append(clauses, "e.error_type = ANY($"+itoa(len(args))+")")
+	}
+	if filter.SinceID != nil {
+		args = append(args, *filter.SinceID)
+		clauses = append(clauses, "e.id > $"+itoa(len(args)))
 	}
 
 	return "WHERE " + strings.Join(clauses, " AND "), args

@@ -140,6 +140,10 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		conditions = append(conditions, fmt.Sprintf("created_at < $%d", len(args)+1))
 		args = append(args, *filters.EndTime)
 	}
+	if filters.SinceID != nil {
+		conditions = append(conditions, fmt.Sprintf("id > $%d", len(args)+1))
+		args = append(args, *filters.SinceID)
+	}
 
 	whereClause := buildWhere(conditions)
 	var (
@@ -147,7 +151,12 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		page *pagination.PaginationResult
 		err  error
 	)
-	if shouldUseFastUsageLogTotal(filters) {
+	if filters.SinceID != nil {
+		// Incremental reads ignore paging/sort requests: the newest page by id,
+		// one extra row to detect a gap, no COUNT.
+		incremental := pagination.PaginationParams{Page: 1, PageSize: params.PageSize, SortBy: "id", SortOrder: pagination.SortOrderDesc}
+		logs, page, err = r.listUsageLogsWithFastPagination(ctx, whereClause, args, incremental)
+	} else if shouldUseFastUsageLogTotal(filters) {
 		logs, page, err = r.listUsageLogsWithFastPagination(ctx, whereClause, args, params)
 	} else {
 		logs, page, err = r.listUsageLogsWithPagination(ctx, whereClause, args, params)

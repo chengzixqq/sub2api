@@ -109,6 +109,7 @@ func newOpsDashboardModelFilterRouter(repo *opsDashboardCaptureRepo) *gin.Engine
 
 func resetOpsDashboardSnapshotV2CacheForTest() {
 	opsDashboardSnapshotV2Cache = newSnapshotCache(30 * time.Second)
+	resetOpsDashboardBucketCachesForTest()
 }
 
 func TestOpsDashboardModelFilter_ParsedForAllEndpoints(t *testing.T) {
