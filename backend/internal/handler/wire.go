@@ -49,6 +49,7 @@ func ProvideAdminHandlers(
 	auditLogHandler *admin.AuditLogHandler,
 	workspaceHandler *admin.WorkspaceHandler,
 	userAdjustmentHandler *admin.UserAdjustmentHandler,
+	meHandler *admin.MeHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
@@ -101,6 +102,7 @@ func ProvideAdminHandlers(
 		AuditLog:               auditLogHandler,
 		Workspace:              workspaceHandler,
 		UserAdjustment:         userAdjustmentHandler,
+		Me:                     meHandler,
 	}
 }
 
@@ -172,6 +174,30 @@ func ProvideBatchImageHandler(
 // ProvideSystemHandler creates admin.SystemHandler with UpdateService
 func ProvideSystemHandler(updateService *service.UpdateService, lockService *service.SystemOperationLockService) *admin.SystemHandler {
 	return admin.NewSystemHandler(updateService, lockService)
+}
+
+// ProvideMeHandler builds GET /admin/me from read-only sources.
+func ProvideMeHandler(cfg *config.Config, userService *service.UserService, settingService *service.SettingService, opsService *service.OpsService, totpService *service.TotpService, workspaceService *service.WorkspaceService, buildInfo BuildInfo) *admin.MeHandler {
+	deps := admin.MeDeps{Version: buildInfo.Version, RunMode: config.RunModeStandard}
+	if cfg != nil && cfg.RunMode != "" {
+		deps.RunMode = cfg.RunMode
+	}
+	if userService != nil {
+		deps.Users = userService
+	}
+	if settingService != nil {
+		deps.Settings = settingService
+	}
+	if opsService != nil {
+		deps.Ops = opsService
+	}
+	if totpService != nil {
+		deps.StepUp = totpService
+	}
+	if workspaceService != nil {
+		deps.Workspaces = workspaceService
+	}
+	return admin.NewMeHandler(deps)
 }
 
 // ProvideSettingHandler creates SettingHandler with version from BuildInfo
@@ -318,5 +344,6 @@ var ProviderSet = wire.NewSet(
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,
+	ProvideMeHandler,
 	ProvideHandlers,
 )

@@ -113,6 +113,7 @@ var vendorAllowedRoutes = []vendorRoute{
 	// 免检通道。而本中间件挂在它之前——不放行这两条，vendor 会被 423 要求确认，
 	// 却又被 403 挡在确认接口之外，成为无法自解的死锁。
 	{prefix: "/api/v1/admin/compliance", methods: []string{"GET"}, exact: true},
+	{prefix: "/api/v1/admin/me", methods: []string{"GET"}, exact: true},
 	{prefix: "/api/v1/admin/compliance/accept", methods: []string{"POST"}, exact: true},
 
 	// 自身信息与工作区自读：vendor 恒可访问。

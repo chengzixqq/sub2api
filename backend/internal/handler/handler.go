@@ -45,6 +45,7 @@ type AdminHandlers struct {
 	AuditLog               *admin.AuditLogHandler
 	Workspace              *admin.WorkspaceHandler
 	UserAdjustment         *admin.UserAdjustmentHandler
+	Me                     *admin.MeHandler
 }
 
 // Handlers contains all HTTP handlers

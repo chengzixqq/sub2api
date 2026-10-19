@@ -70,3 +70,10 @@ func TestVendorRoutesProxyFallbackRevertNeedsAccountManage(t *testing.T) {
 		t.Fatal("reading the fallback list follows proxy read")
 	}
 }
+
+func TestVendorRoutesAllowAdminMe(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{}}
+	if !vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/me"), scope) {
+		t.Fatal("every vendor may read /admin/me")
+	}
+}

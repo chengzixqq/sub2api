@@ -49,5 +49,6 @@ func AdminComplianceGuard(settingService *service.SettingService) gin.HandlerFun
 
 func isAdminComplianceBypassPath(path string) bool {
 	path = strings.TrimSpace(path)
-	return path == "/api/v1/admin/compliance" || strings.HasPrefix(path, "/api/v1/admin/compliance/")
+	return path == "/api/v1/admin/compliance" || strings.HasPrefix(path, "/api/v1/admin/compliance/") ||
+		path == "/api/v1/admin/me"
 }

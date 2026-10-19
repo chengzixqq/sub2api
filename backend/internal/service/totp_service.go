@@ -559,3 +559,17 @@ func (s *TotpService) SendVerifyCode(ctx context.Context, userID int64, locale .
 	// Send verification code via queue
 	return s.emailQueueService.EnqueueVerifyCode(user.Email, siteName, firstEmailLocale(locale))
 }
+
+type stepUpGrantTTLReader interface {
+	StepUpGrantTTL(ctx context.Context, userID int64, sessionKey string) (bool, int64, error)
+}
+
+// StepUpGrantTTL reports whether the session holds a step-up grant and how
+// many seconds remain; caches without TTL support report presence only.
+func (s *TotpService) StepUpGrantTTL(ctx context.Context, userID int64, sessionKey string) (bool, int64, error) {
+	if reader, ok := s.cache.(stepUpGrantTTLReader); ok {
+		return reader.StepUpGrantTTL(ctx, userID, sessionKey)
+	}
+	granted, err := s.cache.HasStepUpGrant(ctx, userID, sessionKey)
+	return granted, 0, err
+}

@@ -169,3 +169,16 @@ func (c *TotpCache) HasStepUpGrant(ctx context.Context, userID int64, sessionKey
 	}
 	return true, nil
 }
+
+// StepUpGrantTTL reports whether a step-up grant exists and its remaining seconds.
+func (c *TotpCache) StepUpGrantTTL(ctx context.Context, userID int64, sessionKey string) (bool, int64, error) {
+	ttl, err := c.rdb.PTTL(ctx, totpStepUpKey(userID, sessionKey)).Result()
+	if err != nil {
+		return false, 0, fmt.Errorf("get step-up grant ttl: %w", err)
+	}
+	// -2 = missing key, -1 = no expiry (never set by SetStepUpGrant).
+	if ttl < 0 {
+		return ttl == -1, 0, nil
+	}
+	return true, int64(ttl.Seconds()), nil
+}
