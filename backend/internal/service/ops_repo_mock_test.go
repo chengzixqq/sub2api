@@ -19,6 +19,8 @@ type opsRepoMock struct {
 	ListAlertSilencesFn           func(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error)
 	UpdateAlertSilenceUntilFn     func(ctx context.Context, id int64, until time.Time, reason *string) (*OpsAlertSilence, error)
 	EndAlertSilenceFn             func(ctx context.Context, id int64, now time.Time) error
+	UpdateAlertEventStatusFn      func(ctx context.Context, eventID int64, status string, resolvedAt *time.Time, resolvedBy *int64) error
+	CountAlertEventsBySeverityFn  func(ctx context.Context, filter *OpsAlertEventFilter) (map[string]int64, error)
 }
 
 func (m *opsRepoMock) ListAlertSilences(ctx context.Context, filter *OpsAlertSilenceFilter) ([]*OpsAlertSilence, error) {
@@ -187,8 +189,18 @@ func (m *opsRepoMock) CreateAlertEvent(ctx context.Context, event *OpsAlertEvent
 	return event, nil
 }
 
-func (m *opsRepoMock) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
+func (m *opsRepoMock) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time, resolvedBy *int64) error {
+	if m.UpdateAlertEventStatusFn != nil {
+		return m.UpdateAlertEventStatusFn(ctx, eventID, status, resolvedAt, resolvedBy)
+	}
 	return nil
+}
+
+func (m *opsRepoMock) CountAlertEventsBySeverity(ctx context.Context, filter *OpsAlertEventFilter) (map[string]int64, error) {
+	if m.CountAlertEventsBySeverityFn != nil {
+		return m.CountAlertEventsBySeverityFn(ctx, filter)
+	}
+	return map[string]int64{}, nil
 }
 
 func (m *opsRepoMock) UpdateAlertEventEmailSent(ctx context.Context, eventID int64, emailSent bool) error {

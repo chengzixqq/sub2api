@@ -47,8 +47,11 @@ type OpsRepository interface {
 	GetActiveAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error)
 	GetLatestAlertEvent(ctx context.Context, ruleID int64) (*OpsAlertEvent, error)
 	CreateAlertEvent(ctx context.Context, event *OpsAlertEvent) (*OpsAlertEvent, error)
-	UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error
+	// UpdateAlertEventStatus sets status and resolved_at and records resolvedBy as the resolver (nil clears it).
+	UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time, resolvedBy *int64) error
 	UpdateAlertEventEmailSent(ctx context.Context, eventID int64, emailSent bool) error
+	// CountAlertEventsBySeverity counts the events matching filter's status, severity, time and scope filters, by severity.
+	CountAlertEventsBySeverity(ctx context.Context, filter *OpsAlertEventFilter) (map[string]int64, error)
 
 	// Alert silences
 	CreateAlertSilence(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error)

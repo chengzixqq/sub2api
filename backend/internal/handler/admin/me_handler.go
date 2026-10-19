@@ -29,6 +29,8 @@ var adminMeCapabilities = []string{
 	"groups.member_batch",
 	"lists.etag",
 	"logs.since_id",
+	"ops.alert_event_counts",
+	"ops.alert_event_details",
 	"ops.dashboard_model_filter",
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",

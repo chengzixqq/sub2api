@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var opsEventColumnsWithSilence = []string{"id", "rule_id", "severity", "status", "title", "description", "metric_value", "threshold_value", "dimensions", "fired_at", "resolved_at", "email_sent", "created_at", "silence_id", "silence_until"}
+var opsEventColumnsWithSilence = []string{"id", "rule_id", "severity", "status", "title", "description", "metric_value", "threshold_value", "dimensions", "fired_at", "resolved_at", "email_sent", "created_at", "silence_id", "silence_until", "rule_snapshot", "current_rule", "group_name", "resolved_by_user_id", "resolved_by_user_name"}
 
 func TestListAlertEvents_AttachesActiveSilence(t *testing.T) {
 	repo, mock := newOpsSilenceRepo(t)
@@ -20,8 +20,8 @@ func TestListAlertEvents_AttachesActiveSilence(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("LEFT JOIN LATERAL")).
 		WillReturnRows(sqlmock.NewRows(opsEventColumnsWithSilence).
-			AddRow(int64(1), int64(41), "P1", "firing", "标准组错误率", "", 5.2, 5.0, []byte(`{"group_id":2}`), fired, nil, false, fired, int64(7), until).
-			AddRow(int64(2), int64(35), "P2", "firing", "Gemini", "", nil, nil, nil, fired, nil, false, fired, nil, nil))
+			AddRow(int64(1), int64(41), "P1", "firing", "标准组错误率", "", 5.2, 5.0, []byte(`{"group_id":2}`), fired, nil, false, fired, int64(7), until, nil, nil, nil, nil, nil).
+			AddRow(int64(2), int64(35), "P2", "firing", "Gemini", "", nil, nil, nil, fired, nil, false, fired, nil, nil, nil, nil, nil, nil, nil))
 
 	events, err := repo.ListAlertEvents(context.Background(), &service.OpsAlertEventFilter{Limit: 10})
 	require.NoError(t, err)
@@ -31,6 +31,12 @@ func TestListAlertEvents_AttachesActiveSilence(t *testing.T) {
 	require.True(t, until.Equal(events[0].Silence.Until))
 	require.Equal(t, float64(2), events[0].Dimensions["group_id"])
 	require.Nil(t, events[1].Silence)
+	for _, ev := range events {
+		require.Nil(t, ev.Rule)
+		require.Nil(t, ev.GroupName)
+		require.Nil(t, ev.ResolvedByUserID)
+		require.Nil(t, ev.ResolvedByUserName)
+	}
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -41,7 +47,7 @@ func TestGetAlertEventByID_AttachesActiveSilence(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("LEFT JOIN LATERAL")).WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows(opsEventColumnsWithSilence).
-			AddRow(int64(1), int64(41), "P1", "firing", "t", "", nil, nil, nil, fired, nil, false, fired, int64(9), until))
+			AddRow(int64(1), int64(41), "P1", "firing", "t", "", nil, nil, nil, fired, nil, false, fired, int64(9), until, nil, nil, nil, nil, nil))
 
 	ev, err := repo.GetAlertEventByID(context.Background(), 1)
 	require.NoError(t, err)

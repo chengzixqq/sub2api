@@ -451,7 +451,7 @@ func (h *OpsHandler) UpdateAlertEventStatus(c *gin.Context) {
 		now := time.Now().UTC()
 		resolvedAt = &now
 	}
-	if err := h.opsService.UpdateAlertEventStatus(c.Request.Context(), id, payload.Status, resolvedAt); err != nil {
+	if err := h.opsService.UpdateAlertEventStatus(c.Request.Context(), id, payload.Status, resolvedAt, opsAlertEventResolver(c, payload.Status)); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

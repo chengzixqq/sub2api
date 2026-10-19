@@ -279,7 +279,8 @@ func (s *OpsService) CreateAlertEvent(ctx context.Context, event *OpsAlertEvent)
 	return created, nil
 }
 
-func (s *OpsService) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
+// UpdateAlertEventStatus resolves an event. resolvedBy (the acting admin) is recorded only for manual_resolved.
+func (s *OpsService) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time, resolvedBy *int64) error {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return err
 	}
@@ -296,7 +297,10 @@ func (s *OpsService) UpdateAlertEventStatus(ctx context.Context, eventID int64, 
 	if status != OpsAlertStatusResolved && status != OpsAlertStatusManualResolved {
 		return infraerrors.BadRequest("INVALID_STATUS", "invalid status")
 	}
-	return s.opsRepo.UpdateAlertEventStatus(ctx, eventID, status, resolvedAt)
+	if status != OpsAlertStatusManualResolved || (resolvedBy != nil && *resolvedBy <= 0) {
+		resolvedBy = nil
+	}
+	return s.opsRepo.UpdateAlertEventStatus(ctx, eventID, status, resolvedAt, resolvedBy)
 }
 
 func (s *OpsService) UpdateAlertEventEmailSent(ctx context.Context, eventID int64, emailSent bool) error {

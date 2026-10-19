@@ -103,3 +103,11 @@ func TestVendorRoutesDenyAdminAccessTokens(t *testing.T) {
 		}
 	}
 }
+
+// TestVendorRoutesDenyOpsAlertEventCounts: ops monitoring is site-owner only; the alert counts stay closed to vendors.
+func TestVendorRoutesDenyOpsAlertEventCounts(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/ops/alert-events/counts"), scope) {
+		t.Fatal("vendor must not read ops alert event counts")
+	}
+}

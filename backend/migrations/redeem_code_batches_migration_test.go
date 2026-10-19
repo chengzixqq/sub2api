@@ -42,3 +42,13 @@ func TestAccountConfigVersionMigration(t *testing.T) {
 	require.Contains(t, sql, "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS config_version BIGINT NOT NULL DEFAULT 0")
 	require.NotContains(t, sql, "+goose")
 }
+
+func TestOpsAlertEventRuleSnapshotMigration(t *testing.T) {
+	content, err := FS.ReadFile("253_ops_alert_event_rule_snapshot.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE ops_alert_events ADD COLUMN IF NOT EXISTS rule_snapshot JSONB")
+	require.Contains(t, sql, "ALTER TABLE ops_alert_events ADD COLUMN IF NOT EXISTS resolved_by_user_id BIGINT")
+	require.NotContains(t, sql, "UPDATE ")
+	require.NotContains(t, sql, "+goose")
+}

@@ -337,25 +337,7 @@ func (r *opsRepository) ListAlertEvents(ctx context.Context, filter *service.Ops
 	args = append(args, limit)
 	limitArg := "$" + itoa(len(args))
 
-	q := `
-SELECT
-  id,
-  COALESCE(rule_id, 0),
-  COALESCE(severity, ''),
-  COALESCE(status, ''),
-  COALESCE(title, ''),
-  COALESCE(description, ''),
-  metric_value,
-  threshold_value,
-  dimensions,
-  fired_at,
-  resolved_at,
-  email_sent,
-  created_at,
-  silence_id,
-  silence_until
-FROM ops_alert_events
-` + opsAlertEventSilenceJoin + `
+	q := opsAlertEventDetailSelect + `
 ` + where + `
 ORDER BY fired_at DESC, id DESC
 LIMIT ` + limitArg
@@ -368,7 +350,7 @@ LIMIT ` + limitArg
 
 	out := []*service.OpsAlertEvent{}
 	for rows.Next() {
-		ev, err := scanOpsAlertEventWithSilence(rows)
+		ev, err := scanOpsAlertEventDetail(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -388,29 +370,11 @@ func (r *opsRepository) GetAlertEventByID(ctx context.Context, eventID int64) (*
 		return nil, fmt.Errorf("invalid event id")
 	}
 
-	q := `
-SELECT
-  id,
-  COALESCE(rule_id, 0),
-  COALESCE(severity, ''),
-  COALESCE(status, ''),
-  COALESCE(title, ''),
-  COALESCE(description, ''),
-  metric_value,
-  threshold_value,
-  dimensions,
-  fired_at,
-  resolved_at,
-  email_sent,
-  created_at,
-  silence_id,
-  silence_until
-FROM ops_alert_events
-` + opsAlertEventSilenceJoin + `
+	q := opsAlertEventDetailSelect + `
 WHERE id = $1`
 
 	row := r.db.QueryRowContext(ctx, q, eventID)
-	ev, err := scanOpsAlertEventWithSilence(row)
+	ev, err := scanOpsAlertEventDetail(row)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -510,6 +474,10 @@ func (r *opsRepository) CreateAlertEvent(ctx context.Context, event *service.Ops
 	if err != nil {
 		return nil, err
 	}
+	ruleSnapshotArg, err := opsAlertRuleSnapshotArg(event.Rule)
+	if err != nil {
+		return nil, err
+	}
 
 	q := `
 INSERT INTO ops_alert_events (
@@ -524,9 +492,10 @@ INSERT INTO ops_alert_events (
   fired_at,
   resolved_at,
   email_sent,
-  created_at
+  created_at,
+  rule_snapshot
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),$12
 )
 RETURNING
   id,
@@ -557,11 +526,20 @@ RETURNING
 		event.FiredAt,
 		opsNullTime(event.ResolvedAt),
 		event.EmailSent,
+		ruleSnapshotArg,
 	)
-	return scanOpsAlertEvent(row)
+	created, err := scanOpsAlertEvent(row)
+	if err != nil {
+		return nil, err
+	}
+	if event.Rule != nil {
+		rule := *event.Rule
+		created.Rule = &rule
+	}
+	return created, nil
 }
 
-func (r *opsRepository) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
+func (r *opsRepository) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time, resolvedBy *int64) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")
 	}
@@ -575,10 +553,11 @@ func (r *opsRepository) UpdateAlertEventStatus(ctx context.Context, eventID int6
 	q := `
 UPDATE ops_alert_events
 SET status = $2,
-    resolved_at = $3
+    resolved_at = $3,
+    resolved_by_user_id = $4
 WHERE id = $1`
 
-	_, err := r.db.ExecContext(ctx, q, eventID, strings.TrimSpace(status), opsNullTime(resolvedAt))
+	_, err := r.db.ExecContext(ctx, q, eventID, strings.TrimSpace(status), opsNullTime(resolvedAt), opsNullInt64(resolvedBy))
 	return err
 }
 
@@ -860,20 +839,6 @@ const opsAlertEventSilenceJoin = `LEFT JOIN LATERAL (
 
 func scanOpsAlertEvent(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
 	return scanOpsAlertEventColumns(row)
-}
-
-// scanOpsAlertEventWithSilence reads the event columns followed by silence_id and silence_until.
-func scanOpsAlertEventWithSilence(row opsAlertEventRow) (*service.OpsAlertEvent, error) {
-	var silenceID sql.NullInt64
-	var silenceUntil sql.NullTime
-	ev, err := scanOpsAlertEventColumns(row, &silenceID, &silenceUntil)
-	if err != nil {
-		return nil, err
-	}
-	if silenceID.Valid && silenceUntil.Valid {
-		ev.Silence = &service.OpsAlertEventSilence{ID: silenceID.Int64, Until: silenceUntil.Time}
-	}
-	return ev, nil
 }
 
 func scanOpsAlertEventColumns(row opsAlertEventRow, extra ...any) (*service.OpsAlertEvent, error) {
