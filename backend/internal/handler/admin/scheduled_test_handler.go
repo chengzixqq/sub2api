@@ -12,11 +12,13 @@ import (
 // ScheduledTestHandler handles admin scheduled-test-plan management.
 type ScheduledTestHandler struct {
 	scheduledTestSvc *service.ScheduledTestService
+	// adminService 只用于归属校验：计划服务按裸 account_id / plan_id 取数，自身不带工作区概念。
+	adminService service.AdminService
 }
 
 // NewScheduledTestHandler creates a new ScheduledTestHandler.
-func NewScheduledTestHandler(scheduledTestSvc *service.ScheduledTestService) *ScheduledTestHandler {
-	return &ScheduledTestHandler{scheduledTestSvc: scheduledTestSvc}
+func NewScheduledTestHandler(scheduledTestSvc *service.ScheduledTestService, adminService service.AdminService) *ScheduledTestHandler {
+	return &ScheduledTestHandler{scheduledTestSvc: scheduledTestSvc, adminService: adminService}
 }
 
 type createScheduledTestPlanRequest struct {
@@ -44,6 +46,10 @@ func (h *ScheduledTestHandler) ListByAccount(c *gin.Context) {
 		return
 	}
 
+	if !h.authorizeAccount(c, accountID, false) {
+		return
+	}
+
 	plans, err := h.scheduledTestSvc.ListPlansByAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.InternalError(c, err.Error())
@@ -57,6 +63,10 @@ func (h *ScheduledTestHandler) Create(c *gin.Context) {
 	var req createScheduledTestPlanRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if !h.authorizeAccount(c, req.AccountID, true) {
 		return
 	}
 
@@ -87,6 +97,10 @@ func (h *ScheduledTestHandler) Update(c *gin.Context) {
 	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid plan id")
+		return
+	}
+
+	if !h.authorizePlan(c, planID, true) {
 		return
 	}
 
@@ -134,6 +148,10 @@ func (h *ScheduledTestHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	if !h.authorizePlan(c, planID, true) {
+		return
+	}
+
 	if err := h.scheduledTestSvc.DeletePlan(c.Request.Context(), planID); err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -146,6 +164,10 @@ func (h *ScheduledTestHandler) ListResults(c *gin.Context) {
 	planID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid plan id")
+		return
+	}
+
+	if !h.authorizePlan(c, planID, false) {
 		return
 	}
 
