@@ -143,6 +143,7 @@ docs/*
 !docs/ACCOUNT_CURRENT_RPM.md
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/mobile-verification.md
+!docs/API_ERROR_CODES.md
 !docs/channel-monitor-v2-safe-defaults.md
 !docs/channel-monitor-unified.md
 !docs/channel-monitor-capacity.md

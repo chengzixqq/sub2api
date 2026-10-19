@@ -34,6 +34,7 @@ func AdminComplianceGuard(settingService *service.SettingService) gin.HandlerFun
 
 		c.JSON(http.StatusLocked, gin.H{
 			"code":    "ADMIN_COMPLIANCE_ACK_REQUIRED",
+			"reason":  "ADMIN_COMPLIANCE_ACK_REQUIRED",
 			"message": "administrator compliance acknowledgement is required",
 			"metadata": gin.H{
 				"version":          service.AdminComplianceVersion,

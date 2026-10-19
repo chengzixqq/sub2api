@@ -61,9 +61,12 @@ func GetForcePlatformFromContext(c *gin.Context) (string, bool) {
 }
 
 // ErrorResponse 标准错误响应结构
+// Reason 与 Code 相同：handler 信封的 code 是 HTTP 整数、reason 是字符串码，
+// 客户端统一读 reason 即可识别两种来源的错误。
 type ErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // NewErrorResponse 创建错误响应
@@ -71,6 +74,7 @@ func NewErrorResponse(code, message string) ErrorResponse {
 	return ErrorResponse{
 		Code:    code,
 		Message: message,
+		Reason:  code,
 	}
 }
 

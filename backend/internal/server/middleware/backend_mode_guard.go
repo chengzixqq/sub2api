@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"net/http"
 	"strings"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -22,7 +24,7 @@ func BackendModeUserGuard(settingService *service.SettingService) gin.HandlerFun
 			c.Next()
 			return
 		}
-		response.Forbidden(c, "Backend mode is active. User self-service is disabled.")
+		response.ErrorFrom(c, service.ErrBackendModeSelfServiceDisabled)
 		c.Abort()
 	}
 }
@@ -87,7 +89,7 @@ func BackendModeAuthGuard(settingService *service.SettingService) gin.HandlerFun
 			c.Next()
 			return
 		}
-		response.Forbidden(c, "Backend mode is active. Registration and self-service auth flows are disabled.")
+		response.ErrorWithDetails(c, http.StatusForbidden, "Backend mode is active. Registration and self-service auth flows are disabled.", infraerrors.Reason(service.ErrBackendModeSelfServiceDisabled), nil)
 		c.Abort()
 	}
 }

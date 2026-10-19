@@ -21,8 +21,10 @@ var (
 	ErrTotpInvalidCode     = infraerrors.BadRequest("TOTP_INVALID_CODE", "invalid totp code")
 	ErrTotpSetupExpired    = infraerrors.BadRequest("TOTP_SETUP_EXPIRED", "totp setup session expired")
 	ErrTotpTooManyAttempts = infraerrors.TooManyRequests("TOTP_TOO_MANY_ATTEMPTS", "too many verification attempts, please try again later")
-	ErrVerifyCodeRequired  = infraerrors.BadRequest("VERIFY_CODE_REQUIRED", "email verification code is required")
-	ErrPasswordRequired    = infraerrors.BadRequest("PASSWORD_REQUIRED", "password is required")
+	// ErrTotpLoginSessionExpired 登录第二步的临时会话不存在或已过期，需重新输入密码。
+	ErrTotpLoginSessionExpired = infraerrors.BadRequest("TOTP_LOGIN_SESSION_EXPIRED", "Invalid or expired 2FA session")
+	ErrVerifyCodeRequired      = infraerrors.BadRequest("VERIFY_CODE_REQUIRED", "email verification code is required")
+	ErrPasswordRequired        = infraerrors.BadRequest("PASSWORD_REQUIRED", "password is required")
 )
 
 // TotpCache defines cache operations for TOTP service

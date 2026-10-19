@@ -167,17 +167,21 @@ func windowTTLMillis(window time.Duration) int64 {
 }
 
 func abortRateLimit(c *gin.Context, retryAfter time.Duration) {
+	body := gin.H{
+		"code":    "RATE_LIMITED",
+		"reason":  "RATE_LIMITED",
+		"error":   "rate limit exceeded",
+		"message": "Too many requests, please try again later",
+	}
 	if retryAfter > 0 {
 		seconds := int64(retryAfter / time.Second)
 		if retryAfter%time.Second > 0 {
 			seconds++
 		}
 		c.Header("Retry-After", strconv.FormatInt(seconds, 10))
+		body["retry_after"] = seconds
 	}
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-		"error":   "rate limit exceeded",
-		"message": "Too many requests, please try again later",
-	})
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, body)
 }
 
 func failureModeLabel(mode RateLimitFailureMode) string {

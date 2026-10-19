@@ -174,14 +174,14 @@ func (h *AuthHandler) ensureBackendModeAllowsUser(ctx context.Context, user *ser
 	if h == nil || !h.isBackendModeEnabled(ctx) || user.IsAdmin() {
 		return nil
 	}
-	return infraerrors.Forbidden("BACKEND_MODE_ADMIN_ONLY", "Backend mode is active. Only admin login is allowed.")
+	return service.ErrBackendModeAdminOnly
 }
 
 func (h *AuthHandler) ensureBackendModeAllowsNewUserLogin(ctx context.Context) error {
 	if h == nil || !h.isBackendModeEnabled(ctx) {
 		return nil
 	}
-	return infraerrors.Forbidden("BACKEND_MODE_ADMIN_ONLY", "Backend mode is active. Only admin login is allowed.")
+	return service.ErrBackendModeAdminOnly
 }
 
 func (h *AuthHandler) isBackendModeEnabled(ctx context.Context) bool {
@@ -341,7 +341,7 @@ func (h *AuthHandler) Login2FA(c *gin.Context) {
 		slog.Debug("login_2fa_session_invalid",
 			"temp_token_prefix", tokenPrefix,
 			"error", err)
-		response.BadRequest(c, "Invalid or expired 2FA session")
+		response.ErrorFrom(c, service.ErrTotpLoginSessionExpired)
 		return
 	}
 
@@ -764,7 +764,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 
 	// Backend mode: block non-admin token refresh
 	if h.settingSvc.IsBackendModeEnabled(c.Request.Context()) && result.UserRole != "admin" {
-		response.Forbidden(c, "Backend mode is active. Only admin login is allowed.")
+		response.ErrorFrom(c, service.ErrBackendModeAdminOnly)
 		return
 	}
 

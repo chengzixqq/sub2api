@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -223,4 +224,21 @@ func TestRateLimiterSuccessAndLimit(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
 	require.Equal(t, http.StatusTooManyRequests, recorder.Code)
+}
+
+func TestAbortRateLimitCarriesCodeReasonAndRetryAfter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	abortRateLimit(c, 1500*time.Millisecond)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	require.Equal(t, "2", w.Header().Get("Retry-After"))
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Equal(t, "RATE_LIMITED", body["code"])
+	require.Equal(t, "RATE_LIMITED", body["reason"])
+	require.Equal(t, float64(2), body["retry_after"])
+	require.Equal(t, "rate limit exceeded", body["error"], "kept for existing clients")
+	require.NotEmpty(t, body["message"])
 }

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -235,7 +234,7 @@ func (h *PasskeyHandler) ensureBackendModeAllowsUser(ctx context.Context, user *
 	if h.settingSvc == nil || !h.settingSvc.IsBackendModeEnabled(ctx) || user.IsAdmin() {
 		return nil
 	}
-	return infraerrors.Forbidden("BACKEND_MODE_ADMIN_ONLY", "Backend mode is active. Only admin login is allowed.")
+	return service.ErrBackendModeAdminOnly
 }
 
 func bindPasskeyFinishRequest(c *gin.Context) (*passkeyFinishRequest, bool) {
