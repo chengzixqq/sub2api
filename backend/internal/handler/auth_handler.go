@@ -95,11 +95,14 @@ func captchaProof(turnstileToken, tencentTicket, tencentRandstr string) service.
 
 // AuthResponse 认证响应格式（匹配前端期望）
 type AuthResponse struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token,omitempty"` // 新增：Refresh Token
-	ExpiresIn    int       `json:"expires_in,omitempty"`    // 新增：Access Token有效期（秒）
-	TokenType    string    `json:"token_type"`
-	User         *dto.User `json:"user"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"` // 新增：Refresh Token
+	ExpiresIn    int    `json:"expires_in,omitempty"`    // 新增：Access Token有效期（秒）
+	TokenType    string `json:"token_type"`
+	// RefreshTokenUnavailable marks the fallback login that issued only an
+	// access token: the client must log in again when it expires.
+	RefreshTokenUnavailable bool      `json:"refresh_token_unavailable,omitempty"`
+	User                    *dto.User `json:"user"`
 }
 
 func ensureLoginUserActive(user *service.User) error {
@@ -134,9 +137,11 @@ func respondWithTokenPair(c *gin.Context, authService *service.AuthService, user
 			return
 		}
 		response.Success(c, AuthResponse{
-			AccessToken: token,
-			TokenType:   "Bearer",
-			User:        dto.UserFromService(user),
+			AccessToken:             token,
+			ExpiresIn:               authService.GetAccessTokenExpiresIn(),
+			TokenType:               "Bearer",
+			RefreshTokenUnavailable: true,
+			User:                    dto.UserFromService(user),
 		})
 		return
 	}

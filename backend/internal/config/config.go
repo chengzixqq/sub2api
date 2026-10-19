@@ -1693,6 +1693,10 @@ type JWTConfig struct {
 	RefreshTokenExpireDays int `mapstructure:"refresh_token_expire_days"`
 	// RefreshWindowMinutes: 刷新窗口（分钟），在Access Token过期前多久开始允许刷新
 	RefreshWindowMinutes int `mapstructure:"refresh_window_minutes"`
+	// RefreshReuseGraceSeconds: 轮换后旧 Refresh Token 的宽限期（秒）。宽限期内同一个旧令牌
+	// 重试（如移动网络丢了响应）拿到同一个继任令牌；超过宽限期再用视为重放并撤销整个会话。
+	// 0 = 不宽限，旧令牌一经轮换即视为重放。
+	RefreshReuseGraceSeconds int `mapstructure:"refresh_reuse_grace_seconds"`
 }
 
 // TotpConfig TOTP 双因素认证配置
@@ -2336,6 +2340,7 @@ func setDefaults() {
 	viper.SetDefault("jwt.access_token_expire_minutes", 0) // 0 表示回退到 expire_hour
 	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
 	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
+	viper.SetDefault("jwt.refresh_reuse_grace_seconds", 30)
 
 	// TOTP
 	viper.SetDefault("totp.encryption_key", "")

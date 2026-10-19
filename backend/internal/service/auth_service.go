@@ -1793,6 +1793,10 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	data, err := s.refreshTokenCache.GetRefreshToken(ctx, tokenHash)
 	if err != nil {
 		if errors.Is(err, ErrRefreshTokenNotFound) {
+			// 已轮换的令牌走宽限 / 重放判定；从未存在或已过期则无效。
+			if rotator, ok := s.refreshRotator(); ok {
+				return s.refreshFromRotated(ctx, rotator, refreshToken, tokenHash)
+			}
 			// Token不存在，可能是已被使用（Token轮转）或已过期
 			logger.LegacyPrintf("service.auth", "[Auth] Refresh token not found, possible reuse attack")
 			return nil, ErrRefreshTokenInvalid
@@ -1842,6 +1846,10 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 			logger.LegacyPrintf("service.auth", "[Auth] Session binding mismatch on refresh for user %d, family revoked", data.UserID)
 			return nil, ErrSessionBindingMismatch
 		}
+	}
+
+	if rotator, ok := s.refreshRotator(); ok {
+		return s.rotateRefreshToken(ctx, rotator, refreshToken, tokenHash, data, user)
 	}
 
 	// Token轮转：立即使旧Token失效
