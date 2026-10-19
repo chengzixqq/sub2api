@@ -203,83 +203,10 @@ func (r *usageLogRepository) GetUserSpendingRanking(ctx context.Context, startTi
 	return r.GetUserSpendingRankingWithFilters(ctx, startTime, endTime, limit, UsageLogFilters{})
 }
 
-func (r *usageLogRepository) GetUserSpendingRankingWithFilters(ctx context.Context, startTime, endTime time.Time, limit int, filters UsageLogFilters) (result *UserSpendingRankingResponse, err error) {
-	if limit <= 0 {
-		limit = 12
-	}
-
-	args := []any{startTime, endTime, limit}
-	where, args := usageRankingWhere(ctx, filters, args)
-	query := fmt.Sprintf(`
-		WITH user_spend AS (
-			SELECT
-				user_id,
-				COALESCE(SUM(actual_cost), 0) as actual_cost,
-				COUNT(*) as requests,
-				COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens
-			FROM usage_logs %s
-			GROUP BY user_id
-		),
-		ranked AS (
-			SELECT
-				user_id,
-				actual_cost,
-				requests,
-				tokens,
-				COALESCE(SUM(actual_cost) OVER (), 0) as total_actual_cost,
-				COALESCE(SUM(requests) OVER (), 0) as total_requests,
-				COALESCE(SUM(tokens) OVER (), 0) as total_tokens
-			FROM user_spend
-			ORDER BY actual_cost DESC, tokens DESC, user_id ASC
-			LIMIT $3
-		)
-		SELECT
-			r.user_id,
-			COALESCE(us.email, '') as email,
-			COALESCE(us.username, '') as username,
-			r.actual_cost,
-			r.requests,
-			r.tokens,
-			r.total_actual_cost,
-			r.total_requests,
-			r.total_tokens
-		FROM ranked r
-		LEFT JOIN users us ON r.user_id = us.id
-		ORDER BY actual_cost DESC, tokens DESC, user_id ASC
-	`, where)
-
-	rows, err := r.sql.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil && err == nil {
-			err = closeErr
-			result = nil
-		}
-	}()
-
-	ranking := make([]UserSpendingRankingItem, 0)
-	totalActualCost := 0.0
-	totalRequests := int64(0)
-	totalTokens := int64(0)
-	for rows.Next() {
-		var row UserSpendingRankingItem
-		if err = rows.Scan(&row.UserID, &row.Email, &row.Username, &row.ActualCost, &row.Requests, &row.Tokens, &totalActualCost, &totalRequests, &totalTokens); err != nil {
-			return nil, err
-		}
-		ranking = append(ranking, row)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return &UserSpendingRankingResponse{
-		Ranking:         ranking,
-		TotalActualCost: totalActualCost,
-		TotalRequests:   totalRequests,
-		TotalTokens:     totalTokens,
-	}, nil
+// GetUserSpendingRankingWithFilters ranks users by actual charge; see
+// GetUserSpendingRankingSorted for the other orders and the totals.
+func (r *usageLogRepository) GetUserSpendingRankingWithFilters(ctx context.Context, startTime, endTime time.Time, limit int, filters UsageLogFilters) (*UserSpendingRankingResponse, error) {
+	return r.GetUserSpendingRankingSorted(ctx, startTime, endTime, limit, usagestats.UserRankingSortActualCost, filters)
 }
 
 // GetUserUsageTrendByUserID 获取指定用户的使用趋势

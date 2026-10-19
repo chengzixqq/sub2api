@@ -387,6 +387,8 @@ func parseRankingLimit(raw string) int {
 
 // GetUserSpendingRanking handles getting user spending ranking data.
 // GET /api/v1/admin/dashboard/users-ranking
+// Query params: shared dashboard filters, limit (default 12, max 50),
+// sort_by (actual_cost | requests | tokens, default actual_cost)
 func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 	if c.IsAborted() {
@@ -398,15 +400,20 @@ func (h *DashboardHandler) GetUserSpendingRanking(c *gin.Context) {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	ranking, hit, err := loadDashboardQuery(queryContext(c), dashboardUsersRankingCache, startTime, endTime, filters.usageFilters(), strconv.Itoa(limit), func(work context.Context) (*usagestats.UserSpendingRankingResponse, error) {
-		return h.dashboardService.GetUserSpendingRankingWithFilters(work, startTime, endTime, limit, filters.usageFilters())
+	sortBy, err := parseUserRankingSort(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	ranking, hit, err := loadDashboardQuery(queryContext(c), dashboardUsersRankingCache, startTime, endTime, filters.usageFilters(), strconv.Itoa(limit)+":"+sortBy, func(work context.Context) (*usagestats.UserSpendingRankingResponse, error) {
+		return h.dashboardService.GetUserSpendingRankingSorted(work, startTime, endTime, limit, sortBy, filters.usageFilters())
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
-	response.Success(c, gin.H{"ranking": ranking.Ranking, "total_actual_cost": ranking.TotalActualCost, "total_requests": ranking.TotalRequests, "total_tokens": ranking.TotalTokens, "start_date": startTime.Format("2006-01-02"), "end_date": endTime.Add(-time.Nanosecond).Format("2006-01-02"), "query": dashboardQueryMetadata(c)})
+	response.Success(c, gin.H{"ranking": ranking.Ranking, "total_users": ranking.TotalUsers, "total_actual_cost": ranking.TotalActualCost, "total_cost": ranking.TotalCost, "total_account_cost": ranking.TotalAccountCost, "total_requests": ranking.TotalRequests, "total_tokens": ranking.TotalTokens, "start_date": startTime.Format("2006-01-02"), "end_date": endTime.Add(-time.Nanosecond).Format("2006-01-02"), "query": dashboardQueryMetadata(c)})
 }
 
 var dashboardAccountsRankingCache = newSnapshotCache(30 * time.Second)

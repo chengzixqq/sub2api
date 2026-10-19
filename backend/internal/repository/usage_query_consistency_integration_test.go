@@ -84,6 +84,10 @@ func TestUsageQuery_AllSectionsUseSameMinuteRangeAndFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, stats.TotalRequests, ranking.TotalRequests)
 	require.Equal(t, stats.TotalActualCost, ranking.TotalActualCost)
+	require.Equal(t, int64(1), ranking.TotalUsers)
+	require.Equal(t, stats.TotalCost, ranking.TotalCost)
+	require.NotNil(t, stats.TotalAccountCost)
+	require.Equal(t, *stats.TotalAccountCost, ranking.TotalAccountCost)
 	users, err := repo.GetUserUsageTrendWithFilters(ctx, start, end, "day", 12, filters)
 	require.NoError(t, err)
 	requests = 0

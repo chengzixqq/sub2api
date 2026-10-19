@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/gin-gonic/gin"
 )
@@ -66,6 +67,21 @@ func parseUserBreakdownLimit(raw string) (int, error) {
 		return 0, invalidDashboardParam("limit", "use 1-200")
 	}
 	return limit, nil
+}
+
+// parseUserRankingSort reads users-ranking sort_by. Blank means the default
+// actual_cost order; anything else unsupported is a 400 with reason
+// INVALID_SORT_BY. The result is normalised so equivalent requests share a
+// cache entry.
+func parseUserRankingSort(c *gin.Context) (string, error) {
+	sortBy := strings.TrimSpace(c.Query("sort_by"))
+	if sortBy == "" {
+		return usagestats.UserRankingSortActualCost, nil
+	}
+	if !usagestats.IsValidUserRankingSort(sortBy) {
+		return "", infraerrors.BadRequest("INVALID_SORT_BY", "Invalid sort_by, use actual_cost/requests/tokens")
+	}
+	return sortBy, nil
 }
 
 // parseUserBreakdownQuery validates every user-breakdown parameter once and

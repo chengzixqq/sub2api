@@ -85,8 +85,9 @@ func TestUsageLogTrendBucket_RankingPreservesRangeScopeAndBilling(t *testing.T) 
 	ranking, err := repo.GetUserSpendingRankingWithFilters(ctx, start, end, 1, filters)
 	require.NoError(t, err)
 	require.Equal(t, &usagestats.UserSpendingRankingResponse{
-		Ranking:         []usagestats.UserSpendingRankingItem{{UserID: userA.ID, Email: userA.Email, Username: userA.Username, ActualCost: 17, Requests: 4, Tokens: 151}},
-		TotalActualCost: 26, TotalRequests: 6, TotalTokens: 601,
+		Ranking:         []usagestats.UserSpendingRankingItem{{UserID: userA.ID, Email: userA.Email, Username: userA.Username, ActualCost: 17, Cost: 6, AccountCost: 6, Requests: 4, Tokens: 151}},
+		TotalUsers:      2,
+		TotalActualCost: 26, TotalCost: 15, TotalAccountCost: 15, TotalRequests: 6, TotalTokens: 601,
 	}, ranking)
 
 	filters.APIKeyID = keyA.ID

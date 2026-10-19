@@ -33,6 +33,22 @@ func (s *DashboardService) GetUserSpendingRankingWithFilters(ctx context.Context
 	return s.GetUserSpendingRanking(ctx, start, end, limit)
 }
 
+// GetUserSpendingRankingSorted ranks users by sortBy (actual_cost, requests or
+// tokens). Every real usage repository implements the sorted query; a
+// repository without it (test doubles) only serves the default actual_cost
+// order through GetUserSpendingRankingWithFilters and errors on other orders.
+func (s *DashboardService) GetUserSpendingRankingSorted(ctx context.Context, start, end time.Time, limit int, sortBy string, filters usagestats.UsageLogFilters) (*usagestats.UserSpendingRankingResponse, error) {
+	if repo, ok := s.usageRepo.(interface {
+		GetUserSpendingRankingSorted(context.Context, time.Time, time.Time, int, string, usagestats.UsageLogFilters) (*usagestats.UserSpendingRankingResponse, error)
+	}); ok {
+		return repo.GetUserSpendingRankingSorted(ctx, start, end, limit, sortBy, filters)
+	}
+	if sortBy == "" || sortBy == usagestats.UserRankingSortActualCost {
+		return s.GetUserSpendingRankingWithFilters(ctx, start, end, limit, filters)
+	}
+	return nil, errors.New("sorted user spending ranking is not supported by the usage repository")
+}
+
 // GetAccountSpendingRanking ranks accounts by actual charged cost. The usage
 // repository must support it; there is no slower fallback.
 func (s *DashboardService) GetAccountSpendingRanking(ctx context.Context, params usagestats.AccountSpendingRankingParams) (*usagestats.AccountSpendingRankingResponse, error) {

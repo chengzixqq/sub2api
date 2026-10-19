@@ -151,20 +151,44 @@ type UserUsageTrendPoint struct {
 
 // UserSpendingRankingItem represents a user spending ranking row.
 type UserSpendingRankingItem struct {
-	UserID     int64   `json:"user_id"`
-	Email      string  `json:"email"`
-	Username   string  `json:"username"`
-	ActualCost float64 `json:"actual_cost"` // 实际扣除
-	Requests   int64   `json:"requests"`
-	Tokens     int64   `json:"tokens"`
+	UserID      int64   `json:"user_id"`
+	Email       string  `json:"email"`
+	Username    string  `json:"username"`
+	ActualCost  float64 `json:"actual_cost"`  // 实际扣除
+	Cost        float64 `json:"cost"`         // 标准计费，只算 provider_cost_recorded 的行
+	AccountCost float64 `json:"account_cost"` // 账号成本，只算 provider_cost_recorded 的行
+	Requests    int64   `json:"requests"`
+	Tokens      int64   `json:"tokens"`
 }
 
-// UserSpendingRankingResponse represents ranking rows plus total spend for the time range.
+// UserSpendingRankingResponse represents ranking rows plus range-wide totals.
+// The totals and TotalUsers cover every user with usage in the range, not
+// just the returned rows.
 type UserSpendingRankingResponse struct {
-	Ranking         []UserSpendingRankingItem `json:"ranking"`
-	TotalActualCost float64                   `json:"total_actual_cost"`
-	TotalRequests   int64                     `json:"total_requests"`
-	TotalTokens     int64                     `json:"total_tokens"`
+	Ranking          []UserSpendingRankingItem `json:"ranking"`
+	TotalUsers       int64                     `json:"total_users"`
+	TotalActualCost  float64                   `json:"total_actual_cost"`
+	TotalCost        float64                   `json:"total_cost"`
+	TotalAccountCost float64                   `json:"total_account_cost"`
+	TotalRequests    int64                     `json:"total_requests"`
+	TotalTokens      int64                     `json:"total_tokens"`
+}
+
+// Orders accepted by the user spending ranking.
+const (
+	UserRankingSortActualCost = "actual_cost"
+	UserRankingSortRequests   = "requests"
+	UserRankingSortTokens     = "tokens"
+)
+
+// IsValidUserRankingSort reports whether sortBy names a supported ranking order.
+func IsValidUserRankingSort(sortBy string) bool {
+	switch sortBy {
+	case UserRankingSortActualCost, UserRankingSortRequests, UserRankingSortTokens:
+		return true
+	default:
+		return false
+	}
 }
 
 // AccountSpendingRankingParams selects the account spending ranking window.
