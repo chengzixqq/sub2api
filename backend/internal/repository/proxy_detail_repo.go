@@ -56,3 +56,12 @@ func (r *proxyRepository) getFallbackAccountCountsForProxies(ctx context.Context
 	}
 	return counts, rows.Err()
 }
+
+var _ service.ProxyFallbackCounter = (*proxyRepository)(nil)
+
+// CountAccountsByFallbackOriginProxyID counts live accounts whose fallback
+// origin is proxyID (unscoped: used for delete protection).
+func (r *proxyRepository) CountAccountsByFallbackOriginProxyID(ctx context.Context, proxyID int64) (count int64, err error) {
+	err = scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM accounts WHERE proxy_fallback_origin_id = $1 AND deleted_at IS NULL", []any{proxyID}, &count)
+	return count, err
+}

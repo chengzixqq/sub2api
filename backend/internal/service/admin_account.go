@@ -1572,6 +1572,18 @@ func (s *adminServiceImpl) RevertAccountProxyFallback(ctx context.Context, id in
 	if err := s.requireAccountAccess(ctx, id); err != nil {
 		return err
 	}
+	current, err := s.accountRepo.GetByIDScoped(ctx, id)
+	if err != nil {
+		return err
+	}
+	if current.ProxyFallbackOriginID == nil {
+		return ErrAccountNotInFallback
+	}
+	// Reverting onto a deleted, disabled or still expired origin would leave the
+	// account without a working proxy (a deleted one silently means direct).
+	if err := s.requireUsableFallbackOrigin(ctx, *current.ProxyFallbackOriginID); err != nil {
+		return err
+	}
 	if err := s.accountRepo.RevertProxyFallback(ctx, id); err != nil {
 		return err
 	}

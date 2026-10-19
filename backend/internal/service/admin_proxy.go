@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -230,7 +232,52 @@ func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {
 	if count > 0 {
 		return ErrProxyInUse
 	}
+	if err := s.requireNoFallbackAccounts(ctx, id); err != nil {
+		return err
+	}
 	return s.proxyRepo.Delete(ctx, id)
+}
+
+// ErrProxyFallbackOriginUnavailable rejects restoring accounts onto an origin
+// proxy that is deleted, disabled or expired.
+var ErrProxyFallbackOriginUnavailable = infraerrors.Conflict("PROXY_FALLBACK_ORIGIN_UNAVAILABLE",
+	"the original proxy is deleted, disabled or expired; renew or enable it before restoring")
+
+// ProxyFallbackCounter counts accounts whose fallback origin is a proxy.
+type ProxyFallbackCounter interface {
+	CountAccountsByFallbackOriginProxyID(ctx context.Context, proxyID int64) (int64, error)
+}
+
+// requireNoFallbackAccounts refuses to delete a proxy that accounts moved off by
+// expiry fallback still point back to; deleting it would make a later restore
+// land on a deleted proxy.
+func (s *adminServiceImpl) requireNoFallbackAccounts(ctx context.Context, proxyID int64) error {
+	counter, ok := s.proxyRepo.(ProxyFallbackCounter)
+	if !ok {
+		return nil
+	}
+	n, err := counter.CountAccountsByFallbackOriginProxyID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrProxyInUse.WithMetadata(map[string]string{"fallback_account_count": strconv.FormatInt(n, 10)})
+	}
+	return nil
+}
+
+func (s *adminServiceImpl) requireUsableFallbackOrigin(ctx context.Context, proxyID int64) error {
+	origin, err := s.proxyRepo.GetByID(ctx, proxyID)
+	if err != nil {
+		if errors.Is(err, ErrProxyNotFound) {
+			return ErrProxyFallbackOriginUnavailable
+		}
+		return err
+	}
+	if origin.Status != StatusActive || origin.IsExpired(time.Now()) {
+		return ErrProxyFallbackOriginUnavailable
+	}
+	return nil
 }
 
 func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) (*ProxyBatchDeleteResult, error) {
@@ -261,6 +308,13 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
 				ID:     id,
 				Reason: ErrProxyInUse.Error(),
+			})
+			continue
+		}
+		if err := s.requireNoFallbackAccounts(ctx, id); err != nil {
+			result.Skipped = append(result.Skipped, ProxyBatchDeleteSkipped{
+				ID:     id,
+				Reason: err.Error(),
 			})
 			continue
 		}
