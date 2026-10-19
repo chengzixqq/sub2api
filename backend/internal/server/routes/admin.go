@@ -298,6 +298,8 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 		// Request drilldown (success + error)
 		ops.GET("/requests", h.Admin.Ops.ListRequestDetails)
+		// Upstream retry chain of one request (failed attempts + billed attempt)
+		ops.GET("/requests/:request_id/attempts", h.Admin.Ops.GetRequestAttempts)
 
 		// Indexed system logs
 		ops.GET("/system-logs", h.Admin.Ops.ListSystemLogs)

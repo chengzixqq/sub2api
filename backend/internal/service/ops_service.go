@@ -618,6 +618,7 @@ func sanitizeOpsUpstreamErrors(entry *OpsInsertErrorLogInput) error {
 		if out.AtUnixMs < 0 {
 			out.AtUnixMs = 0
 		}
+		out.StartedAtUnixMs, out.DurationMs = sanitizeOpsUpstreamAttemptTiming(out.StartedAtUnixMs, out.DurationMs)
 
 		msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(out.Message))
 		msg = truncateString(msg, messageMaxLen)

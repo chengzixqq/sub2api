@@ -427,6 +427,11 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 // It is stored in ops_error_logs.upstream_errors as a JSON array.
 type OpsUpstreamErrorEvent struct {
 	AtUnixMs int64 `json:"at_unix_ms,omitempty"`
+	// StartedAtUnixMs is when this attempt's upstream dispatch began and
+	// DurationMs runs from there to AtUnixMs (including any body read). Both
+	// are absent when the dispatch was not observed (older rows, WebSocket).
+	StartedAtUnixMs int64  `json:"started_at_unix_ms,omitempty"`
+	DurationMs      *int64 `json:"duration_ms,omitempty"`
 
 	// Passthrough 表示本次请求是否命中“原样透传（仅替换认证）”分支。
 	// 该字段用于排障与灰度评估；存入 JSON，不涉及 DB schema 变更。
@@ -492,6 +497,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if ev.AtUnixMs <= 0 {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
+	stampOpsUpstreamAttemptTiming(c, &ev)
 	ev.Platform = strings.TrimSpace(ev.Platform)
 	normalizeOpsUpstreamProxyAttribution(&ev)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)

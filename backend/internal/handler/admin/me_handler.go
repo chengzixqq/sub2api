@@ -36,6 +36,7 @@ var adminMeCapabilities = []string{
 	"ops.ingress_reject_totals",
 	"ops.job_heartbeat_status",
 	"ops.monitoring_status",
+	"ops.request_attempts",
 	"ops.system_metrics_history",
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",

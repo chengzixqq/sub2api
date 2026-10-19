@@ -1089,6 +1089,8 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}()
 		c.Writer = w
 		markOpsRequestStart(c)
+		// Upstream dispatches stamp per-attempt start times for upstream_errors.
+		service.InstallOpsUpstreamAttemptClock(c)
 		c.Next()
 		w.finalizeCapture()
 

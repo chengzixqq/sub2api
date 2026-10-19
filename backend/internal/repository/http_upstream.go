@@ -234,6 +234,9 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	if req == nil {
 		return nil, errors.New("nil upstream request")
 	}
+	// Each application-level dispatch starts an attempt; client acquisition
+	// counts toward the attempt's duration.
+	service.MarkOpsUpstreamAttemptStart(req.Context(), accountID)
 	requestCtx, cancelRequest := context.WithCancel(req.Context())
 	releaseRequest := true
 	defer func() {
@@ -322,6 +325,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if req == nil {
 		return nil, errors.New("nil upstream request")
 	}
+	service.MarkOpsUpstreamAttemptStart(req.Context(), accountID)
 	requestCtx, cancelRequest := context.WithCancel(req.Context())
 	releaseRequest := true
 	defer func() {

@@ -32,12 +32,15 @@
 | 423 | ADMIN_COMPLIANCE_ACK_REQUIRED | 展示协议，`POST /api/v1/admin/compliance/accept` 后重试 |
 | 404 | OPS_DISABLED | 显示“运维监控未开启”；用 `GET /api/v1/admin/ops/monitoring-status`（不受开关影响）的 `disabled_reason` 区分 `config_off` 与 `setting_off`，后者可 `PUT` 同一路径开启 |
 | 409 | OPS_CONFIG_DISABLED | `PUT /api/v1/admin/ops/monitoring-status`：服务器配置文件关闭了运维监控（`ops.enabled=false`），提示“需要在服务器配置中启用运维监控”，不要引导去设置页，也不要重试 |
+| 404 | OPS_REQUEST_NOT_FOUND | `GET /api/v1/admin/ops/requests/:request_id/attempts`：运维错误日志与使用记录都没有这个请求（参数可传运维 request_id、client_request_id 或使用记录的 `client:<client_request_id>`；`around` 收窄到前后 1 小时时也可能落在窗口外）。退回 `request-errors/:id/upstream-errors` 加 `admin/usage?request_id=client:<client_request_id>` 自己拼 |
+| 409 | OPS_REQUEST_AMBIGUOUS | 同一路径：客户端自带的 X-Request-ID 被多次请求复用，命中了多条链。`metadata.client_request_ids` 逗号分隔列出最多 5 个服务端 client_request_id，选一个改用它重查；不要原样重试 |
 | 400 | TOTP_INVALID_CODE、TURNSTILE_VERIFICATION_FAILED、TENCENT_CAPTCHA_VERIFICATION_FAILED、ALIYUN_CAPTCHA_VERIFICATION_FAILED | 重新输入 |
 | 400 | TOTP_LOGIN_SESSION_EXPIRED | 登录第二步超时，回到密码页重新登录 |
 | 400 | INVALID_SORT_BY | 参数校验类：查询参数取值不受支持（`/admin/dashboard/users-ranking` 的 `sort_by` 只接受 actual_cost / requests / tokens），按 message 修正参数，不要原样重试 |
 | 400 | TOO_MANY_IDS | 批量查询的 ID 超过上限（`/admin/dashboard/users-usage`、`/admin/dashboard/api-keys-usage`、`/usage/dashboard/api-keys-usage`；`metadata.max` 为上限，当前 1000；`metadata.field` 指出是哪个字段），拆成更小的批次重试 |
 | 400 | OPS_TIME_RANGE_TOO_LARGE | 时间跨度超过接口上限：`/admin/ops/dashboard/openai-token-stats`、`/admin/ops/system-metrics/history` 为 31 天（`metadata.max_days`=31，另有 1 小时夏令时容差），`/admin/ops/realtime-traffic` 为 1 小时（无 metadata）；缩短范围后重试 |
 | 400 | INVALID_MAX_POINTS | 参数校验类：`/admin/ops/system-metrics/history` 的 `max_points` 必须是 1–1440 的整数（缺省 60），按 message 修正参数，不要原样重试 |
+| 400 | INVALID_REQUEST_ID、INVALID_AROUND | 参数校验类：`/admin/ops/requests/:request_id/attempts` 的 request_id 去掉首尾空白后须为 1–256 字节；`around` 须为 RFC3339 时间（如 `2026-10-18T01:41:00Z`，带 `+08:00` 时要把 `+` 编码为 `%2B`）。按 message 修正参数，不要原样重试 |
 | 400 | INVALID_SINCE_ID、SINCE_ID_WITH_PAGE | 参数校验类：`/admin/usage`、`/admin/ops/request-errors` 的增量游标 `since_id` 必须是不小于 0 的整数，且不能与 `page` > 1 同时传；去掉 `page` 或改用 `page=1` 全量刷新 |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |
 | 503 | STEP_UP_UNAVAILABLE、SERVICE_UNAVAILABLE、CAPTCHA_PROVIDER_CONFLICT | 暂时性错误，保留会话，稍后重试 |

@@ -129,3 +129,11 @@ func TestVendorRoutesDenyOpsMonitoringStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestVendorRoutesDenyOpsRequestAttempts: ops error logs cannot be narrowed to a workspace.
+func TestVendorRoutesDenyOpsRequestAttempts(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/ops/requests/:request_id/attempts"), scope) {
+		t.Fatal("vendor must not read ops request attempts")
+	}
+}

@@ -117,6 +117,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "ops.ingress_reject_totals")
 	require.Contains(t, server["capabilities"], "ops.job_heartbeat_status")
 	require.Contains(t, server["capabilities"], "ops.monitoring_status")
+	require.Contains(t, server["capabilities"], "ops.request_attempts")
 	require.Contains(t, server["capabilities"], "ops.system_metrics_history")
 	require.Contains(t, server["capabilities"], "ops.token_stats_custom_range")
 	require.Contains(t, server["capabilities"], "lists.etag")

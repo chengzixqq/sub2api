@@ -31,6 +31,7 @@ func TestIngressRejectAdminRoutesRequireAdminAuthentication(t *testing.T) {
 		"/api/v1/admin/ops/ingress-rejections",
 		"/api/v1/admin/ops/ingress-rejections/health",
 		"/api/v1/admin/ops/system-metrics/history",
+		"/api/v1/admin/ops/requests/req-1/attempts",
 	} {
 		for _, tc := range []struct {
 			name       string
