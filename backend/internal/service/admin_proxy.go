@@ -168,6 +168,7 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if err != nil {
 		return nil, err
 	}
+	before := proxyNetworkIdentity(proxy)
 
 	// Merge only supplied fields, then validate the resulting fallback configuration.
 	mode := proxy.FallbackMode
@@ -218,7 +219,36 @@ func (s *adminServiceImpl) UpdateProxy(ctx context.Context, id int64, input *Upd
 	if err := s.proxyRepo.Update(ctx, proxy); err != nil {
 		return nil, err
 	}
+	if proxyNetworkIdentity(proxy) != before {
+		s.refreshProxyLatencyAfterChange(ctx, proxy)
+	}
 	return proxy, nil
+}
+
+type proxyNetworkIdentityKey struct {
+	protocol, host, username, password string
+	port                               int
+}
+
+// proxyNetworkIdentity is what a latency / exit-IP reading depends on.
+func proxyNetworkIdentity(p *Proxy) proxyNetworkIdentityKey {
+	return proxyNetworkIdentityKey{protocol: p.Protocol, host: p.Host, port: p.Port, username: p.Username, password: p.Password}
+}
+
+// refreshProxyLatencyAfterChange drops the reading taken for the old address
+// and probes the new one in the background, like CreateProxy.
+func (s *adminServiceImpl) refreshProxyLatencyAfterChange(ctx context.Context, proxy *Proxy) {
+	if deleter, ok := s.proxyLatencyCache.(ProxyLatencyDeleter); ok {
+		if err := deleter.DeleteProxyLatency(ctx, proxy.ID); err != nil {
+			logger.LegacyPrintf("service.admin", "Warning: drop stale proxy latency failed: proxy=%d err=%v", proxy.ID, err)
+		}
+	}
+	probe := *proxy
+	if s.proxyReprobe != nil {
+		s.proxyReprobe(&probe)
+		return
+	}
+	go s.probeProxyLatency(context.Background(), &probe)
 }
 
 func (s *adminServiceImpl) DeleteProxy(ctx context.Context, id int64) error {

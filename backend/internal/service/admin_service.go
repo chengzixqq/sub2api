@@ -760,6 +760,9 @@ type adminServiceImpl struct {
 	billingCacheService  *BillingCacheService
 	proxyProber          ProxyExitInfoProber
 	proxyLatencyCache    ProxyLatencyCache
+	// proxyReprobe re-probes a proxy after its network identity changed; nil
+	// probes asynchronously (tests replace it).
+	proxyReprobe func(*Proxy)
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 	entClient            *dbent.Client // 用于开启数据库事务
 	settingService       *SettingService

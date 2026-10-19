@@ -86,3 +86,46 @@ func TestTestProxy_ReturnsCheckedAtAndListExposesIt(t *testing.T) {
 	require.False(t, failed.Success)
 	require.NotZero(t, failed.CheckedAt, "failures carry checked_at too")
 }
+
+type proxyUpdateRepoStub struct {
+	proxyLatencyRepoStub
+	updated *Proxy
+}
+
+func (r *proxyUpdateRepoStub) GetByID(context.Context, int64) (*Proxy, error) {
+	copied := *r.proxy
+	return &copied, nil
+}
+
+func (r *proxyUpdateRepoStub) Update(_ context.Context, p *Proxy) error {
+	r.updated = p
+	return nil
+}
+
+func TestUpdateProxy_NetworkChangeInvalidatesLatency(t *testing.T) {
+	cache := newMemoryProxyLatencyCache()
+	repo := &proxyUpdateRepoStub{proxyLatencyRepoStub: proxyLatencyRepoStub{proxy: &Proxy{ID: 1, Name: "hk", Protocol: "socks5", Host: "203.0.113.24", Port: 1080, Status: StatusActive}}}
+	probed := make(chan int64, 4)
+	svc := &adminServiceImpl{proxyRepo: repo, proxyLatencyCache: cache, proxyProber: fakeProxyProber{}}
+	svc.proxyReprobe = func(p *Proxy) { probed <- p.ID }
+	ctx := WithScope(context.Background(), AdminScope())
+	require.NoError(t, cache.SetProxyLatency(ctx, 1, &ProxyLatencyInfo{Success: true, UpdatedAt: time.Now()}))
+
+	// Renaming keeps the old reading.
+	_, err := svc.UpdateProxy(ctx, 1, &UpdateProxyInput{Name: "hk-renamed"})
+	require.NoError(t, err)
+	require.Empty(t, cache.deleted)
+	require.Len(t, probed, 0)
+
+	// A new host drops the stale reading and re-probes.
+	_, err = svc.UpdateProxy(ctx, 1, &UpdateProxyInput{Host: "198.51.100.7"})
+	require.NoError(t, err)
+	require.Equal(t, []int64{1}, cache.deleted)
+	require.Equal(t, int64(1), <-probed)
+
+	password := "new-secret"
+	repo.proxy = repo.updated
+	_, err = svc.UpdateProxy(ctx, 1, &UpdateProxyInput{Password: &password})
+	require.NoError(t, err)
+	require.Len(t, cache.deleted, 2, "credentials are part of the network identity")
+}

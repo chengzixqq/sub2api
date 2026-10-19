@@ -72,3 +72,9 @@ func (c *proxyLatencyCache) SetProxyLatency(ctx context.Context, proxyID int64, 
 	}
 	return c.rdb.Set(ctx, proxyLatencyKey(proxyID), payload, 0).Err()
 }
+
+var _ service.ProxyLatencyDeleter = (*proxyLatencyCache)(nil)
+
+func (c *proxyLatencyCache) DeleteProxyLatency(ctx context.Context, proxyID int64) error {
+	return c.rdb.Del(ctx, proxyLatencyKey(proxyID)).Err()
+}

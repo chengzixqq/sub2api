@@ -27,3 +27,8 @@ type ProxyLatencyCache interface {
 	GetProxyLatencies(ctx context.Context, proxyIDs []int64) (map[int64]*ProxyLatencyInfo, error)
 	SetProxyLatency(ctx context.Context, proxyID int64, info *ProxyLatencyInfo) error
 }
+
+// ProxyLatencyDeleter drops a proxy's cached latency (the cache never expires).
+type ProxyLatencyDeleter interface {
+	DeleteProxyLatency(ctx context.Context, proxyID int64) error
+}
