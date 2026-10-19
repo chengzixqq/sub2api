@@ -58,6 +58,8 @@ func dashboardQueryMetadata(c *gin.Context) usagequery.Metadata {
 	return usagequery.Metadata{GeneratedAt: time.Now().UTC()}
 }
 
+// parseOptionalBoolDashboardFilter reads an optional boolean filter. A blank
+// value means not set; an invalid value yields a message naming the parameter.
 func parseOptionalBoolDashboardFilter(c *gin.Context, name string) (*bool, error) {
 	raw := strings.TrimSpace(c.Query(name))
 	if raw == "" {
@@ -65,7 +67,7 @@ func parseOptionalBoolDashboardFilter(c *gin.Context, name string) (*bool, error
 	}
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
-		return nil, err
+		return nil, invalidDashboardParam(name, "use true or false")
 	}
 	return &value, nil
 }
@@ -558,89 +560,22 @@ func (h *DashboardHandler) GetBatchAPIKeysUsage(c *gin.Context) {
 
 // GetUserBreakdown handles getting per-user usage breakdown within a dimension.
 // GET /api/v1/admin/dashboard/user-breakdown
-// Query params: start_date, end_date, group_id, model, endpoint, endpoint_type, limit
+// Query params: start_date, end_date (or start_time, end_time, timezone), the
+// shared dashboard filters (user_id, api_key_id, account_id, group_id, model,
+// model_source, request_type, stream, native_compaction_v2, billing_type,
+// billing_mode, request_id, upstream_model_mismatch), requested_model,
+// endpoint, endpoint_type, sort_by, limit (1-200, default 50).
+// Any malformed filter or limit returns 400 naming the parameter.
 func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 	if c.IsAborted() {
 		return
 	}
 
-	dim := usagestats.UserBreakdownDimension{}
-	filters, err := parseDashboardSnapshotV2Filters(c)
+	dim, limit, err := parseUserBreakdownQuery(c)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
-	}
-	dim.BillingMode, dim.RequestID, dim.UpstreamModelMismatch = filters.BillingMode, filters.RequestID, filters.UpstreamModelMismatch
-	if v := c.Query("group_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			dim.GroupID = id
-		}
-	}
-	dim.Model = c.Query("model")
-	dim.RequestedModel = c.Query("requested_model")
-	rawModelSource := strings.TrimSpace(c.DefaultQuery("model_source", usagestats.ModelSourceRequested))
-	if !usagestats.IsValidModelSource(rawModelSource) {
-		response.BadRequest(c, "Invalid model_source, use requested/upstream/mapping")
-		return
-	}
-	dim.ModelType = rawModelSource
-	dim.Endpoint = c.Query("endpoint")
-	dim.EndpointType = c.DefaultQuery("endpoint_type", "inbound")
-
-	// Additional filter conditions
-	if v := c.Query("user_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			dim.UserID = id
-		}
-	}
-	if v := c.Query("api_key_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			dim.APIKeyID = id
-		}
-	}
-	if v := c.Query("account_id"); v != "" {
-		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-			dim.AccountID = id
-		}
-	}
-	if v := strings.TrimSpace(c.Query("request_type")); v != "" {
-		parsed, err := service.ParseUsageRequestType(v)
-		if err != nil {
-			response.BadRequest(c, err.Error())
-			return
-		}
-		rtVal := int16(parsed)
-		dim.RequestType = &rtVal
-	}
-	if v := c.Query("stream"); v != "" {
-		if s, err := strconv.ParseBool(v); err == nil {
-			dim.Stream = &s
-		}
-	}
-	if v := strings.TrimSpace(c.Query("native_compaction_v2")); v != "" {
-		value, err := strconv.ParseBool(v)
-		if err != nil {
-			response.BadRequest(c, "Invalid native_compaction_v2 value, use true or false")
-			return
-		}
-		dim.NativeCompactionV2 = &value
-	}
-	if v := c.Query("billing_type"); v != "" {
-		if bt, err := strconv.ParseInt(v, 10, 8); err == nil {
-			btVal := int8(bt)
-			dim.BillingType = &btVal
-		}
-	}
-
-	// sort_by 由 repo 层 allowlist 校验;非法值静默回退默认排序(actual_cost)。
-	dim.SortBy = strings.TrimSpace(c.Query("sort_by"))
-
-	limit := 50
-	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
-			limit = n
-		}
 	}
 
 	stats, err := h.dashboardService.GetUserBreakdownStats(

@@ -251,7 +251,7 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		RequestID:   strings.TrimSpace(c.Query("request_id")),
 	}
 	if filters.BillingMode != "" && !service.BillingMode(filters.BillingMode).IsValidUsageFilter() {
-		return nil, errors.New("invalid billing_mode")
+		return nil, invalidDashboardParam("billing_mode", "")
 	}
 	source, err := parseModelFilterSource(c)
 	if err != nil {
@@ -259,35 +259,20 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 	}
 	filters.ModelSource = source
 
-	if userIDStr := strings.TrimSpace(c.Query("user_id")); userIDStr != "" {
-		id, err := strconv.ParseInt(userIDStr, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		filters.UserID = id
+	if filters.UserID, err = parseDashboardIDFilter(c, "user_id"); err != nil {
+		return nil, err
 	}
-	if apiKeyIDStr := strings.TrimSpace(c.Query("api_key_id")); apiKeyIDStr != "" {
-		id, err := strconv.ParseInt(apiKeyIDStr, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		filters.APIKeyID = id
+	if filters.APIKeyID, err = parseDashboardIDFilter(c, "api_key_id"); err != nil {
+		return nil, err
 	}
-	if accountIDStr := strings.TrimSpace(c.Query("account_id")); accountIDStr != "" {
-		id, err := strconv.ParseInt(accountIDStr, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		filters.AccountID = id
+	if filters.AccountID, err = parseDashboardIDFilter(c, "account_id"); err != nil {
+		return nil, err
 	}
-	if groupIDStr := strings.TrimSpace(c.Query("group_id")); groupIDStr != "" {
-		id, err := strconv.ParseInt(groupIDStr, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		filters.GroupID = id
+	if filters.GroupID, err = parseDashboardIDFilter(c, "group_id"); err != nil {
+		return nil, err
 	}
 
+	// request_type takes precedence: stream is only read when request_type is absent.
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
 		if err != nil {
@@ -295,37 +280,18 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		}
 		value := int16(parsed)
 		filters.RequestType = &value
-	} else if streamStr := strings.TrimSpace(c.Query("stream")); streamStr != "" {
-		streamVal, err := strconv.ParseBool(streamStr)
-		if err != nil {
-			return nil, err
-		}
-		filters.Stream = &streamVal
+	} else if filters.Stream, err = parseOptionalBoolDashboardFilter(c, "stream"); err != nil {
+		return nil, err
 	}
 
-	if nativeCompactionV2Str := strings.TrimSpace(c.Query("native_compaction_v2")); nativeCompactionV2Str != "" {
-		value, err := strconv.ParseBool(nativeCompactionV2Str)
-		if err != nil {
-			return nil, err
-		}
-		filters.NativeCompactionV2 = &value
+	if filters.NativeCompactionV2, err = parseOptionalBoolDashboardFilter(c, "native_compaction_v2"); err != nil {
+		return nil, err
 	}
-
-	if billingTypeStr := strings.TrimSpace(c.Query("billing_type")); billingTypeStr != "" {
-		v, err := strconv.ParseInt(billingTypeStr, 10, 8)
-		if err != nil {
-			return nil, err
-		}
-		bt := int8(v)
-		filters.BillingType = &bt
+	if filters.BillingType, err = parseDashboardBillingTypeFilter(c); err != nil {
+		return nil, err
 	}
-
-	if mismatchStr := strings.TrimSpace(c.Query("upstream_model_mismatch")); mismatchStr != "" {
-		value, err := strconv.ParseBool(mismatchStr)
-		if err != nil {
-			return nil, err
-		}
-		filters.UpstreamModelMismatch = &value
+	if filters.UpstreamModelMismatch, err = parseOptionalBoolDashboardFilter(c, "upstream_model_mismatch"); err != nil {
+		return nil, err
 	}
 
 	return filters, nil

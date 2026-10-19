@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -323,4 +324,33 @@ func TestDashboardUsersRankingLimitAndCache(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec2.Code)
 	require.Equal(t, "hit", rec2.Header().Get("X-Snapshot-Cache"))
+}
+
+func TestDashboardFiltersInvalidValueNamesParameter(t *testing.T) {
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	cases := []struct {
+		query string
+		want  string
+	}{
+		{"group_id=abc", "Invalid group_id"},
+		{"user_id=x", "Invalid user_id"},
+		{"upstream_model_mismatch=maybe", "Invalid upstream_model_mismatch, use true or false"},
+	}
+	for _, path := range []string{"/admin/dashboard/trend", "/admin/dashboard/models", "/admin/dashboard/groups"} {
+		for _, tc := range cases {
+			req := httptest.NewRequest(http.MethodGet, path+"?"+tc.query, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, path+"?"+tc.query)
+			var resp struct {
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.Equal(t, tc.want, resp.Message, path+"?"+tc.query)
+			require.NotContains(t, resp.Message, "strconv")
+		}
+	}
 }
