@@ -68,6 +68,12 @@ func jwtAuth(
 			return
 		}
 
+		// 退出、撤销会话后已签发的 token 立即失效（Redis 故障时放行）
+		if err := authService.CheckAccessTokenRevocation(c.Request.Context(), claims); err != nil {
+			AbortWithError(c, 401, "TOKEN_REVOKED", "Token has been revoked")
+			return
+		}
+
 		// 从数据库获取最新的用户信息
 		user, err := userService.GetByID(c.Request.Context(), claims.UserID)
 		if err != nil {

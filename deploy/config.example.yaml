@@ -947,7 +947,8 @@ jwt:
   # 优先级说明：
   # - >0: 按分钟生效（优先于 expire_hour）
   # - =0: 回退使用 expire_hour
-  access_token_expire_minutes: 0
+  # 默认 60；客户端用 refresh token 自动续期
+  access_token_expire_minutes: 60
 
 # =============================================================================
 # TOTP (2FA) Configuration

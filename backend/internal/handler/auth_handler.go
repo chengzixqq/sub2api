@@ -793,6 +793,10 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	// 允许空请求体（向后兼容）
 	_ = c.ShouldBindJSON(&req)
 
+	// 携带的 access token 所在会话立即失效（覆盖没有 refresh token 的会话）
+	if token := bearerToken(c.GetHeader("Authorization")); token != "" {
+		h.authService.RevokeAccessToken(c.Request.Context(), token)
+	}
 	// 如果提供了Refresh Token，撤销它
 	if req.RefreshToken != "" {
 		if err := h.authService.RevokeRefreshToken(c.Request.Context(), req.RefreshToken); err != nil {
@@ -806,6 +810,15 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	response.Success(c, LogoutResponse{
 		Message: "Logged out successfully",
 	})
+}
+
+// bearerToken returns the token of an "Authorization: Bearer <token>" header.
+func bearerToken(header string) string {
+	scheme, token, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(token)
 }
 
 // RevokeAllSessionsResponse 撤销所有会话响应

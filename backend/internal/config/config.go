@@ -2337,7 +2337,9 @@ func setDefaults() {
 	// JWT
 	viper.SetDefault("jwt.secret", "")
 	viper.SetDefault("jwt.expire_hour", 24)
-	viper.SetDefault("jwt.access_token_expire_minutes", 0) // 0 表示回退到 expire_hour
+	// 默认 60 分钟：退出 / 踢下线已即时生效（按会话吊销），短有效期再收紧 Redis 故障时的窗口；
+	// 设为 0 回退到 expire_hour。
+	viper.SetDefault("jwt.access_token_expire_minutes", 60)
 	viper.SetDefault("jwt.refresh_token_expire_days", 30)  // 30天Refresh Token有效期
 	viper.SetDefault("jwt.refresh_window_minutes", 2)      // 过期前2分钟开始允许刷新
 	viper.SetDefault("jwt.refresh_reuse_grace_seconds", 30)

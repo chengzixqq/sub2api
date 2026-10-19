@@ -204,7 +204,7 @@ func (s *AuthService) refreshFromRotated(ctx context.Context, rotator RefreshTok
 }
 
 func (s *AuthService) revokeReplayedFamily(ctx context.Context, rotated *RotatedRefreshToken) {
-	if err := s.refreshTokenCache.DeleteTokenFamily(ctx, rotated.FamilyID); err != nil {
+	if err := s.RevokeSessionFamily(ctx, rotated.FamilyID); err != nil {
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke replayed refresh family: %v", err)
 	}
 	logger.LegacyPrintf("service.auth", "[Auth] Refresh token replayed after rotation for user %d, family revoked", rotated.UserID)

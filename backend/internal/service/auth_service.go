@@ -66,6 +66,9 @@ type JWTClaims struct {
 	SessionID string `json:"sid,omitempty"`
 	// BindingHash 会话指纹哈希（IP+UA），会话绑定开启时校验；空值表示旧 token（平滑升级）。
 	BindingHash string `json:"bnd,omitempty"`
+	// IssuedAtMs is the issue time in Unix milliseconds; whole-second iat cannot
+	// tell a token issued just before a revoke-all from one issued just after.
+	IssuedAtMs int64 `json:"iat_ms,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -1434,6 +1437,7 @@ func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash str
 		TokenVersion: resolvedTokenVersion(user),
 		SessionID:    sessionID,
 		BindingHash:  bindingHash,
+		IssuedAtMs:   now.UnixMilli(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -1501,6 +1505,9 @@ func (s *AuthService) RefreshToken(ctx context.Context, oldTokenString string) (
 	// This ensures tokens issued before a password change cannot be refreshed
 	if claims.TokenVersion != resolvedTokenVersion(user) {
 		return "", ErrTokenRevoked
+	}
+	if err := s.CheckAccessTokenRevocation(ctx, claims); err != nil {
+		return "", err
 	}
 
 	// 会话绑定检查：指纹变化的旧 token 不允许换发新 token。
@@ -1820,7 +1827,7 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	if err != nil {
 		if errors.Is(err, ErrUserNotFound) {
 			// 用户已删除，撤销整个Token家族
-			_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
+			_ = s.RevokeSessionFamily(ctx, data.FamilyID)
 			return nil, ErrRefreshTokenInvalid
 		}
 		logger.LegacyPrintf("service.auth", "[Auth] Database error getting user for token refresh: %v", err)
@@ -1830,14 +1837,14 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	// 检查用户状态
 	if !user.IsActive() {
 		// 用户被禁用，撤销整个Token家族
-		_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
+		_ = s.RevokeSessionFamily(ctx, data.FamilyID)
 		return nil, ErrUserNotActive
 	}
 
 	// 检查TokenVersion（密码更改后所有Token失效）
 	if data.TokenVersion != resolvedTokenVersion(user) {
 		// TokenVersion不匹配，撤销整个Token家族
-		_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
+		_ = s.RevokeSessionFamily(ctx, data.FamilyID)
 		return nil, ErrTokenRevoked
 	}
 
@@ -1845,7 +1852,7 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	// data.BindingHash 为空表示功能开启前签发的旧会话，放行并在轮转时补齐绑定。
 	if s.settingService != nil && s.settingService.IsSessionBindingEnabled(ctx) && data.BindingHash != "" {
 		if !sessionBindingMatches(ctx, data.BindingHash) {
-			_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
+			_ = s.RevokeSessionFamily(ctx, data.FamilyID)
 			logger.LegacyPrintf("service.auth", "[Auth] Session binding mismatch on refresh for user %d, family revoked", data.UserID)
 			return nil, ErrSessionBindingMismatch
 		}
@@ -1878,6 +1885,8 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 }
 
 // RevokeRefreshToken 撤销单个Refresh Token
+// 登出时结束整个会话：删除该会话家族，并让该会话已签发的 access token 立即失效。
+// 已轮换（宽限期内）的旧 token 同样能定位到会话。
 func (s *AuthService) RevokeRefreshToken(ctx context.Context, refreshToken string) error {
 	if s.refreshTokenCache == nil {
 		return nil // No-op if cache not configured
@@ -1887,15 +1896,35 @@ func (s *AuthService) RevokeRefreshToken(ctx context.Context, refreshToken strin
 	}
 
 	tokenHash := hashToken(refreshToken)
+	if familyID := s.refreshTokenFamily(ctx, tokenHash); familyID != "" {
+		if err := s.RevokeSessionFamily(ctx, familyID); err != nil {
+			return err
+		}
+	}
 	return s.refreshTokenCache.DeleteRefreshToken(ctx, tokenHash)
 }
 
-// RevokeSessionFamily 撤销单个会话家族（该会话的所有 refresh token）。
+// refreshTokenFamily finds the session of a live or just-rotated refresh token.
+func (s *AuthService) refreshTokenFamily(ctx context.Context, tokenHash string) string {
+	if data, err := s.refreshTokenCache.GetRefreshToken(ctx, tokenHash); err == nil && data != nil {
+		return data.FamilyID
+	}
+	if rotator, ok := s.refreshRotator(); ok {
+		if rotated, err := rotator.GetRotatedRefreshToken(ctx, tokenHash); err == nil && rotated != nil {
+			return rotated.FamilyID
+		}
+	}
+	return ""
+}
+
+// RevokeSessionFamily 撤销单个会话家族（该会话的所有 refresh token），
+// 并让该会话（sid 即 family_id）已签发的 access token 立即失效。
 // 用于会话绑定失效等单会话级撤销场景，不影响用户的其他设备会话。
 func (s *AuthService) RevokeSessionFamily(ctx context.Context, familyID string) error {
 	if s.refreshTokenCache == nil || familyID == "" {
 		return nil
 	}
+	s.revokeSessionAccess(ctx, familyID)
 	return s.refreshTokenCache.DeleteTokenFamily(ctx, familyID)
 }
 
@@ -1920,6 +1949,8 @@ func (s *AuthService) RevokeAllUserTokens(ctx context.Context, userID int64) err
 		return fmt.Errorf("get user: %w", err)
 	}
 
+	// 此刻之前签发的 access token 立即失效（Redis 记录 valid_after）。
+	s.revokeUserAccessBefore(ctx, userID, time.Now())
 	if err := s.RevokeAllUserSessions(ctx, userID); err != nil {
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke refresh sessions after token invalidation for user %d: %v", userID, err)
 	}
