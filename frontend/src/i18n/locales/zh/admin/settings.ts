@@ -1043,7 +1043,8 @@ export default {
         queryModeRaw: '原始（最准确，但较慢）',
         queryModePreagg: '预聚合（最快，需预聚合）',
         metricsInterval: '采集频率（秒）',
-        metricsIntervalHint: '系统/请求指标采集频率（60-3600 秒）'
+        metricsIntervalHint: '系统/请求指标采集频率（60-3600 秒）',
+        configDisabledHint: '服务器配置文件已关闭运维监控（ops.enabled=false），需修改配置并重启后才能在这里开启'
       },
       adminApiKey: {
         title: '管理员 API Key',

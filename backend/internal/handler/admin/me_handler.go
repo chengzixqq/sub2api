@@ -35,6 +35,7 @@ var adminMeCapabilities = []string{
 	"ops.dashboard_model_filter",
 	"ops.ingress_reject_totals",
 	"ops.job_heartbeat_status",
+	"ops.monitoring_status",
 	"ops.system_metrics_history",
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",
@@ -56,6 +57,7 @@ type meSettingsReader interface {
 type meOpsReader interface {
 	IsMonitoringEnabled(ctx context.Context) bool
 	IsRealtimeMonitoringEnabled(ctx context.Context) bool
+	MonitoringDisabledReason(ctx context.Context) string
 }
 
 type meStepUpReader interface {
@@ -118,13 +120,16 @@ type meCompliance struct {
 }
 
 type meFeatures struct {
-	OpsMonitoringEnabled         bool   `json:"ops_monitoring_enabled"`
-	OpsRealtimeMonitoringEnabled bool   `json:"ops_realtime_monitoring_enabled"`
-	ChannelMonitorEnabled        bool   `json:"channel_monitor_enabled"`
-	ChannelMonitorMode           string `json:"channel_monitor_mode"`
-	BackendModeEnabled           bool   `json:"backend_mode_enabled"`
-	PaymentEnabled               bool   `json:"payment_enabled"`
-	SubscriptionEnabled          bool   `json:"subscription_enabled"`
+	OpsMonitoringEnabled         bool `json:"ops_monitoring_enabled"`
+	OpsRealtimeMonitoringEnabled bool `json:"ops_realtime_monitoring_enabled"`
+	// OpsMonitoringDisabledReason is config_off / setting_off while ops
+	// monitoring is off on this instance, otherwise null.
+	OpsMonitoringDisabledReason *string `json:"ops_monitoring_disabled_reason"`
+	ChannelMonitorEnabled       bool    `json:"channel_monitor_enabled"`
+	ChannelMonitorMode          string  `json:"channel_monitor_mode"`
+	BackendModeEnabled          bool    `json:"backend_mode_enabled"`
+	PaymentEnabled              bool    `json:"payment_enabled"`
+	SubscriptionEnabled         bool    `json:"subscription_enabled"`
 }
 
 type meServer struct {
@@ -201,6 +206,9 @@ func (h *MeHandler) Get(c *gin.Context) {
 	if h.deps.Ops != nil {
 		out.Features.OpsMonitoringEnabled = h.deps.Ops.IsMonitoringEnabled(ctx)
 		out.Features.OpsRealtimeMonitoringEnabled = out.Features.OpsMonitoringEnabled && h.deps.Ops.IsRealtimeMonitoringEnabled(ctx)
+		if reason := h.deps.Ops.MonitoringDisabledReason(ctx); reason != "" {
+			out.Features.OpsMonitoringDisabledReason = &reason
+		}
 	}
 	response.Success(c, out)
 }

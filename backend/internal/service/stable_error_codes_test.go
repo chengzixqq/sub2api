@@ -31,6 +31,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrBackendModeAdminOnly, http.StatusForbidden, "BACKEND_MODE_ADMIN_ONLY"},
 		{ErrBackendModeSelfServiceDisabled, http.StatusForbidden, "BACKEND_MODE_SELF_SERVICE_DISABLED"},
 		{ErrOpsDisabled, http.StatusNotFound, "OPS_DISABLED"},
+		{ErrOpsConfigDisabled, http.StatusConflict, "OPS_CONFIG_DISABLED"},
 		{ErrOpsTokenStatsRangeTooLarge, http.StatusBadRequest, "OPS_TIME_RANGE_TOO_LARGE"},
 		{ErrOpsSystemMetricsHistoryRangeTooLarge, http.StatusBadRequest, "OPS_TIME_RANGE_TOO_LARGE"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},

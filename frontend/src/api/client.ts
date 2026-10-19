@@ -132,7 +132,7 @@ apiClient.interceptors.response.use(
         }
 
         if (window.location.pathname.startsWith('/admin/ops')) {
-          window.location.href = '/admin/settings'
+          window.location.href = '/admin/settings?tab=features'
         }
 
         return Promise.reject({

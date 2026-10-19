@@ -1296,6 +1296,30 @@ export async function getSystemLogSinkHealth(): Promise<OpsSystemLogSinkHealth> 
   return data
 }
 
+// Monitoring switch: not gated by the switch itself, so it tells config_off from setting_off.
+export interface OpsMonitoringStatus {
+  config_enabled: boolean
+  monitoring_enabled: boolean
+  realtime_monitoring_enabled: boolean
+  effective: boolean
+  disabled_reason: 'config_off' | 'setting_off' | null
+}
+
+export interface OpsMonitoringStatusUpdate {
+  monitoring_enabled?: boolean
+  realtime_monitoring_enabled?: boolean
+}
+
+export async function getMonitoringStatus(): Promise<OpsMonitoringStatus> {
+  const { data } = await apiClient.get<OpsMonitoringStatus>('/admin/ops/monitoring-status')
+  return data
+}
+
+export async function updateMonitoringStatus(payload: OpsMonitoringStatusUpdate): Promise<OpsMonitoringStatus> {
+  const { data } = await apiClient.put<OpsMonitoringStatus>('/admin/ops/monitoring-status', payload)
+  return data
+}
+
 // Advanced settings (DB-backed)
 export async function getAdvancedSettings(): Promise<OpsAdvancedSettings> {
   const { data } = await apiClient.get<OpsAdvancedSettings>('/admin/ops/advanced-settings')
@@ -1364,6 +1388,8 @@ export const opsAPI = {
   resetRuntimeLogConfig,
   getAdvancedSettings,
   updateAdvancedSettings,
+  getMonitoringStatus,
+  updateMonitoringStatus,
   getMetricThresholds,
   updateMetricThresholds,
   listSystemLogs,

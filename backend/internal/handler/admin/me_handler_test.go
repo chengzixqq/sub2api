@@ -32,10 +32,14 @@ func (f meSettingsFake) GetPublicSettings(context.Context) (*service.PublicSetti
 	return f.public, nil
 }
 
-type meOpsFake struct{ monitoring, realtime bool }
+type meOpsFake struct {
+	monitoring, realtime bool
+	reason               string
+}
 
 func (f meOpsFake) IsMonitoringEnabled(context.Context) bool         { return f.monitoring }
 func (f meOpsFake) IsRealtimeMonitoringEnabled(context.Context) bool { return f.realtime }
+func (f meOpsFake) MonitoringDisabledReason(context.Context) string  { return f.reason }
 
 type meStepUpFake struct {
 	granted bool
@@ -98,6 +102,8 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	features := data["features"].(map[string]any)
 	require.Equal(t, true, features["ops_monitoring_enabled"])
 	require.Equal(t, false, features["ops_realtime_monitoring_enabled"])
+	require.Contains(t, features, "ops_monitoring_disabled_reason")
+	require.Nil(t, features["ops_monitoring_disabled_reason"])
 	server := data["server"].(map[string]any)
 	require.Equal(t, "0.2.16", server["version"])
 	require.Contains(t, server["capabilities"], "dashboard.rates")
@@ -110,6 +116,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "ops.dashboard_model_filter")
 	require.Contains(t, server["capabilities"], "ops.ingress_reject_totals")
 	require.Contains(t, server["capabilities"], "ops.job_heartbeat_status")
+	require.Contains(t, server["capabilities"], "ops.monitoring_status")
 	require.Contains(t, server["capabilities"], "ops.system_metrics_history")
 	require.Contains(t, server["capabilities"], "ops.token_stats_custom_range")
 	require.Contains(t, server["capabilities"], "lists.etag")
@@ -148,4 +155,16 @@ func TestAdminMe_VendorWorkspace(t *testing.T) {
 	perms := ws["permissions"].(map[string]any)
 	require.Equal(t, true, perms["account_manage"])
 	require.Equal(t, false, perms["group_billing"])
+}
+
+func TestAdminMe_OpsMonitoringDisabledReason(t *testing.T) {
+	h := NewMeHandler(MeDeps{
+		Users: meUserReaderFake{user: &service.User{ID: 1, Role: service.RoleAdmin}},
+		Ops:   meOpsFake{monitoring: false, reason: service.OpsMonitoringDisabledSettingOff},
+	})
+	rec := httptest.NewRecorder()
+	newMeRouter(h, "jwt", service.RoleAdmin).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/me", nil))
+	features := decodeMe(t, rec)["features"].(map[string]any)
+	require.Equal(t, false, features["ops_monitoring_enabled"])
+	require.Equal(t, "setting_off", features["ops_monitoring_disabled_reason"])
 }

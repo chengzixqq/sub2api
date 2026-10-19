@@ -809,7 +809,7 @@ onMounted(async () => {
 
   await adminSettingsStore.fetch()
   if (!adminSettingsStore.opsMonitoringEnabled) {
-    await router.replace('/admin/settings')
+    await router.replace({ path: '/admin/settings', query: { tab: 'features' } })
     return
   }
 

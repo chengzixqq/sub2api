@@ -1048,7 +1048,8 @@ export default {
         queryModeRaw: 'Raw (most accurate, slower)',
         queryModePreagg: 'Preagg (fastest, requires aggregation)',
         metricsInterval: 'Metrics Collection Interval (seconds)',
-        metricsIntervalHint: 'How often to collect system/request metrics (60-3600 seconds)'
+        metricsIntervalHint: 'How often to collect system/request metrics (60-3600 seconds)',
+        configDisabledHint: 'Ops monitoring is disabled in the server config (ops.enabled=false). Change the config and restart to enable it here.'
       },
       adminApiKey: {
         title: 'Admin API Key',

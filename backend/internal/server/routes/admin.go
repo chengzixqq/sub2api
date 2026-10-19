@@ -315,6 +315,10 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 		// Server CPU / memory history (site-wide minute snapshots)
 		ops.GET("/system-metrics/history", h.Admin.Ops.GetSystemMetricsHistory)
+
+		// Monitoring switch: not gated by the ops switch itself (config_off vs setting_off)
+		ops.GET("/monitoring-status", h.Admin.Ops.GetMonitoringStatus)
+		ops.PUT("/monitoring-status", h.Admin.Ops.UpdateMonitoringStatus)
 	}
 }
 

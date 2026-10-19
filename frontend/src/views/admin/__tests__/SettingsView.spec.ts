@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, h } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 
@@ -28,6 +28,7 @@ const {
   updateOllamaCloudUsageSettings,
   getGroups,
   listProxies,
+  getMonitoringStatus,
   getProviders,
   updateProvider,
   createProvider,
@@ -69,6 +70,13 @@ const {
   updateOllamaCloudUsageSettings: vi.fn().mockImplementation(async (payload) => payload),
   getGroups: vi.fn(),
   listProxies: vi.fn(),
+  getMonitoringStatus: vi.fn().mockResolvedValue({
+    config_enabled: true,
+    monitoring_enabled: false,
+    realtime_monitoring_enabled: false,
+    effective: false,
+    disabled_reason: "setting_off",
+  }),
   getProviders: vi.fn(),
   updateProvider: vi.fn(),
   createProvider: vi.fn(),
@@ -110,6 +118,9 @@ vi.mock("@/api", () => ({
     },
     proxies: {
       list: listProxies,
+    },
+    ops: {
+      getMonitoringStatus,
     },
     payment: {
       getProviders,
@@ -2163,5 +2174,167 @@ describe("admin SettingsView platform quota matrix", () => {
     const quotas = payload["default_platform_quotas"] as Record<string, Record<string, unknown>>;
     // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
     expect(quotas["anthropic"]?.["daily"]).toBe(null);
+  });
+});
+
+describe("admin SettingsView ops monitoring card", () => {
+  const enabledStatus = {
+    config_enabled: true,
+    monitoring_enabled: true,
+    realtime_monitoring_enabled: true,
+    effective: true,
+    disabled_reason: null,
+  };
+
+  beforeEach(() => {
+    getSettings.mockReset();
+    updateSettings.mockReset();
+    getWebSearchEmulationConfig.mockReset();
+    updateWebSearchEmulationConfig.mockReset();
+    getAdminApiKey.mockReset();
+    getOverloadCooldownSettings.mockReset();
+    getRateLimit429CooldownSettings.mockReset();
+    updateRateLimit429CooldownSettings.mockReset();
+    getStreamTimeoutSettings.mockReset();
+    getRectifierSettings.mockReset();
+    getBetaPolicySettings.mockReset();
+    getGroups.mockReset();
+    listProxies.mockReset();
+    getMonitoringStatus.mockReset();
+    getProviders.mockReset();
+    fetchPublicSettings.mockReset();
+    adminSettingsFetch.mockReset();
+    showError.mockReset();
+    showSuccess.mockReset();
+    localeRef.value = "zh-CN";
+
+    getSettings.mockResolvedValue({
+      ...baseSettingsResponse,
+      ops_monitoring_enabled: true,
+      ops_realtime_monitoring_enabled: true,
+    });
+    updateSettings.mockImplementation(async (payload) => ({
+      ...baseSettingsResponse,
+      ops_monitoring_enabled: true,
+      ops_realtime_monitoring_enabled: true,
+      ...payload,
+    }));
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: false, providers: [] });
+    updateWebSearchEmulationConfig.mockResolvedValue({ enabled: false, providers: [] });
+    getAdminApiKey.mockResolvedValue({ exists: false, masked_key: "" });
+    getOverloadCooldownSettings.mockResolvedValue({});
+    getRateLimit429CooldownSettings.mockResolvedValue({});
+    updateRateLimit429CooldownSettings.mockResolvedValue({});
+    getStreamTimeoutSettings.mockResolvedValue({});
+    getRectifierSettings.mockResolvedValue({});
+    getBetaPolicySettings.mockResolvedValue({});
+    getGroups.mockResolvedValue([]);
+    listProxies.mockResolvedValue({ items: [] });
+    getMonitoringStatus.mockResolvedValue({ ...enabledStatus });
+    getProviders.mockResolvedValue({ data: [] });
+    fetchPublicSettings.mockResolvedValue(undefined);
+    adminSettingsFetch.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, "", "/");
+  });
+
+  async function submit(wrapper: ReturnType<typeof mountView>) {
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    return updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+  }
+
+  it("saves the ops sub-settings and sends the master switch only after it changes", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get("#settings-tab-features").trigger("click");
+    const card = wrapper.get('[data-testid="ops-monitoring-settings"]');
+    expect(card.text()).toContain("admin.settings.opsMonitoring.title");
+
+    let payload = await submit(wrapper);
+    expect(payload).toEqual(expect.objectContaining({
+      ops_realtime_monitoring_enabled: true,
+      ops_query_mode_default: "auto",
+      ops_metrics_interval_seconds: 60,
+    }));
+    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+
+    await card.get('[data-testid="ops-query-mode-select"] select').setValue("raw");
+    await card.get('[data-testid="ops-metrics-interval-input"]').setValue("5000");
+    await card.get('[data-testid="ops-realtime-monitoring-toggle"]').setValue(false);
+    payload = await submit(wrapper);
+    expect(payload).toEqual(expect.objectContaining({
+      ops_realtime_monitoring_enabled: false,
+      ops_query_mode_default: "raw",
+      ops_metrics_interval_seconds: 3600,
+    }));
+    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+
+    await wrapper.get('[data-testid="ops-monitoring-enabled-toggle"]').setValue(false);
+    payload = await submit(wrapper);
+    expect(payload.ops_monitoring_enabled).toBe(false);
+
+    // The saved value becomes the new baseline: an untouched save omits it again.
+    payload = await submit(wrapper);
+    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+    expect(getMonitoringStatus).toHaveBeenCalled();
+  });
+
+  it("locks the switch and never writes it back while the server config disables ops", async () => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, ops_monitoring_enabled: false });
+    getMonitoringStatus.mockResolvedValue({
+      config_enabled: false,
+      monitoring_enabled: true,
+      realtime_monitoring_enabled: true,
+      effective: false,
+      disabled_reason: "config_off",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get("#settings-tab-features").trigger("click");
+
+    const toggle = wrapper.get('[data-testid="ops-monitoring-enabled-toggle"]');
+    expect(toggle.attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="ops-monitoring-config-disabled-hint"]').exists()).toBe(true);
+
+    const payload = await submit(wrapper);
+    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+  });
+
+  it("keeps the page usable when the monitoring status request fails", async () => {
+    // Baseline: other optional loaders in this harness may already report errors.
+    let wrapper = mountView();
+    await flushPromises();
+    const baselineErrors = showError.mock.calls.length;
+    wrapper.unmount();
+    showError.mockReset();
+
+    getMonitoringStatus.mockRejectedValue(new Error("old server"));
+    wrapper = mountView();
+    await flushPromises();
+    await wrapper.get("#settings-tab-features").trigger("click");
+
+    const toggle = wrapper.get('[data-testid="ops-monitoring-enabled-toggle"]');
+    expect(toggle.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="ops-monitoring-config-disabled-hint"]').exists()).toBe(false);
+    expect(showError).toHaveBeenCalledTimes(baselineErrors);
+    wrapper.unmount();
+  });
+
+  it("opens the tab named in ?tab= and falls back to general for unknown values", async () => {
+    window.history.replaceState({}, "", "/admin/settings?tab=features");
+    let wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get("#settings-tab-features").attributes("aria-selected")).toBe("true");
+    expect(wrapper.get('[data-testid="ops-monitoring-settings"]').isVisible()).toBe(true);
+    wrapper.unmount();
+
+    window.history.replaceState({}, "", "/admin/settings?tab=nope");
+    wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get("#settings-tab-general").attributes("aria-selected")).toBe("true");
+    wrapper.unmount();
   });
 });

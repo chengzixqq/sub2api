@@ -119,3 +119,13 @@ func TestVendorRoutesDenyOpsSystemMetricsHistory(t *testing.T) {
 		t.Fatal("vendor must not read ops system metrics history")
 	}
 }
+
+// TestVendorRoutesDenyOpsMonitoringStatus: the ops switch is site-wide and owner-only.
+func TestVendorRoutesDenyOpsMonitoringStatus(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, method := range []string{"GET", "PUT"} {
+		if vendorRouteAllowed(newFullPathContext(method, "/api/v1/admin/ops/monitoring-status"), scope) {
+			t.Fatalf("vendor must not reach %s ops monitoring-status", method)
+		}
+	}
+}
