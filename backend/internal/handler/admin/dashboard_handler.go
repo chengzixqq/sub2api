@@ -320,7 +320,9 @@ func (h *DashboardHandler) GetAPIKeyUsageTrend(c *gin.Context) {
 
 // GetUserUsageTrend handles getting user usage trend data
 // GET /api/v1/admin/dashboard/users-trend
-// Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), limit (default 12)
+// Query params: start_date, end_date (YYYY-MM-DD), granularity (day/hour), limit (default 12),
+// metric (tokens|actual_cost, default tokens; picks the top users with or without
+// the shared dashboard filters such as group_id and model)
 func (h *DashboardHandler) GetUserUsageTrend(c *gin.Context) {
 	startTime, endTime := parseTimeRange(c)
 	if c.IsAborted() {
@@ -346,7 +348,7 @@ func (h *DashboardHandler) GetUserUsageTrend(c *gin.Context) {
 	var trend []usagestats.UserUsageTrendPoint
 	var hit bool
 	if usageFilters.UserID != 0 || usageFilters.APIKeyID != 0 || usageFilters.AccountID != 0 || usageFilters.GroupID != 0 || usageFilters.Model != "" || usageFilters.BillingMode != "" || usageFilters.RequestID != "" || usageFilters.RequestType != nil || usageFilters.Stream != nil || usageFilters.NativeCompactionV2 != nil || usageFilters.BillingType != nil || usageFilters.UpstreamModelMismatch != nil {
-		trend, hit, err = h.getUserUsageTrendCachedWithFilters(queryContext(c), startTime, endTime, granularity, limit, usageFilters)
+		trend, hit, err = h.getUserUsageTrendCachedWithFilters(queryContext(c), startTime, endTime, granularity, limit, metric, usageFilters)
 	} else {
 		trend, hit, err = h.getUserUsageTrendCached(queryContext(c), startTime, endTime, granularity, limit, metric)
 	}

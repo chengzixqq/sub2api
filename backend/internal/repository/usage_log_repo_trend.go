@@ -124,6 +124,13 @@ func (r *usageLogRepository) GetUserUsageTrendWithFilters(ctx context.Context, s
 	return r.getUserUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, "tokens", filters)
 }
 
+// GetUserUsageTrendWithFiltersByMetric picks the top users inside the filtered
+// range by metric: "actual_cost" ranks by actual charged cost, anything else by
+// tokens.
+func (r *usageLogRepository) GetUserUsageTrendWithFiltersByMetric(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string, filters UsageLogFilters) (results []UserUsageTrendPoint, err error) {
+	return r.getUserUsageTrendWithFilters(ctx, startTime, endTime, granularity, limit, metric, filters)
+}
+
 func (r *usageLogRepository) getUserUsageTrendWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string, filters UsageLogFilters) (results []UserUsageTrendPoint, err error) {
 	dateFormat := safeDateFormat(granularity)
 	rankExpr := "SUM(tokens)"

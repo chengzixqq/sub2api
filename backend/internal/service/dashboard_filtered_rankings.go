@@ -16,6 +16,23 @@ func (s *DashboardService) GetUserUsageTrendWithFilters(ctx context.Context, sta
 	}
 	return s.GetUserUsageTrend(ctx, start, end, granularity, limit, "tokens")
 }
+
+// GetUserUsageTrendWithFiltersByMetric picks the top users inside the filtered
+// range by metric ("actual_cost", otherwise tokens). Every real usage
+// repository implements the metric-aware query; a repository without it (test
+// doubles) only serves the tokens ranking through GetUserUsageTrendWithFilters
+// and errors for actual_cost instead of silently ranking by tokens.
+func (s *DashboardService) GetUserUsageTrendWithFiltersByMetric(ctx context.Context, start, end time.Time, granularity string, limit int, metric string, filters usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, error) {
+	if repo, ok := s.usageRepo.(interface {
+		GetUserUsageTrendWithFiltersByMetric(context.Context, time.Time, time.Time, string, int, string, usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, error)
+	}); ok {
+		return repo.GetUserUsageTrendWithFiltersByMetric(ctx, start, end, granularity, limit, metric, filters)
+	}
+	if metric != "actual_cost" {
+		return s.GetUserUsageTrendWithFilters(ctx, start, end, granularity, limit, filters)
+	}
+	return nil, errors.New("filtered user usage trend by actual_cost is not supported by the usage repository")
+}
 func (s *DashboardService) GetAPIKeyUsageTrendWithFilters(ctx context.Context, start, end time.Time, granularity string, limit int, filters usagestats.UsageLogFilters) ([]usagestats.APIKeyUsageTrendPoint, error) {
 	if repo, ok := s.usageRepo.(interface {
 		GetAPIKeyUsageTrendWithFilters(context.Context, time.Time, time.Time, string, int, usagestats.UsageLogFilters) ([]usagestats.APIKeyUsageTrendPoint, error)

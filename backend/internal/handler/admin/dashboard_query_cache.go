@@ -119,12 +119,14 @@ func (h *DashboardHandler) getUserUsageTrendCached(ctx context.Context, startTim
 	return trend, hit, err
 }
 
-func (h *DashboardHandler) getUserUsageTrendCachedWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, complete ...usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, bool, error) {
+// getUserUsageTrendCachedWithFilters ranks users inside the filtered range by
+// metric, which the caller has already normalised to tokens or actual_cost.
+func (h *DashboardHandler) getUserUsageTrendCachedWithFilters(ctx context.Context, startTime, endTime time.Time, granularity string, limit int, metric string, complete ...usagestats.UsageLogFilters) ([]usagestats.UserUsageTrendPoint, bool, error) {
 	filters := usagestats.UsageLogFilters{}
 	if len(complete) > 0 {
 		filters = complete[0]
 	}
-	return loadDashboardQuery(ctx, dashboardUsersTrendCache, startTime, endTime, filters, fmt.Sprintf("%s:%d", granularity, limit), func(work context.Context) ([]usagestats.UserUsageTrendPoint, error) {
-		return h.dashboardService.GetUserUsageTrendWithFilters(work, startTime, endTime, granularity, limit, filters)
+	return loadDashboardQuery(ctx, dashboardUsersTrendCache, startTime, endTime, filters, fmt.Sprintf("%s:%d:%s", granularity, limit, metric), func(work context.Context) ([]usagestats.UserUsageTrendPoint, error) {
+		return h.dashboardService.GetUserUsageTrendWithFiltersByMetric(work, startTime, endTime, granularity, limit, metric, filters)
 	})
 }
