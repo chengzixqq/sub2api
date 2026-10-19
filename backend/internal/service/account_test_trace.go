@@ -118,7 +118,7 @@ func observeAccountTestEvent(c *gin.Context, event TestEvent) {
 				t.model = event.Model
 			}
 		case "content", "image", "audio", "video":
-			if t.firstOutputAt.IsZero() {
+			if t.firstOutputAt.IsZero() && !event.localNote {
 				t.firstOutputAt = time.Now()
 			}
 			if event.Type == "content" && t.responseText.Len() < accountTestTraceMaxTextBytes {
@@ -133,6 +133,14 @@ func observeAccountTestEvent(c *gin.Context, event TestEvent) {
 			}
 		}
 	})
+}
+
+// sendLocalNote writes a content event the probe composes itself before the
+// upstream answers (which endpoint is being called, the uploaded input, the
+// dial target). It stays in the stream and in the captured text, but it is not
+// upstream output, so it does not stamp first_token_ms.
+func (s *AccountTestService) sendLocalNote(c *gin.Context, text string) {
+	s.sendEvent(c, TestEvent{Type: "content", Text: text, localNote: true})
 }
 
 // AccountTestTraceFrom returns the trace recorded on c by TestAccountConnection.

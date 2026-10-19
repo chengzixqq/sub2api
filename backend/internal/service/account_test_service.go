@@ -63,6 +63,10 @@ type TestEvent struct {
 	Data     any    `json:"data,omitempty"`
 	Success  bool   `json:"success,omitempty"`
 	Error    string `json:"error,omitempty"`
+
+	// localNote marks a content event the probe writes itself before the
+	// upstream answers; see sendLocalNote. Not serialized.
+	localNote bool
 }
 
 // AccountTestOptions carries optional media for admin connectivity tests.
@@ -1341,7 +1345,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 		}
 		// Match gateway prepareGrokMediaForwardBody shape: {url, type:image_url}.
 		payload["image"] = grokMediaImageObject(normalized)
-		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("source image ready (%d chars data URL)\n", len(normalized))})
+		s.sendLocalNote(c, fmt.Sprintf("source image ready (%d chars data URL)\n", len(normalized)))
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1453,7 +1457,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		}
 		// First-frame / image-to-video input (xAI image field).
 		payload["image"] = grokMediaImageObject(normalized)
-		s.sendEvent(c, TestEvent{Type: "content", Text: "using uploaded first-frame / reference image\n"})
+		s.sendLocalNote(c, "using uploaded first-frame / reference image\n")
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -1777,7 +1781,7 @@ func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, ac
 		audioBytes = raw
 		filename = sttFilenameForMIME(mime)
 		s.sendEvent(c, TestEvent{Type: "status", Text: "Calling standalone /v1/stt with uploaded audio..."})
-		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("uploaded audio: mime=%s bytes=%d\n", mime, len(audioBytes))})
+		s.sendLocalNote(c, fmt.Sprintf("uploaded audio: mime=%s bytes=%d\n", mime, len(audioBytes)))
 	} else {
 		audioBytes = minimalSilentWAV()
 		s.sendEvent(c, TestEvent{Type: "status", Text: "Calling standalone /v1/stt with a synthetic silent WAV..."})
@@ -1875,7 +1879,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 	s.prepareGrokTestSSE(c)
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: model})
 	s.sendEvent(c, TestEvent{Type: "status", Text: "Dialing standalone wss /v1/realtime (connectivity probe)..."})
-	s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("realtime target: %s\n", redactGrokRealtimeURLForLog(wsURL))})
+	s.sendLocalNote(c, fmt.Sprintf("realtime target: %s\n", redactGrokRealtimeURLForLog(wsURL)))
 
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+authToken)
@@ -3200,9 +3204,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 
 	direct := usesCodexDirectImages(upstreamModel)
 	if direct {
-		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Calling Codex /images/generations; image model: %s\n", upstreamModel)})
+		s.sendLocalNote(c, fmt.Sprintf("Calling Codex /images/generations; image model: %s\n", upstreamModel))
 	} else {
-		s.sendEvent(c, TestEvent{Type: "content", Text: fmt.Sprintf("Calling Codex /responses image tool; driver: %s; image model: %s\n", openAIImagesResponsesMainModelValue(), upstreamModel)})
+		s.sendLocalNote(c, fmt.Sprintf("Calling Codex /responses image tool; driver: %s; image model: %s\n", openAIImagesResponsesMainModelValue(), upstreamModel))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(responsesBody))
 	if err != nil {
