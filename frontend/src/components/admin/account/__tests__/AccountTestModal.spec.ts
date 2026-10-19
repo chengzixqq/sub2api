@@ -220,4 +220,53 @@ describe('AccountTestModal', () => {
       mode: 'compact'
     })
   })
+
+  async function runOpenAIStream(lines: string[]) {
+    getAvailableModels.mockResolvedValue([
+      { id: 'gpt-5.4', display_name: 'GPT-5.4' }
+    ])
+    global.fetch = vi.fn().mockResolvedValue(createStreamResponse(lines)) as any
+
+    const wrapper = mountModal({
+      id: 42,
+      name: 'OpenAI OAuth',
+      platform: 'openai',
+      type: 'oauth',
+      status: 'active'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
+    await (wrapper.vm as any).startTest()
+    await flushPromises()
+    return wrapper
+  }
+
+  const testResultLine =
+    'data: {"type":"test_result","data":{"success":false,"total_ms":12,"upstream_status":401,"account":null,"recovery":null,"marked":null}}\n'
+
+  it('测试成功后末尾的 test_result 事件不改变弹窗状态与输出', async () => {
+    const base = [
+      'data: {"type":"test_start","model":"gpt-5.4"}\n',
+      'data: {"type":"content","text":"pong"}\n',
+      'data: {"type":"test_complete","success":true}\n'
+    ]
+    const plain = await runOpenAIStream(base)
+    const withResult = await runOpenAIStream([...base, testResultLine])
+
+    expect((withResult.vm as any).status).toBe('success')
+    expect((withResult.vm as any).outputLines).toEqual((plain.vm as any).outputLines)
+  })
+
+  it('测试失败后末尾的 test_result 事件不覆盖错误文案', async () => {
+    const wrapper = await runOpenAIStream([
+      'data: {"type":"test_start","model":"gpt-5.4"}\n',
+      'data: {"type":"error","error":"API returned 401: bad"}\n',
+      testResultLine
+    ])
+
+    expect((wrapper.vm as any).status).toBe('error')
+    expect((wrapper.vm as any).errorMessage).toBe('API returned 401: bad')
+  })
 })

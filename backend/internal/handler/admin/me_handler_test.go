@@ -106,6 +106,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Nil(t, features["ops_monitoring_disabled_reason"])
 	server := data["server"].(map[string]any)
 	require.Equal(t, "0.2.16", server["version"])
+	require.Contains(t, server["capabilities"], "accounts.test_result")
 	require.Contains(t, server["capabilities"], "dashboard.home")
 	require.Contains(t, server["capabilities"], "dashboard.rates")
 	require.Contains(t, server["capabilities"], "dashboard.request_types")

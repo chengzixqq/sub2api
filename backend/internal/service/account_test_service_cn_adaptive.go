@@ -99,6 +99,7 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Adaptive Anthropic endpoint request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -118,6 +119,8 @@ func (s *AccountTestService) testCNProviderAdaptiveAnthropicConnection(c *gin.Co
 
 func (s *AccountTestService) processCNProviderAdaptiveAnthropicStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
+	var usage accountTestStreamUsage
+	defer usage.commit(c)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {
@@ -141,6 +144,8 @@ func (s *AccountTestService) processCNProviderAdaptiveAnthropicStream(c *gin.Con
 			continue
 		}
 		switch eventType, _ := data["type"].(string); eventType {
+		case "message_start", "message_delta":
+			usage.observeAnthropic(data)
 		case "content_block_delta":
 			if delta, ok := data["delta"].(map[string]any); ok {
 				if text, ok := delta["text"].(string); ok && text != "" {
@@ -194,6 +199,7 @@ func (s *AccountTestService) testCNProviderAdaptiveResponsesConnection(c *gin.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Adaptive Responses endpoint request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -284,6 +290,7 @@ func (s *AccountTestService) testCNProviderAnthropicConnection(c *gin.Context, a
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Anthropic endpoint request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

@@ -1449,7 +1449,8 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	// The account test service also serves background jobs and therefore accepts
 	// an unscoped repository read. Resolve the management scope before allowing a
 	// vendor request to start an upstream probe or mutate runtime state.
-	if _, err := h.adminService.GetAccount(c.Request.Context(), accountID); err != nil {
+	before, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -1463,17 +1464,19 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		AudioDataURL: req.AudioDataURL,
 	}
 
-	// Use AccountTestService to test the account with SSE streaming
-	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, opts); err != nil {
-		// Error already sent via SSE, just log
-		return
-	}
+	// Use AccountTestService to test the account with SSE streaming. A failure
+	// was already sent via SSE; the trailing test_result is still written.
+	testErr := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt, req.Mode, opts)
 
-	if h.rateLimitService != nil {
-		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
+	var recovery *service.SuccessfulTestRecoveryResult
+	if testErr == nil && h.rateLimitService != nil {
+		recovery, err = h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID)
+		if err != nil {
 			_ = c.Error(err)
+			recovery = nil
 		}
 	}
+	h.writeAccountTestResult(c, accountID, before, testErr == nil, recovery)
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.

@@ -73,6 +73,7 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", sanitizeUpstreamErrorMessage(err.Error())))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -88,6 +89,9 @@ func (s *AccountTestService) testTypeSafeAccountConnection(c *gin.Context, accou
 	decoded, err := typesafe.DecodeSystemOneResponse(resp.Body)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid System One response: %s", err.Error()))
+	}
+	if decoded.Usage.InputTokens > 0 || decoded.Usage.OutputTokens > 0 {
+		addAccountTestUsage(c, int64(decoded.Usage.InputTokens), int64(decoded.Usage.OutputTokens))
 	}
 	s.sendEvent(c, TestEvent{Type: "content", Text: truncateString(string(decoded.Body), typeSafeTestMaxPreviewBytes)})
 	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})

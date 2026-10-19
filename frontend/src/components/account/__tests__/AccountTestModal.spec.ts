@@ -189,4 +189,69 @@ describe('AccountTestModal', () => {
 
     expect(wrapper.text()).toContain('已通过 /v1/chat/completions 验证')
   })
+
+  async function runStream(lines: string[]) {
+    const encoder = new TextEncoder()
+    const chunks = lines.map((line) => encoder.encode(line))
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: vi.fn().mockImplementation(() => Promise.resolve(
+            chunks.length > 0
+              ? { done: false, value: chunks.shift() }
+              : { done: true, value: undefined }
+          ))
+        })
+      }
+    } as any)
+
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: true,
+        account: buildAccount()
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+    })
+
+    await flushPromises()
+    ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
+    await (wrapper.vm as any).startTest()
+    await flushPromises()
+    return wrapper
+  }
+
+  const testResultLine =
+    'data: {"type":"test_result","data":{"success":false,"total_ms":12,"upstream_status":401,"account":null,"recovery":null,"marked":null}}\n\n'
+
+  it('ignores a trailing test_result event after a successful test', async () => {
+    const base = [
+      'data: {"type":"test_start","model":"gpt-5.4"}\n\n',
+      'data: {"type":"content","text":"pong"}\n\n',
+      'data: {"type":"test_complete","success":true}\n\n'
+    ]
+    const plain = await runStream(base)
+    const withResult = await runStream([...base, testResultLine])
+
+    expect((withResult.vm as any).status).toBe('success')
+    expect((withResult.vm as any).outputLines).toEqual((plain.vm as any).outputLines)
+  })
+
+  it('keeps the error state and message when test_result follows an error', async () => {
+    const wrapper = await runStream([
+      'data: {"type":"test_start","model":"gpt-5.4"}\n\n',
+      'data: {"type":"error","error":"API returned 401: bad"}\n\n',
+      testResultLine
+    ])
+
+    expect((wrapper.vm as any).status).toBe('error')
+    expect((wrapper.vm as any).errorMessage).toBe('API returned 401: bad')
+  })
 })

@@ -360,6 +360,8 @@ func createTestPayload(modelID string) (map[string]any, error) {
 // opts is optional media (image/audio data URLs for real generation / STT).
 func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int64, modelID string, prompt string, mode string, opts ...AccountTestOptions) error {
 	initAccountTestLogger(c, accountID, modelID, mode)
+	beginAccountTestTrace(c)
+	defer markAccountTestTraceFinished(c)
 	ctx := c.Request.Context()
 	testOpts := firstAccountTestOptions(opts)
 
@@ -615,6 +617,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -687,6 +690,7 @@ func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Con
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -773,6 +777,7 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(resp.Body)
@@ -963,6 +968,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if isOAuth && s.accountRepo != nil {
@@ -1280,6 +1286,7 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	s.observeGrokTestResponse(withGrokTeamRateLimitModel(ctx, testModelID), account, resp)
@@ -1373,6 +1380,7 @@ func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context
 		}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	s.observeGrokTestResponse(ctx, account, resp)
 
 	body, err := io.ReadAll(resp.Body)
@@ -1459,6 +1467,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(ctx, account, resp)
 
@@ -1500,6 +1509,7 @@ func (s *AccountTestService) testGrokVideoGeneration(c *gin.Context, ctx context
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video status failed: %s", err.Error()))
 		}
+		noteAccountTestUpstreamStatus(c, statusResp.StatusCode)
 		statusBody, _ := io.ReadAll(statusResp.Body)
 		_ = statusResp.Body.Close()
 		if statusResp.StatusCode != http.StatusOK && statusResp.StatusCode != http.StatusAccepted {
@@ -1557,6 +1567,7 @@ func (s *AccountTestService) emitGrokVideoResult(c *gin.Context, ctx context.Con
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok video content download failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20)) // 64 MiB cap for admin preview
 	if resp.StatusCode != http.StatusOK {
@@ -1629,6 +1640,7 @@ User query:
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("standalone web_search probe failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(withGrokTeamRateLimitModel(ctx, grokDefaultResponsesModel), account, resp)
 
@@ -1710,6 +1722,7 @@ func (s *AccountTestService) testGrokTTS(c *gin.Context, ctx context.Context, ac
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Grok TTS failed: %s", err.Error()))
 		}
+		noteAccountTestUpstreamStatus(c, resp.StatusCode)
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		s.observeGrokTestResponse(ctx, account, resp)
@@ -1801,6 +1814,7 @@ func (s *AccountTestService) testGrokSTT(c *gin.Context, ctx context.Context, ac
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok STT failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 	s.observeGrokTestResponse(ctx, account, resp)
 	respBody, _ := io.ReadAll(resp.Body)
@@ -1879,6 +1893,7 @@ func (s *AccountTestService) testGrokRealtime(c *gin.Context, ctx context.Contex
 	defer cancel()
 
 	conn, status, _, dialErr := dialer.Dial(dialCtx, wsURL, headers, s.grokTestProxyURL(account))
+	noteAccountTestUpstreamStatus(c, status)
 	if dialErr != nil {
 		detail := dialErr.Error()
 		var hs *openAIWSHandshakeError
@@ -2171,6 +2186,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -2309,6 +2325,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -2452,6 +2469,7 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -2696,6 +2714,8 @@ func createGeminiTestPayload(modelID string, prompt string) []byte {
 // processGeminiStream processes SSE stream from Gemini API
 func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
+	var usage accountTestStreamUsage
+	defer usage.commit(c)
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -2728,6 +2748,9 @@ func (s *AccountTestService) processGeminiStream(c *gin.Context, body io.Reader)
 		// - Gemini CLI: {"response": {"candidates": [...]}}
 		if resp, ok := data["response"].(map[string]any); ok && resp != nil {
 			data = resp
+		}
+		if usageMetadata, ok := data["usageMetadata"].(map[string]any); ok {
+			usage.observeFields(usageMetadata, "promptTokenCount", "candidatesTokenCount")
 		}
 		if candidates, ok := data["candidates"].([]any); ok && len(candidates) > 0 {
 			if candidate, ok := candidates[0].(map[string]any); ok {
@@ -2824,6 +2847,8 @@ func createOpenAIChatCompletionsTestPayload(modelID string, prompt string) map[s
 // processClaudeStream processes the SSE stream from Claude API
 func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
+	var usage accountTestStreamUsage
+	defer usage.commit(c)
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -2854,6 +2879,8 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 		eventType, _ := data["type"].(string)
 
 		switch eventType {
+		case "message_start", "message_delta":
+			usage.observeAnthropic(data)
 		case "content_block_delta":
 			if delta, ok := data["delta"].(map[string]any); ok {
 				if text, ok := delta["text"].(string); ok {
@@ -2881,6 +2908,8 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 	reader := bufio.NewReader(body)
 	seenJSON := false
 	seenFinish := false
+	var usage accountTestStreamUsage
+	defer usage.commit(c)
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -2925,6 +2954,9 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) error: %s", errorMsg))
 		}
 
+		if chunkUsage, ok := data["usage"].(map[string]any); ok {
+			usage.observeFields(chunkUsage, "prompt_tokens", "completion_tokens")
+		}
 		choices, ok := data["choices"].([]any)
 		if !ok {
 			continue
@@ -2997,6 +3029,13 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 				s.sendEvent(c, TestEvent{Type: "content", Text: delta})
 			}
 		case "response.completed", "response.done":
+			if responseData, ok := data["response"].(map[string]any); ok {
+				var usage accountTestStreamUsage
+				if responseUsage, ok := responseData["usage"].(map[string]any); ok {
+					usage.observeFields(responseUsage, "input_tokens", "output_tokens")
+				}
+				usage.commit(c)
+			}
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 			return nil
 		case "response.failed":
@@ -3075,6 +3114,7 @@ func (s *AccountTestService) testOpenAIImageAPIKey(c *gin.Context, ctx context.C
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
@@ -3210,6 +3250,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Image upstream request failed: %s", err.Error()))
 	}
+	noteAccountTestUpstreamStatus(c, resp.StatusCode)
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -3270,6 +3311,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 }
 
 func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
+	observeAccountTestEvent(c, event)
 	if event.Type == "test_complete" {
 		if suppress, ok := c.Get(accountTestSuppressCompletionContextKey); ok {
 			if suppressCompletion, _ := suppress.(bool); suppressCompletion {
