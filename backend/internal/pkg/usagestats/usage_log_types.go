@@ -137,6 +137,20 @@ type GroupStat struct {
 	AccountCost float64 `json:"account_cost"` // 账号成本
 }
 
+// RequestTypeStat is the usage total of one effective request type (sync,
+// stream, ws_v2, cyber, live). Rows written before request_type existed are
+// classified from their legacy openai_ws_mode / stream flags, the same way the
+// request_type filter matches them, so each item equals usage/stats filtered
+// by that type.
+type RequestTypeStat struct {
+	RequestType string  `json:"request_type"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	Cost        float64 `json:"cost"`         // 标准计费（只算 provider_cost_recorded 的行）
+	ActualCost  float64 `json:"actual_cost"`  // 实际扣除
+	AccountCost float64 `json:"account_cost"` // 账号成本
+}
+
 // UserUsageTrendPoint represents user usage trend data point
 type UserUsageTrendPoint struct {
 	Date       string  `json:"date"`

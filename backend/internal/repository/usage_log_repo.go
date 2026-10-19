@@ -225,6 +225,7 @@ func appendNativeCompactionV2QueryFilter(query string, args []any, nativeCompact
 }
 
 // buildRequestTypeFilterCondition 在 request_type 过滤时兼容 legacy 字段，避免历史数据漏查。
+// legacy 归类规则须与 usageLogEffectiveRequestTypeExpr（dashboard/request-types 的分组表达式）保持一致。
 func buildRequestTypeFilterCondition(startArgIndex int, requestType int16) (string, []any) {
 	return buildRequestTypeFilterConditionWithAlias(startArgIndex, requestType, "")
 }

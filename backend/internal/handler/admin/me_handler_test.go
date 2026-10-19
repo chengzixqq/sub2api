@@ -101,6 +101,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	server := data["server"].(map[string]any)
 	require.Equal(t, "0.2.16", server["version"])
 	require.Contains(t, server["capabilities"], "dashboard.rates")
+	require.Contains(t, server["capabilities"], "dashboard.request_types")
 	require.Contains(t, server["capabilities"], "dashboard.users_ranking_sort")
 	require.Contains(t, server["capabilities"], "dashboard.users_trend_filtered_metric")
 }

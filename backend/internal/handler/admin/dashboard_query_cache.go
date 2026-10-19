@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	dashboardTrendCache        = newSnapshotCache(30 * time.Second)
-	dashboardModelStatsCache   = newSnapshotCache(30 * time.Second)
-	dashboardGroupStatsCache   = newSnapshotCache(30 * time.Second)
-	dashboardUsersTrendCache   = newSnapshotCache(30 * time.Second)
-	dashboardAPIKeysTrendCache = newSnapshotCache(30 * time.Second)
+	dashboardTrendCache            = newSnapshotCache(30 * time.Second)
+	dashboardModelStatsCache       = newSnapshotCache(30 * time.Second)
+	dashboardGroupStatsCache       = newSnapshotCache(30 * time.Second)
+	dashboardRequestTypeStatsCache = newSnapshotCache(30 * time.Second)
+	dashboardUsersTrendCache       = newSnapshotCache(30 * time.Second)
+	dashboardAPIKeysTrendCache     = newSnapshotCache(30 * time.Second)
 )
 
 type dashboardEntityTrendCacheKey struct {
@@ -91,6 +92,14 @@ func (h *DashboardHandler) getGroupStatsCached(ctx context.Context, startTime, e
 	}
 	return loadDashboardQuery(ctx, dashboardGroupStatsCache, startTime, endTime, filters, "", func(work context.Context) ([]usagestats.GroupStat, error) {
 		return h.dashboardService.GetGroupStatsWithUsageFilters(work, startTime, endTime, filters)
+	})
+}
+
+// getRequestTypeStatsCached caches the per-request-type totals; the key holds
+// every filter (including model_source) and the caller's usage scope.
+func (h *DashboardHandler) getRequestTypeStatsCached(ctx context.Context, startTime, endTime time.Time, filters usagestats.UsageLogFilters) ([]usagestats.RequestTypeStat, bool, error) {
+	return loadDashboardQuery(ctx, dashboardRequestTypeStatsCache, startTime, endTime, filters, "request_types", func(work context.Context) ([]usagestats.RequestTypeStat, error) {
+		return h.dashboardService.GetRequestTypeStatsWithUsageFilters(work, startTime, endTime, filters)
 	})
 }
 

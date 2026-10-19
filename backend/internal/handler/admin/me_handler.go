@@ -23,6 +23,7 @@ var adminMeCapabilities = []string{
 	"dashboard.account_cost",
 	"dashboard.accounts_ranking",
 	"dashboard.rates",
+	"dashboard.request_types",
 	"dashboard.users_ranking_sort",
 	"dashboard.users_trend_filtered_metric",
 	"groups.member_batch",

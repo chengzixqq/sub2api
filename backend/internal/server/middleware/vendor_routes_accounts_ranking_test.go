@@ -37,6 +37,17 @@ func TestVendorRoutesDenyDashboardRates(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyDashboardRequestTypes: the per-type split returns cost,
+// actual_cost and account_cost untrimmed, while vendor dashboards trim amounts
+// by monitoring tier. Opening it requires registering the path in both
+// vendorAllowedRoutes and vendorUsageScopedRoutes and trimming those amounts.
+func TestVendorRoutesDenyDashboardRequestTypes(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/dashboard/request-types"), scope) {
+		t.Fatal("vendor must not read the request type split")
+	}
+}
+
 // TestVendorRoutesDenyGroupMemberBatch: membership batch writes are POST under
 // /admin/groups, which the vendor whitelist only opens for GET / PUT / PATCH.
 func TestVendorRoutesDenyGroupMemberBatch(t *testing.T) {
