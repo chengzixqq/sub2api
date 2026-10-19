@@ -159,6 +159,7 @@ func isUserTimingPath(path string) bool {
 	switch {
 	case rest == "/auth/me",
 		rest == "/auth/revoke-all-sessions",
+		rest == "/auth/sessions", strings.HasPrefix(rest, "/auth/sessions/"),
 		rest == "/auth/oauth/bind-token":
 		return true
 	case rest == "/user", strings.HasPrefix(rest, "/user/"):

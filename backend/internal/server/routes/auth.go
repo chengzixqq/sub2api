@@ -255,8 +255,11 @@ func RegisterAuthRoutes(
 	authenticated.Use(panelRateLimiter.Global())
 	{
 		authenticated.GET("/auth/me", h.Auth.GetCurrentUser)
-		// 撤销所有会话（需要认证）
-		authenticated.POST("/auth/revoke-all-sessions", h.Auth.RevokeAllSessions)
+		// 会话列表与撤销（撤销类操作记入审计）
+		authenticated.GET("/auth/sessions", h.Auth.ListSessions)
+		authenticated.DELETE("/auth/sessions/:id", gin.HandlerFunc(auditLog), h.Auth.RevokeSession)
+		// 撤销所有会话（需要认证）；{"keep_current":true} 只踢其他设备
+		authenticated.POST("/auth/revoke-all-sessions", gin.HandlerFunc(auditLog), h.Auth.RevokeAllSessions)
 		authenticated.POST("/auth/oauth/bind-token", h.Auth.PrepareOAuthBindAccessTokenCookie)
 	}
 }

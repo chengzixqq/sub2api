@@ -35,6 +35,8 @@ const (
 	AuditActionRegister               = "auth.register"
 	AuditActionTokenRefresh           = "auth.token.refresh"
 	AuditActionSessionBindingMismatch = "auth.session_binding.mismatch"
+	AuditActionSessionRevoke          = "auth.session.revoke"
+	AuditActionSessionsRevokeAll      = "auth.sessions.revoke_all"
 	AuditActionStepUpVerify           = "auth.step_up.verify"
 	AuditActionAuditLogClear          = "admin.audit_log.clear"
 )

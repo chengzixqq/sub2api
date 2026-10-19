@@ -28,15 +28,15 @@ func (s *stubRevocationCache) RevokeSession(_ context.Context, sid string, _ tim
 	return nil
 }
 
-func (s *stubRevocationCache) SetUserTokensValidAfter(context.Context, int64, time.Time, time.Duration) error {
+func (s *stubRevocationCache) SetUserTokensValidAfter(context.Context, int64, time.Time, string, time.Duration) error {
 	return nil
 }
 
-func (s *stubRevocationCache) GetSessionRevocation(_ context.Context, sid string, _ int64) (bool, time.Time, error) {
+func (s *stubRevocationCache) GetSessionRevocation(_ context.Context, sid string, _ int64) (service.SessionRevocation, error) {
 	if s.err != nil {
-		return false, time.Time{}, s.err
+		return service.SessionRevocation{}, s.err
 	}
-	return s.revoked[sid], time.Time{}, nil
+	return service.SessionRevocation{Revoked: s.revoked[sid]}, nil
 }
 
 func newRevocationTestEnv(t *testing.T, cache *stubRevocationCache) (*service.AuthService, *service.UserService, *service.User) {

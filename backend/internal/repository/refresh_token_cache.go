@@ -70,7 +70,15 @@ func (c *refreshTokenCache) DeleteRefreshToken(ctx context.Context, tokenHash st
 	return c.rdb.Del(ctx, key).Err()
 }
 
+// DeleteUserRefreshTokens also deletes the user's session metadata.
 func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID int64) error {
+	if err := c.deleteUserTokens(ctx, userID); err != nil {
+		return err
+	}
+	return c.deleteUserSessionMetas(ctx, userID)
+}
+
+func (c *refreshTokenCache) deleteUserTokens(ctx context.Context, userID int64) error {
 	// Get all token hashes for this user
 	tokenHashes, err := c.GetUserTokenHashes(ctx, userID)
 	if err != nil && err != redis.Nil {
@@ -97,7 +105,15 @@ func (c *refreshTokenCache) DeleteUserRefreshTokens(ctx context.Context, userID 
 	return err
 }
 
+// DeleteTokenFamily also deletes the session's metadata.
 func (c *refreshTokenCache) DeleteTokenFamily(ctx context.Context, familyID string) error {
+	if err := c.deleteFamilyTokens(ctx, familyID); err != nil {
+		return err
+	}
+	return c.deleteSessionMeta(ctx, familyID)
+}
+
+func (c *refreshTokenCache) deleteFamilyTokens(ctx context.Context, familyID string) error {
 	// Get all token hashes in this family
 	tokenHashes, err := c.GetFamilyTokenHashes(ctx, familyID)
 	if err != nil && err != redis.Nil {

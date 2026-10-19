@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -826,12 +828,34 @@ type RevokeAllSessionsResponse struct {
 	Message string `json:"message"`
 }
 
+// RevokeAllSessionsRequest 撤销所有会话请求（请求体可省略）。
+type RevokeAllSessionsRequest struct {
+	// KeepCurrent 保留发起请求的本机会话，只踢掉其他设备。
+	KeepCurrent bool `json:"keep_current"`
+}
+
 // RevokeAllSessions 撤销当前用户的所有会话
 // POST /api/v1/auth/revoke-all-sessions
 func (h *AuthHandler) RevokeAllSessions(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	var req RevokeAllSessionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		// 请求体写错时不能退回“全部踢掉”，否则本机也会被登出。
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if sid := c.GetString(middleware2.ContextKeySessionID); req.KeepCurrent && sid != "" {
+		if err := h.authService.RevokeOtherUserSessions(c.Request.Context(), subject.UserID, sid); err != nil {
+			slog.Error("failed to revoke other sessions", "user_id", subject.UserID, "error", err)
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, RevokeAllSessionsResponse{Message: "All other sessions have been revoked."})
 		return
 	}
 

@@ -14,10 +14,21 @@ import (
 // implements it.
 type SessionRevocationCache interface {
 	RevokeSession(ctx context.Context, sessionID string, ttl time.Duration) error
-	SetUserTokensValidAfter(ctx context.Context, userID int64, validAfter time.Time, ttl time.Duration) error
-	// GetSessionRevocation reports whether sessionID is revoked and the user's
-	// valid-after point (zero when none), in one round trip.
-	GetSessionRevocation(ctx context.Context, sessionID string, userID int64) (revoked bool, validAfter time.Time, err error)
+	// SetUserTokensValidAfter revokes the user's tokens issued before
+	// validAfter, except those of exceptSessionID ("" = none).
+	SetUserTokensValidAfter(ctx context.Context, userID int64, validAfter time.Time, exceptSessionID string, ttl time.Duration) error
+	// GetSessionRevocation reads both records in one round trip.
+	GetSessionRevocation(ctx context.Context, sessionID string, userID int64) (SessionRevocation, error)
+}
+
+// SessionRevocation is what the revocation records say about one token.
+type SessionRevocation struct {
+	// Revoked means the token's session was revoked.
+	Revoked bool
+	// ValidAfter is the user's last revoke-all point (zero when none);
+	// ExceptSessionID survived that revoke-all.
+	ValidAfter      time.Time
+	ExceptSessionID string
 }
 
 const revocationCheckFailLogInterval = 30 * time.Second
@@ -54,11 +65,15 @@ func (s *AuthService) revokeSessionAccess(ctx context.Context, sessionID string)
 }
 
 func (s *AuthService) revokeUserAccessBefore(ctx context.Context, userID int64, at time.Time) {
+	s.revokeUserAccessBeforeExcept(ctx, userID, at, "")
+}
+
+func (s *AuthService) revokeUserAccessBeforeExcept(ctx context.Context, userID int64, at time.Time, exceptSessionID string) {
 	cache, ok := s.sessionRevocation()
 	if !ok {
 		return
 	}
-	if err := cache.SetUserTokensValidAfter(ctx, userID, at, s.revocationTTL()); err != nil {
+	if err := cache.SetUserTokensValidAfter(ctx, userID, at, exceptSessionID, s.revocationTTL()); err != nil {
 		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke access tokens of user %d: %v", userID, err)
 	}
 }
@@ -81,18 +96,21 @@ func (s *AuthService) CheckAccessTokenRevocation(ctx context.Context, claims *JW
 	if !ok || claims == nil {
 		return nil
 	}
-	revoked, validAfter, err := cache.GetSessionRevocation(ctx, claims.SessionID, claims.UserID)
+	rev, err := cache.GetSessionRevocation(ctx, claims.SessionID, claims.UserID)
 	if err != nil {
 		logRevocationCheckFailure(err)
 		return nil
 	}
-	if revoked {
+	if rev.Revoked {
 		return ErrTokenRevoked
 	}
-	if !validAfter.IsZero() && claims.issuedAt().Before(validAfter) {
-		return ErrTokenRevoked
+	if rev.ValidAfter.IsZero() || !claims.issuedAt().Before(rev.ValidAfter) {
+		return nil
 	}
-	return nil
+	if rev.ExceptSessionID != "" && rev.ExceptSessionID == claims.SessionID {
+		return nil
+	}
+	return ErrTokenRevoked
 }
 
 // issuedAt prefers the millisecond issue time; tokens issued before it existed

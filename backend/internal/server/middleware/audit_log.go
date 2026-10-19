@@ -129,6 +129,8 @@ var auditActionOverrides = map[string]string{
 	"POST /api/v1/auth/passkey/login/finish":                  service.AuditActionLogin,
 	"POST /api/v1/auth/register":                              service.AuditActionRegister,
 	"POST /api/v1/auth/refresh":                               service.AuditActionTokenRefresh,
+	"DELETE /api/v1/auth/sessions/:id":                        service.AuditActionSessionRevoke,
+	"POST /api/v1/auth/revoke-all-sessions":                   service.AuditActionSessionsRevokeAll,
 	"POST /api/v1/user/totp/step-up":                          service.AuditActionStepUpVerify,
 	"POST /api/v1/admin/audit-logs/clear":                     service.AuditActionAuditLogClear,
 	"POST /api/v1/admin/accounts/data":                        "admin.accounts.import",
