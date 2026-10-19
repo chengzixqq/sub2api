@@ -23,6 +23,7 @@ type DashboardHandler struct {
 	dashboardService   *service.DashboardService
 	aggregationService *service.DashboardAggregationService
 	startTime          time.Time // Server start time for uptime calculation
+	home               dashboardHomeBuilder
 }
 
 // NewDashboardHandler creates a new admin dashboard handler

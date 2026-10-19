@@ -22,6 +22,7 @@ var adminMeCapabilities = []string{
 	"api_keys.masked_view",
 	"dashboard.account_cost",
 	"dashboard.accounts_ranking",
+	"dashboard.home",
 	"dashboard.rates",
 	"dashboard.request_types",
 	"dashboard.users_ranking_sort",

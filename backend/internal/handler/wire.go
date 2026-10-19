@@ -57,6 +57,7 @@ func ProvideAdminHandlers(
 	settingService *service.SettingService,
 	claudeResetCredits *service.ClaudeResetCreditService,
 	accountStatusSummary *service.AccountStatusSummaryService,
+	dashboardHome *service.DashboardHomeService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
@@ -64,6 +65,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetClaudeCustomizationService(settingService)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
 	accountHandler.SetAccountStatusSummaryService(accountStatusSummary)
+	dashboardHandler.SetDashboardHomeService(dashboardHome)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,

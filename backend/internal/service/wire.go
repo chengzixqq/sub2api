@@ -879,6 +879,7 @@ var ProviderSet = wire.NewSet(
 	NewAdminAccessTokenService,
 	// Core services
 	NewAccountStatusSummaryServiceForWire,
+	NewDashboardHomeService,
 	ProvideAuthService,
 	NewPasskeyService,
 	NewUserService,

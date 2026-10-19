@@ -82,6 +82,7 @@ func TestVendorRoutesDenyUnscopableDashboards(t *testing.T) {
 		"/api/v1/admin/dashboard/stats",
 		"/api/v1/admin/dashboard/snapshot-v2",
 		"/api/v1/admin/dashboard/realtime",
+		"/api/v1/admin/dashboard/home",
 	}
 
 	for _, path := range unscopable {

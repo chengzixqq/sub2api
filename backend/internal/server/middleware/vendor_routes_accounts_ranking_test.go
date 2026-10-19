@@ -37,6 +37,16 @@ func TestVendorRoutesDenyDashboardRates(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyDashboardHome: the home aggregate reads station-wide
+// stats, ops, alerts, group availability and channel health, none of which
+// can be narrowed to a workspace.
+func TestVendorRoutesDenyDashboardHome(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/dashboard/home"), scope) {
+		t.Fatal("vendor must not read the station-wide home aggregate")
+	}
+}
+
 // TestVendorRoutesDenyDashboardRequestTypes: the per-type split returns cost,
 // actual_cost and account_cost untrimmed, while vendor dashboards trim amounts
 // by monitoring tier. Opening it requires registering the path in both
