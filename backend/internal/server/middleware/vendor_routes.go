@@ -130,6 +130,11 @@ var vendorAllowedRoutes = []vendorRoute{
 	// 在 service 层夹住。工作区写路径一律不对 vendor 开放 —— 放出去
 	// 等于供应商可自建工作区、给自己授权任意分组、自定结算区间。
 	{prefix: "/api/v1/admin/workspaces/me", methods: []string{"GET"}},
+	// 运行时平台目录与枚举：全是编译期常量，platform_catalog 与随公开 Web 产物分发的
+	// platformCatalog.builtin.json 相同，不含工作区或全站数据，也不查 usage_logs
+	// （因此不登记 vendorUsageScopedRoutes）。platform_auth 由 handler 按权限档裁剪：
+	// 有账号管理档时去掉不能新建的 Grok，否则为空。
+	{prefix: "/api/v1/admin/meta/catalog", methods: []string{"GET"}, exact: true},
 
 	// 账号：在已授权分组内管理自己工作区的账号。
 	{prefix: "/api/v1/admin/accounts", methods: []string{"GET"}, permit: permitAccountRead, exclude: vendorBatchAccountRoutes},

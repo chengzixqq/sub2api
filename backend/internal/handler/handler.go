@@ -46,6 +46,7 @@ type AdminHandlers struct {
 	Workspace              *admin.WorkspaceHandler
 	UserAdjustment         *admin.UserAdjustmentHandler
 	Me                     *admin.MeHandler
+	Meta                   *admin.MetaHandler
 	AccessToken            *admin.AccessTokenHandler
 	AccountTestRun         *admin.AccountTestRunHandler
 }

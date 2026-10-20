@@ -553,14 +553,20 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 }
 
 func validateAccountCreateScope(ctx context.Context, platform string) error {
-	scope := ScopeFromContextOrDeny(ctx)
-	if scope.IsVendor() && strings.EqualFold(strings.TrimSpace(platform), PlatformGrok) {
+	if !accountCreatePlatformAllowed(ScopeFromContextOrDeny(ctx), platform) {
 		return infraerrors.Forbidden(
 			"WORKSPACE_GROK_ACCOUNT_CREATE_FORBIDDEN",
 			"workspace vendors may only reauthorize an existing Grok account",
 		)
 	}
 	return nil
+}
+
+// accountCreatePlatformAllowed reports whether scope may create a new account
+// on platform; vendors may only reauthorize existing Grok accounts. The meta
+// catalog's platform_auth uses it too, so both stay in step.
+func accountCreatePlatformAllowed(scope Scope, platform string) bool {
+	return !scope.IsVendor() || !strings.EqualFold(strings.TrimSpace(platform), PlatformGrok)
 }
 
 // resolveNewAccountWorkspaceID 决定新建账号的归属工作区。

@@ -42,6 +42,7 @@ var adminMeCapabilities = []string{
 	"groups.member_batch",
 	"lists.etag",
 	"logs.since_id",
+	"meta.catalog",
 	"ops.alert_event_counts",
 	"ops.alert_event_details",
 	"ops.alert_latency_metrics",

@@ -50,6 +50,7 @@ func ProvideAdminHandlers(
 	workspaceHandler *admin.WorkspaceHandler,
 	userAdjustmentHandler *admin.UserAdjustmentHandler,
 	meHandler *admin.MeHandler,
+	metaHandler *admin.MetaHandler,
 	accessTokenHandler *admin.AccessTokenHandler,
 	accountTestRunHandler *admin.AccountTestRunHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
@@ -109,6 +110,7 @@ func ProvideAdminHandlers(
 		Workspace:              workspaceHandler,
 		UserAdjustment:         userAdjustmentHandler,
 		Me:                     meHandler,
+		Meta:                   metaHandler,
 		AccessToken:            accessTokenHandler,
 		AccountTestRun:         accountTestRunHandler,
 	}
@@ -350,6 +352,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewWorkspaceHandler,
 	admin.NewUserAdjustmentHandler,
 	admin.NewAccessTokenHandler,
+	admin.NewMetaHandler,
 	admin.NewAccountTestRunHandler,
 
 	// AdminHandlers and Handlers constructors

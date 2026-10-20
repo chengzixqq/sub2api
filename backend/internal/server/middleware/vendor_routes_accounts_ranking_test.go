@@ -205,3 +205,29 @@ func TestVendorRoutesAccountRuntimeBatchFollowsAccountRead(t *testing.T) {
 		t.Fatalf("%s must be registered in vendorBatchAccountRoutes", path)
 	}
 }
+
+// TestVendorRoutesAllowMetaCatalog: the catalog is compile-time constants that
+// already ship in the public Web bundle, so every vendor may read it (the
+// handler trims platform_auth by tier). Only the exact GET path opens, and it
+// queries no usage rows, so it needs no account allowlist.
+func TestVendorRoutesAllowMetaCatalog(t *testing.T) {
+	const path = "/api/v1/admin/meta/catalog"
+	for _, perms := range []service.WorkspacePermissions{{}, {MonitorView: true}, allPermsOn()} {
+		scope := VendorScope{WorkspaceID: 7, Perms: perms}
+		if !vendorRouteAllowed(newFullPathContext("GET", path), scope) {
+			t.Errorf("GET %s should be open to every vendor (%+v)", path, perms)
+		}
+		if vendorRouteAllowed(newFullPathContext("POST", path), scope) {
+			t.Errorf("POST %s must stay closed (%+v)", path, perms)
+		}
+	}
+	all := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, sibling := range []string{"/api/v1/admin/meta", "/api/v1/admin/meta/catalog/extra", "/api/v1/admin/meta/other"} {
+		if vendorRouteAllowed(newFullPathContext("GET", sibling), all) {
+			t.Errorf("GET %s must not inherit the exact catalog rule", sibling)
+		}
+	}
+	if containsString(vendorUsageScopedRoutes, path) {
+		t.Errorf("%s reads no usage rows and must not trigger the account allowlist lookup", path)
+	}
+}

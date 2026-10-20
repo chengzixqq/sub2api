@@ -38,6 +38,7 @@ func RegisterAdminRoutes(
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
 		admin.GET("/me", h.Admin.Me.Get)
+		admin.GET("/meta/catalog", h.Admin.Meta.Catalog)
 
 		// 仪表盘
 		registerDashboardRoutes(admin, h)
