@@ -621,6 +621,15 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 		}
 	}
 
+	// 授权校验必须早于 Create：绑定发生在账号入库之后，
+	// 放到那里失败会留下一个不属于任何分组的孤儿账号。
+	// 默认分组自动绑定同样经此校验 —— 那条路径不走 validateGroupIDsExist。
+	// 还必须早于混合渠道检查：否则 vendor 用未授权的 group_id 就能从 409 里
+	// 读到别家分组的名称与平台构成（越权探测）。
+	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
+		return nil, err
+	}
+
 	// 检查混合渠道风险（除非用户已确认）
 	if len(groupIDs) > 0 && !input.SkipMixedChannelCheck {
 		if err := s.checkMixedChannelRisk(ctx, 0, input.Platform, groupIDs); err != nil {
@@ -639,13 +648,6 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 	// 只在新建入口记刷新时间；复制账号走 buildAccountForCreate，凭据须与源账号一致。
 	stampTokenRefreshedAtOnCreate(input.Type, input.Credentials, time.Now())
-
-	// 授权校验必须早于 Create：绑定发生在账号入库之后，
-	// 放到那里失败会留下一个不属于任何分组的孤儿账号。
-	// 默认分组自动绑定同样经此校验 —— 那条路径不走 validateGroupIDsExist。
-	if err := s.requireGroupIDsGranted(ctx, groupIDs); err != nil {
-		return nil, err
-	}
 
 	account, err := buildAccountForCreate(ctx, input, accountExtra)
 	if err != nil {
@@ -1926,6 +1928,24 @@ type MixedChannelError struct {
 func (e *MixedChannelError) Error() string {
 	return fmt.Sprintf("mixed_channel_warning: Group '%s' contains both %s and %s accounts. Using mixed channels in the same context may cause thinking block signature validation issues, which will fallback to non-thinking mode for historical messages.",
 		e.GroupName, e.CurrentPlatform, e.OtherPlatform)
+}
+
+// MixedChannelWarningReason 是创建 / 更新账号混合渠道 409 的稳定 reason（docs/API_ERROR_CODES.md）。
+// 分组批量成员接口的逐项结果另用 MIXED_CHANNEL_RISK，两者不合并。
+const MixedChannelWarningReason = "MIXED_CHANNEL_WARNING"
+
+// ConflictError 把混合渠道风险转成带稳定 reason 的 409：message 与 Error() 逐字相同，
+// metadata 全部是字符串（group_id 为十进制）。
+//
+// 有意不给 MixedChannelError 加 Unwrap / Is：否则幂等记录的失败原因、
+// 其他走 response.ErrorFrom 的路径都会跟着变成这个 409。
+func (e *MixedChannelError) ConflictError() *infraerrors.ApplicationError {
+	return infraerrors.Conflict(MixedChannelWarningReason, e.Error()).WithMetadata(map[string]string{
+		"group_id":         strconv.FormatInt(e.GroupID, 10),
+		"group_name":       e.GroupName,
+		"current_platform": e.CurrentPlatform,
+		"other_platform":   e.OtherPlatform,
+	})
 }
 
 func (s *adminServiceImpl) ResetAccountQuota(ctx context.Context, id int64) error {

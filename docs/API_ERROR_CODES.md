@@ -10,6 +10,7 @@
 - handler 信封：`{"code":401,"message":"...","reason":"REFRESH_TOKEN_INVALID","metadata":{...}}`，`code` 是 HTTP 状态码整数。
 - 合规确认 423：`{"code":"ADMIN_COMPLIANCE_ACK_REQUIRED","reason":"ADMIN_COMPLIANCE_ACK_REQUIRED","message":"...","metadata":{"version":"...","document_url_zh":"...",...}}`。
 - 登录 / 刷新限流 429：`{"code":"RATE_LIMITED","reason":"RATE_LIMITED","retry_after":12,"error":"rate limit exceeded","message":"..."}`，同时带 `Retry-After` 头；`error` 字段为兼容旧客户端保留。
+- 账号混合渠道 409：`{"code":409,"reason":"MIXED_CHANNEL_WARNING","error":"mixed_channel_warning","message":"mixed_channel_warning: Group '...' contains both Antigravity and Anthropic accounts. ...","metadata":{"group_id":"7","group_name":"...","current_platform":"Antigravity","other_platform":"Anthropic"},"details":{"group_id":7,"group_name":"...","current_platform":"Antigravity","other_platform":"Anthropic"}}`。`error` 与 `message` 为兼容旧客户端保留；`metadata` 全是字符串，`details` 与 `POST /api/v1/admin/accounts/check-mixed-channel` 返回的 details 同形（group_id 为数字）。同为 409 的还有 `IDEMPOTENCY_KEY_CONFLICT`、`IDEMPOTENCY_RETRY_BACKOFF` 等，必须按 `reason` 区分。
 
 建议解码方式：`code` 按整数或字符串都能解；识别用 `reason`，缺省时退回字符串 `code`。
 
@@ -52,6 +53,7 @@
 | 400 | INVALID_GROUP_FILTER | 参数校验类：分组过滤参数 `group_id` 必须是正整数（`GET /admin/accounts/status-summary` 的查询参数、`POST /api/v1/admin/accounts/today-stats/batch` 请求体里的可选 `group_id`；后者传 null 等于不传）；按 message 修正参数，不要原样重试。vendor 对 today-stats/batch 传未授权的分组返回 404 RESOURCE_NOT_FOUND（不区分分组不存在） |
 | 400 | INVALID_ACCOUNT_STATUS_FILTER | 参数校验类：`GET /api/v1/admin/accounts`（以及账号导出、`/admin/accounts/upstream-billing-rates` 等共用账号列表筛选的接口）的 `status` 按逗号拆分、去空白、去重后超过 16 个值（`metadata.max`=16）。减少筛选值后重试，不要原样重试；单个值不会触发 |
 | 409 | ACCOUNT_TEST_RUNNING | `POST /api/v1/admin/accounts/:id/test-runs`：该账号已有一个运行中的异步测试，`metadata.run_id` 是它的 run_id，改为轮询 `GET /api/v1/admin/account-test-runs/:run_id`，不要重复提交 |
+| 409 | MIXED_CHANNEL_WARNING | 新建 / 编辑账号绑定的分组里同时有 Antigravity 与 Anthropic 账号（`POST /api/v1/admin/accounts`、`PUT` / `PATCH /api/v1/admin/accounts/:id`、`POST /api/v1/admin/accounts/bulk-update`；信封见上文“响应格式”）。用 `metadata` 或 `details` 的分组名与两个平台弹确认框，确认后在请求体加 `confirm_mixed_channel_risk=true` 重发。新建接口要求 `Idempotency-Key`，确认后请求体变了，必须换一个新的 key 重发，沿用旧 key 会收到 409 `IDEMPOTENCY_KEY_CONFLICT`。`current_platform` / `other_platform` 是展示用的首字母大写名称（Antigravity、Anthropic），不是平台枚举。`/admin/me` 的 capabilities 含 `accounts.mixed_channel_details` 时才有 reason / metadata / details，否则先调 check-mixed-channel 预检。分组批量成员接口（`groups.member_batch`）的逐项结果用的是另一个码 `MIXED_CHANNEL_RISK`。vendor 绑定未授权的分组时先返回 404 `RESOURCE_NOT_FOUND`，不会走到这个码 |
 | 404 | ACCOUNT_TEST_RUN_NOT_FOUND | `GET /api/v1/admin/accounts/:id/test-runs/latest` 与 `GET /api/v1/admin/account-test-runs/:run_id`：没有测试记录、run_id 不存在或不属于本工作区的账号；latest 返回它时显示“还没有测试记录” |
 | 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试；该账号已有运行中的测试时优先返回 409 ACCOUNT_TEST_RUNNING |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |

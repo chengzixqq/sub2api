@@ -1041,3 +1041,41 @@ describe('CreateAccountModal Vertex API key auth', () => {
     expect(wrapper.find('[data-testid="vertex-api-key-input"]').exists()).toBe(false)
   })
 })
+
+describe('CreateAccountModal mixed-channel 409 fallback', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset()
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+  })
+
+  it('opens the mixed-channel dialog when create returns 409 and resends with confirmation', async () => {
+    createAccountMock
+      .mockRejectedValueOnce({
+        status: 409,
+        code: 409,
+        reason: 'MIXED_CHANNEL_WARNING',
+        error: 'mixed_channel_warning',
+        message: "mixed_channel_warning: Group 'claude-max' contains both Anthropic and Antigravity accounts.",
+      })
+      .mockResolvedValueOnce({ id: 42, platform: 'anthropic', type: 'apikey' })
+
+    const wrapper = await submitApiKeyAccount('anthropic')
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.confirm_mixed_channel_risk).toBeUndefined()
+    const dialog = wrapper
+      .findAllComponents({ name: 'ConfirmDialog' })
+      .find((candidate) => candidate.props('title') === 'admin.accounts.mixedChannelWarningTitle')
+    expect(dialog).toBeDefined()
+    expect(dialog!.props('show')).toBe(true)
+    expect(dialog!.props('message')).toContain('claude-max')
+
+    dialog!.vm.$emit('confirm')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(2)
+    expect(createAccountMock.mock.calls[1]?.[0]?.confirm_mixed_channel_risk).toBe(true)
+  })
+})

@@ -18,6 +18,7 @@ var adminMeCapabilities = []string{
 	"accounts.apply_oauth_preserve_status",
 	"accounts.clear_error_preserve_inactive",
 	"accounts.list_query",
+	"accounts.mixed_channel_details",
 	"accounts.oauth_error_reasons",
 	"accounts.patch",
 	"accounts.reauthorize",

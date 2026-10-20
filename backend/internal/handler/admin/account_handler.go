@@ -979,14 +979,9 @@ func (h *AccountHandler) CheckMixedChannel(c *gin.Context) {
 		if errors.As(err, &mixedErr) {
 			response.Success(c, gin.H{
 				"has_risk": true,
-				"error":    "mixed_channel_warning",
+				"error":    mixedChannelWarningError,
 				"message":  mixedErr.Error(),
-				"details": gin.H{
-					"group_id":         mixedErr.GroupID,
-					"group_name":       mixedErr.GroupName,
-					"current_platform": mixedErr.CurrentPlatform,
-					"other_platform":   mixedErr.OtherPlatform,
-				},
+				"details":  mixedChannelDetails(mixedErr),
 			})
 			return
 		}
@@ -1060,14 +1055,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		return h.buildAccountResponseWithRuntime(ctx, account), nil
 	})
 	if err != nil {
-		// 检查是否为混合渠道错误
-		var mixedErr *service.MixedChannelError
-		if errors.As(err, &mixedErr) {
-			// 创建接口仅返回最小必要字段，详细信息由专门检查接口提供
-			c.JSON(409, gin.H{
-				"error":   "mixed_channel_warning",
-				"message": mixedErr.Error(),
-			})
+		if respondMixedChannelConflict(c, err) {
 			return
 		}
 
@@ -1183,14 +1171,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		SkipMixedChannelCheck: skipCheck,
 	})
 	if err != nil {
-		// 检查是否为混合渠道错误
-		var mixedErr *service.MixedChannelError
-		if errors.As(err, &mixedErr) {
-			// 更新接口仅返回最小必要字段，详细信息由专门检查接口提供
-			c.JSON(409, gin.H{
-				"error":   "mixed_channel_warning",
-				"message": mixedErr.Error(),
-			})
+		if respondMixedChannelConflict(c, err) {
 			return
 		}
 
@@ -1273,12 +1254,7 @@ func (h *AccountHandler) Patch(c *gin.Context) {
 		ExpectedConfigVersion: expectedVersion,
 	})
 	if err != nil {
-		var mixedErr *service.MixedChannelError
-		if errors.As(err, &mixedErr) {
-			c.JSON(409, gin.H{
-				"error":   "mixed_channel_warning",
-				"message": mixedErr.Error(),
-			})
+		if respondMixedChannelConflict(c, err) {
 			return
 		}
 		response.ErrorFrom(c, err)
@@ -2440,18 +2416,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		SkipMixedChannelCheck: skipCheck,
 	})
 	if err != nil {
-		var mixedErr *service.MixedChannelError
-		if errors.As(err, &mixedErr) {
-			c.JSON(409, gin.H{
-				"error":   "mixed_channel_warning",
-				"message": mixedErr.Error(),
-				"details": gin.H{
-					"group_id":         mixedErr.GroupID,
-					"group_name":       mixedErr.GroupName,
-					"current_platform": mixedErr.CurrentPlatform,
-					"other_platform":   mixedErr.OtherPlatform,
-				},
-			})
+		if respondMixedChannelConflict(c, err) {
 			return
 		}
 		response.ErrorFrom(c, err)

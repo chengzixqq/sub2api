@@ -19,8 +19,49 @@ func setupAccountMixedChannelRouter(adminSvc *stubAdminService) *gin.Engine {
 	router.POST("/api/v1/admin/accounts/check-mixed-channel", accountHandler.CheckMixedChannel)
 	router.POST("/api/v1/admin/accounts", accountHandler.Create)
 	router.PUT("/api/v1/admin/accounts/:id", accountHandler.Update)
+	router.PATCH("/api/v1/admin/accounts/:id", accountHandler.Patch)
 	router.POST("/api/v1/admin/accounts/bulk-update", accountHandler.BulkUpdate)
 	return router
+}
+
+func newTestMixedChannelError() *service.MixedChannelError {
+	return &service.MixedChannelError{
+		GroupID:         27,
+		GroupName:       "claude-max",
+		CurrentPlatform: "Antigravity",
+		OtherPlatform:   "Anthropic",
+	}
+}
+
+// assertMixedChannelConflictBody 锁定混合渠道 409 的完整信封：旧字段 error / message
+// 一字不变，新增 code、reason、metadata（全字符串）与 details（group_id 为数字，
+// 与 check-mixed-channel 的 details 同形）。
+func assertMixedChannelConflictBody(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	require.Equal(t, http.StatusConflict, rec.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, "mixed_channel_warning", resp["error"])
+	require.Equal(t, newTestMixedChannelError().Error(), resp["message"])
+	require.Contains(t, resp["message"], "mixed_channel_warning")
+	require.Equal(t, float64(http.StatusConflict), resp["code"])
+	require.Equal(t, "MIXED_CHANNEL_WARNING", resp["reason"])
+	require.Equal(t, map[string]any{
+		"group_id":         "27",
+		"group_name":       "claude-max",
+		"current_platform": "Antigravity",
+		"other_platform":   "Anthropic",
+	}, resp["metadata"])
+	require.Equal(t, map[string]any{
+		"group_id":         float64(27),
+		"group_name":       "claude-max",
+		"current_platform": "Antigravity",
+		"other_platform":   "Anthropic",
+	}, resp["details"])
+	_, hasRequireConfirmation := resp["require_confirmation"]
+	_, hasData := resp["data"]
+	require.False(t, hasRequireConfirmation)
+	require.False(t, hasData)
 }
 
 func TestAccountHandlerCheckMixedChannelNoRisk(t *testing.T) {
@@ -83,16 +124,16 @@ func TestAccountHandlerCheckMixedChannelWithRisk(t *testing.T) {
 	require.Equal(t, "Antigravity", details["current_platform"])
 	require.Equal(t, "Anthropic", details["other_platform"])
 	require.Equal(t, int64(99), adminSvc.lastMixedCheck.accountID)
+	// 预检接口的 200 结构不变：不带 409 信封才有的 reason / metadata。
+	_, hasReason := data["reason"]
+	_, hasMetadata := data["metadata"]
+	require.False(t, hasReason)
+	require.False(t, hasMetadata)
 }
 
-func TestAccountHandlerCreateMixedChannelConflictSimplifiedResponse(t *testing.T) {
+func TestAccountHandlerCreateMixedChannelConflictAddsStructuredFields(t *testing.T) {
 	adminSvc := newStubAdminService()
-	adminSvc.createAccountErr = &service.MixedChannelError{
-		GroupID:         27,
-		GroupName:       "claude-max",
-		CurrentPlatform: "Antigravity",
-		OtherPlatform:   "Anthropic",
-	}
+	adminSvc.createAccountErr = newTestMixedChannelError()
 	router := setupAccountMixedChannelRouter(adminSvc)
 
 	body, _ := json.Marshal(map[string]any{
@@ -107,25 +148,35 @@ func TestAccountHandlerCreateMixedChannelConflictSimplifiedResponse(t *testing.T
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusConflict, rec.Code)
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "mixed_channel_warning", resp["error"])
-	require.Contains(t, resp["message"], "mixed_channel_warning")
-	_, hasDetails := resp["details"]
-	_, hasRequireConfirmation := resp["require_confirmation"]
-	require.False(t, hasDetails)
-	require.False(t, hasRequireConfirmation)
+	assertMixedChannelConflictBody(t, rec)
+	require.Empty(t, rec.Header().Get("Retry-After"))
 }
 
-func TestAccountHandlerUpdateMixedChannelConflictSimplifiedResponse(t *testing.T) {
+func TestAccountHandlerCreateMixedChannelConfirmPassesSkipFlag(t *testing.T) {
 	adminSvc := newStubAdminService()
-	adminSvc.updateAccountErr = &service.MixedChannelError{
-		GroupID:         27,
-		GroupName:       "claude-max",
-		CurrentPlatform: "Antigravity",
-		OtherPlatform:   "Anthropic",
-	}
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                       "ag-oauth-1",
+		"platform":                   "antigravity",
+		"type":                       "oauth",
+		"credentials":                map[string]any{"refresh_token": "rt"},
+		"group_ids":                  []int64{27},
+		"confirm_mixed_channel_risk": true,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.True(t, adminSvc.createdAccounts[0].SkipMixedChannelCheck)
+}
+
+func TestAccountHandlerUpdateMixedChannelConflictAddsStructuredFields(t *testing.T) {
+	adminSvc := newStubAdminService()
+	adminSvc.updateAccountErr = newTestMixedChannelError()
 	router := setupAccountMixedChannelRouter(adminSvc)
 
 	body, _ := json.Marshal(map[string]any{
@@ -136,15 +187,28 @@ func TestAccountHandlerUpdateMixedChannelConflictSimplifiedResponse(t *testing.T
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusConflict, rec.Code)
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Equal(t, "mixed_channel_warning", resp["error"])
-	require.Contains(t, resp["message"], "mixed_channel_warning")
-	_, hasDetails := resp["details"]
-	_, hasRequireConfirmation := resp["require_confirmation"]
-	require.False(t, hasDetails)
-	require.False(t, hasRequireConfirmation)
+	assertMixedChannelConflictBody(t, rec)
+}
+
+// PATCH 是 App 编辑分组走的路径（C03），409 信封必须与 PUT 一致，且不能带 ETag。
+func TestAccountHandlerPatchMixedChannelConflictAddsStructuredFields(t *testing.T) {
+	adminSvc := newStubAdminService()
+	adminSvc.updateAccountErr = newTestMixedChannelError()
+	router := setupAccountMixedChannelRouter(adminSvc)
+
+	body, _ := json.Marshal(map[string]any{
+		"group_ids": []int64{27},
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/accounts/3", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	assertMixedChannelConflictBody(t, rec)
+	require.Empty(t, rec.Header().Get("ETag"))
+	require.Equal(t, 1, adminSvc.updateAccountCalls)
+	require.NotNil(t, adminSvc.lastUpdateAccountInput)
+	require.False(t, adminSvc.lastUpdateAccountInput.SkipMixedChannelCheck)
 }
 
 func TestAccountHandlerUpdateMapsUpstreamBillingRateSyncSettings(t *testing.T) {
@@ -171,12 +235,7 @@ func TestAccountHandlerUpdateMapsUpstreamBillingRateSyncSettings(t *testing.T) {
 
 func TestAccountHandlerBulkUpdateMixedChannelConflict(t *testing.T) {
 	adminSvc := newStubAdminService()
-	adminSvc.bulkUpdateAccountErr = &service.MixedChannelError{
-		GroupID:         27,
-		GroupName:       "claude-max",
-		CurrentPlatform: "Antigravity",
-		OtherPlatform:   "Anthropic",
-	}
+	adminSvc.bulkUpdateAccountErr = newTestMixedChannelError()
 	router := setupAccountMixedChannelRouter(adminSvc)
 
 	body, _ := json.Marshal(map[string]any{
@@ -193,6 +252,7 @@ func TestAccountHandlerBulkUpdateMixedChannelConflict(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.Equal(t, "mixed_channel_warning", resp["error"])
 	require.Contains(t, resp["message"], "claude-max")
+	assertMixedChannelConflictBody(t, rec)
 }
 
 func TestAccountHandlerBulkUpdateMixedChannelConfirmSkips(t *testing.T) {
