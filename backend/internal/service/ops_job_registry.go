@@ -22,19 +22,22 @@ const (
 const opsJobStaleSlack = time.Minute
 
 // opsJobSchedule is how often a background job is expected to succeed.
-// Interval jobs set interval; cron jobs set cron + loc.
+// Interval jobs set interval; cron jobs set cron + loc. disabled means the
+// job is turned off in settings; misconfigured means it is turned on but its
+// schedule cannot run (an invalid cron), so it never runs.
 type opsJobSchedule struct {
-	disabled bool
-	interval time.Duration
-	cron     cron.Schedule
-	loc      *time.Location
-	grace    time.Duration
+	disabled      bool
+	misconfigured bool
+	interval      time.Duration
+	cron          cron.Schedule
+	loc           *time.Location
+	grace         time.Duration
 }
 
 // opsCleanupScheduleReader is implemented by OpsCleanupService so the
-// dashboard reads the cron that is actually running.
+// dashboard reads the cleanup schedule that settings turned on.
 type opsCleanupScheduleReader interface {
-	CurrentSchedule() (spec string, loc *time.Location, active bool)
+	CurrentSchedule() (spec string, loc *time.Location, enabled bool)
 }
 
 // resolveOpsJobSchedules lists the background jobs that write heartbeats and
@@ -64,10 +67,12 @@ func (s *OpsService) resolveOpsJobSchedules(ctx context.Context) map[string]opsJ
 	}
 	// An unreadable email config leaves the report job unregistered (unknown).
 	if emailCfg, err := s.GetEmailNotificationConfig(ctx); err == nil {
+		enabled, runnable := opsScheduledReportsState(emailCfg)
 		out[opsScheduledReportJobName] = opsJobSchedule{
-			disabled: !opsScheduledReportsConfigured(emailCfg),
-			interval: opsScheduledReportTickInterval,
-			grace:    opsScheduledReportRunTimeout + opsJobStaleSlack,
+			disabled:      !enabled,
+			misconfigured: enabled && !runnable,
+			interval:      opsScheduledReportTickInterval,
+			grace:         opsScheduledReportRunTimeout + opsJobStaleSlack,
 		}
 	}
 	if sched, ok := s.opsCleanupJobSchedule(); ok {
@@ -84,19 +89,21 @@ func (s *OpsService) opsMetricsCollectorInterval(ctx context.Context) time.Durat
 }
 
 // opsCleanupJobSchedule reports false when the cleanup schedule cannot be
-// read, so the job shows as unknown rather than guessing.
+// read, so the job shows as unknown rather than guessing. The cleanup cron is
+// built with the same parser, so an enabled spec that fails to parse is a
+// cleanup that never runs.
 func (s *OpsService) opsCleanupJobSchedule() (opsJobSchedule, bool) {
 	reader, ok := s.cleanupReloader.(opsCleanupScheduleReader)
 	if !ok {
 		return opsJobSchedule{}, false
 	}
-	spec, loc, active := reader.CurrentSchedule()
-	if !active {
+	spec, loc, enabled := reader.CurrentSchedule()
+	if !enabled {
 		return opsJobSchedule{disabled: true}, true
 	}
 	sched, err := opsCleanupCronParser.Parse(spec)
 	if err != nil {
-		return opsJobSchedule{}, false
+		return opsJobSchedule{misconfigured: true}, true
 	}
 	if loc == nil {
 		loc = time.UTC
@@ -134,6 +141,8 @@ func annotateOpsJobHeartbeats(now time.Time, heartbeats []*OpsJobHeartbeat, sche
 
 // opsJobHeartbeatStatus judges one heartbeat:
 //   - disabled: the job is registered but turned off by settings
+//   - failing (misconfigured): turned on in settings but its schedule cannot
+//     run, so it never runs again; no interval or next run is reported
 //   - stale: interval jobs without a success for 2 x interval + grace; cron
 //     jobs whose first run after the last success is overdue by grace. This
 //     wins over failing, so a job that keeps failing turns stale.
@@ -143,6 +152,9 @@ func opsJobHeartbeatStatus(now time.Time, hb *OpsJobHeartbeat, sched opsJobSched
 	failing := hb.LastErrorAt != nil && (hb.LastSuccessAt == nil || hb.LastErrorAt.After(*hb.LastSuccessAt))
 	if registered && sched.disabled {
 		return OpsJobStatusDisabled, nil, nil
+	}
+	if registered && sched.misconfigured {
+		return OpsJobStatusFailing, nil, nil
 	}
 	if !registered || !sched.valid() {
 		if failing {

@@ -60,9 +60,11 @@ type OpsCleanupService struct {
 	stopped   bool
 	effective opsCleanupEffectiveConfig
 
-	// activeSpec / activeLoc describe the running cron (valid while cron != nil).
-	activeSpec string
-	activeLoc  *time.Location
+	// scheduleEnabled / scheduleSpec / scheduleLoc record the schedule the
+	// last apply asked for. cron stays nil when scheduleSpec fails to parse.
+	scheduleEnabled bool
+	scheduleSpec    string
+	scheduleLoc     *time.Location
 
 	warnNoRedisOnce sync.Once
 }
@@ -150,6 +152,7 @@ func (s *OpsCleanupService) applyScheduleLocked(ctx context.Context) error {
 	s.computeEffectiveLocked(ctx)
 	s.stopCronLocked()
 
+	s.scheduleEnabled = s.effective.Enabled
 	if !s.effective.Enabled {
 		logger.LegacyPrintf("service.ops_cleanup", "[OpsCleanup] cron disabled by settings")
 		return nil
@@ -166,6 +169,7 @@ func (s *OpsCleanupService) applyScheduleLocked(ctx context.Context) error {
 			loc = parsed
 		}
 	}
+	s.scheduleSpec, s.scheduleLoc = schedule, loc
 
 	c := cron.New(cron.WithParser(opsCleanupCronParser), cron.WithLocation(loc))
 	if _, err := c.AddFunc(schedule, func() { s.runScheduled() }); err != nil {
@@ -173,7 +177,6 @@ func (s *OpsCleanupService) applyScheduleLocked(ctx context.Context) error {
 	}
 	c.Start()
 	s.cron = c
-	s.activeSpec, s.activeLoc = schedule, loc
 	logger.LegacyPrintf("service.ops_cleanup",
 		"[OpsCleanup] scheduled (schedule=%q tz=%s retention_days=err:%d/system:%d/min:%d/hour:%d)",
 		schedule, loc.String(),
@@ -201,19 +204,20 @@ func (s *OpsCleanupService) Reload(ctx context.Context) error {
 	return s.applyScheduleLocked(ctx)
 }
 
-// CurrentSchedule reports the cron spec and location of the running cleanup
-// schedule; active is false when cleanup is not scheduled (disabled by
-// settings, not started, or stopped).
+// CurrentSchedule reports the cron spec and location that settings turned on
+// for cleanup; enabled is false when cleanup is turned off by settings, not
+// started, or stopped. An enabled spec may be invalid: the cron then failed
+// to start and cleanup never runs.
 func (s *OpsCleanupService) CurrentSchedule() (string, *time.Location, bool) {
 	if s == nil {
 		return "", nil, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cron == nil {
+	if s.stopped || !s.scheduleEnabled {
 		return "", nil, false
 	}
-	return s.activeSpec, s.activeLoc, true
+	return s.scheduleSpec, s.scheduleLoc, true
 }
 
 // computeEffectiveLocked 计算"生效配置"并写入 s.effective。调用方持锁。

@@ -197,6 +197,27 @@ func TestOpsJobHeartbeatStatus_DisabledAndUnregistered(t *testing.T) {
 	require.Contains(t, string(raw), `"status":"unknown"`)
 }
 
+func TestOpsJobHeartbeatStatus_MisconfiguredScheduleIsFailing(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	broken := opsJobSchedule{misconfigured: true}
+
+	// The cron was valid until this morning's run, then an admin saved an
+	// invalid one: no error is recorded, but the job will never run again.
+	recent := &OpsJobHeartbeat{JobName: opsCleanupJobName, LastRunAt: timePtr(now.Add(-10 * time.Hour)), LastSuccessAt: timePtr(now.Add(-10 * time.Hour))}
+	status, expected, next := opsJobHeartbeatStatus(now, recent, broken, true)
+	require.Equal(t, OpsJobStatusFailing, status)
+	require.Nil(t, expected)
+	require.Nil(t, next)
+
+	old := &OpsJobHeartbeat{JobName: opsCleanupJobName, LastSuccessAt: timePtr(now.Add(-30 * 24 * time.Hour))}
+	status, _, _ = opsJobHeartbeatStatus(now, old, broken, true)
+	require.Equal(t, OpsJobStatusFailing, status)
+
+	// Turned off in settings still wins.
+	status, _, _ = opsJobHeartbeatStatus(now, old, opsJobSchedule{disabled: true}, true)
+	require.Equal(t, OpsJobStatusDisabled, status)
+}
+
 func TestOpsMetricsCollectorIntervalFromRaw_PreservesClamp(t *testing.T) {
 	cases := map[string]time.Duration{
 		"":      time.Minute,
@@ -279,7 +300,16 @@ func TestOpsServiceResolveJobSchedules(t *testing.T) {
 	writeJSONSetting(t, repo, SettingKeyOpsEmailNotificationConfig, report)
 	got = svc.resolveOpsJobSchedules(ctx)
 	require.False(t, got[opsScheduledReportJobName].disabled)
+	require.False(t, got[opsScheduledReportJobName].misconfigured)
 	require.Equal(t, opsScheduledReportTickInterval, got[opsScheduledReportJobName].interval)
+
+	report.Report.DailySummarySchedule = "0 9 * * * *"
+	writeJSONSetting(t, repo, SettingKeyOpsEmailNotificationConfig, report)
+	got = svc.resolveOpsJobSchedules(ctx)
+	require.False(t, got[opsScheduledReportJobName].disabled, "a report is turned on in settings")
+	require.True(t, got[opsScheduledReportJobName].misconfigured, "the only enabled report has an invalid cron")
+	report.Report.DailySummarySchedule = "0 9 * * *"
+	writeJSONSetting(t, repo, SettingKeyOpsEmailNotificationConfig, report)
 
 	svc.SetCleanupReloader(&cleanupScheduleReaderFake{spec: "0 3 * * *", loc: time.UTC, active: true})
 	got = svc.resolveOpsJobSchedules(ctx)
@@ -295,8 +325,11 @@ func TestOpsServiceResolveJobSchedules(t *testing.T) {
 	require.True(t, svc.resolveOpsJobSchedules(ctx)[opsCleanupJobName].disabled)
 
 	svc.SetCleanupReloader(&cleanupScheduleReaderFake{spec: "not a cron", active: true})
-	_, hasCleanup = svc.resolveOpsJobSchedules(ctx)[opsCleanupJobName]
-	require.False(t, hasCleanup, "an unparsable schedule is reported as unknown")
+	cleanup, ok = svc.resolveOpsJobSchedules(ctx)[opsCleanupJobName]
+	require.True(t, ok, "an enabled cleanup with an unparsable schedule stays registered")
+	require.False(t, cleanup.disabled, "enabled in settings is not disabled")
+	require.True(t, cleanup.misconfigured)
+	require.Nil(t, cleanup.cron)
 
 	svc.SetCleanupReloader(&runtimeCleanupReloader{})
 	_, hasCleanup = svc.resolveOpsJobSchedules(ctx)[opsCleanupJobName]
@@ -315,21 +348,30 @@ func TestOpsServiceResolveJobSchedules(t *testing.T) {
 	require.False(t, hasReports, "an unreadable email config is reported as unknown, not disabled")
 }
 
-func TestOpsScheduledReportsConfigured(t *testing.T) {
-	require.False(t, opsScheduledReportsConfigured(nil))
+func TestOpsScheduledReportsState(t *testing.T) {
+	assertState := func(cfg *OpsEmailNotificationConfig, wantEnabled, wantRunnable bool, msg string) {
+		t.Helper()
+		enabled, runnable := opsScheduledReportsState(cfg)
+		require.Equal(t, wantEnabled, enabled, msg)
+		require.Equal(t, wantRunnable, runnable, msg)
+	}
+	assertState(nil, false, false, "nil config")
 	cfg := defaultOpsEmailNotificationConfig()
-	require.False(t, opsScheduledReportsConfigured(cfg))
+	assertState(cfg, false, false, "reports are off by default")
 	cfg.Report.Enabled = true
-	require.False(t, opsScheduledReportsConfigured(cfg), "no report type is enabled")
+	assertState(cfg, false, false, "no report type is enabled")
 	cfg.Report.WeeklySummaryEnabled = true
 	cfg.Report.WeeklySummarySchedule = "  "
-	require.False(t, opsScheduledReportsConfigured(cfg), "empty schedule")
+	assertState(cfg, false, false, "an empty schedule is skipped like a disabled report")
 	cfg.Report.WeeklySummarySchedule = "not cron"
-	require.False(t, opsScheduledReportsConfigured(cfg), "invalid schedule")
+	assertState(cfg, true, false, "the only enabled report has an invalid cron")
+	cfg.Report.DailySummaryEnabled = true
+	cfg.Report.DailySummarySchedule = "@daily"
+	assertState(cfg, true, false, "descriptors are rejected by the 5-field parser")
 	cfg.Report.WeeklySummarySchedule = "0 9 * * 1"
-	require.True(t, opsScheduledReportsConfigured(cfg))
+	assertState(cfg, true, true, "one valid report keeps the scheduler running")
 	cfg.Report.Enabled = false
-	require.False(t, opsScheduledReportsConfigured(cfg))
+	assertState(cfg, false, false, "the master switch turns every report off")
 }
 
 func TestOpsCleanupServiceCurrentSchedule(t *testing.T) {
@@ -362,6 +404,47 @@ func TestOpsCleanupServiceCurrentSchedule(t *testing.T) {
 	disabled.mu.Unlock()
 	_, _, active = disabled.CurrentSchedule()
 	require.False(t, active)
+}
+
+func TestOpsCleanupInvalidCronShowsFailingNotDisabled(t *testing.T) {
+	repo := newRuntimeSettingRepoStub()
+	writeAdvancedSettings(t, repo, OpsDataRetentionSettings{
+		CleanupEnabled:             true,
+		CleanupSchedule:            "0 2 * * * *",
+		ErrorLogRetentionDays:      -1,
+		MinuteMetricsRetentionDays: -1,
+		HourlyMetricsRetentionDays: -1,
+	})
+	cleanupSvc := makeOverlayService(repo, config.OpsCleanupConfig{Enabled: true, Schedule: "0 3 * * *"})
+	cleanupSvc.mu.Lock()
+	require.Error(t, cleanupSvc.applyScheduleLocked(context.Background()), "the 6-field cron is rejected")
+	require.Nil(t, cleanupSvc.cron, "cleanup never runs with this schedule")
+	cleanupSvc.mu.Unlock()
+	t.Cleanup(cleanupSvc.Stop)
+
+	spec, _, enabled := cleanupSvc.CurrentSchedule()
+	require.True(t, enabled, "cleanup is still turned on in settings")
+	require.Equal(t, "0 2 * * * *", spec)
+
+	opsSvc := &OpsService{settingRepo: newRuntimeSettingRepoStub(), cfg: &config.Config{}}
+	opsSvc.SetCleanupReloader(cleanupSvc)
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	out := annotateOpsJobHeartbeats(now, []*OpsJobHeartbeat{
+		{JobName: opsCleanupJobName, LastRunAt: timePtr(now.Add(-10 * time.Hour)), LastSuccessAt: timePtr(now.Add(-10 * time.Hour))},
+	}, opsSvc.resolveOpsJobSchedules(context.Background()))
+	require.Len(t, out, 1)
+	require.Equal(t, OpsJobStatusFailing, out[0].Status)
+	require.Nil(t, out[0].ExpectedIntervalSeconds)
+	require.Nil(t, out[0].NextExpectedAt)
+
+	// Turning cleanup off in settings is disabled again.
+	writeAdvancedSettings(t, repo, OpsDataRetentionSettings{CleanupEnabled: false, CleanupSchedule: "0 2 * * * *"})
+	cleanupSvc.mu.Lock()
+	require.NoError(t, cleanupSvc.applyScheduleLocked(context.Background()))
+	cleanupSvc.mu.Unlock()
+	_, _, enabled = cleanupSvc.CurrentSchedule()
+	require.False(t, enabled)
+	require.True(t, opsSvc.resolveOpsJobSchedules(context.Background())[opsCleanupJobName].disabled)
 }
 
 type overviewHeartbeatRepo struct {

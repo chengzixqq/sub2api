@@ -315,22 +315,25 @@ func opsScheduledReportDefs(emailCfg *OpsEmailNotificationConfig) []opsScheduled
 	}
 }
 
-// opsScheduledReportsConfigured reports whether listScheduledReports would
-// return any report, i.e. whether the scheduler writes heartbeats at all.
-func opsScheduledReportsConfigured(emailCfg *OpsEmailNotificationConfig) bool {
+// opsScheduledReportsState reports whether settings turn on any report with a
+// schedule (enabled) and whether listScheduledReports would return any report,
+// i.e. whether the scheduler writes heartbeats at all (runnable). enabled
+// without runnable means every enabled report has an invalid cron.
+func opsScheduledReportsState(emailCfg *OpsEmailNotificationConfig) (enabled, runnable bool) {
 	if emailCfg == nil || !emailCfg.Report.Enabled {
-		return false
+		return false, false
 	}
 	for _, d := range opsScheduledReportDefs(emailCfg) {
 		spec := strings.TrimSpace(d.schedule)
 		if !d.enabled || spec == "" {
 			continue
 		}
+		enabled = true
 		if _, err := opsScheduledReportCronParser.Parse(spec); err == nil {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return enabled, false
 }
 
 func (s *OpsScheduledReportService) runReport(ctx context.Context, report *opsScheduledReport, now time.Time) (int, error) {
