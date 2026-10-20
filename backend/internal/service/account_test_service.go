@@ -19,7 +19,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -3359,37 +3358,21 @@ func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) er
 // RunTestBackground executes an account test in-memory (no real HTTP client),
 // capturing SSE output via httptest.NewRecorder, then parses the result.
 func (s *AccountTestService) RunTestBackground(ctx context.Context, accountID int64, modelID string) (*ScheduledTestResult, error) {
-	startedAt := time.Now()
-
-	w := httptest.NewRecorder()
-	ginCtx, _ := gin.CreateTestContext(w)
-	ginCtx.Request = (&http.Request{}).WithContext(ctx)
-	ginCtx.Set(accountTestBackgroundKey, true)
-
-	testErr := s.TestAccountConnection(ginCtx, accountID, modelID, "", AccountTestModeDefault)
-
-	finishedAt := time.Now()
-	body := w.Body.String()
-	responseText, errMsg := parseTestSSEOutput(body)
+	capture := s.RunTestCaptured(ctx, AccountTestCaptureInput{AccountID: accountID, ModelID: modelID, Mode: AccountTestModeDefault})
 
 	status := "success"
-	if testErr != nil || errMsg != "" {
+	if !capture.Success {
 		status = "failed"
-		if errMsg == "" && testErr != nil {
-			errMsg = testErr.Error()
-		}
 	}
-
-	upstreamStatus := accountTestRecordedUpstreamStatus(ginCtx, errMsg)
 	return &ScheduledTestResult{
 		Status:             status,
-		ResponseText:       responseText,
-		ErrorMessage:       errMsg,
-		LatencyMs:          finishedAt.Sub(startedAt).Milliseconds(),
-		StartedAt:          startedAt,
-		FinishedAt:         finishedAt,
-		UpstreamStatusCode: upstreamStatus,
-		ErrorKind:          AccountTestErrorKind(status, upstreamStatus, errMsg),
+		ResponseText:       capture.ResponseText,
+		ErrorMessage:       capture.ErrorMessage,
+		LatencyMs:          capture.FinishedAt.Sub(capture.StartedAt).Milliseconds(),
+		StartedAt:          capture.StartedAt,
+		FinishedAt:         capture.FinishedAt,
+		UpstreamStatusCode: capture.UpstreamStatusCode,
+		ErrorKind:          AccountTestErrorKind(status, capture.UpstreamStatusCode, capture.ErrorMessage),
 	}, nil
 }
 

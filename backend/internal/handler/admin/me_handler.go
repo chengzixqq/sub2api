@@ -20,6 +20,7 @@ var adminMeCapabilities = []string{
 	"accounts.status_summary",
 	"accounts.structured_error",
 	"accounts.test_result",
+	"accounts.test_runs",
 	"api_keys.masked_view",
 	"dashboard.account_cost",
 	"dashboard.accounts_ranking",

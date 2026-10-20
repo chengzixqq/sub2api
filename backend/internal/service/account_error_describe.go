@@ -100,6 +100,12 @@ func accountErrorStatusCode(message string) *int {
 }
 
 func summarizeAccountError(message string) string {
+	return redactAccountErrorText(message, accountErrorSummaryMaxRunes)
+}
+
+// redactAccountErrorText masks credentials, upstream URLs and HTML in an error
+// text, collapses whitespace and caps it at maxRunes.
+func redactAccountErrorText(message string, maxRunes int) string {
 	out := logredact.RedactText(message, "key", "token", "api_key", "x-api-key", "authorization")
 	out = sanitizeUpstreamErrorMessage(out)
 	out = redactUpstreamURLs(out)
@@ -107,8 +113,8 @@ func summarizeAccountError(message string) string {
 	out = accountErrorHTMLTag.ReplaceAllString(out, " ")
 	out = strings.TrimSpace(accountErrorSpaces.ReplaceAllString(out, " "))
 	runes := []rune(out)
-	if len(runes) > accountErrorSummaryMaxRunes {
-		out = string(runes[:accountErrorSummaryMaxRunes-1]) + "…"
+	if len(runes) > maxRunes {
+		out = string(runes[:maxRunes-1]) + "…"
 	}
 	return out
 }

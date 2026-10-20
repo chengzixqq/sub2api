@@ -71,6 +71,7 @@ type AccountHandler struct {
 	cfg                     *config.Config
 	opencodeGoUsage         *service.OpenCodeGoUsageService
 	statusSummary           *service.AccountStatusSummaryService
+	testRuns                accountTestRunRecorder
 }
 
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
@@ -1477,6 +1478,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		}
 	}
 	h.writeAccountTestResult(c, accountID, before, testErr == nil, recovery)
+	h.recordManualTestRun(c, accountID, req.ModelID, testErr, recovery)
 }
 
 // RecoverState handles unified recovery of recoverable account runtime state.

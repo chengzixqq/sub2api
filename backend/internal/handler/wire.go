@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
 	userAdjustmentHandler *admin.UserAdjustmentHandler,
 	meHandler *admin.MeHandler,
 	accessTokenHandler *admin.AccessTokenHandler,
+	accountTestRunHandler *admin.AccountTestRunHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
@@ -58,6 +59,7 @@ func ProvideAdminHandlers(
 	claudeResetCredits *service.ClaudeResetCreditService,
 	accountStatusSummary *service.AccountStatusSummaryService,
 	dashboardHome *service.DashboardHomeService,
+	accountTestRuns *service.AccountTestRunService,
 ) *AdminHandlers {
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
@@ -65,6 +67,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetClaudeCustomizationService(settingService)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
 	accountHandler.SetAccountStatusSummaryService(accountStatusSummary)
+	accountHandler.SetAccountTestRunService(accountTestRuns)
 	dashboardHandler.SetDashboardHomeService(dashboardHome)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
@@ -107,6 +110,7 @@ func ProvideAdminHandlers(
 		UserAdjustment:         userAdjustmentHandler,
 		Me:                     meHandler,
 		AccessToken:            accessTokenHandler,
+		AccountTestRun:         accountTestRunHandler,
 	}
 }
 
@@ -346,6 +350,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewWorkspaceHandler,
 	admin.NewUserAdjustmentHandler,
 	admin.NewAccessTokenHandler,
+	admin.NewAccountTestRunHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

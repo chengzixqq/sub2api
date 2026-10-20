@@ -16,6 +16,25 @@ func TestVendorRoutesDenyAccountsRanking(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyAccountTestRuns: async tests take a capped per-instance
+// worker and are owner-only for now; the interactive SSE test stays open.
+func TestVendorRoutesDenyAccountTestRuns(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	denied := []struct{ method, path string }{
+		{"POST", "/api/v1/admin/accounts/:id/test-runs"},
+		{"GET", "/api/v1/admin/accounts/:id/test-runs/latest"},
+		{"GET", "/api/v1/admin/account-test-runs/:run_id"},
+	}
+	for _, route := range denied {
+		if vendorRouteAllowed(newFullPathContext(route.method, route.path), scope) {
+			t.Errorf("vendor must not reach %s %s", route.method, route.path)
+		}
+	}
+	if !vendorRouteAllowed(newFullPathContext("POST", "/api/v1/admin/accounts/:id/test"), scope) {
+		t.Fatal("vendor SSE account tests must stay open")
+	}
+}
+
 // TestVendorRoutesDenyAccountStatusSummary: the summary names every group and
 // reads ops alert thresholds, neither of which is workspace-scoped.
 func TestVendorRoutesDenyAccountStatusSummary(t *testing.T) {

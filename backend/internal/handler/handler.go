@@ -47,6 +47,7 @@ type AdminHandlers struct {
 	UserAdjustment         *admin.UserAdjustmentHandler
 	Me                     *admin.MeHandler
 	AccessToken            *admin.AccessTokenHandler
+	AccountTestRun         *admin.AccountTestRunHandler
 }
 
 // Handlers contains all HTTP handlers

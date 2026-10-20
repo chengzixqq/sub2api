@@ -47,6 +47,9 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrTooManyUsageAPIKeyIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
 		{ErrDashboardHomeInvalidTimezone, http.StatusBadRequest, "INVALID_TIMEZONE"},
 		{ErrDashboardHomeInvalidInclude, http.StatusBadRequest, "INVALID_INCLUDE"},
+		{ErrAccountTestRunning, http.StatusConflict, "ACCOUNT_TEST_RUNNING"},
+		{ErrAccountTestRunNotFound, http.StatusNotFound, "ACCOUNT_TEST_RUN_NOT_FOUND"},
+		{ErrAccountTestBusy, http.StatusTooManyRequests, "ACCOUNT_TEST_BUSY"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

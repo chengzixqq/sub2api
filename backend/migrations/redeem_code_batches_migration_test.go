@@ -61,3 +61,14 @@ func TestScheduledTestResultUpstreamStatusMigration(t *testing.T) {
 	require.NotContains(t, sql, "UPDATE ")
 	require.NotContains(t, sql, "+goose")
 }
+
+func TestAccountTestRunsMigration(t *testing.T) {
+	content, err := FS.ReadFile("255_account_test_runs.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "CREATE TABLE IF NOT EXISTS account_test_runs")
+	require.Contains(t, sql, "account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE")
+	require.Contains(t, sql, "CREATE UNIQUE INDEX IF NOT EXISTS idx_account_test_runs_one_running ON account_test_runs (account_id) WHERE status = 'running'")
+	require.NotContains(t, sql, "DROP ")
+	require.NotContains(t, sql, "+goose")
+}

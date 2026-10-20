@@ -69,6 +69,12 @@ var vendorDeniedRoutes = []vendorRoute{
 	{prefix: "/api/v1/admin/accounts/sync/crs", methods: allMethods},
 	{prefix: "/api/v1/admin/accounts/import/codex-session", methods: allMethods, exact: true},
 
+	// 异步账号测试占用本实例有上限的后台 worker（每个最长 120 秒），vendor 可能挤占站长的测试，
+	// 暂时只给站长。不加这一条的话 /accounts 前缀规则会放行 POST（账号管理档）与 GET latest。
+	// 按 run_id 读取的 /account-test-runs 不在白名单里，本就拒绝；service 层另按账号归属兜底。
+	// vendor 自家账号的 SSE 测试 POST /accounts/:id/test 不受影响。
+	{prefix: "/api/v1/admin/accounts/:id/test-runs", methods: allMethods},
+
 	// 代理导入/导出同理：导出会带出全站代理的主机、端口与凭证，
 	// 导入则批量建号且无法归属发起方工作区。
 	{prefix: "/api/v1/admin/proxies/data", methods: allMethods, exact: true},
