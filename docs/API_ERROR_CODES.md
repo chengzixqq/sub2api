@@ -51,7 +51,7 @@
 | 400 | INVALID_TIMEZONE、INVALID_INCLUDE | 参数校验类：`/admin/dashboard/home` 的 `timezone` 须为 IANA 时区名（如 `Asia/Shanghai`，不传为服务器时区），`include` 只接受 stats、rates、hourly、ops、alerts、availability、channels 的逗号分隔组合（不传为全部）；按 message 修正参数，不要原样重试 |
 | 409 | ACCOUNT_TEST_RUNNING | `POST /api/v1/admin/accounts/:id/test-runs`：该账号已有一个运行中的异步测试，`metadata.run_id` 是它的 run_id，改为轮询 `GET /api/v1/admin/account-test-runs/:run_id`，不要重复提交 |
 | 404 | ACCOUNT_TEST_RUN_NOT_FOUND | `GET /api/v1/admin/accounts/:id/test-runs/latest` 与 `GET /api/v1/admin/account-test-runs/:run_id`：没有测试记录、run_id 不存在或不属于本工作区的账号；latest 返回它时显示“还没有测试记录” |
-| 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试 |
+| 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试；该账号已有运行中的测试时优先返回 409 ACCOUNT_TEST_RUNNING |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |
 | 500 | ACCOUNT_RECOVERED_SCHEDULABLE_FAILED | `POST /api/v1/admin/accounts/:id/recover-state` 带 `{"schedulable":...}` 时：恢复已生效、调度开关未改（`metadata.recovered="true"`）。不要整体重试，先 GET 账号以读回的 schedulable 为准，再用 `POST /api/v1/admin/accounts/:id/schedulable` 单独重试；仍暂停时显示“已恢复 · 仍暂停”并给“启用调度”按钮 |
 | 500 | REAUTH_PERSIST_FAILED | `POST /api/v1/admin/accounts/:id/reauthorize`：换码已成功、凭据保存失败（`metadata.retry_within_seconds`=300，`metadata.cause_reason` 为保存失败的原因码，可能没有）。授权码已用掉，不要重新换码：5 分钟内用同一 `session_id` 原样重试，服务端直接保存暂存的凭据（暂存在本实例内存里，重启或打到别的实例会丢，那时只能重新生成授权链接）。保存成功后 5 分钟内再用同一 `session_id` 重放会直接返回账号 |

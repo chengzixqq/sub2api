@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -73,25 +74,39 @@ func accountTestRunRecoveryJSON(rec *service.AccountTestRunRecovery) (any, error
 	return string(raw), nil
 }
 
+// accountTestRunCreateAttempts bounds the insert / read loop of CreateRunning:
+// the running row that blocked an insert can finish before it is read.
+const accountTestRunCreateAttempts = 3
+
 func (r *accountTestRunRepository) CreateRunning(ctx context.Context, run *service.AccountTestRun) (*service.AccountTestRun, bool, error) {
-	stored, err := scanAccountTestRun(r.db.QueryRowContext(ctx, `
+	for attempt := 0; attempt < accountTestRunCreateAttempts; attempt++ {
+		stored, err := scanAccountTestRun(r.db.QueryRowContext(ctx, `
 INSERT INTO account_test_runs (run_id, account_id, source, status, model_id, created_by)
 VALUES ($1, $2, $3, 'running', $4, $5)
 ON CONFLICT (account_id) WHERE status = 'running' DO NOTHING
 RETURNING `+accountTestRunColumns,
-		run.RunID, run.AccountID, run.Source, run.ModelID, run.CreatedBy))
-	if err == nil {
-		return stored, true, nil
+			run.RunID, run.AccountID, run.Source, run.ModelID, run.CreatedBy))
+		if err == nil {
+			return stored, true, nil
+		}
+		if !errors.Is(err, service.ErrAccountTestRunNotFound) {
+			return nil, false, err
+		}
+		existing, err := r.GetRunningByAccount(ctx, run.AccountID)
+		if err == nil {
+			return existing, false, nil
+		}
+		if !errors.Is(err, service.ErrAccountTestRunNotFound) {
+			return nil, false, err
+		}
+		// The blocking run finished between the two statements: insert again.
 	}
-	if !errors.Is(err, service.ErrAccountTestRunNotFound) {
-		return nil, false, err
-	}
-	existing, err := scanAccountTestRun(r.db.QueryRowContext(ctx, `SELECT `+accountTestRunColumns+`
- FROM account_test_runs WHERE account_id = $1 AND status = 'running' LIMIT 1`, run.AccountID))
-	if err != nil {
-		return nil, false, err
-	}
-	return existing, false, nil
+	return nil, false, fmt.Errorf("account test run: account %d running row kept changing", run.AccountID)
+}
+
+func (r *accountTestRunRepository) GetRunningByAccount(ctx context.Context, accountID int64) (*service.AccountTestRun, error) {
+	return scanAccountTestRun(r.db.QueryRowContext(ctx, `SELECT `+accountTestRunColumns+`
+ FROM account_test_runs WHERE account_id = $1 AND status = 'running' LIMIT 1`, accountID))
 }
 
 func (r *accountTestRunRepository) Finish(ctx context.Context, run *service.AccountTestRun) error {

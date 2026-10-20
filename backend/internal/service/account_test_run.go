@@ -91,6 +91,9 @@ type AccountTestRunRepository interface {
 	// CreateRunning inserts run as running unless the account already has a
 	// running row; it returns the stored row and whether it was created.
 	CreateRunning(ctx context.Context, run *AccountTestRun) (*AccountTestRun, bool, error)
+	// GetRunningByAccount returns the running row of the account, or
+	// ErrAccountTestRunNotFound when it has none.
+	GetRunningByAccount(ctx context.Context, accountID int64) (*AccountTestRun, error)
 	// Finish writes the outcome of a running row (no-op once it left running).
 	Finish(ctx context.Context, run *AccountTestRun) error
 	// InsertFinished stores an already finished run (manual SSE tests).

@@ -50,6 +50,17 @@ func (m *memAccountTestRunRepo) CreateRunning(_ context.Context, run *AccountTes
 	return cloneAccountTestRun(stored), true, nil
 }
 
+func (m *memAccountTestRunRepo) GetRunningByAccount(_ context.Context, accountID int64) (*AccountTestRun, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, existing := range m.runs {
+		if existing.AccountID == accountID && existing.Status == AccountTestRunStatusRunning {
+			return cloneAccountTestRun(existing), nil
+		}
+	}
+	return nil, ErrAccountTestRunNotFound
+}
+
 func (m *memAccountTestRunRepo) Finish(_ context.Context, run *AccountTestRun) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -398,6 +409,45 @@ func TestAccountTestRunStart_BusyWhenWorkersExhausted(t *testing.T) {
 	require.Equal(t, 1, f.repo.count(), "a busy start must not insert a running row")
 	close(release)
 	f.waitFinished(t, first.RunID)
+}
+
+func TestAccountTestRunStart_RunningConflictWinsOverBusyWorkers(t *testing.T) {
+	release := make(chan struct{})
+	f := newAccountTestRunFixture(func(ctx context.Context, in AccountTestCaptureInput) AccountTestCapture {
+		<-release
+		return successfulCapture(ctx, in)
+	})
+	f.svc.slots = make(chan struct{}, 1)
+	first, err := f.svc.Start(context.Background(), StartAccountTestRunInput{AccountID: 12})
+	require.NoError(t, err)
+
+	_, err = f.svc.Start(context.Background(), StartAccountTestRunInput{AccountID: 12})
+
+	require.Equal(t, 409, infraerrors.Code(err), "a running test of the same account is reported even when workers are full")
+	require.Equal(t, "ACCOUNT_TEST_RUNNING", infraerrors.Reason(err))
+	require.Equal(t, first.RunID, infraerrors.FromError(err).Metadata["run_id"])
+	require.Len(t, f.svc.slots, 1, "the rejected start must not hold a worker slot")
+	require.Equal(t, 1, f.repo.count())
+	close(release)
+	f.waitFinished(t, first.RunID)
+}
+
+func TestAccountTestRunStart_SanitizesModelIDForStorage(t *testing.T) {
+	release := make(chan struct{})
+	f := newAccountTestRunFixture(func(ctx context.Context, in AccountTestCaptureInput) AccountTestCapture {
+		<-release
+		return successfulCapture(ctx, in)
+	})
+
+	run, err := f.svc.Start(context.Background(), StartAccountTestRunInput{AccountID: 12, ModelID: "claude\x00x"})
+	require.NoError(t, err)
+
+	require.Equal(t, "claudex", run.ModelID, "PostgreSQL rejects NUL bytes in model_id")
+	stored, err := f.repo.GetByRunID(context.Background(), run.RunID)
+	require.NoError(t, err)
+	require.NotContains(t, stored.ModelID, "\x00")
+	close(release)
+	f.waitFinished(t, run.RunID)
 }
 
 func TestAccountTestRunGet_HidesOtherWorkspaceRun(t *testing.T) {

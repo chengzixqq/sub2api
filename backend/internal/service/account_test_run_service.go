@@ -83,7 +83,8 @@ func (s *AccountTestRunService) ready() bool {
 // Start checks the account is in scope, takes a worker slot and stores a
 // running row, then runs the test in the background. A second start for an
 // account with a running test returns ErrAccountTestRunning with metadata
-// run_id; a full worker pool returns ErrAccountTestBusy.
+// run_id, even when the worker pool is full; otherwise a full pool returns
+// ErrAccountTestBusy.
 func (s *AccountTestRunService) Start(ctx context.Context, in StartAccountTestRunInput) (*AccountTestRun, error) {
 	if !s.ready() {
 		return nil, ErrServiceUnavailable
@@ -97,14 +98,14 @@ func (s *AccountTestRunService) Start(ctx context.Context, in StartAccountTestRu
 	select {
 	case s.slots <- struct{}{}:
 	default:
-		return nil, ErrAccountTestBusy
+		return nil, s.busyError(ctx, in.AccountID)
 	}
 	run, created, err := s.repo.CreateRunning(ctx, &AccountTestRun{
 		RunID:     newAccountTestRunID(),
 		AccountID: in.AccountID,
 		Source:    AccountTestRunSourceAsync,
 		Status:    AccountTestRunStatusRunning,
-		ModelID:   truncateString(in.ModelID, accountTestRunMaxModelLen),
+		ModelID:   truncateString(sanitizeAccountTestRunText(in.ModelID), accountTestRunMaxModelLen),
 		CreatedBy: in.CreatedBy,
 	})
 	if err != nil || !created {
@@ -112,13 +113,32 @@ func (s *AccountTestRunService) Start(ctx context.Context, in StartAccountTestRu
 		if err != nil {
 			return nil, err
 		}
-		return nil, ErrAccountTestRunning.WithMetadata(map[string]string{"run_id": run.RunID})
+		return nil, accountTestRunningError(run.RunID)
 	}
 	recoverOnSuccess := in.RecoverOnSuccess == nil || *in.RecoverOnSuccess
 	captureIn := AccountTestCaptureInput{AccountID: in.AccountID, ModelID: in.ModelID, Prompt: in.Prompt, Mode: in.Mode}
 	s.running.Add(1)
 	go s.execute(cloneRun(run), captureIn, recoverOnSuccess)
 	return run, nil
+}
+
+// busyError answers a start that found the worker pool full: a running test
+// of the same account is reported as a conflict with its run_id, so the client
+// can poll it instead of retrying.
+func (s *AccountTestRunService) busyError(ctx context.Context, accountID int64) error {
+	existing, err := s.repo.GetRunningByAccount(ctx, accountID)
+	switch {
+	case err == nil:
+		return accountTestRunningError(existing.RunID)
+	case errors.Is(err, ErrAccountTestRunNotFound):
+		return ErrAccountTestBusy
+	default:
+		return err
+	}
+}
+
+func accountTestRunningError(runID string) error {
+	return ErrAccountTestRunning.WithMetadata(map[string]string{"run_id": runID})
 }
 
 // execute runs one async test; it never lets a panic escape and always writes

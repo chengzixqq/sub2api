@@ -57,6 +57,9 @@ func TestAccountTestRunRepo_OneRunningPerAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, created)
 	require.Equal(t, first.RunID, existing.RunID)
+	running, err := repo.GetRunningByAccount(ctx, accountID)
+	require.NoError(t, err)
+	require.Equal(t, first.RunID, running.RunID)
 
 	_, created, err = repo.CreateRunning(ctx, newAccountTestRunForRepo(otherID))
 	require.NoError(t, err)
@@ -90,6 +93,8 @@ func TestAccountTestRunRepo_OneRunningPerAccount(t *testing.T) {
 	again, err := repo.GetByRunID(ctx, first.RunID)
 	require.NoError(t, err)
 	require.Equal(t, service.AccountTestRunStatusSuccess, again.Status)
+	_, err = repo.GetRunningByAccount(ctx, accountID)
+	require.ErrorIs(t, err, service.ErrAccountTestRunNotFound, "a finished run is not running")
 
 	_, created, err = repo.CreateRunning(ctx, newAccountTestRunForRepo(accountID))
 	require.NoError(t, err)
