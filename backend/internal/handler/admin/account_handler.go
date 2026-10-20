@@ -252,11 +252,14 @@ type CheckMixedChannelRequest struct {
 // AccountWithConcurrency extends Account with real-time concurrency info
 type AccountWithConcurrency struct {
 	*dto.Account
-	simpleMode         bool                         `json:"-"`
-	CurrentConcurrency int                          `json:"current_concurrency"`
-	ProbeConcurrency   int                          `json:"probe_concurrency"`
-	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
-	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
+	simpleMode         bool `json:"-"`
+	CurrentConcurrency int  `json:"current_concurrency"`
+	ProbeConcurrency   int  `json:"probe_concurrency"`
+	// ConcurrencyAvailable is false when the counters could not be read; the
+	// two counts above are then 0 placeholders, not observed values.
+	ConcurrencyAvailable bool                         `json:"concurrency_available"`
+	SchedulerScore       *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
+	SchedulerScores      []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
 	// 窗口费用和会话数仅在 Anthropic OAuth/SetupToken 账号启用时返回。
 	CurrentWindowCost *float64 `json:"current_window_cost,omitempty"` // 当前窗口费用
 	ActiveSessions    *int     `json:"active_sessions,omitempty"`     // 当前活跃会话数
@@ -269,13 +272,14 @@ type AccountWithConcurrency struct {
 // so groups/account_groups never appear in the list payload.
 type AccountListItemWithConcurrency struct {
 	*dto.AccountListItem
-	CurrentConcurrency int                          `json:"current_concurrency"`
-	SchedulerScore     *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
-	SchedulerScores    []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
-	CurrentWindowCost  *float64                     `json:"current_window_cost,omitempty"`
-	ActiveSessions     *int                         `json:"active_sessions,omitempty"`
-	CurrentRPM         *int                         `json:"current_rpm,omitempty"`
-	SchedulingRPM      *int                         `json:"scheduling_rpm,omitempty"`
+	CurrentConcurrency   int                          `json:"current_concurrency"`
+	ConcurrencyAvailable bool                         `json:"concurrency_available"`
+	SchedulerScore       *AccountSchedulerScore       `json:"scheduler_score,omitempty"`
+	SchedulerScores      []AccountSchedulerGroupScore `json:"scheduler_scores,omitempty"`
+	CurrentWindowCost    *float64                     `json:"current_window_cost,omitempty"`
+	ActiveSessions       *int                         `json:"active_sessions,omitempty"`
+	CurrentRPM           *int                         `json:"current_rpm,omitempty"`
+	SchedulingRPM        *int                         `json:"scheduling_rpm,omitempty"`
 }
 
 type simpleModeGroupReference struct {
@@ -434,8 +438,11 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 
 	if h.concurrencyService != nil {
 		if counts, err := h.concurrencyService.GetAccountConcurrencyBreakdownBatch(ctx, []int64{account.ID}); err == nil {
-			item.CurrentConcurrency = counts[account.ID].Current
-			item.ProbeConcurrency = counts[account.ID].Probe
+			if breakdown, ok := counts[account.ID]; ok {
+				item.CurrentConcurrency = breakdown.Current
+				item.ProbeConcurrency = breakdown.Probe
+				item.ConcurrencyAvailable = true
+			}
 		}
 	}
 
@@ -744,11 +751,11 @@ func (h *AccountHandler) List(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+	accountPointers := make([]*service.Account, len(accounts))
+	for index := range accounts {
+		accountPointers[index] = &accounts[index]
+	}
 	if len(accounts) > 0 {
-		accountPointers := make([]*service.Account, len(accounts))
-		for index := range accounts {
-			accountPointers[index] = &accounts[index]
-		}
 		if h.ollamaCloudUsage != nil {
 			if err := h.ollamaCloudUsage.ResolveAccounts(c.Request.Context(), accountPointers); err != nil {
 				response.ErrorFrom(c, err)
@@ -763,18 +770,6 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	// Get current concurrency counts for all accounts
-	accountIDs := make([]int64, len(accounts))
-	for i, acc := range accounts {
-		accountIDs[i] = acc.ID
-	}
-
-	concurrencyCounts := make(map[int64]int)
-	probeConcurrencyCounts := make(map[int64]int)
-	var windowCosts map[int64]float64
-	var activeSessions map[int64]int
-	var rpmCounts map[int64]int
-	var rollingRPMCounts map[int64]int
 	// 双重门控：用户要看该列，且当前页确实有 OpenAI 账号，才进入昂贵的候选池打分路径。
 	var schedulerScores map[int64]*AccountSchedulerScore
 	var schedulerGroupScores map[int64][]AccountSchedulerGroupScore
@@ -790,77 +785,8 @@ func (h *AccountHandler) List(c *gin.Context) {
 		schedulerScores, schedulerGroupScores = h.buildOpenAIAccountSchedulerScores(c.Request.Context(), accounts, schedulerFilterPool)
 	}
 
-	// 始终获取并发数（Redis ZCARD，极低开销）
-	if h.concurrencyService != nil {
-		if cc, ccErr := h.concurrencyService.GetAccountConcurrencyBreakdownBatch(c.Request.Context(), accountIDs); ccErr == nil && cc != nil {
-			for accountID, breakdown := range cc {
-				concurrencyCounts[accountID] = breakdown.Current
-				probeConcurrencyCounts[accountID] = breakdown.Probe
-			}
-		}
-	}
-
-	// 窗口费用和会话数仍仅查询启用了对应功能的 Anthropic OAuth/SetupToken 账号。
-	windowCostAccountIDs := make([]int64, 0)
-	sessionLimitAccountIDs := make([]int64, 0)
-	sessionIdleTimeouts := make(map[int64]time.Duration) // 各账号的会话空闲超时配置
-	for i := range accounts {
-		acc := &accounts[i]
-		if acc.IsAnthropicOAuthOrSetupToken() {
-			if acc.GetWindowCostLimit() > 0 {
-				windowCostAccountIDs = append(windowCostAccountIDs, acc.ID)
-			}
-			if acc.GetMaxSessions() > 0 {
-				sessionLimitAccountIDs = append(sessionLimitAccountIDs, acc.ID)
-				sessionIdleTimeouts[acc.ID] = time.Duration(acc.GetSessionIdleTimeoutMinutes()) * time.Minute
-			}
-		}
-	}
-
-	// 仅对当前页做一次 Redis 批量查询，不依赖账号类型或是否配置 RPM 限额。
-	// 读取失败的账号不在返回 map 中，保持 current_rpm 缺省而非伪造为零。
-	if len(accountIDs) > 0 && h.rpmCache != nil {
-		rpmCounts, _ = h.rpmCache.GetRPMBatch(c.Request.Context(), accountIDs)
-		if rolling, ok := h.rpmCache.(service.RollingRPMCache); ok {
-			rollingRPMCounts, _ = rolling.GetRollingRPMBatch(c.Request.Context(), accountIDs)
-		}
-	}
-
-	// 始终获取活跃会话数（Redis ZCARD，低开销）
-	if len(sessionLimitAccountIDs) > 0 && h.sessionLimitCache != nil {
-		activeSessions, _ = h.sessionLimitCache.GetActiveSessionCountBatch(c.Request.Context(), sessionLimitAccountIDs, sessionIdleTimeouts)
-		if activeSessions == nil {
-			activeSessions = make(map[int64]int)
-		}
-	}
-
-	// 始终获取窗口费用（PostgreSQL 聚合查询）
-	if len(windowCostAccountIDs) > 0 {
-		windowCosts = make(map[int64]float64)
-		var mu sync.Mutex
-		g, gctx := errgroup.WithContext(c.Request.Context())
-		g.SetLimit(10) // 限制并发数
-
-		for i := range accounts {
-			acc := &accounts[i]
-			if !acc.IsAnthropicOAuthOrSetupToken() || acc.GetWindowCostLimit() <= 0 {
-				continue
-			}
-			accCopy := acc // 闭包捕获
-			g.Go(func() error {
-				// 使用统一的窗口开始时间计算逻辑（考虑窗口过期情况）
-				startTime := accCopy.GetCurrentWindowStartTime()
-				stats, err := h.accountUsageService.GetAccountWindowStats(gctx, accCopy.ID, startTime)
-				if err == nil && stats != nil {
-					mu.Lock()
-					windowCosts[accCopy.ID] = stats.StandardCost // 使用标准费用
-					mu.Unlock()
-				}
-				return nil // 不返回错误，允许部分失败
-			})
-		}
-		_ = g.Wait()
-	}
+	// 并发、RPM、会话数与窗口费用与 runtime/batch 共用同一套批量采样，每页每类只读一次。
+	sample := h.sampleRuntime(c.Request.Context(), accountPointers, true)
 
 	// Build response with concurrency info
 	result := make([]AccountWithConcurrency, len(accounts))
@@ -874,39 +800,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 			}
 		}
 		item := AccountWithConcurrency{
-			Account:            accountResponse,
-			simpleMode:         h.isSimpleMode(),
-			CurrentConcurrency: concurrencyCounts[acc.ID],
-			ProbeConcurrency:   probeConcurrencyCounts[acc.ID],
-			SchedulerScore:     schedulerScores[acc.ID],
-			SchedulerScores:    schedulerGroupScores[acc.ID],
+			Account:         accountResponse,
+			simpleMode:      h.isSimpleMode(),
+			SchedulerScore:  schedulerScores[acc.ID],
+			SchedulerScores: schedulerGroupScores[acc.ID],
 		}
-
-		// 添加窗口费用（仅当启用时）
-		if windowCosts != nil {
-			if cost, ok := windowCosts[acc.ID]; ok {
-				item.CurrentWindowCost = &cost
-			}
-		}
-
-		// 添加活跃会话数（仅当启用时）
-		if activeSessions != nil {
-			if count, ok := activeSessions[acc.ID]; ok {
-				item.ActiveSessions = &count
-			}
-		}
-
 		// Keep display rates and scheduling limits on their respective windows.
-		if rpmCounts != nil {
-			if rpm, ok := rpmCounts[acc.ID]; ok {
-				item.SchedulingRPM = &rpm
-			}
-		}
-		if rollingRPMCounts != nil {
-			if rpm, ok := rollingRPMCounts[acc.ID]; ok {
-				item.CurrentRPM = &rpm
-			}
-		}
+		sample.applyTo(&item, acc.ID)
 
 		result[i] = item
 	}
@@ -918,14 +818,15 @@ func (h *AccountHandler) List(c *gin.Context) {
 		for i := range result {
 			item := result[i]
 			compact[i] = AccountListItemWithConcurrency{
-				AccountListItem:    dto.AccountListItemFromAccount(item.Account),
-				CurrentConcurrency: item.CurrentConcurrency,
-				SchedulerScore:     item.SchedulerScore,
-				SchedulerScores:    item.SchedulerScores,
-				CurrentWindowCost:  item.CurrentWindowCost,
-				ActiveSessions:     item.ActiveSessions,
-				CurrentRPM:         item.CurrentRPM,
-				SchedulingRPM:      item.SchedulingRPM,
+				AccountListItem:      dto.AccountListItemFromAccount(item.Account),
+				CurrentConcurrency:   item.CurrentConcurrency,
+				ConcurrencyAvailable: item.ConcurrencyAvailable,
+				SchedulerScore:       item.SchedulerScore,
+				SchedulerScores:      item.SchedulerScores,
+				CurrentWindowCost:    item.CurrentWindowCost,
+				ActiveSessions:       item.ActiveSessions,
+				CurrentRPM:           item.CurrentRPM,
+				SchedulingRPM:        item.SchedulingRPM,
 			}
 		}
 		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true)

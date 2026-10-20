@@ -17,6 +17,15 @@ const ContextKeyAdminAccessTokenID = "admin_access_token_id"
 // adminAccessTokenSelfRevokePath 只读令牌也允许撤销自己（App 退出登录时）。
 const adminAccessTokenSelfRevokePath = "/api/v1/admin/access-tokens/:id"
 
+// adminAccessTokenReadOnlyAllowedWrites 是只读令牌仍可调用的写方法路由，按「方法 + FullPath」精确匹配。
+//
+// 只登记没有副作用的读：批量读取把 ID 列表放在 POST 请求体里，本质仍是查询。
+// usage/batch 不在此列：force=true 会探测上游并落库快照。
+var adminAccessTokenReadOnlyAllowedWrites = map[string]struct{}{
+	http.MethodPost + " /api/v1/admin/accounts/runtime/batch":     {},
+	http.MethodPost + " /api/v1/admin/accounts/today-stats/batch": {},
+}
+
 type adminAccessTokenAuthenticator interface {
 	Authenticate(ctx context.Context, plain, clientIP string) (*service.AdminAccessToken, error)
 }
@@ -51,7 +60,7 @@ func validateAdminAccessToken(c *gin.Context, plain string, tokens adminAccessTo
 		AbortWithError(c, http.StatusForbidden, "FORBIDDEN", "Admin access required")
 		return false
 	}
-	if token.ReadOnly() && isWriteMethod(c.Request.Method) && !isAdminAccessTokenSelfRevoke(c, token.ID) {
+	if token.ReadOnly() && isWriteMethod(c.Request.Method) && !isAdminAccessTokenSelfRevoke(c, token.ID) && !isAdminAccessTokenReadOnlyAllowedWrite(c) {
 		AbortWithError(c, http.StatusForbidden, "ACCESS_TOKEN_READ_ONLY", "This admin access token is read-only")
 		return false
 	}
@@ -77,6 +86,11 @@ func isAdminAccessTokenSelfRevoke(c *gin.Context, tokenID int64) bool {
 	return c.Request.Method == http.MethodDelete &&
 		c.FullPath() == adminAccessTokenSelfRevokePath &&
 		c.Param("id") == strconv.FormatInt(tokenID, 10)
+}
+
+func isAdminAccessTokenReadOnlyAllowedWrite(c *gin.Context) bool {
+	_, ok := adminAccessTokenReadOnlyAllowedWrites[c.Request.Method+" "+c.FullPath()]
+	return ok
 }
 
 // abortWithServiceError 把服务层的 ApplicationError 写成中间件错误格式（code 与 reason 都是字符串）。

@@ -21,6 +21,7 @@ var adminMeCapabilities = []string{
 	"accounts.patch",
 	"accounts.reauthorize",
 	"accounts.recover_schedulable",
+	"accounts.runtime_batch",
 	"admin.access_tokens",
 	"accounts.status_summary",
 	"accounts.structured_error",

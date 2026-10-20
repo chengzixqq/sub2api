@@ -166,3 +166,42 @@ func TestVendorRoutesDenyOpsRequestAttempts(t *testing.T) {
 		t.Fatal("vendor must not read ops request attempts")
 	}
 }
+
+// TestVendorRoutesAccountRuntimeBatchFollowsAccountRead: the live-counter batch
+// is a read at the same tier as GET /accounts, so either AccountManage or
+// MonitorView opens it. It must be listed as a batch route so the broad
+// /accounts write prefix (AccountManage) does not decide it.
+func TestVendorRoutesAccountRuntimeBatchFollowsAccountRead(t *testing.T) {
+	const path = "/api/v1/admin/accounts/runtime/batch"
+	for _, perms := range []service.WorkspacePermissions{
+		{MonitorView: true},
+		{AccountManage: true},
+	} {
+		scope := VendorScope{WorkspaceID: 7, Perms: perms}
+		if !vendorRouteAllowed(newFullPathContext("POST", path), scope) {
+			t.Errorf("POST %s should be open with %+v", path, perms)
+		}
+		if vendorRouteAllowed(newFullPathContext("GET", path), scope) {
+			t.Errorf("GET %s must not inherit the batch read exception (%+v)", path, perms)
+		}
+	}
+	for _, perms := range []service.WorkspacePermissions{
+		{},
+		{ProxyManage: true},
+		{GroupOps: true, GroupBilling: true},
+	} {
+		if vendorRouteAllowed(newFullPathContext("POST", path), VendorScope{WorkspaceID: 7, Perms: perms}) {
+			t.Errorf("POST %s must require AccountManage or MonitorView, got allowed with %+v", path, perms)
+		}
+	}
+
+	excluded := false
+	for _, route := range vendorBatchAccountRoutes {
+		if route == path {
+			excluded = true
+		}
+	}
+	if !excluded {
+		t.Fatalf("%s must be registered in vendorBatchAccountRoutes", path)
+	}
+}

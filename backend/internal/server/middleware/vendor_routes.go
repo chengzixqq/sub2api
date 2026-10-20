@@ -135,6 +135,9 @@ var vendorAllowedRoutes = []vendorRoute{
 	{prefix: "/api/v1/admin/accounts", methods: []string{"GET"}, permit: permitAccountRead, exclude: vendorBatchAccountRoutes},
 	{prefix: "/api/v1/admin/accounts/usage/batch", methods: []string{"POST"}, exact: true, permit: permitMonitorView},
 	{prefix: "/api/v1/admin/accounts/today-stats/batch", methods: []string{"POST"}, exact: true, permit: permitMonitorView},
+	// 实时数采样只读（并发、RPM、会话数、窗口费用与调度状态），字段与 GET 账号列表相同，
+	// 因此与列表同档；handler 先按工作区收窄 ID，别家账号不出现在结果里。
+	{prefix: "/api/v1/admin/accounts/runtime/batch", methods: []string{"POST"}, exact: true, permit: permitAccountRead},
 	{prefix: "/api/v1/admin/accounts", methods: []string{"POST", "PUT", "PATCH", "DELETE"}, permit: func(p service.WorkspacePermissions) bool {
 		return p.AccountManage
 	}, exclude: vendorBatchAccountRoutes},
@@ -185,6 +188,7 @@ var vendorBatchAccountRoutes = []string{
 	"/api/v1/admin/accounts/batch-refresh",
 	"/api/v1/admin/accounts/usage/batch",
 	"/api/v1/admin/accounts/today-stats/batch",
+	"/api/v1/admin/accounts/runtime/batch",
 }
 
 // vendorUsageScopedRoutes 是需要注入账号白名单的 vendor 路由前缀。

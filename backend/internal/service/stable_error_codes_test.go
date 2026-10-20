@@ -47,6 +47,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrSessionNotFound, http.StatusNotFound, "SESSION_NOT_FOUND"},
 		{ErrTooManyUsageUserIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
 		{ErrTooManyUsageAPIKeyIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
+		{ErrTooManyRuntimeAccountIDs, http.StatusBadRequest, "TOO_MANY_IDS"},
 		{ErrDashboardHomeInvalidTimezone, http.StatusBadRequest, "INVALID_TIMEZONE"},
 		{ErrDashboardHomeInvalidInclude, http.StatusBadRequest, "INVALID_INCLUDE"},
 		{ErrAccountTestRunning, http.StatusConflict, "ACCOUNT_TEST_RUNNING"},

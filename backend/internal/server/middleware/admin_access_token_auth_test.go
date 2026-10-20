@@ -46,6 +46,11 @@ func newAccessTokenTestEnv(t *testing.T, users map[int64]*service.User, tokens m
 	group.GET("/dashboard/stats", record)
 	group.PUT("/users/:id", record)
 	group.DELETE("/access-tokens/:id", record)
+	group.POST("/accounts/runtime/batch", record)
+	group.POST("/accounts/today-stats/batch", record)
+	group.POST("/accounts/batch-delete", record)
+	group.POST("/accounts/usage/batch", record)
+	group.PUT("/accounts/runtime/batch", record)
 	return env
 }
 
@@ -87,6 +92,31 @@ func TestAdminAccessToken_ReadOnlyBlocksWrites(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, env.do(http.MethodDelete, "/api/v1/admin/access-tokens/9", "sat_read").Code)
 	require.Equal(t, http.StatusOK, env.do(http.MethodDelete, "/api/v1/admin/access-tokens/"+strconv.Itoa(8), "sat_read").Code,
 		"a read-only token may still revoke itself")
+}
+
+// TestAdminAccessToken_ReadOnlyAllowsReadBatchPOSTs: two batch reads carry
+// their ID lists in a POST body but change nothing, so a read-only token may
+// call them. The allowance is per method and exact route.
+func TestAdminAccessToken_ReadOnlyAllowsReadBatchPOSTs(t *testing.T) {
+	owner := &service.User{ID: 42, Role: service.RoleAdmin, Status: service.StatusActive}
+	env := newAccessTokenTestEnv(t, map[int64]*service.User{42: owner}, map[string]*service.AdminAccessToken{
+		"sat_read": {ID: 8, UserID: 42, Scope: service.AdminAccessTokenScopeRead, ExpiresAt: time.Now().Add(time.Hour)},
+	})
+
+	for _, path := range []string{"/api/v1/admin/accounts/runtime/batch", "/api/v1/admin/accounts/today-stats/batch"} {
+		require.Equal(t, http.StatusOK, env.do(http.MethodPost, path, "sat_read").Code, path)
+	}
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/admin/accounts/batch-delete"},
+		// usage/batch with force=true probes upstream and persists snapshots.
+		{http.MethodPost, "/api/v1/admin/accounts/usage/batch"},
+		{http.MethodPut, "/api/v1/admin/accounts/runtime/batch"},
+		{http.MethodPut, "/api/v1/admin/users/1"},
+	} {
+		w := env.do(tc.method, tc.path, "sat_read")
+		require.Equal(t, http.StatusForbidden, w.Code, "%s %s", tc.method, tc.path)
+		require.Equal(t, "ACCESS_TOKEN_READ_ONLY", decodeErrorBody(t, w)["reason"], "%s %s", tc.method, tc.path)
+	}
 }
 
 func TestAdminAccessToken_Rejections(t *testing.T) {

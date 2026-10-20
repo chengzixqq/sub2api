@@ -25,7 +25,7 @@
 | 403 | STEP_UP_REQUIRED | 弹 TOTP，`POST /api/v1/user/totp/step-up` 后重试原请求 |
 | 403 | STEP_UP_TOTP_NOT_ENABLED | 提示先启用两步验证 |
 | 403 | STEP_UP_ADMIN_API_KEY_FORBIDDEN | 提示改用账号登录（Admin Key 与管理访问令牌都不能做二次验证） |
-| 403 | ACCESS_TOKEN_READ_ONLY | 只读的管理访问令牌不能执行写操作 |
+| 403 | ACCESS_TOKEN_READ_ONLY | 只读的管理访问令牌不能执行写操作。例外：撤销自己，以及两个只读的批量 POST `/api/v1/admin/accounts/runtime/batch`、`/api/v1/admin/accounts/today-stats/batch`（`/admin/me` 的 capabilities 含 `accounts.runtime_batch` 起放行；`accounts/usage/batch` 仍拒绝，它带 `force` 时会探测上游） |
 | 403 | FORBIDDEN、WORKSPACE_DISABLED、USER_NOT_ACTIVE | 无权限 |
 | 403 | BACKEND_MODE_ADMIN_ONLY | 后端模式只允许管理员登录 |
 | 403 | BACKEND_MODE_SELF_SERVICE_DISABLED | 后端模式下用户自助功能已关闭 |
@@ -43,7 +43,7 @@
 | 400 | REAUTH_UNSUPPORTED | `POST /api/v1/admin/accounts/:id/reauthorize`：这个 OAuth 账号不能走一步重新授权，`metadata.detail` 说明原因：`shadow_account`（影子账号，凭据跟随母账号）、`codex_personal_access_token`（Codex PAT 账号，改用 PAT 重新导入）、`unsupported_platform`（只支持 anthropic / openai / gemini / antigravity / grok）、`auth_kind_not_supported`（`auth_kind=setup-token` 只用于 Claude）。不要重试；换码阶段带原因码的非 502 错误（上面各 `*_OAUTH_*` 行、403 `GROK_OAUTH_ENTITLEMENT_DENIED` 等）原样透传，处理方式相同；上游或网络失败统一为 502 `OAUTH_EXCHANGE_FAILED`（见下） |
 | 404 | PROXY_NOT_FOUND | 代理不存在或不属于本工作区（越权与不存在同码）。供应商（vendor）调 Claude 授权接口（`/admin/accounts/generate-auth-url`、`generate-setup-token-url`、`exchange-code`、`exchange-setup-token-code`、`cookie-auth`、`setup-token-cookie-auth`）时，请求里的 `proxy_id` 只能是本工作区的代理，否则返回这个码且不会发出任何上游请求；站长不受限。重新拉取代理列表后改选，或不传 `proxy_id` 直连，不要原样重试 |
 | 400 | INVALID_SORT_BY | 参数校验类：查询参数取值不受支持（`/admin/dashboard/users-ranking` 的 `sort_by` 只接受 actual_cost / requests / tokens），按 message 修正参数，不要原样重试 |
-| 400 | TOO_MANY_IDS | 批量查询的 ID 超过上限（`/admin/dashboard/users-usage`、`/admin/dashboard/api-keys-usage`、`/usage/dashboard/api-keys-usage`；`metadata.max` 为上限，当前 1000；`metadata.field` 指出是哪个字段），拆成更小的批次重试 |
+| 400 | TOO_MANY_IDS | 批量查询的 ID 超过上限（`/admin/dashboard/users-usage`、`/admin/dashboard/api-keys-usage`、`/usage/dashboard/api-keys-usage` 当前为 1000；`POST /api/v1/admin/accounts/runtime/batch` 的 `account_ids` 当前为 200，按去重、去掉非正数之后的个数计；`metadata.max` 为上限，`metadata.field` 指出是哪个字段），按 `metadata.max` 拆成更小的批次重试 |
 | 400 | OPS_TIME_RANGE_TOO_LARGE | 时间跨度超过接口上限：`/admin/ops/dashboard/openai-token-stats`、`/admin/ops/system-metrics/history` 为 31 天（`metadata.max_days`=31，另有 1 小时夏令时容差），`/admin/ops/realtime-traffic` 为 1 小时（无 metadata）；缩短范围后重试 |
 | 400 | INVALID_MAX_POINTS | 参数校验类：`/admin/ops/system-metrics/history` 的 `max_points` 必须是 1–1440 的整数（缺省 60），按 message 修正参数，不要原样重试 |
 | 400 | INVALID_REQUEST_ID、INVALID_AROUND | 参数校验类：`/admin/ops/requests/:request_id/attempts` 的 request_id 去掉首尾空白后须为 1–256 字节的合法 UTF-8，且不含 NUL；`around` 须为 RFC3339 时间（如 `2026-10-18T01:41:00Z`，带 `+08:00` 时要把 `+` 编码为 `%2B`）。按 message 修正参数，不要原样重试 |
