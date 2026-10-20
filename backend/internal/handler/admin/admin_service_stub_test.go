@@ -587,6 +587,14 @@ func (s *stubAdminService) ClearAccountError(ctx context.Context, id int64) (*se
 	return &account, nil
 }
 
+func (s *stubAdminService) ClearAccountErrorWithOptions(ctx context.Context, id int64, opts service.ClearAccountErrorOptions) (*service.ClearAccountErrorResult, error) {
+	account, err := s.ClearAccountError(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &service.ClearAccountErrorResult{Account: account}, nil
+}
+
 func (s *stubAdminService) SetAccountError(ctx context.Context, id int64, errorMsg string) error {
 	return nil
 }

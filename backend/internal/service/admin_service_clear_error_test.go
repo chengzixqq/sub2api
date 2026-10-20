@@ -94,3 +94,136 @@ func TestAdminService_ClearAccountError_AlsoClearsRecoverableRuntimeState(t *tes
 	require.Empty(t, updated.TempUnschedulableReason)
 	require.Equal(t, []int64{31}, blocker.clearedIDs)
 }
+
+// conditionalClearRepoStub adds the narrow conditional clear capability on top
+// of accountRepoStubForClearAccountError. The base stub intentionally does not
+// implement it so the fail-closed path can be exercised.
+type conditionalClearRepoStub struct {
+	*accountRepoStubForClearAccountError
+	conditionalClearCalls int
+}
+
+func (r *conditionalClearRepoStub) ClearErrorPreservingInactive(ctx context.Context, id int64) (bool, error) {
+	r.conditionalClearCalls++
+	if r.account.Status != StatusActive && r.account.Status != StatusError {
+		return false, nil
+	}
+	r.account.Status = StatusActive
+	r.account.ErrorMessage = ""
+	return true, nil
+}
+
+func newClearErrorStubAccount(id int64, status string) *Account {
+	until := time.Now().Add(10 * time.Minute)
+	resetAt := time.Now().Add(5 * time.Minute)
+	return &Account{
+		ID:                      id,
+		Platform:                PlatformOpenAI,
+		Type:                    AccountTypeOAuth,
+		Status:                  status,
+		ErrorMessage:            "previous failure",
+		RateLimitResetAt:        &resetAt,
+		TempUnschedulableUntil:  &until,
+		TempUnschedulableReason: "upstream 529",
+	}
+}
+
+func requireRuntimeStateCleared(t *testing.T, repo *accountRepoStubForClearAccountError, account *Account) {
+	t.Helper()
+	require.Equal(t, 1, repo.clearRateLimitCalls)
+	require.Equal(t, 1, repo.clearAntigravityCalls)
+	require.Equal(t, 1, repo.clearModelRateLimitCalls)
+	require.Equal(t, 1, repo.clearTempUnschedCalls)
+	require.Nil(t, account.RateLimitResetAt)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.Empty(t, account.TempUnschedulableReason)
+}
+
+func TestAdminService_ClearAccountErrorWithOptions_PreserveInactiveKeepsStatus(t *testing.T) {
+	base := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(41, "inactive")}
+	repo := &conditionalClearRepoStub{accountRepoStubForClearAccountError: base}
+	blocker := &runtimeBlockRecorder{}
+	svc := &adminServiceImpl{accountRepo: repo, runtimeBlocker: blocker}
+
+	result, err := svc.ClearAccountErrorWithOptions(context.Background(), 41, ClearAccountErrorOptions{PreserveInactive: true})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Account)
+	require.True(t, result.SkippedInactive)
+	require.Equal(t, "inactive", result.Account.Status)
+	require.Equal(t, "previous failure", result.Account.ErrorMessage, "停用账号整个跳过 ClearError，错误信息保持原样")
+	require.Equal(t, 0, base.clearErrorCalls, "preserve 时不得调用无条件 ClearError")
+	require.Equal(t, 1, repo.conditionalClearCalls)
+	requireRuntimeStateCleared(t, base, result.Account)
+	require.Equal(t, []int64{41}, blocker.clearedIDs)
+}
+
+func TestAdminService_ClearAccountErrorWithOptions_PreserveInactiveTreatsDisabledAsInactive(t *testing.T) {
+	base := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(42, StatusDisabled)}
+	repo := &conditionalClearRepoStub{accountRepoStubForClearAccountError: base}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.ClearAccountErrorWithOptions(context.Background(), 42, ClearAccountErrorOptions{PreserveInactive: true})
+	require.NoError(t, err)
+	require.True(t, result.SkippedInactive)
+	require.Equal(t, StatusDisabled, result.Account.Status)
+	require.Equal(t, 0, base.clearErrorCalls)
+}
+
+func TestAdminService_ClearAccountErrorWithOptions_PreserveInactiveRecoversErrorAccount(t *testing.T) {
+	base := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(43, StatusError)}
+	repo := &conditionalClearRepoStub{accountRepoStubForClearAccountError: base}
+	blocker := &runtimeBlockRecorder{}
+	svc := &adminServiceImpl{accountRepo: repo, runtimeBlocker: blocker}
+
+	result, err := svc.ClearAccountErrorWithOptions(context.Background(), 43, ClearAccountErrorOptions{PreserveInactive: true})
+	require.NoError(t, err)
+	require.False(t, result.SkippedInactive)
+	require.Equal(t, StatusActive, result.Account.Status)
+	require.Empty(t, result.Account.ErrorMessage)
+	require.Equal(t, 0, base.clearErrorCalls)
+	require.Equal(t, 1, repo.conditionalClearCalls)
+	requireRuntimeStateCleared(t, base, result.Account)
+	require.Equal(t, []int64{43}, blocker.clearedIDs)
+}
+
+func TestAdminService_ClearAccountErrorWithOptions_DefaultReactivatesInactive(t *testing.T) {
+	base := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(44, "inactive")}
+	repo := &conditionalClearRepoStub{accountRepoStubForClearAccountError: base}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	result, err := svc.ClearAccountErrorWithOptions(context.Background(), 44, ClearAccountErrorOptions{})
+	require.NoError(t, err)
+	require.False(t, result.SkippedInactive)
+	require.Equal(t, StatusActive, result.Account.Status, "默认行为不变：停用账号也会被重新启用")
+	require.Equal(t, 1, base.clearErrorCalls)
+	require.Equal(t, 0, repo.conditionalClearCalls)
+	requireRuntimeStateCleared(t, base, result.Account)
+
+	// 旧入口 ClearAccountError 同样保持原行为。
+	legacyBase := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(45, "inactive")}
+	legacyRepo := &conditionalClearRepoStub{accountRepoStubForClearAccountError: legacyBase}
+	legacy := &adminServiceImpl{accountRepo: legacyRepo}
+	account, err := legacy.ClearAccountError(context.Background(), 45)
+	require.NoError(t, err)
+	require.Equal(t, StatusActive, account.Status)
+	require.Equal(t, 1, legacyBase.clearErrorCalls)
+	require.Equal(t, 0, legacyRepo.conditionalClearCalls)
+}
+
+func TestAdminService_ClearAccountErrorWithOptions_PreserveInactiveFailsClosedWithoutConditionalRepo(t *testing.T) {
+	repo := &accountRepoStubForClearAccountError{account: newClearErrorStubAccount(46, "inactive")}
+	blocker := &runtimeBlockRecorder{}
+	svc := &adminServiceImpl{accountRepo: repo, runtimeBlocker: blocker}
+
+	result, err := svc.ClearAccountErrorWithOptions(context.Background(), 46, ClearAccountErrorOptions{PreserveInactive: true})
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, 0, repo.clearErrorCalls)
+	require.Equal(t, 0, repo.clearRateLimitCalls)
+	require.Equal(t, 0, repo.clearAntigravityCalls)
+	require.Equal(t, 0, repo.clearModelRateLimitCalls)
+	require.Equal(t, 0, repo.clearTempUnschedCalls)
+	require.Empty(t, blocker.clearedIDs)
+	require.Equal(t, "inactive", repo.account.Status)
+}

@@ -1509,32 +1509,17 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 
 // ClearAccountError 清空账号的错误与限流状态，使其恢复可调度。
 //
-// 归属校验必须前置：下面是连续五次写操作，末尾的 GetByIDScoped 只是取回显值。
-// 若把它当校验，五次写早已落库 —— 越权的 vendor 已经把别家账号从
-// 限流状态里捞了出来，读不到也回滚不了。
+// 归属校验必须前置（见 ClearAccountErrorWithOptions）：后面是连续五次写操作，
+// 末尾的 GetByIDScoped 只是取回显值。若把它当校验，五次写早已落库 ——
+// 越权的 vendor 已经把别家账号从限流状态里捞了出来，读不到也回滚不了。
+//
+// 零值选项：停用账号同样会被重新启用（历史行为）。
 func (s *adminServiceImpl) ClearAccountError(ctx context.Context, id int64) (*Account, error) {
-	if err := s.requireAccountAccess(ctx, id); err != nil {
+	result, err := s.ClearAccountErrorWithOptions(ctx, id, ClearAccountErrorOptions{})
+	if err != nil {
 		return nil, err
 	}
-	if err := s.accountRepo.ClearError(ctx, id); err != nil {
-		return nil, err
-	}
-	if err := s.accountRepo.ClearRateLimit(ctx, id); err != nil {
-		return nil, err
-	}
-	if err := s.accountRepo.ClearAntigravityQuotaScopes(ctx, id); err != nil {
-		return nil, err
-	}
-	if err := s.accountRepo.ClearModelRateLimits(ctx, id); err != nil {
-		return nil, err
-	}
-	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
-		return nil, err
-	}
-	if s.runtimeBlocker != nil {
-		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
-	}
-	return s.accountRepo.GetByIDScoped(ctx, id)
+	return result.Account, nil
 }
 
 // SetAccountError 手工把账号标记为错误状态。

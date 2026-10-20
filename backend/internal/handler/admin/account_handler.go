@@ -1919,18 +1919,25 @@ func (h *AccountHandler) GetStats(c *gin.Context) {
 
 // ClearError handles clearing account error
 // POST /api/v1/admin/accounts/:id/clear-error
+// Optional body {"preserve_inactive": bool}; see ClearAccountErrorRequest.
 func (h *AccountHandler) ClearError(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
+	var req ClearAccountErrorRequest
+	if err := bindOptionalJSON(c, &req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
 
-	account, err := h.adminService.ClearAccountError(c.Request.Context(), accountID)
+	result, err := h.adminService.ClearAccountErrorWithOptions(c.Request.Context(), accountID, service.ClearAccountErrorOptions{PreserveInactive: req.PreserveInactive})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
+	account := result.Account
 
 	// 清除错误后，同时清除 token 缓存，确保下次请求会获取最新的 token（触发刷新或从 DB 读取）
 	// 这解决了管理员重置账号状态后，旧的失效 token 仍在缓存中导致立即再次 401 的问题
@@ -2096,9 +2103,7 @@ func (h *AccountHandler) BatchDelete(c *gin.Context) {
 // BatchClearError handles batch clearing account errors
 // POST /api/v1/admin/accounts/batch-clear-error
 func (h *AccountHandler) BatchClearError(c *gin.Context) {
-	var req struct {
-		AccountIDs []int64 `json:"account_ids"`
-	}
+	var req BatchClearAccountErrorRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
@@ -2117,12 +2122,14 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	var mu sync.Mutex
 	var successCount, failedCount int
 	var errors []gin.H
+	skipped := newSkippedInactiveIDs()
+	opts := service.ClearAccountErrorOptions{PreserveInactive: req.PreserveInactive}
 
 	// 注意：所有 goroutine 必须 return nil，避免 errgroup cancel 其他并发任务
 	for _, id := range req.AccountIDs {
 		accountID := id // 闭包捕获
 		g.Go(func() error {
-			account, err := h.adminService.ClearAccountError(gctx, accountID)
+			result, err := h.adminService.ClearAccountErrorWithOptions(gctx, accountID, opts)
 			if err != nil {
 				mu.Lock()
 				failedCount++
@@ -2132,6 +2139,10 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 				})
 				mu.Unlock()
 				return nil
+			}
+			account := result.Account
+			if result.SkippedInactive {
+				skipped.add(accountID)
 			}
 
 			// 清除错误后，同时清除 token 缓存
@@ -2154,10 +2165,11 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"total":   len(req.AccountIDs),
-		"success": successCount,
-		"failed":  failedCount,
-		"errors":  errors,
+		"total":                len(req.AccountIDs),
+		"success":              successCount,
+		"failed":               failedCount,
+		"errors":               errors,
+		"skipped_inactive_ids": skipped.sorted(),
 	})
 }
 

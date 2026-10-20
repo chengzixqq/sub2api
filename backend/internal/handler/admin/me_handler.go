@@ -15,6 +15,7 @@ import (
 // adminMeCapabilities lists server features a client may probe for; append one
 // string whenever a mobile-facing capability ships.
 var adminMeCapabilities = []string{
+	"accounts.clear_error_preserve_inactive",
 	"accounts.patch",
 	"accounts.recover_schedulable",
 	"admin.access_tokens",

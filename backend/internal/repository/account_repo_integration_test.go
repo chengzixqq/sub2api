@@ -1471,6 +1471,72 @@ func (s *AccountRepoSuite) TestClearError_SyncSchedulerSnapshotOnRecovery() {
 	s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
 }
 
+func (s *AccountRepoSuite) TestClearErrorPreservingInactive_OnlyClearsActiveOrErrorAccounts() {
+	errorAt := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	inactive := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:         "acc-preserve-inactive",
+		Status:       "inactive",
+		ErrorMessage: "x",
+	})
+	s.Require().NoError(s.client.Account.UpdateOneID(inactive.ID).SetErrorAt(errorAt).Exec(s.ctx))
+	disabled := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:         "acc-preserve-disabled",
+		Status:       service.StatusDisabled,
+		ErrorMessage: "legacy",
+	})
+	failed := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:         "acc-preserve-error",
+		Status:       service.StatusError,
+		ErrorMessage: "token revoked",
+	})
+	s.Require().NoError(s.client.Account.UpdateOneID(failed.ID).SetErrorAt(errorAt).Exec(s.ctx))
+	active := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:   "acc-preserve-active",
+		Status: service.StatusActive,
+	})
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
+
+	cleared, err := s.repo.ClearErrorPreservingInactive(s.ctx, inactive.ID)
+	s.Require().NoError(err)
+	s.Require().False(cleared, "inactive 账号不应被清除")
+	got, err := s.repo.GetByID(s.ctx, inactive.ID)
+	s.Require().NoError(err)
+	s.Require().Equal("inactive", got.Status)
+	s.Require().Equal("x", got.ErrorMessage)
+	s.Require().NotNil(got.ErrorAt)
+	s.Require().Empty(cacheRecorder.setAccounts, "未命中条件时不得同步调度快照")
+
+	cleared, err = s.repo.ClearErrorPreservingInactive(s.ctx, disabled.ID)
+	s.Require().NoError(err)
+	s.Require().False(cleared, "历史 disabled 状态同样按停用处理")
+	got, err = s.repo.GetByID(s.ctx, disabled.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusDisabled, got.Status)
+	s.Require().Equal("legacy", got.ErrorMessage)
+	s.Require().Empty(cacheRecorder.setAccounts)
+
+	cleared, err = s.repo.ClearErrorPreservingInactive(s.ctx, failed.ID)
+	s.Require().NoError(err)
+	s.Require().True(cleared)
+	got, err = s.repo.GetByID(s.ctx, failed.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusActive, got.Status)
+	s.Require().Empty(got.ErrorMessage)
+	s.Require().Nil(got.ErrorAt)
+	s.Require().Len(cacheRecorder.setAccounts, 1)
+	s.Require().Equal(failed.ID, cacheRecorder.setAccounts[0].ID)
+	s.Require().Equal(service.StatusActive, cacheRecorder.setAccounts[0].Status)
+
+	cleared, err = s.repo.ClearErrorPreservingInactive(s.ctx, active.ID)
+	s.Require().NoError(err)
+	s.Require().True(cleared)
+	got, err = s.repo.GetByID(s.ctx, active.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(service.StatusActive, got.Status)
+	s.Require().Len(cacheRecorder.setAccounts, 2)
+}
+
 // --- UpdateSessionWindow ---
 
 func (s *AccountRepoSuite) TestUpdateSessionWindow() {

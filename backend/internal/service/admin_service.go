@@ -121,6 +121,10 @@ type AdminService interface {
 	DeleteAccount(ctx context.Context, id int64) error
 	RefreshAccountCredentials(ctx context.Context, id int64) (*Account, error)
 	ClearAccountError(ctx context.Context, id int64) (*Account, error)
+	// ClearAccountErrorWithOptions 同 ClearAccountError；PreserveInactive 时 status 既不是
+	// active 也不是 error 的账号（inactive、历史 disabled）不改 status / 错误信息，只清运行态限制，
+	// 并在结果里标记 SkippedInactive。零值选项与 ClearAccountError 完全一致。
+	ClearAccountErrorWithOptions(ctx context.Context, id int64, opts ClearAccountErrorOptions) (*ClearAccountErrorResult, error)
 	SetAccountError(ctx context.Context, id int64, errorMsg string) error
 	// EnsureOpenAIPrivacy 检查 OpenAI OAuth 账号 privacy_mode，未设置则尝试关闭训练数据共享并持久化。
 	EnsureOpenAIPrivacy(ctx context.Context, account *Account) string

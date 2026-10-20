@@ -108,6 +108,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Equal(t, "0.2.16", server["version"])
 	require.Contains(t, server["capabilities"], "accounts.test_result")
 	require.Contains(t, server["capabilities"], "accounts.recover_schedulable")
+	require.Contains(t, server["capabilities"], "accounts.clear_error_preserve_inactive")
 	require.Contains(t, server["capabilities"], "accounts.test_runs")
 	require.Contains(t, server["capabilities"], "scheduled_tests.upstream_status")
 	require.Contains(t, server["capabilities"], "dashboard.home")
