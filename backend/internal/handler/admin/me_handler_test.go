@@ -185,3 +185,18 @@ func TestAdminMe_OpsMonitoringDisabledReason(t *testing.T) {
 	require.Equal(t, false, features["ops_monitoring_enabled"])
 	require.Equal(t, "setting_off", features["ops_monitoring_disabled_reason"])
 }
+
+func TestAdminMe_WebAccountsEditDeepLinkFollowsEmbeddedFrontend(t *testing.T) {
+	capabilities := func(embeddedWeb bool) []any {
+		h := NewMeHandler(MeDeps{EmbeddedWeb: embeddedWeb})
+		rec := httptest.NewRecorder()
+		newMeRouter(h, "jwt", service.RoleAdmin).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/me", nil))
+		return decodeMe(t, rec)["server"].(map[string]any)["capabilities"].([]any)
+	}
+
+	require.Contains(t, capabilities(true), "web.accounts_edit_deep_link")
+	// 前端单独部署时后端无法知道 Web 版本，不能声称支持。
+	require.NotContains(t, capabilities(false), "web.accounts_edit_deep_link")
+	// 追加能力不能改动共享的基础列表。
+	require.NotContains(t, adminMeCapabilities, "web.accounts_edit_deep_link")
+}

@@ -5,6 +5,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/google/wire"
 )
@@ -188,7 +189,7 @@ func ProvideSystemHandler(updateService *service.UpdateService, lockService *ser
 
 // ProvideMeHandler builds GET /admin/me from read-only sources.
 func ProvideMeHandler(cfg *config.Config, userService *service.UserService, settingService *service.SettingService, opsService *service.OpsService, totpService *service.TotpService, workspaceService *service.WorkspaceService, buildInfo BuildInfo) *admin.MeHandler {
-	deps := admin.MeDeps{Version: buildInfo.Version, RunMode: config.RunModeStandard}
+	deps := admin.MeDeps{Version: buildInfo.Version, RunMode: config.RunModeStandard, EmbeddedWeb: web.HasEmbeddedFrontend()}
 	if cfg != nil && cfg.RunMode != "" {
 		deps.RunMode = cfg.RunMode
 	}

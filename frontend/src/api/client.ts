@@ -78,6 +78,28 @@ apiClient.interceptors.request.use(
 
 // ==================== Response Interceptor ====================
 
+// 同一次会话失效里常有多个请求先后收到 401；第一次就定下跳转目标，
+// 避免跳转生效前页面改写了地址栏（如账号页去掉 ?edit= 深链）后被后到的 401 覆盖。
+let loginRedirectTarget: string | null = null
+
+const isAdminPath = (pathname: string): boolean => pathname === '/admin' || pathname.startsWith('/admin/')
+
+/**
+ * 会话失效时硬跳到登录页。管理端页面带上 `redirect=当前路径+query`，
+ * 登录后由 resolveLandingPath 回到原地址（与路由守卫对未登录访问的处理一致）；
+ * 其他页面（OAuth 回调、支付结果等）可能带一次性参数，仍跳到不带 redirect 的登录页。
+ */
+function redirectToLogin(): void {
+  const { pathname, search } = window.location
+  if (pathname.includes('/login')) return
+  if (loginRedirectTarget === null) {
+    loginRedirectTarget = isAdminPath(pathname)
+      ? `/login?redirect=${encodeURIComponent(`${pathname}${search}`)}`
+      : '/login'
+  }
+  window.location.href = loginRedirectTarget
+}
+
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => {
     // Unwrap standard API response format { code, message, data }
@@ -218,9 +240,7 @@ apiClient.interceptors.response.use(
             localStorage.removeItem('token_expires_at')
             sessionStorage.setItem('auth_expired', '1')
 
-            if (!window.location.pathname.includes('/login')) {
-              window.location.href = '/login'
-            }
+            redirectToLogin()
 
             return Promise.reject({
               status: 401,
@@ -249,9 +269,7 @@ apiClient.interceptors.response.use(
           sessionStorage.setItem('auth_expired', '1')
         }
         // Only redirect if not already on login page
-        if (!window.location.pathname.includes('/login')) {
-          window.location.href = '/login'
-        }
+        redirectToLogin()
       }
 
       // Return structured error

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { LocationQuery } from 'vue-router'
 import {
   ACCOUNT_DEEP_LINK_INVALID_DISPLAY_MAX,
-  ACCOUNT_DEEP_LINK_SEARCH_MAX,
+  ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES,
   parseAccountDeepLink
 } from '../accountDeepLink'
+
+const utf8Bytes = (value: string) => new TextEncoder().encode(value).length
 
 describe('parseAccountDeepLink', () => {
   it('parses a valid edit id and strips it from the remaining query without mutating input', () => {
@@ -75,15 +77,32 @@ describe('parseAccountDeepLink', () => {
   })
 
   it('trims search and truncates it to the backend limit', () => {
-    const long = `  ${'s'.repeat(ACCOUNT_DEEP_LINK_SEARCH_MAX + 20)}  `
+    const long = `  ${'s'.repeat(ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES + 20)}  `
 
     const link = parseAccountDeepLink({ search: long })
 
-    expect(ACCOUNT_DEEP_LINK_SEARCH_MAX).toBe(100)
+    expect(ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES).toBe(100)
     expect(link.present).toBe(true)
     expect(link.editId).toBeNull()
     expect(link.invalidEdit).toBeNull()
-    expect(link.search).toBe('s'.repeat(ACCOUNT_DEEP_LINK_SEARCH_MAX))
+    expect(link.search).toBe('s'.repeat(ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES))
+  })
+
+  it('never splits a surrogate pair when truncating search', () => {
+    const link = parseAccountDeepLink({ search: `${'a'.repeat(99)}😀` })
+
+    expect(link.search).toBe('a'.repeat(99))
+    expect(() => encodeURIComponent(link.search ?? '')).not.toThrow()
+  })
+
+  it('truncates search to whole characters within the backend UTF-8 byte limit', () => {
+    const cjk = parseAccountDeepLink({ search: '中'.repeat(40) })
+    expect(cjk.search).toBe('中'.repeat(33))
+    expect(utf8Bytes(cjk.search ?? '')).toBe(99)
+
+    const exact = `${'a'.repeat(96)}😀`
+    expect(utf8Bytes(exact)).toBe(ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES)
+    expect(parseAccountDeepLink({ search: exact }).search).toBe(exact)
   })
 
   it('reports no deep link when neither key is present', () => {

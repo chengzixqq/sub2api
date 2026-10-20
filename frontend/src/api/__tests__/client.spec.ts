@@ -491,6 +491,83 @@ describe('API Client', () => {
     })
   })
 
+  // --- 会话失效跳登录页时保留管理端地址 ---
+
+  describe('会话失效跳转登录页', () => {
+    let originalLocation: Location
+    let locationState: { pathname: string; search: string; href: string }
+
+    const stubLocation = (pathname: string, search: string) => {
+      locationState = { pathname, search, href: `${pathname}${search}` }
+      Object.defineProperty(window, 'location', { value: locationState, writable: true, configurable: true })
+    }
+
+    const unauthorized = () => ({
+      response: { status: 401, data: { code: 'TOKEN_EXPIRED' } },
+      config: { url: '/admin/accounts', headers: { Authorization: 'Bearer expired-token' } },
+    })
+
+    beforeEach(() => {
+      originalLocation = window.location
+    })
+
+    afterEach(() => {
+      Object.defineProperty(window, 'location', { value: originalLocation, writable: true, configurable: true })
+    })
+
+    it('刷新失败时管理端页面带上 redirect，登录后回到原地址（含深链参数）', async () => {
+      stubLocation('/admin/accounts', '?edit=12&search=acc')
+      localStorage.setItem('auth_token', 'expired-token')
+      localStorage.setItem('refresh_token', 'refresh-token')
+      localStorage.setItem('auth_user', JSON.stringify({ id: 7 }))
+      const refresh = await import('@/api/tokenRefresh')
+      vi.spyOn(refresh, 'refreshAuthTokens').mockRejectedValueOnce(
+        Object.assign(new axios.AxiosError('Refresh rejected'), { response: { status: 401 } })
+      )
+      apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(unauthorized())
+
+      await expect(apiClient.get('/admin/accounts')).rejects.toMatchObject({ code: 'TOKEN_REFRESH_FAILED' })
+
+      expect(locationState.href).toBe(`/login?redirect=${encodeURIComponent('/admin/accounts?edit=12&search=acc')}`)
+    })
+
+    it('没有 refresh_token 时管理端页面同样带上 redirect', async () => {
+      stubLocation('/admin/ops', '')
+      localStorage.setItem('auth_token', 'expired-token')
+      apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(unauthorized())
+
+      await expect(apiClient.get('/admin/ops')).rejects.toBeDefined()
+
+      expect(locationState.href).toBe(`/login?redirect=${encodeURIComponent('/admin/ops')}`)
+    })
+
+    it('非管理端页面仍跳到不带 redirect 的登录页', async () => {
+      stubLocation('/auth/callback', '?code=used')
+      localStorage.setItem('auth_token', 'expired-token')
+      apiClient.defaults.adapter = vi.fn().mockRejectedValueOnce(unauthorized())
+
+      await expect(apiClient.get('/test')).rejects.toBeDefined()
+
+      expect(locationState.href).toBe('/login')
+    })
+
+    it('同一次失效里后到的 401 沿用第一次的 redirect，不被已改写的地址栏覆盖', async () => {
+      stubLocation('/admin/accounts', '?edit=12')
+      localStorage.setItem('auth_token', 'expired-token')
+      apiClient.defaults.adapter = vi.fn()
+        .mockRejectedValueOnce(unauthorized())
+        .mockRejectedValueOnce(unauthorized())
+
+      await expect(apiClient.get('/admin/accounts')).rejects.toBeDefined()
+      // 页面挂载后用 router.replace 去掉了深链参数，之后的请求才收到 401。
+      locationState.search = ''
+      localStorage.setItem('auth_token', 'expired-token')
+      await expect(apiClient.get('/admin/accounts/today-stats')).rejects.toBeDefined()
+
+      expect(locationState.href).toBe(`/login?redirect=${encodeURIComponent('/admin/accounts?edit=12')}`)
+    })
+  })
+
   // --- 网络错误 ---
 
   describe('网络错误', () => {

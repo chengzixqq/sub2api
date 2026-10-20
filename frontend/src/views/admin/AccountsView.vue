@@ -1896,9 +1896,21 @@ const consumeAccountDeepLink = (): AccountDeepLink | null => {
   return link
 }
 
+/**
+ * 深链要等代理、分组与账号详情都加载完才打开编辑弹窗。等待期间用户可能已经打开了
+ * 别的弹窗（例如点了另一行的“编辑”）或离开了本页：这时放弃深链，不覆盖用户正在填的表单。
+ */
+let isAccountsViewUnmounted = false
+const canOpenDeepLinkEditor = () => !isAccountsViewUnmounted && !isAnyModalOpen.value
+
 const openEditFromDeepLink = async (link: AccountDeepLink) => {
+  if (isAccountsViewUnmounted) return
   if (link.editId !== null) {
-    await handleEdit({ id: link.editId })
+    if (!canOpenDeepLinkEditor()) return
+    const account = await loadAccountDetails({ id: link.editId })
+    if (!account || !canOpenDeepLinkEditor()) return
+    edAcc.value = account
+    showEdit.value = true
     return
   }
   if (link.invalidEdit !== null) {
@@ -2642,6 +2654,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  isAccountsViewUnmounted = true
   upstreamBillingRateAbortController?.abort()
   if (usageBatchFlushTimer !== null) {
     clearTimeout(usageBatchFlushTimer)

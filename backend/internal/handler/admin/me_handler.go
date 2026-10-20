@@ -60,6 +60,13 @@ var adminMeCapabilities = []string{
 	"users.quick_topup",
 }
 
+// adminMeEmbeddedWebCapabilities are Web frontend features. They are listed
+// only when the frontend is embedded in this binary; a separately deployed
+// frontend may be older or newer than the server.
+var adminMeEmbeddedWebCapabilities = []string{
+	"web.accounts_edit_deep_link",
+}
+
 type meUserReader interface {
 	GetByID(ctx context.Context, id int64) (*service.User, error)
 }
@@ -94,6 +101,10 @@ type MeDeps struct {
 	Workspaces meWorkspaceReader
 	Version    string
 	RunMode    string
+	// EmbeddedWeb reports whether this binary serves the embedded Web frontend
+	// (built with -tags embed). Only then does the Web version match the server,
+	// so Web-only capabilities are advertised just in that case.
+	EmbeddedWeb bool
 }
 
 // MeHandler answers who is calling the admin API and what the server offers.
@@ -251,11 +262,15 @@ func (h *MeHandler) security(c *gin.Context, userID int64, authMethod string, us
 
 func (h *MeHandler) serverInfo() meServer {
 	now := time.Now().In(timezone.Location())
+	capabilities := append([]string(nil), adminMeCapabilities...)
+	if h.deps.EmbeddedWeb {
+		capabilities = append(capabilities, adminMeEmbeddedWebCapabilities...)
+	}
 	return meServer{
 		Version:         h.deps.Version,
 		RunMode:         h.deps.RunMode,
 		ServerTimezone:  timezone.Name(),
 		ServerUTCOffset: now.Format("-07:00"),
-		Capabilities:    append([]string(nil), adminMeCapabilities...),
+		Capabilities:    capabilities,
 	}
 }

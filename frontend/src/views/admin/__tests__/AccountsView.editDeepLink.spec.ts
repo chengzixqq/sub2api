@@ -78,6 +78,18 @@ const AccountTableFiltersStub = {
   template: '<div data-test="filters" :data-search="searchQuery" />'
 }
 
+// 渲染每行的操作列，便于模拟用户在等待期间点击别的账号的“编辑”。
+const DataTableStub = {
+  props: ['data'],
+  template: `
+    <div>
+      <div v-for="row in data" :key="row.id" :data-test="'row-' + row.id">
+        <slot name="cell-actions" :row="row" />
+      </div>
+    </div>
+  `
+}
+
 const account = {
   id: 12,
   name: 'acc-x',
@@ -104,14 +116,14 @@ async function createTestRouter(path: string): Promise<Router> {
   return router
 }
 
-function mountView(router: Router) {
+function mountView(router: Router, options: { renderRows?: boolean } = {}) {
   const wrapper = mount(AccountsView, {
     global: {
       plugins: [router],
       stubs: {
         AppLayout: { template: '<div><slot /></div>' },
         TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /></div>' },
-        DataTable: true,
+        DataTable: options.renderRows ? DataTableStub : true,
         AccountTableActions: true,
         AccountTableFilters: AccountTableFiltersStub,
         AccountBulkActionsBar: true,
@@ -282,5 +294,70 @@ describe('admin AccountsView edit deep link', () => {
     expect(getById).toHaveBeenCalledWith(12)
     expect(wrapper.get('[data-test="edit-modal"]').attributes('data-show')).toBe('true')
     expect(warn).toHaveBeenCalledWith('Failed to clear account deep link query:', expect.any(Error))
+  })
+
+  it('does not replace an editor the user opened while proxies and groups were loading', async () => {
+    const other = { ...account, id: 5, name: 'acc-5' }
+    listAccounts.mockResolvedValue(page([other]))
+    getById.mockImplementation(async (id: number) => ({ ...account, id }))
+    let resolveProxies: (value: unknown) => void = () => undefined
+    getAllProxies.mockReturnValue(new Promise(resolve => { resolveProxies = resolve }))
+    const router = await createTestRouter('/admin/accounts?edit=12')
+    const wrapper = mountView(router, { renderRows: true })
+    await flushPromises()
+
+    await wrapper.get('[data-test="row-5"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="edit-modal"]').attributes('data-account-id')).toBe('5')
+
+    resolveProxies([{ id: 3, name: 'proxy' }])
+    await flushPromises()
+
+    expect(getById).toHaveBeenCalledTimes(1)
+    expect(getById).toHaveBeenCalledWith(5)
+    const modal = wrapper.get('[data-test="edit-modal"]')
+    expect(modal.attributes('data-show')).toBe('true')
+    expect(modal.attributes('data-account-id')).toBe('5')
+  })
+
+  it('discards the deep-link account when another editor opened while it was being fetched', async () => {
+    const other = { ...account, id: 5, name: 'acc-5' }
+    listAccounts.mockResolvedValue(page([other]))
+    let resolveDeepLinkAccount: (value: unknown) => void = () => undefined
+    getById.mockImplementation((id: number) =>
+      id === 12
+        ? new Promise(resolve => { resolveDeepLinkAccount = resolve })
+        : Promise.resolve({ ...account, id })
+    )
+    const router = await createTestRouter('/admin/accounts?edit=12')
+    const wrapper = mountView(router, { renderRows: true })
+    await flushPromises()
+    expect(getById).toHaveBeenCalledWith(12)
+
+    await wrapper.get('[data-test="row-5"] button').trigger('click')
+    await flushPromises()
+    resolveDeepLinkAccount({ ...account, id: 12 })
+    await flushPromises()
+
+    const modal = wrapper.get('[data-test="edit-modal"]')
+    expect(modal.attributes('data-show')).toBe('true')
+    expect(modal.attributes('data-account-id')).toBe('5')
+  })
+
+  it('skips the deep link when the page is left before proxies and groups finish loading', async () => {
+    let resolveProxies: (value: unknown) => void = () => undefined
+    getAllProxies.mockReturnValue(new Promise(resolve => { resolveProxies = resolve }))
+    getById.mockRejectedValue({ status: 404, message: 'account not found' })
+    const router = await createTestRouter('/admin/accounts?edit=12')
+    const wrapper = mountView(router)
+    await flushPromises()
+
+    wrappers.splice(wrappers.indexOf(wrapper), 1)
+    wrapper.unmount()
+    resolveProxies([{ id: 3, name: 'proxy' }])
+    await flushPromises()
+
+    expect(getById).not.toHaveBeenCalled()
+    expect(showError).not.toHaveBeenCalled()
   })
 })

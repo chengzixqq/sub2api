@@ -3,8 +3,8 @@ import type { LocationQuery, LocationQueryValue } from 'vue-router'
 /** 账号管理页深链：`/admin/accounts?edit=<id>[&search=<名称>]`（App“在 Web 中编辑”使用）。 */
 export const ACCOUNT_DEEP_LINK_EDIT_KEY = 'edit'
 export const ACCOUNT_DEEP_LINK_SEARCH_KEY = 'search'
-/** 与后端 GET /admin/accounts 对 search 的截断长度一致。 */
-export const ACCOUNT_DEEP_LINK_SEARCH_MAX = 100
+/** 后端 GET /admin/accounts 按 UTF-8 字节把 search 截到 100（`search[:100]`），这里用同一上限。 */
+export const ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES = 100
 /** 非法 edit 值回显到提示里时的最大长度，避免超长链接撑爆 toast。 */
 export const ACCOUNT_DEEP_LINK_INVALID_DISPLAY_MAX = 32
 
@@ -40,9 +40,28 @@ const parseEditId = (raw: string): number | null => {
 const truncateForDisplay = (raw: string): string =>
   raw.length > ACCOUNT_DEEP_LINK_INVALID_DISPLAY_MAX ? `${raw.slice(0, ACCOUNT_DEEP_LINK_INVALID_DISPLAY_MAX)}…` : raw
 
+const utf8ByteLength = (codePoint: number): number =>
+  codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4
+
+/**
+ * 按完整字符截到 maxBytes 个 UTF-8 字节以内。
+ * 不能用 String#slice：按 UTF-16 码元截断会把 emoji 等代理对劈开，
+ * 留下的孤立代理会让 encodeURIComponent 抛 URIError，列表请求全部失败。
+ */
+const truncateUtf8 = (value: string, maxBytes: number): string => {
+  let bytes = 0
+  let out = ''
+  for (const char of value) {
+    bytes += utf8ByteLength(char.codePointAt(0) ?? 0)
+    if (bytes > maxBytes) break
+    out += char
+  }
+  return out
+}
+
 const normalizeSearch = (raw: string | null): string | null => {
   if (raw === null) return null
-  const trimmed = raw.trim().slice(0, ACCOUNT_DEEP_LINK_SEARCH_MAX)
+  const trimmed = truncateUtf8(raw.trim(), ACCOUNT_DEEP_LINK_SEARCH_MAX_BYTES)
   return trimmed.length > 0 ? trimmed : null
 }
 
