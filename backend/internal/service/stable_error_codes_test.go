@@ -51,6 +51,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrAccountTestRunNotFound, http.StatusNotFound, "ACCOUNT_TEST_RUN_NOT_FOUND"},
 		{ErrAccountTestBusy, http.StatusTooManyRequests, "ACCOUNT_TEST_BUSY"},
 		{ErrAccountRecoveredSchedulableFailed, http.StatusInternalServerError, "ACCOUNT_RECOVERED_SCHEDULABLE_FAILED"},
+		{ErrProxyNotFound, http.StatusNotFound, "PROXY_NOT_FOUND"},
 		{ErrClaudeOAuthSessionNotFound, http.StatusBadRequest, "CLAUDE_OAUTH_SESSION_NOT_FOUND"},
 		{ErrClaudeOAuthInvalidState, http.StatusBadRequest, "CLAUDE_OAUTH_INVALID_STATE"},
 		{ErrGeminiOAuthSessionNotFound, http.StatusBadRequest, "GEMINI_OAUTH_SESSION_NOT_FOUND"},

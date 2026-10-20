@@ -242,6 +242,52 @@ func TestVendorGrokOAuthOnlyAllowsScopedReauthHelpers(t *testing.T) {
 	}
 }
 
+// TestVendorOAuthProxyHelpersReachability 锁定带 proxy_id 的各平台授权接口对 vendor 的开放范围。
+//
+// 各平台 OAuth 服务按 proxy_id 取代理时都不过滤工作区。Claude 的六个接口挂在
+// /admin/accounts 写前缀下，对有账号管理档的 vendor 开放，由 handler 的
+// constrainVendorOAuthProxy 把 proxy_id 收窄到本工作区；OpenAI、Gemini、
+// Antigravity 的同类接口没有这道校验，必须保持站长专属，要开放得先补上收窄。
+func TestVendorOAuthProxyHelpersReachability(t *testing.T) {
+	manage := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{AccountManage: true}}
+	monitorOnly := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{MonitorView: true}}
+	claudeHelpers := []string{
+		"/api/v1/admin/accounts/generate-auth-url",
+		"/api/v1/admin/accounts/generate-setup-token-url",
+		"/api/v1/admin/accounts/exchange-code",
+		"/api/v1/admin/accounts/exchange-setup-token-code",
+		"/api/v1/admin/accounts/cookie-auth",
+		"/api/v1/admin/accounts/setup-token-cookie-auth",
+	}
+	for _, path := range claudeHelpers {
+		if !vendorRouteAllowed(newFullPathContext("POST", path), manage) {
+			t.Errorf("POST %s should stay available to vendors with account management", path)
+		}
+		if vendorRouteAllowed(newFullPathContext("POST", path), monitorOnly) {
+			t.Errorf("POST %s must require account management", path)
+		}
+	}
+
+	allPerms := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	stationOnly := []string{
+		"/api/v1/admin/openai/generate-auth-url",
+		"/api/v1/admin/openai/exchange-code",
+		"/api/v1/admin/openai/refresh-token",
+		"/api/v1/admin/openai/create-from-oauth",
+		"/api/v1/admin/openai/create-from-codex-pat",
+		"/api/v1/admin/gemini/oauth/auth-url",
+		"/api/v1/admin/gemini/oauth/exchange-code",
+		"/api/v1/admin/antigravity/oauth/auth-url",
+		"/api/v1/admin/antigravity/oauth/exchange-code",
+		"/api/v1/admin/antigravity/oauth/refresh-token",
+	}
+	for _, path := range stationOnly {
+		if vendorRouteAllowed(newFullPathContext("POST", path), allPerms) {
+			t.Errorf("POST %s resolves proxy_id without a workspace filter and must remain station-owner only", path)
+		}
+	}
+}
+
 // TestVendorRoutesWorkspaceSelfReadNeedsNoPerm 锁定工作区自读不依赖权限档。
 //
 // vendor 必须能读到自己的工作区信息，否则前端无法渲染身份与权限，

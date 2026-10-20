@@ -38,12 +38,16 @@ import (
 // OAuthHandler handles OAuth-related operations for accounts
 type OAuthHandler struct {
 	oauthService *service.OAuthService
+	// proxies checks a vendor's proxy_id against its workspace (see
+	// constrainVendorOAuthProxy).
+	proxies scopedProxyLookup
 }
 
 // NewOAuthHandler creates a new OAuth handler
-func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
+func NewOAuthHandler(oauthService *service.OAuthService, adminService service.AdminService) *OAuthHandler {
 	return &OAuthHandler{
 		oauthService: oauthService,
+		proxies:      adminService,
 	}
 }
 
@@ -2569,8 +2573,12 @@ func (h *OAuthHandler) GenerateAuthURL(c *gin.Context) {
 		// Allow empty body
 		req = GenerateAuthURLRequest{}
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
-	result, err := h.oauthService.GenerateAuthURL(c.Request.Context(), req.ProxyID)
+	result, err := h.oauthService.GenerateAuthURL(c.Request.Context(), proxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -2587,8 +2595,12 @@ func (h *OAuthHandler) GenerateSetupTokenURL(c *gin.Context) {
 		// Allow empty body
 		req = GenerateAuthURLRequest{}
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
-	result, err := h.oauthService.GenerateSetupTokenURL(c.Request.Context(), req.ProxyID)
+	result, err := h.oauthService.GenerateSetupTokenURL(c.Request.Context(), proxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -2612,11 +2624,15 @@ func (h *OAuthHandler) ExchangeCode(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
 	tokenInfo, err := h.oauthService.ExchangeCode(c.Request.Context(), &service.ExchangeCodeInput{
 		SessionID: req.SessionID,
 		Code:      req.Code,
-		ProxyID:   req.ProxyID,
+		ProxyID:   proxyID,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -2634,11 +2650,15 @@ func (h *OAuthHandler) ExchangeSetupTokenCode(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
 	tokenInfo, err := h.oauthService.ExchangeCode(c.Request.Context(), &service.ExchangeCodeInput{
 		SessionID: req.SessionID,
 		Code:      req.Code,
-		ProxyID:   req.ProxyID,
+		ProxyID:   proxyID,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -2662,10 +2682,14 @@ func (h *OAuthHandler) CookieAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
 	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
 		SessionKey: req.SessionKey,
-		ProxyID:    req.ProxyID,
+		ProxyID:    proxyID,
 		Scope:      "full",
 	})
 	if err != nil {
@@ -2684,10 +2708,14 @@ func (h *OAuthHandler) SetupTokenCookieAuth(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	proxyID, ok := h.requestProxy(c, req.ProxyID)
+	if !ok {
+		return
+	}
 
 	tokenInfo, err := h.oauthService.CookieAuth(c.Request.Context(), &service.CookieAuthInput{
 		SessionKey: req.SessionKey,
-		ProxyID:    req.ProxyID,
+		ProxyID:    proxyID,
 		Scope:      "inference",
 	})
 	if err != nil {

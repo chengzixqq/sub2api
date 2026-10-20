@@ -86,8 +86,14 @@ func TestOAuthExchangeHandlers_SessionNotFound(t *testing.T) {
 	antigravitySvc := service.NewAntigravityOAuthService(nil)
 	t.Cleanup(antigravitySvc.Stop)
 
-	claudeHandler := NewOAuthHandler(claudeSvc)
+	claudeHandler := NewOAuthHandler(claudeSvc, nil)
 	router := gin.New()
+	// The station-owner scope the admin middleware sets; the Claude helpers
+	// fail closed without one.
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
+		c.Next()
+	})
 	router.POST("/accounts/exchange-code", claudeHandler.ExchangeCode)
 	router.POST("/accounts/exchange-setup-token-code", claudeHandler.ExchangeSetupTokenCode)
 	router.POST("/gemini/oauth/exchange-code", NewGeminiOAuthHandler(geminiSvc).ExchangeCode)
