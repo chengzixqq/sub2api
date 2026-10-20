@@ -77,6 +77,7 @@ export default {
         'Existing accounts only sync fields returned by CRS; missing fields keep their current values. Credentials are merged by key — keys not returned by CRS are preserved. Proxies are kept when "Sync proxies" is unchecked.',
       crsBack: 'Back',
       editAccount: 'Edit Account',
+      deepLinkInvalidId: 'Invalid account ID in link: {id}',
       deleteAccount: 'Delete Account',
       searchAccounts: 'Search accounts...',
       moreFilters: 'More filters',

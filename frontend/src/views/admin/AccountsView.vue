@@ -510,9 +510,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
+import { ref, reactive, computed, inject, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { routeLocationKey, routerKey } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -551,6 +552,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRulesModal.vue'
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { fetchAllAccountIds } from '@/utils/accountSelection'
+import { parseAccountDeepLink, type AccountDeepLink } from '@/utils/accountDeepLink'
 import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
@@ -563,6 +565,9 @@ import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupSc
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+// 等价于 useRoute() / useRouter()，但未安装 router 时（既有视图测试）返回 null 且不告警，深链逻辑据此防空。
+const route = inject(routeLocationKey, null)
+const router = inject(routerKey, null)
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -1869,11 +1874,36 @@ const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise
   }
 }
 
-const handleEdit = async (a: AccountListItem) => {
+const handleEdit = async (a: Pick<AccountListItem, 'id'>) => {
   const account = await loadAccountDetails(a)
   if (!account) return
   edAcc.value = account
   showEdit.value = true
+}
+
+/**
+ * 读取 `?edit=<id>[&search=<名称>]` 深链：search 预填到列表筛选，
+ * 随后无论成败都从地址栏去掉这两个参数，避免刷新时重复弹窗或重复报错。
+ */
+const consumeAccountDeepLink = (): AccountDeepLink | null => {
+  if (!route) return null
+  const link = parseAccountDeepLink(route.query)
+  if (!link.present) return null
+  if (link.search !== null) params.search = link.search
+  router?.replace({ query: link.rest }).catch((error: unknown) => {
+    console.warn('Failed to clear account deep link query:', error)
+  })
+  return link
+}
+
+const openEditFromDeepLink = async (link: AccountDeepLink) => {
+  if (link.editId !== null) {
+    await handleEdit({ id: link.editId })
+    return
+  }
+  if (link.invalidEdit !== null) {
+    appStore.showError(t('admin.accounts.deepLinkInvalidId', { id: link.invalidEdit }))
+  }
 }
 
 /**
@@ -2579,6 +2609,7 @@ onMounted(async () => {
     }
   }
 
+  const deepLink = consumeAccountDeepLink()
   load()
   loadUpstreamBillingProbeGlobalState()
   const [proxiesResult, groupsResult] = await Promise.allSettled([
@@ -2605,6 +2636,9 @@ onMounted(async () => {
   } else {
     pauseAutoRefresh()
   }
+
+  // 放在代理与分组加载之后，编辑弹窗打开时下拉数据已就绪。
+  if (deepLink) await openEditFromDeepLink(deepLink)
 })
 
 onUnmounted(() => {
