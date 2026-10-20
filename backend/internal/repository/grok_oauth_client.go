@@ -15,6 +15,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	sharedhttp "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -221,6 +222,8 @@ func grokOAuthExchangeStatusError(resp *req.Response) error {
 	if resp == nil || infraerrors.Reason(err) != exchangeFailedReason || !oauth.IsCodeRejected(resp.StatusCode, resp.String()) {
 		return err
 	}
+	// 400 不会进 ErrorFrom 的 [ERROR] 日志，这里留一条记录供排查（message 已脱敏）。
+	logger.LegacyPrintf("repository.grok_oauth", "[WARN] [OAuth] token exchange rejected: %s", infraerrors.Message(err))
 	return service.NewOAuthCodeRejectedError(service.GrokOAuthCodeRejectedReason, infraerrors.Message(err), resp.StatusCode)
 }
 

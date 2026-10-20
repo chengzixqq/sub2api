@@ -10,9 +10,11 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/imroc/req/v3"
 )
 
@@ -68,6 +70,8 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 		body := resp.String()
 		message := fmt.Sprintf("token exchange failed: status %d, body: %s", resp.StatusCode, body)
 		if oauth.IsCodeRejected(resp.StatusCode, body) {
+			// 400 不会进 ErrorFrom 的 [ERROR] 日志，这里留一条脱敏记录供排查。
+			logger.LegacyPrintf("repository.openai_oauth", "[WARN] [OAuth] token exchange rejected: %s", logredact.RedactText(message))
 			return nil, service.NewOAuthCodeRejectedError(service.OpenAIOAuthCodeRejectedReason, message, resp.StatusCode)
 		}
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", message)
