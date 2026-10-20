@@ -49,6 +49,8 @@ func writeTodayStatsCacheKeyIDs(b *strings.Builder, accountIDs []int64) {
 
 // todayStatsBatchPayload 组装 today-stats/batch 的响应 data。
 // failed_account_ids 必须是非 nil 切片，确保序列化为 [] 而不是 null。
+// 它的顺序沿用 handler 规范化（normalizeInt64IDList 去重并升序）后的账号 ID 顺序，
+// 对外契约是“按账号 ID 升序去重”，不是请求里的顺序。
 func todayStatsBatchPayload(stats map[int64]*service.WindowStats, failedIDs []int64, degraded bool) gin.H {
 	if failedIDs == nil {
 		failedIDs = []int64{}

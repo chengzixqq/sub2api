@@ -115,6 +115,22 @@ func TestGetBatchTodayStats_PartialFailureSkipsCache(t *testing.T) {
 	require.Equal(t, 2, repo.calls())
 }
 
+// failed_account_ids 的顺序是接口契约：handler 先把请求 ID 去重并按升序排好，
+// 所以返回的是按账号 ID 升序的去重列表，与请求里的顺序无关。
+func TestGetBatchTodayStats_FailedIDsAscendingRegardlessOfRequestOrder(t *testing.T) {
+	repo := &todayStatsBatchHandlerRepo{
+		batchErr: errors.New("batch sql failed"),
+		failIDs:  map[int64]bool{916053: true, 916051: true},
+	}
+	router := newTodayStatsBatchRouter(repo)
+
+	rec := postTodayStatsBatch(router, `{"account_ids":[916053,916052,916051,916053]}`, "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body := decodeTodayStatsBatch(t, rec)
+	require.Equal(t, []int64{916051, 916053}, body.Data.FailedAccountIDs)
+	require.Equal(t, int64(4), body.Data.Stats["916052"].Requests)
+}
+
 func TestGetBatchTodayStats_SuccessCachedWithEmptyFailures(t *testing.T) {
 	repo := &todayStatsBatchHandlerRepo{}
 	router := newTodayStatsBatchRouter(repo)
