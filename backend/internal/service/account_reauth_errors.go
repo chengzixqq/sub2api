@@ -14,8 +14,9 @@ var (
 	// ErrReauthUnsupported: an OAuth account this flow cannot reauthorize;
 	// metadata.detail tells which rule rejected it.
 	ErrReauthUnsupported = infraerrors.BadRequest("REAUTH_UNSUPPORTED", "account cannot be reauthorized with this flow")
-	// ErrOAuthExchangeFailed: the code exchange failed without a more specific
-	// reason (upstream or network failure); metadata.platform names the platform.
+	// ErrOAuthExchangeFailed: the code exchange failed upstream or on the
+	// network on any platform; metadata.platform names the platform and
+	// metadata.cause_reason keeps the platform's own 502 reason when it had one.
 	ErrOAuthExchangeFailed = infraerrors.New(http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED", "oauth code exchange failed")
 	// ErrReauthPersistFailed: the exchange succeeded but saving failed. The new
 	// credentials are kept for a while; retry with the same session_id.

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -244,15 +245,26 @@ func reauthPersistFailed(cause error) error {
 	return service.ErrReauthPersistFailed.WithMetadata(metadata).WithCause(cause)
 }
 
-// mapReauthExchangeError keeps errors that already carry a stable reason
-// (session expired, state mismatch, code rejected, ...) and turns the rest into
-// 502 OAUTH_EXCHANGE_FAILED with a redacted cause in the message.
+// mapReauthExchangeError turns upstream and network failures into 502
+// OAUTH_EXCHANGE_FAILED with a redacted cause in the message, and keeps the
+// other errors that carry a stable reason (session expired, state mismatch,
+// code rejected, entitlement denied, ...). OpenAI and Grok report upstream and
+// network failures as 502 with their own reasons (*_TOKEN_EXCHANGE_FAILED,
+// *_REQUEST_FAILED, ...); those are folded in as well so every platform answers
+// alike, with the platform reason kept in metadata.cause_reason.
 func mapReauthExchangeError(platform string, err error) error {
-	if infraerrors.Reason(err) != "" {
+	reason := infraerrors.Reason(err)
+	if reason != "" && infraerrors.Code(err) != http.StatusBadGateway {
 		return err
 	}
-	appErr := service.ErrOAuthExchangeFailed.WithMetadata(map[string]string{"platform": platform}).WithCause(err)
-	appErr.Message += ": " + truncateRunes(logredact.RedactText(err.Error()), reauthorizeErrorMessageMax)
+	metadata := map[string]string{"platform": platform}
+	detail := err.Error()
+	if reason != "" {
+		metadata["cause_reason"] = reason
+		detail = infraerrors.Message(err)
+	}
+	appErr := service.ErrOAuthExchangeFailed.WithMetadata(metadata).WithCause(err)
+	appErr.Message += ": " + truncateRunes(logredact.RedactText(detail), reauthorizeErrorMessageMax)
 	return appErr
 }
 

@@ -10,12 +10,15 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -170,6 +173,7 @@ func (f *fakeClaudeOAuthClient) calls() int {
 type fakeGrokReauthService struct {
 	exchangeCalls int
 	lastInput     service.GrokExchangeCodeInput
+	err           error
 }
 
 func (f *fakeGrokReauthService) RefreshAccountToken(context.Context, *service.Account) (*service.GrokTokenInfo, error) {
@@ -183,6 +187,9 @@ func (f *fakeGrokReauthService) BuildAccountCredentials(tokenInfo *service.GrokT
 func (f *fakeGrokReauthService) ExchangeCode(_ context.Context, input *service.GrokExchangeCodeInput) (*service.GrokTokenInfo, error) {
 	f.exchangeCalls++
 	f.lastInput = *input
+	if f.err != nil {
+		return nil, f.err
+	}
 	return &service.GrokTokenInfo{
 		AccessToken:       reauthTestAccessToken,
 		RefreshToken:      reauthTestRefreshToken,
@@ -484,6 +491,95 @@ func TestReauthorizeUnclassifiedExchangeErrorMapsTo502(t *testing.T) {
 	require.Equal(t, service.PlatformAnthropic, envelope.Metadata["platform"])
 	require.Contains(t, envelope.Message, "connection refused")
 	require.Zero(t, admin.updateAccountCalls)
+}
+
+// failingOpenAIOAuthClient fails every code exchange with err.
+type failingOpenAIOAuthClient struct{ err error }
+
+func (f failingOpenAIOAuthClient) ExchangeCode(context.Context, string, string, string, string, string) (*openai.TokenResponse, error) {
+	return nil, f.err
+}
+
+func (f failingOpenAIOAuthClient) RefreshToken(context.Context, string, string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not used")
+}
+
+func (f failingOpenAIOAuthClient) RefreshTokenWithClientID(context.Context, string, string, string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not used")
+}
+
+func newOpenAIReauthSession(t *testing.T, svc *service.OpenAIOAuthService) (sessionID, state string) {
+	t.Helper()
+	result, err := svc.GenerateAuthURL(context.Background(), nil, "", "")
+	require.NoError(t, err)
+	parsed, err := url.Parse(result.AuthURL)
+	require.NoError(t, err)
+	return result.SessionID, parsed.Query().Get("state")
+}
+
+// OpenAI and Grok report upstream and network failures with their own 502
+// reasons; reauthorize folds them into OAUTH_EXCHANGE_FAILED like the other
+// platforms and keeps the platform reason in metadata.cause_reason.
+func TestReauthorizeOpenAIUpstreamFailuresMapToExchangeFailed(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"upstream_5xx", infraerrors.New(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed: status 503, body: upstream unavailable")},
+		{"network", infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_REQUEST_FAILED", "request failed: %v", context.DeadlineExceeded)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := service.NewOpenAIOAuthService(nil, failingOpenAIOAuthClient{err: tc.err})
+			t.Cleanup(svc.Stop)
+			admin := newReauthAdmin(&service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusError})
+			router := newReauthRouter(newReauthHandler(admin, reauthDeps{openai: svc}), service.AdminScope())
+			sessionID, state := newOpenAIReauthSession(t, svc)
+
+			rec, envelope := postReauth(t, router, "/accounts/1/reauthorize", reauthBody(sessionID, `"state":"`+state+`"`))
+
+			require.Equal(t, http.StatusBadGateway, rec.Code, rec.Body.String())
+			require.Equal(t, "OAUTH_EXCHANGE_FAILED", envelope.Reason)
+			require.Equal(t, service.PlatformOpenAI, envelope.Metadata["platform"])
+			require.Equal(t, infraerrors.Reason(tc.err), envelope.Metadata["cause_reason"])
+			require.Contains(t, envelope.Message, infraerrors.Message(tc.err))
+			require.NotContains(t, envelope.Message, "reason=", "the message carries the cause text, not the debug string")
+			require.Zero(t, admin.updateAccountCalls)
+		})
+	}
+}
+
+func TestReauthorizeGrokExchangeErrorMapping(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		status      int
+		reason      string
+		causeReason string
+	}{
+		{"upstream_5xx", infraerrors.New(http.StatusBadGateway, "GROK_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed: status 500, body: oops"), http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED", "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
+		{"network", infraerrors.New(http.StatusBadGateway, "GROK_OAUTH_REQUEST_FAILED", "request failed: connection reset by peer"), http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED", "GROK_OAUTH_REQUEST_FAILED"},
+		{"code_rejected_passes_through", service.NewOAuthCodeRejectedError(service.GrokOAuthCodeRejectedReason, "token exchange failed: status 400", http.StatusBadRequest), http.StatusBadRequest, service.GrokOAuthCodeRejectedReason, ""},
+		{"entitlement_denied_passes_through", infraerrors.New(http.StatusForbidden, "GROK_OAUTH_ENTITLEMENT_DENIED", "token exchange failed: status 403"), http.StatusForbidden, "GROK_OAUTH_ENTITLEMENT_DENIED", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			grok := &fakeGrokReauthService{err: tc.err}
+			admin := newReauthAdmin(newGrokReauthAccount(""))
+			router := newReauthRouter(newReauthHandler(admin, reauthDeps{grok: grok}), service.AdminScope())
+
+			rec, envelope := postReauth(t, router, "/accounts/5/reauthorize", reauthBody("grok-sess", `"state":"s"`))
+
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			require.Equal(t, tc.reason, envelope.Reason)
+			require.Equal(t, tc.causeReason, envelope.Metadata["cause_reason"])
+			if tc.causeReason != "" {
+				require.Equal(t, service.PlatformGrok, envelope.Metadata["platform"])
+				require.Contains(t, envelope.Message, infraerrors.Message(tc.err))
+			}
+			require.Zero(t, admin.updateAccountCalls)
+		})
+	}
 }
 
 func TestReauthorizePersistFailureRetriesWithSameSessionWithoutReexchange(t *testing.T) {
