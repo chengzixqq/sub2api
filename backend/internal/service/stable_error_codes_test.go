@@ -50,6 +50,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrAccountTestRunning, http.StatusConflict, "ACCOUNT_TEST_RUNNING"},
 		{ErrAccountTestRunNotFound, http.StatusNotFound, "ACCOUNT_TEST_RUN_NOT_FOUND"},
 		{ErrAccountTestBusy, http.StatusTooManyRequests, "ACCOUNT_TEST_BUSY"},
+		{ErrAccountRecoveredSchedulableFailed, http.StatusInternalServerError, "ACCOUNT_RECOVERED_SCHEDULABLE_FAILED"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

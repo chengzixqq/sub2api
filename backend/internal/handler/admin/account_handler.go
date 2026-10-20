@@ -1483,10 +1483,16 @@ func (h *AccountHandler) Test(c *gin.Context) {
 
 // RecoverState handles unified recovery of recoverable account runtime state.
 // POST /api/v1/admin/accounts/:id/recover-state
+// Optional body {"schedulable": bool} sets the switch after recovery; see RecoverStateRequest.
 func (h *AccountHandler) RecoverState(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	var req RecoverStateRequest
+	if err := bindOptionalJSON(c, &req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 	// RateLimitService is also used by gateway/background paths and its account
@@ -1506,6 +1512,9 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 		InvalidateToken: true,
 	}); err != nil {
 		response.ErrorFrom(c, err)
+		return
+	}
+	if !h.applyRecoveredSchedulable(c, accountID, req.Schedulable) {
 		return
 	}
 
