@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,7 +22,8 @@ const (
 )
 
 // ListRequestAttemptErrorLogs matches ops_error_logs by request_id or
-// client_request_id (both indexed), oldest first.
+// client_request_id (both indexed). It keeps the newest rows when a reused
+// client X-Request-ID matches more than the limit, returned oldest first.
 func (r *opsRepository) ListRequestAttemptErrorLogs(ctx context.Context, lookup service.OpsRequestAttemptLookup) ([]*service.OpsRequestAttemptErrorRow, error) {
 	if r == nil || r.db == nil {
 		return nil, fmt.Errorf("nil ops repository")
@@ -34,7 +36,7 @@ SELECT id, created_at, COALESCE(request_id, ''), COALESCE(client_request_id, '')
        COALESCE(status_code, 0), COALESCE(error_phase, ''), COALESCE(upstream_errors::text, '')
 FROM ops_error_logs
 WHERE ` + strings.Join(conditions, " AND ") + `
-ORDER BY created_at, id
+ORDER BY created_at DESC, id DESC
 LIMIT ` + itoa(opsRequestAttemptErrorRowLimit)
 
 	rows, err := r.db.QueryContext(ctx, q, args...)
@@ -53,7 +55,11 @@ LIMIT ` + itoa(opsRequestAttemptErrorRowLimit)
 		row.CreatedAt = row.CreatedAt.UTC()
 		out = append(out, &row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Reverse(out)
+	return out, nil
 }
 
 // ListRequestAttemptUsageLogs reads billed attempts by usage request_id with

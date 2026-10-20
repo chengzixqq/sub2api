@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
@@ -22,6 +23,9 @@ const (
 
 	opsUsageRequestIDClientPrefix = "client:"
 	opsUsageRequestIDLocalPrefix  = "local:"
+	// opsUsageRequestIDProbePrefix bills a coalesced probe leader; it wraps
+	// the ops request_id when the client sent no X-Request-ID.
+	opsUsageRequestIDProbePrefix = "probe:"
 
 	opsRequestAttemptSourceUpstreamError = "upstream_error"
 	opsRequestAttemptSourceUsage         = "usage"
@@ -84,7 +88,8 @@ type OpsRequestAttemptsRepository interface {
 
 // OpsRequestAttempt is one upstream try of a request. Failed tries come from
 // upstream_errors events; the billed try comes from usage_logs, whose start
-// is estimated as created_at − duration_ms and whose upstream status is 200.
+// is estimated as created_at − duration_ms (no earlier than the end of the
+// failed try before it) and whose upstream status is 200.
 type OpsRequestAttempt struct {
 	Index              int        `json:"index"`
 	Source             string     `json:"source"`
@@ -135,13 +140,13 @@ func ParseOpsRequestAttemptsAround(raw string) (*time.Time, error) {
 // GetRequestAttempts merges the failed upstream attempts recorded in
 // ops_error_logs with the billed attempt in usage_logs. requestID may be the
 // ops request_id, the server client_request_id, or a usage request_id
-// ("client:<id>" / "local:<id>").
+// ("client:<id>" / "local:<id>" / "probe:<id>").
 func (s *OpsService) GetRequestAttempts(ctx context.Context, requestID string, around *time.Time) (*OpsRequestAttempts, error) {
 	if err := s.RequireMonitoringEnabled(ctx); err != nil {
 		return nil, err
 	}
 	requestID = strings.TrimSpace(requestID)
-	if requestID == "" || len(requestID) > opsRequestAttemptsMaxIDBytes {
+	if !validOpsRequestAttemptID(requestID) {
 		return nil, errOpsInvalidRequestID
 	}
 	repo, ok := s.opsRepo.(OpsRequestAttemptsRepository)
@@ -158,7 +163,7 @@ func (s *OpsService) GetRequestAttempts(ctx context.Context, requestID string, a
 	}
 	clientIDs := opsRequestAttemptClientIDs(errRows)
 	if len(clientIDs) > 1 {
-		return nil, newOpsRequestAmbiguousError(clientIDs)
+		return nil, newOpsRequestAmbiguousError(errRows)
 	}
 	clientRequestID := ""
 	if len(clientIDs) == 1 {
@@ -197,12 +202,41 @@ func (s *OpsService) GetRequestAttempts(ctx context.Context, requestID string, a
 	return result, nil
 }
 
-func newOpsRequestAmbiguousError(clientRequestIDs []string) *infraerrors.ApplicationError {
-	if len(clientRequestIDs) > opsRequestAttemptsMaxAmbiguousIDs {
-		clientRequestIDs = clientRequestIDs[:opsRequestAttemptsMaxAmbiguousIDs]
+// validOpsRequestAttemptID mirrors what can be stored: ops and usage ids are
+// valid UTF-8 without NUL, which Postgres would otherwise reject with a 500.
+func validOpsRequestAttemptID(requestID string) bool {
+	return requestID != "" && len(requestID) <= opsRequestAttemptsMaxIDBytes &&
+		utf8.ValidString(requestID) && strings.IndexByte(requestID, 0) < 0
+}
+
+// newOpsRequestAmbiguousError lists the newest requests first, each with the
+// created_at of its newest ops row, so the caller can pick the one it shows.
+func newOpsRequestAmbiguousError(rows []*OpsRequestAttemptErrorRow) *infraerrors.ApplicationError {
+	newest := make([]*OpsRequestAttemptErrorRow, 0, len(rows))
+	for _, row := range rows {
+		if row != nil && strings.TrimSpace(row.ClientRequestID) != "" {
+			newest = append(newest, row)
+		}
+	}
+	sort.SliceStable(newest, func(i, j int) bool { return opsRequestAttemptRowIsNewer(newest[i], newest[j]) })
+	ids := make([]string, 0, opsRequestAttemptsMaxAmbiguousIDs)
+	times := make([]string, 0, opsRequestAttemptsMaxAmbiguousIDs)
+	seen := make(map[string]struct{}, len(newest))
+	for _, row := range newest {
+		if len(ids) == opsRequestAttemptsMaxAmbiguousIDs {
+			break
+		}
+		id := strings.TrimSpace(row.ClientRequestID)
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+		times = append(times, row.CreatedAt.UTC().Format(time.RFC3339Nano))
 	}
 	return ErrOpsRequestAmbiguous.WithMetadata(map[string]string{
-		"client_request_ids": strings.Join(clientRequestIDs, ","),
+		"client_request_ids":      strings.Join(ids, ","),
+		"client_request_id_times": strings.Join(times, ","),
 	})
 }
 
@@ -221,17 +255,27 @@ func opsRequestAttemptErrorLookup(requestID string) OpsRequestAttemptLookup {
 	if rest, ok := strings.CutPrefix(requestID, opsUsageRequestIDClientPrefix); ok {
 		return OpsRequestAttemptLookup{RequestIDs: []string{requestID}, ClientRequestIDs: nonEmptyStrings(strings.TrimSpace(rest))}
 	}
-	if rest, ok := strings.CutPrefix(requestID, opsUsageRequestIDLocalPrefix); ok {
-		return OpsRequestAttemptLookup{RequestIDs: nonEmptyStrings(requestID, strings.TrimSpace(rest)), ClientRequestIDs: []string{}}
+	for _, prefix := range []string{opsUsageRequestIDLocalPrefix, opsUsageRequestIDProbePrefix} {
+		if rest, ok := strings.CutPrefix(requestID, prefix); ok {
+			return OpsRequestAttemptLookup{RequestIDs: nonEmptyStrings(requestID, strings.TrimSpace(rest)), ClientRequestIDs: []string{}}
+		}
 	}
 	return OpsRequestAttemptLookup{RequestIDs: []string{requestID}, ClientRequestIDs: []string{requestID}}
+}
+
+// opsRequestAttemptOpsIDUsageIDs lists the usage request_ids that wrap an ops
+// request_id: "local:" (no client id) and "probe:" (coalesced probe leader).
+func opsRequestAttemptOpsIDUsageIDs(opsRequestID string) []string {
+	return []string{opsUsageRequestIDLocalPrefix + opsRequestID, opsUsageRequestIDProbePrefix + opsRequestID}
 }
 
 // opsRequestAttemptUsageIDs lists the usage_logs.request_id values the
 // request may be billed under (see resolveUsageBillingRequestID).
 func opsRequestAttemptUsageIDs(requestID, clientRequestID string, errRows []*OpsRequestAttemptErrorRow) []string {
 	ids := []string{requestID}
-	unprefixed := !strings.HasPrefix(requestID, opsUsageRequestIDClientPrefix) && !strings.HasPrefix(requestID, opsUsageRequestIDLocalPrefix)
+	unprefixed := !strings.HasPrefix(requestID, opsUsageRequestIDClientPrefix) &&
+		!strings.HasPrefix(requestID, opsUsageRequestIDLocalPrefix) &&
+		!strings.HasPrefix(requestID, opsUsageRequestIDProbePrefix)
 	switch {
 	case clientRequestID != "":
 		ids = append(ids, opsUsageRequestIDClientPrefix+clientRequestID)
@@ -240,11 +284,11 @@ func opsRequestAttemptUsageIDs(requestID, clientRequestID string, errRows []*Ops
 		ids = append(ids, opsUsageRequestIDClientPrefix+requestID)
 	}
 	if unprefixed {
-		ids = append(ids, opsUsageRequestIDLocalPrefix+requestID)
+		ids = append(ids, opsRequestAttemptOpsIDUsageIDs(requestID)...)
 	}
 	for _, row := range errRows {
 		if row != nil && strings.TrimSpace(row.RequestID) != "" {
-			ids = append(ids, opsUsageRequestIDLocalPrefix+strings.TrimSpace(row.RequestID))
+			ids = append(ids, opsRequestAttemptOpsIDUsageIDs(strings.TrimSpace(row.RequestID))...)
 		}
 	}
 	return nonEmptyStrings(ids...)
@@ -369,6 +413,7 @@ func buildOpsRequestAttempts(errRows []*OpsRequestAttemptErrorRow, usageRows []*
 		items = append(items, opsTimedAttempt{attempt: opsRequestAttemptFromUsage(row, failureStatus > 0), endMs: row.CreatedAt.UnixMilli()})
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].endMs < items[j].endMs })
+	clampOpsBilledAttemptStarts(items)
 	for i, item := range items {
 		item.attempt.Index = i + 1
 		out.Attempts = append(out.Attempts, item.attempt)
@@ -386,28 +431,66 @@ func buildOpsRequestAttempts(errRows []*OpsRequestAttemptErrorRow, usageRows []*
 	return out
 }
 
+// clampOpsBilledAttemptStarts keeps a billed try from overlapping the failed
+// tries sorted before it. usage duration_ms runs from the Forward entry, so a
+// same-account retry inside Forward would otherwise start the billed try at
+// or before the failed one; the clamped duration still includes the retry
+// backoff. Partial tries keep the estimate because their own stream failure
+// event ends inside them.
+func clampOpsBilledAttemptStarts(items []opsTimedAttempt) {
+	var prevEnd *time.Time
+	for _, item := range items {
+		a := item.attempt
+		if a.Source != opsRequestAttemptSourceUsage {
+			if a.EndedAt != nil && (prevEnd == nil || a.EndedAt.After(*prevEnd)) {
+				prevEnd = a.EndedAt
+			}
+			continue
+		}
+		if a.Outcome != opsRequestAttemptOutcomeSuccess || prevEnd == nil || a.StartedAt == nil ||
+			a.DurationMs == nil || a.EndedAt == nil || !prevEnd.After(*a.StartedAt) || prevEnd.After(*a.EndedAt) {
+			continue
+		}
+		started := prevEnd.UTC()
+		duration := a.EndedAt.Sub(started).Milliseconds()
+		shift := *a.DurationMs - duration
+		a.StartedAt = &started
+		a.DurationMs = &duration
+		if a.FirstTokenMs != nil {
+			if ft := *a.FirstTokenMs - shift; ft >= 0 {
+				a.FirstTokenMs = &ft
+			} else {
+				a.FirstTokenMs = nil
+			}
+		}
+	}
+}
+
+// opsRequestAttemptRowIsNewer orders rows by created_at, then id; any row is
+// newer than nil.
+func opsRequestAttemptRowIsNewer(a, b *OpsRequestAttemptErrorRow) bool {
+	if b == nil {
+		return true
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.ID > b.ID
+}
+
 // opsRequestAttemptRowStatuses returns the status of the newest failure row
 // (>= 400) and of the newest recovered row (< 400).
 func opsRequestAttemptRowStatuses(rows []*OpsRequestAttemptErrorRow) (failure, recovered int) {
 	var failureRow, recoveredRow *OpsRequestAttemptErrorRow
-	newer := func(a, b *OpsRequestAttemptErrorRow) bool {
-		if b == nil {
-			return true
-		}
-		if !a.CreatedAt.Equal(b.CreatedAt) {
-			return a.CreatedAt.After(b.CreatedAt)
-		}
-		return a.ID > b.ID
-	}
 	for _, row := range rows {
 		switch {
 		case row == nil || row.StatusCode <= 0:
 		case row.StatusCode >= http.StatusBadRequest:
-			if newer(row, failureRow) {
+			if opsRequestAttemptRowIsNewer(row, failureRow) {
 				failureRow = row
 			}
 		default:
-			if newer(row, recoveredRow) {
+			if opsRequestAttemptRowIsNewer(row, recoveredRow) {
 				recoveredRow = row
 			}
 		}

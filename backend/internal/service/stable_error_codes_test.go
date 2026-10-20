@@ -36,7 +36,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrOpsSystemMetricsHistoryRangeTooLarge, http.StatusBadRequest, "OPS_TIME_RANGE_TOO_LARGE"},
 		{ErrOpsRequestNotFound, http.StatusNotFound, "OPS_REQUEST_NOT_FOUND"},
 		{ErrOpsRequestAmbiguous, http.StatusConflict, "OPS_REQUEST_AMBIGUOUS"},
-		{newOpsRequestAmbiguousError([]string{"a", "b"}), http.StatusConflict, "OPS_REQUEST_AMBIGUOUS"},
+		{newOpsRequestAmbiguousError([]*OpsRequestAttemptErrorRow{{ClientRequestID: "a"}, {ClientRequestID: "b"}}), http.StatusConflict, "OPS_REQUEST_AMBIGUOUS"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{ErrCaptchaProviderConflict, http.StatusServiceUnavailable, "CAPTCHA_PROVIDER_CONFLICT"},
 		{ErrAdminAccessTokenInvalid, http.StatusUnauthorized, "INVALID_ADMIN_KEY"},

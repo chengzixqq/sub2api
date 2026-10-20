@@ -99,6 +99,8 @@ func TestOpsHandlerGetRequestAttempts(t *testing.T) {
 		{"/ops/requests/req_5f3a/attempts?around=2026-10-18", http.StatusBadRequest, "INVALID_AROUND"},
 		{"/ops/requests/" + strings.Repeat("a", 257) + "/attempts", http.StatusBadRequest, "INVALID_REQUEST_ID"},
 		{"/ops/requests/%20/attempts", http.StatusBadRequest, "INVALID_REQUEST_ID"},
+		{"/ops/requests/%00/attempts", http.StatusBadRequest, "INVALID_REQUEST_ID"},
+		{"/ops/requests/req%FF/attempts", http.StatusBadRequest, "INVALID_REQUEST_ID"},
 	} {
 		rec = serveOps(r, http.MethodGet, tc.path, nil)
 		require.Equal(t, tc.status, rec.Code, tc.path)
