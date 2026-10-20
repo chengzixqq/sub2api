@@ -15,6 +15,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	sharedhttp "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
@@ -74,7 +75,7 @@ func (c *grokOAuthClient) ExchangeCode(ctx context.Context, code, codeVerifier, 
 		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_OAUTH_REQUEST_FAILED", "request failed: %v", err)
 	}
 	if !resp.IsSuccessState() {
-		return nil, grokOAuthStatusError("GROK_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed", resp)
+		return nil, grokOAuthExchangeStatusError(resp)
 	}
 	return &tokenResp, nil
 }
@@ -209,6 +210,18 @@ func grokOAuthStatusError(code, message string, resp *req.Response) error {
 		}
 	}
 	return infraerrors.Newf(statusCode, errorCode, "%s: status %d, body: %s", message, upstreamStatus, body)
+}
+
+// grokOAuthExchangeStatusError classifies a failed code exchange: an explicit
+// entitlement denial stays 403, a refused code becomes 400
+// GROK_OAUTH_CODE_REJECTED, everything else keeps 502 TOKEN_EXCHANGE_FAILED.
+func grokOAuthExchangeStatusError(resp *req.Response) error {
+	const exchangeFailedReason = "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"
+	err := grokOAuthStatusError(exchangeFailedReason, "token exchange failed", resp)
+	if resp == nil || infraerrors.Reason(err) != exchangeFailedReason || !oauth.IsCodeRejectedStatus(resp.StatusCode) {
+		return err
+	}
+	return service.NewOAuthCodeRejectedError(service.GrokOAuthCodeRejectedReason, infraerrors.Message(err), resp.StatusCode)
 }
 
 func grokOAuthHasExplicitEntitlementDenial(body string) bool {

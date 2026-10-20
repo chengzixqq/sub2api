@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -194,6 +195,7 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 		code         string
 		isSetupToken bool
 		wantErr      bool
+		checkErr     func(err error)
 		wantResp     *oauth.TokenResponse
 		validate     func(captured requestCapture)
 	}{
@@ -255,6 +257,13 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 			code:         "AUTH",
 			isSetupToken: false,
 			wantErr:      true,
+			checkErr: func(err error) {
+				// The service classifies rejected codes by upstream status; the text stays byte-identical.
+				var exchangeErr *oauth.TokenExchangeError
+				require.True(s.T(), errors.As(err, &exchangeErr), "expected *oauth.TokenExchangeError, got %T", err)
+				require.Equal(s.T(), http.StatusBadRequest, exchangeErr.StatusCode)
+				require.Equal(s.T(), "token exchange failed: status 400, body: bad request", err.Error())
+			},
 		},
 	}
 
@@ -280,6 +289,9 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 
 			if tt.wantErr {
 				require.Error(s.T(), err)
+				if tt.checkErr != nil {
+					tt.checkErr(err)
+				}
 				return
 			}
 

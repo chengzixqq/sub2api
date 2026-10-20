@@ -5,11 +5,15 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/stretchr/testify/require"
 )
 
 // --- mock: ClaudeOAuthClient ---
@@ -251,9 +255,145 @@ func TestOAuthService_ExchangeCode_SessionNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExchangeCode 应返回错误（session 不存在）")
 	}
-	if err.Error() != "session not found or expired" {
-		t.Fatalf("错误信息不匹配: got=%q", err.Error())
+	// 以前是 fmt 错误，经 ErrorFrom 变成 500 "internal error"；现在是可识别的 400
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "CLAUDE_OAUTH_SESSION_NOT_FOUND", infraerrors.Reason(err))
+	require.Equal(t, "session not found or expired", infraerrors.Message(err))
+}
+
+func TestOAuthService_ExchangeCode_StateMismatchReturnsInvalidState(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClaudeOAuthClient{
+		exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+			t.Fatal("state 不符时不应调用上游换码")
+			return nil, nil
+		},
 	}
+	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+	defer svc.Stop()
+
+	result, err := svc.GenerateAuthURL(context.Background(), nil)
+	require.NoError(t, err)
+
+	_, err = svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
+		SessionID: result.SessionID,
+		Code:      "auth-code#wrong-state",
+	})
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "CLAUDE_OAUTH_INVALID_STATE", infraerrors.Reason(err))
+	require.Equal(t, "invalid oauth state", infraerrors.Message(err))
+
+	// 会话保留：用户可以回到授权页重新复制正确的授权码
+	_, ok := svc.sessionStore.Get(result.SessionID)
+	require.True(t, ok, "state 不符时不应删除会话")
+}
+
+func TestOAuthService_ExchangeCode_StateMatchPassesRawCode(t *testing.T) {
+	t.Parallel()
+
+	var gotCode string
+	client := &mockClaudeOAuthClient{
+		exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+			gotCode = code
+			return &oauth.TokenResponse{AccessToken: "at", TokenType: "Bearer", ExpiresIn: 3600}, nil
+		},
+	}
+	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+	defer svc.Stop()
+
+	result, err := svc.GenerateAuthURL(context.Background(), nil)
+	require.NoError(t, err)
+	session, ok := svc.sessionStore.Get(result.SessionID)
+	require.True(t, ok)
+
+	raw := "auth-code#" + session.State
+	tokenInfo, err := svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
+		SessionID: result.SessionID,
+		Code:      raw,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "at", tokenInfo.AccessToken)
+	require.Equal(t, raw, gotCode, "授权码应原样传给上游客户端")
+}
+
+func TestOAuthService_ExchangeCode_UpstreamRejectedReturnsCodeRejected(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	client := &mockClaudeOAuthClient{
+		exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+			calls++
+			return nil, &oauth.TokenExchangeError{StatusCode: http.StatusBadRequest, Body: `{"error":"invalid_grant","secret":"upstream-body"}`}
+		},
+	}
+	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+	defer svc.Stop()
+
+	result, err := svc.GenerateSetupTokenURL(context.Background(), nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.ExchangeCode(context.Background(), &ExchangeCodeInput{
+			SessionID: result.SessionID,
+			Code:      "used-code",
+		})
+		require.Error(t, err)
+		require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+		require.Equal(t, "CLAUDE_OAUTH_CODE_REJECTED", infraerrors.Reason(err))
+		require.Equal(t, "authorization code was rejected by upstream", infraerrors.Message(err))
+		require.Equal(t, map[string]string{"upstream_status": "400"}, infraerrors.FromError(err).Metadata)
+		require.False(t, strings.Contains(infraerrors.Message(err), "upstream-body"), "不应回显上游响应体")
+	}
+	// 会话没被删：同一会话可换新授权码重试
+	require.Equal(t, 2, calls)
+}
+
+func TestOAuthService_ExchangeCode_UpstreamRetryableUnchanged(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+		upstreamErr := &oauth.TokenExchangeError{StatusCode: status, Body: "busy"}
+		client := &mockClaudeOAuthClient{
+			exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+				return nil, upstreamErr
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		result, err := svc.GenerateAuthURL(context.Background(), nil)
+		require.NoError(t, err)
+
+		_, err = svc.ExchangeCode(context.Background(), &ExchangeCodeInput{SessionID: result.SessionID, Code: "code"})
+		svc.Stop()
+		require.Error(t, err)
+		require.Equal(t, http.StatusInternalServerError, infraerrors.Code(err), "status %d", status)
+		require.Empty(t, infraerrors.Reason(err), "status %d", status)
+		require.Equal(t, upstreamErr.Error(), err.Error(), "status %d", status)
+	}
+}
+
+func TestOAuthService_CookieAuth_UpstreamRejectedStillInternal(t *testing.T) {
+	t.Parallel()
+
+	client := &mockClaudeOAuthClient{
+		getOrgUUIDFunc: func(ctx context.Context, sessionKey, proxyURL string) (string, error) {
+			return "org-uuid", nil
+		},
+		getAuthCodeFunc: func(ctx context.Context, sessionKey, orgUUID, scope, codeChallenge, state, proxyURL string) (string, error) {
+			return "auth-code", nil
+		},
+		exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+			return nil, &oauth.TokenExchangeError{StatusCode: http.StatusBadRequest, Body: "bad request"}
+		},
+	}
+	svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+	defer svc.Stop()
+
+	_, err := svc.CookieAuth(context.Background(), &CookieAuthInput{SessionKey: "sk", Scope: "full"})
+	require.Error(t, err)
+	require.Equal(t, http.StatusInternalServerError, infraerrors.Code(err))
+	require.Empty(t, infraerrors.Reason(err))
 }
 
 func TestOAuthService_ExchangeCode_Success(t *testing.T) {

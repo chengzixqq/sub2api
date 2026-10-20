@@ -217,6 +217,27 @@ func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_IncludesBody() {
 	require.Error(s.T(), err)
 	require.ErrorContains(s.T(), err, "status 400")
 	require.ErrorContains(s.T(), err, "bad")
+	// An upstream 4xx means the authorization code itself was refused.
+	require.Equal(s.T(), http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(s.T(), "OPENAI_OAUTH_CODE_REJECTED", infraerrors.Reason(err))
+	require.Equal(s.T(), "token exchange failed: status 400, body: bad", infraerrors.Message(err))
+	require.Equal(s.T(), map[string]string{"upstream_status": "400"}, infraerrors.FromError(err).Metadata)
+}
+
+func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_RetryableKeepsExchangeFailed() {
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway} {
+		s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, "busy")
+		}))
+
+		_, err := s.svc.ExchangeCode(s.ctx, "code", "ver", openai.DefaultRedirectURI, "", "")
+		require.Error(s.T(), err)
+		require.Equal(s.T(), http.StatusBadGateway, infraerrors.Code(err), "status %d", status)
+		require.Equal(s.T(), "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", infraerrors.Reason(err), "status %d", status)
+		s.srv.Close()
+		s.srv = nil
+	}
 }
 
 func (s *OpenAIOAuthServiceSuite) TestRequestError_ClosedServer() {

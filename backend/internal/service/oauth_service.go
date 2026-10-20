@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
@@ -148,7 +150,10 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Get session
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found or expired")
+		return nil, ErrClaudeOAuthSessionNotFound
+	}
+	if !claudeCodeStateMatches(input.Code, session.State) {
+		return nil, ErrClaudeOAuthInvalidState
 	}
 
 	// Get proxy URL
@@ -166,6 +171,9 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Exchange code for token
 	tokenInfo, err := s.exchangeCodeForToken(ctx, input.Code, session.CodeVerifier, session.State, proxyURL, isSetupToken)
 	if err != nil {
+		if rejected, ok := oauthCodeRejected(ClaudeOAuthCodeRejectedReason, claudeOAuthCodeRejectedMessage, err); ok {
+			return nil, rejected
+		}
 		return nil, err
 	}
 
@@ -173,6 +181,18 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	s.sessionStore.Delete(input.SessionID)
 
 	return tokenInfo, nil
+}
+
+// claudeCodeStateMatches checks the state the Claude callback page appends to
+// the code ("code#state") against the session. Codes pasted without "#state"
+// predate this check and are still accepted unchanged.
+func claudeCodeStateMatches(code, sessionState string) bool {
+	_, codeState, found := strings.Cut(code, "#")
+	codeState = strings.TrimSpace(codeState)
+	if !found || codeState == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(codeState), []byte(sessionState)) == 1
 }
 
 // CookieAuthInput represents the input for cookie-based authentication

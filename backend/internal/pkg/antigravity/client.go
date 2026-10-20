@@ -30,6 +30,22 @@ func (e *ForbiddenError) Error() string {
 	return fmt.Sprintf("fetchAvailableModels 失败 (HTTP %d): %s", e.StatusCode, e.Body)
 }
 
+// TokenExchangeError 表示换码时 token 端点返回非 200；文本与原来的 fmt 错误一致，
+// UpstreamStatusCode 供 service 层区分“授权码被拒”与上游故障
+type TokenExchangeError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *TokenExchangeError) Error() string {
+	return fmt.Sprintf("token 交换失败 (HTTP %d): %s", e.StatusCode, e.Body)
+}
+
+// UpstreamStatusCode 返回 token 端点的 HTTP 状态码
+func (e *TokenExchangeError) UpstreamStatusCode() int {
+	return e.StatusCode
+}
+
 // NewAPIRequestWithURL 使用指定的 base URL 创建 Antigravity API 请求（v1internal 端点）
 func NewAPIRequestWithURL(ctx context.Context, baseURL, action, accessToken string, body []byte) (*http.Request, error) {
 	// 构建 URL，流式请求添加 ?alt=sse 参数
@@ -351,7 +367,7 @@ func (c *Client) ExchangeCode(ctx context.Context, code, codeVerifier string) (*
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token 交换失败 (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		return nil, &TokenExchangeError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	var tokenResp TokenResponse

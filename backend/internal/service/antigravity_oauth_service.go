@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"strconv"
 	"strings"
@@ -98,11 +99,11 @@ type AntigravityTokenInfo struct {
 func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *AntigravityExchangeCodeInput) (*AntigravityTokenInfo, error) {
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session 不存在或已过期")
+		return nil, ErrAntigravityOAuthSessionNotFound
 	}
 
-	if strings.TrimSpace(input.State) == "" || input.State != session.State {
-		return nil, fmt.Errorf("state 无效")
+	if strings.TrimSpace(input.State) == "" || subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
+		return nil, ErrAntigravityOAuthInvalidState
 	}
 
 	// 确定代理 URL
@@ -122,6 +123,9 @@ func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *Antig
 	// 交换 token
 	tokenResp, err := client.ExchangeCode(ctx, input.Code, session.CodeVerifier)
 	if err != nil {
+		if rejected, ok := oauthCodeRejected(AntigravityOAuthCodeRejectedReason, "token 交换失败: "+err.Error(), err); ok {
+			return nil, rejected
+		}
 		return nil, fmt.Errorf("token 交换失败: %w", err)
 	}
 

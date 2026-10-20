@@ -5,14 +5,18 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/stretchr/testify/require"
 )
 
 // =====================
@@ -1423,6 +1427,9 @@ func TestGeminiOAuthService_ExchangeCode_SessionNotFound(t *testing.T) {
 	if !strings.Contains(err.Error(), "session not found") {
 		t.Fatalf("错误信息不匹配: got=%q", err.Error())
 	}
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "GEMINI_OAUTH_SESSION_NOT_FOUND", infraerrors.Reason(err))
+	require.Equal(t, "session not found or expired", infraerrors.Message(err))
 }
 
 func TestGeminiOAuthService_ExchangeCode_InvalidState(t *testing.T) {
@@ -1450,6 +1457,9 @@ func TestGeminiOAuthService_ExchangeCode_InvalidState(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid state") {
 		t.Fatalf("错误信息不匹配: got=%q", err.Error())
 	}
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "GEMINI_OAUTH_INVALID_STATE", infraerrors.Reason(err))
+	require.Equal(t, "invalid state", infraerrors.Message(err))
 }
 
 func TestGeminiOAuthService_ExchangeCode_EmptyState(t *testing.T) {
@@ -1472,6 +1482,50 @@ func TestGeminiOAuthService_ExchangeCode_EmptyState(t *testing.T) {
 	if err == nil {
 		t.Fatal("应返回错误（空 state）")
 	}
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "GEMINI_OAUTH_INVALID_STATE", infraerrors.Reason(err))
+}
+
+func TestGeminiOAuthService_ExchangeCode_UpstreamRejected(t *testing.T) {
+	t.Parallel()
+
+	newSvc := func(upstreamErr error) *GeminiOAuthService {
+		client := &mockGeminiOAuthClient{
+			exchangeCodeFunc: func(ctx context.Context, oauthType, code, codeVerifier, redirectURI, proxyURL string) (*geminicli.TokenResponse, error) {
+				return nil, upstreamErr
+			},
+		}
+		svc := NewGeminiOAuthService(nil, client, nil, nil, &config.Config{})
+		svc.sessionStore.Set("test-session", &geminicli.OAuthSession{
+			State:        "correct-state",
+			CodeVerifier: "verifier",
+			OAuthType:    "code_assist",
+			CreatedAt:    time.Now(),
+		})
+		return svc
+	}
+	input := &GeminiExchangeCodeInput{SessionID: "test-session", State: "correct-state", Code: "used-code"}
+
+	rejected := &oauth.TokenExchangeError{StatusCode: http.StatusBadRequest, Body: "invalid_grant"}
+	svc := newSvc(rejected)
+	_, err := svc.ExchangeCode(context.Background(), input)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "GEMINI_OAUTH_CODE_REJECTED", infraerrors.Reason(err))
+	// message 与以前的 fmt 文本一致，handler 加上原前缀后 Web 看到的文字不变
+	require.Equal(t, "failed to exchange code: token exchange failed: status 400, body: invalid_grant", infraerrors.Message(err))
+	require.Equal(t, map[string]string{"upstream_status": "400"}, infraerrors.FromError(err).Metadata)
+	_, ok := svc.sessionStore.Get("test-session")
+	require.True(t, ok, "拒码后会话保留，可换新授权码重试")
+	svc.Stop()
+
+	retryable := &oauth.TokenExchangeError{StatusCode: http.StatusBadGateway, Body: "busy"}
+	svc = newSvc(retryable)
+	defer svc.Stop()
+	_, err = svc.ExchangeCode(context.Background(), input)
+	require.Error(t, err)
+	require.Empty(t, infraerrors.Reason(err))
+	require.Equal(t, "failed to exchange code: token exchange failed: status 502, body: busy", err.Error())
 }
 
 // =====================

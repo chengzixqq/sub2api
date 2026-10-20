@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/stretchr/testify/require"
 )
@@ -133,4 +134,42 @@ func TestNewGrokOAuthClient_UnvalidatedTokenURLFallsBackToDefault(t *testing.T) 
 
 	client := NewGrokOAuthClient().(*grokOAuthClient)
 	require.Equal(t, xai.DefaultTokenURL, client.tokenURL)
+}
+
+func TestGrokOAuthClientExchangeClassifiesRejectedCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantCode   int
+		wantReason string
+		wantMeta   map[string]string
+	}{
+		{name: "invalid grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant","refresh_token":"leak-secret"}`, wantCode: http.StatusBadRequest, wantReason: "GROK_OAUTH_CODE_REJECTED", wantMeta: map[string]string{"upstream_status": "400"}},
+		{name: "unauthorized client", status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`, wantCode: http.StatusBadRequest, wantReason: "GROK_OAUTH_CODE_REJECTED", wantMeta: map[string]string{"upstream_status": "401"}},
+		{name: "explicit entitlement wins", status: http.StatusForbidden, body: `{"error":"access_denied"}`, wantCode: http.StatusForbidden, wantReason: "GROK_OAUTH_ENTITLEMENT_DENIED"},
+		{name: "rate limited", status: http.StatusTooManyRequests, body: `slow down`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
+		{name: "upstream error", status: http.StatusInternalServerError, body: `oops`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+			t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+			t.Setenv(xai.EnvTokenURL, server.URL)
+
+			client := NewGrokOAuthClient()
+			_, err := client.ExchangeCode(context.Background(), "auth-code", "verifier", "http://127.0.0.1:56121/callback", "", "client-id")
+			require.Error(t, err)
+			require.Equal(t, tt.wantCode, infraerrors.Code(err))
+			require.Equal(t, tt.wantReason, infraerrors.Reason(err))
+			require.Equal(t, tt.wantMeta, infraerrors.FromError(err).Metadata)
+			message := infraerrors.Message(err)
+			require.True(t, strings.HasPrefix(message, "token exchange failed: status "), message)
+			require.NotContains(t, message, "leak-secret")
+		})
+	}
 }

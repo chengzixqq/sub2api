@@ -59,7 +59,7 @@ func (h *AntigravityOAuthHandler) ExchangeCode(c *gin.Context) {
 		ProxyID:   req.ProxyID,
 	})
 	if err != nil {
-		response.BadRequest(c, "Token 交换失败: "+err.Error())
+		respondOAuthExchangeError(c, "Token 交换失败: ", err)
 		return
 	}
 

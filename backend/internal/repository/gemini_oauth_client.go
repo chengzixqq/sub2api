@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/imroc/req/v3"
@@ -69,7 +70,7 @@ func (c *geminiOAuthClient) ExchangeCode(ctx context.Context, oauthType, code, c
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	if !resp.IsSuccessState() {
-		return nil, fmt.Errorf("token exchange failed: status %d, body: %s", resp.StatusCode, geminicli.SanitizeBodyForLogs(resp.String()))
+		return nil, &oauth.TokenExchangeError{StatusCode: resp.StatusCode, Body: geminicli.SanitizeBodyForLogs(resp.String())}
 	}
 	return &tokenResp, nil
 }

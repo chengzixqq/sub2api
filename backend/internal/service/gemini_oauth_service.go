@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -449,11 +450,11 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Session not found or expired")
-		return nil, fmt.Errorf("session not found or expired")
+		return nil, ErrGeminiOAuthSessionNotFound
 	}
-	if strings.TrimSpace(input.State) == "" || input.State != session.State {
+	if strings.TrimSpace(input.State) == "" || subtle.ConstantTimeCompare([]byte(input.State), []byte(session.State)) != 1 {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Invalid state")
-		return nil, fmt.Errorf("invalid state")
+		return nil, ErrGeminiOAuthInvalidState
 	}
 
 	proxyURL := session.ProxyURL
@@ -499,6 +500,9 @@ func (s *GeminiOAuthService) ExchangeCode(ctx context.Context, input *GeminiExch
 	tokenResp, err := s.oauthClient.ExchangeCode(ctx, oauthType, input.Code, session.CodeVerifier, redirectURI, proxyURL)
 	if err != nil {
 		logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] ERROR: Failed to exchange code: %v", err)
+		if rejected, ok := oauthCodeRejected(GeminiOAuthCodeRejectedReason, "failed to exchange code: "+err.Error(), err); ok {
+			return nil, rejected
+		}
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
 	logger.LegacyPrintf("service.gemini_oauth", "[GeminiOAuth] Token exchange successful")

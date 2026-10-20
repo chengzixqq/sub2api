@@ -3,12 +3,14 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/imroc/req/v3"
@@ -63,7 +65,11 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 	}
 
 	if !resp.IsSuccessState() {
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", "token exchange failed: status %d, body: %s", resp.StatusCode, resp.String())
+		message := fmt.Sprintf("token exchange failed: status %d, body: %s", resp.StatusCode, resp.String())
+		if oauth.IsCodeRejectedStatus(resp.StatusCode) {
+			return nil, service.NewOAuthCodeRejectedError(service.OpenAIOAuthCodeRejectedReason, message, resp.StatusCode)
+		}
+		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", message)
 	}
 
 	return &tokenResp, nil

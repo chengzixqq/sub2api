@@ -51,6 +51,17 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrAccountTestRunNotFound, http.StatusNotFound, "ACCOUNT_TEST_RUN_NOT_FOUND"},
 		{ErrAccountTestBusy, http.StatusTooManyRequests, "ACCOUNT_TEST_BUSY"},
 		{ErrAccountRecoveredSchedulableFailed, http.StatusInternalServerError, "ACCOUNT_RECOVERED_SCHEDULABLE_FAILED"},
+		{ErrClaudeOAuthSessionNotFound, http.StatusBadRequest, "CLAUDE_OAUTH_SESSION_NOT_FOUND"},
+		{ErrClaudeOAuthInvalidState, http.StatusBadRequest, "CLAUDE_OAUTH_INVALID_STATE"},
+		{ErrGeminiOAuthSessionNotFound, http.StatusBadRequest, "GEMINI_OAUTH_SESSION_NOT_FOUND"},
+		{ErrGeminiOAuthInvalidState, http.StatusBadRequest, "GEMINI_OAUTH_INVALID_STATE"},
+		{ErrAntigravityOAuthSessionNotFound, http.StatusBadRequest, "ANTIGRAVITY_OAUTH_SESSION_NOT_FOUND"},
+		{ErrAntigravityOAuthInvalidState, http.StatusBadRequest, "ANTIGRAVITY_OAUTH_INVALID_STATE"},
+		{NewOAuthCodeRejectedError(ClaudeOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "CLAUDE_OAUTH_CODE_REJECTED"},
+		{NewOAuthCodeRejectedError(GeminiOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "GEMINI_OAUTH_CODE_REJECTED"},
+		{NewOAuthCodeRejectedError(AntigravityOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "ANTIGRAVITY_OAUTH_CODE_REJECTED"},
+		{NewOAuthCodeRejectedError(OpenAIOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "OPENAI_OAUTH_CODE_REJECTED"},
+		{NewOAuthCodeRejectedError(GrokOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "GROK_OAUTH_CODE_REJECTED"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

@@ -5,6 +5,7 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -959,6 +960,18 @@ func TestClient_ExchangeCode_ServerError_RealCall(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("错误信息应包含状态码 400: got %s", err.Error())
+	}
+	// 类型化错误让 service 层能按上游状态码区分“授权码被拒”，文本必须与原来逐字一致
+	var exchangeErr *TokenExchangeError
+	if !errors.As(err, &exchangeErr) {
+		t.Fatalf("应返回 *TokenExchangeError: got %T", err)
+	}
+	if exchangeErr.StatusCode != http.StatusBadRequest || exchangeErr.UpstreamStatusCode() != http.StatusBadRequest {
+		t.Errorf("StatusCode 应为 400: got %d", exchangeErr.StatusCode)
+	}
+	want := `token 交换失败 (HTTP 400): {"error":"invalid_grant","error_description":"code expired"}`
+	if err.Error() != want {
+		t.Errorf("错误文本变了: got %q want %q", err.Error(), want)
 	}
 }
 

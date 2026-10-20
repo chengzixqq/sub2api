@@ -16,6 +16,7 @@ import (
 // string whenever a mobile-facing capability ships.
 var adminMeCapabilities = []string{
 	"accounts.clear_error_preserve_inactive",
+	"accounts.oauth_error_reasons",
 	"accounts.patch",
 	"accounts.recover_schedulable",
 	"admin.access_tokens",
