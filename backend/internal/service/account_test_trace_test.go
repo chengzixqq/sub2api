@@ -286,3 +286,37 @@ func TestParseTestSSEOutput_IgnoresTestResult(t *testing.T) {
 }
 
 func intPtrForTraceTest(v int) *int { return &v }
+
+func TestAccountTestTrace_AntigravityOAuthSuccessRecordsUpstreamStatus(t *testing.T) {
+	c, recorder := newTestContext()
+	account := &Account{
+		ID:          90,
+		Name:        "ag-oauth",
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token": "token",
+			antigravityProjectIDFallbackCredentialKey: "test-project",
+		},
+	}
+	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{newJSONResponse(http.StatusOK,
+		"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}}\n\n")}}
+	gateway := &AntigravityGatewayService{
+		settingService: NewSettingService(&antigravitySettingRepoStub{}, &config.Config{}),
+		tokenProvider:  &AntigravityTokenProvider{},
+		httpUpstream:   upstream,
+	}
+	svc := &AccountTestService{accountRepo: repo, antigravityGatewayService: gateway}
+
+	require.NoError(t, svc.TestAccountConnection(c, account.ID, "", "", AccountTestModeDefault))
+	require.Equal(t, 1, upstream.callCount)
+	require.Contains(t, recorder.Body.String(), `"type":"test_complete"`)
+
+	result := BuildAccountTestResult(c, true, nil, nil, nil)
+	require.NotNil(t, result.UpstreamStatus, "the non-streaming Antigravity probe reports the upstream status on success")
+	require.Equal(t, http.StatusOK, *result.UpstreamStatus)
+	require.NotNil(t, result.FirstTokenMs)
+}

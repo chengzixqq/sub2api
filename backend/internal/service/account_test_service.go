@@ -2538,6 +2538,7 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	if err != nil {
 		return s.sendErrorAndEnd(c, err.Error())
 	}
+	noteAccountTestUpstreamStatus(c, result.StatusCode)
 
 	// 发送响应内容
 	if result.Text != "" {

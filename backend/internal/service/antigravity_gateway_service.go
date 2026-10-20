@@ -348,6 +348,7 @@ func (s *AntigravityGatewayService) IsModelSupported(requestedModel string) bool
 type TestConnectionResult struct {
 	Text        string // 响应文本
 	MappedModel string // 实际使用的模型
+	StatusCode  int    // 上游响应的 HTTP 状态码
 }
 
 // TestConnection 测试 Antigravity 账号连接。
@@ -435,7 +436,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 	}
 
 	text := extractTextFromSSEResponse(respBody)
-	return &TestConnectionResult{Text: text, MappedModel: mappedModel}, nil
+	return &TestConnectionResult{Text: text, MappedModel: mappedModel, StatusCode: result.resp.StatusCode}, nil
 }
 
 // testConnectionHandleError 是 TestConnection 使用的轻量 handleError 回调。
