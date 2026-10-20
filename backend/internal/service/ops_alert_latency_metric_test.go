@@ -130,3 +130,70 @@ func TestEvaluateOnce_LatencyRuleWithoutSamplesIsSkipped(t *testing.T) {
 	require.Zero(t, repo.resolveCalls)
 	require.Contains(t, repo.heartbeat, "enabled=1 evaluated=0")
 }
+
+// newSustainedLatencyEvaluator needs three consecutive breaches at a one-minute interval before firing.
+func newSustainedLatencyEvaluator() (*latencyEvaluatorRepo, *OpsAlertEvaluatorService) {
+	repo := newLatencyEvaluatorRepo(OpsPercentiles{})
+	repo.rules[0].SustainedMinutes = 3
+	return repo, NewOpsAlertEvaluatorService(nil, repo, nil, nil, nil, nil)
+}
+
+func slowLatencyWindow() *OpsDashboardOverview {
+	return &OpsDashboardOverview{SuccessCount: 120, Duration: OpsPercentiles{P95: intPtr(2000), P99: intPtr(5000)}}
+}
+
+// timedOutLatencyWindow has successful requests but no percentiles: the raw latency query timed out.
+func timedOutLatencyWindow() *OpsDashboardOverview {
+	return &OpsDashboardOverview{SuccessCount: 120}
+}
+
+func TestEvaluateOnce_LatencyQueryTimeoutKeepsSustainedCount(t *testing.T) {
+	repo, svc := newSustainedLatencyEvaluator()
+	rounds := []*OpsDashboardOverview{slowLatencyWindow(), slowLatencyWindow(), timedOutLatencyWindow(), slowLatencyWindow()}
+
+	for i, overview := range rounds {
+		repo.overview = overview
+		svc.evaluateOnce(time.Minute)
+		if i < len(rounds)-1 {
+			require.Empty(t, repo.created, "round %d must not fire yet", i+1)
+		}
+	}
+
+	require.Len(t, repo.created, 1, "a timed-out round must not restart the sustained-breach count")
+	require.Equal(t, int64(3), repo.created[0].RuleID)
+	require.Contains(t, repo.heartbeat, "evaluated=1")
+}
+
+func TestEvaluateOnce_LatencyQueryTimeoutHoldsStateAndReportsIt(t *testing.T) {
+	repo, svc := newSustainedLatencyEvaluator()
+	repo.overview = timedOutLatencyWindow()
+	repo.active = &OpsAlertEvent{ID: 9, RuleID: 3, Status: OpsAlertStatusFiring}
+	svc.ruleStates[3] = &opsAlertRuleState{LastEvaluatedAt: time.Now().UTC().Add(-time.Minute), ConsecutiveBreaches: 2}
+	before := time.Now().UTC()
+
+	svc.evaluateOnce(time.Minute)
+
+	state := svc.ruleStates[3]
+	require.NotNil(t, state)
+	require.Equal(t, 2, state.ConsecutiveBreaches)
+	require.False(t, state.LastEvaluatedAt.Before(before),
+		"the skipped round moves the clock so the next round's gap check does not see a pause")
+	require.Empty(t, repo.created)
+	require.Zero(t, repo.resolveCalls, "an unmeasured round never auto-resolves")
+	require.Contains(t, repo.heartbeat, "enabled=1 evaluated=0")
+	require.Contains(t, repo.heartbeat, "latency_timeouts=1")
+}
+
+func TestEvaluateOnce_LatencyWindowWithoutTrafficRestartsSustainedCount(t *testing.T) {
+	repo, svc := newSustainedLatencyEvaluator()
+	rounds := []*OpsDashboardOverview{slowLatencyWindow(), slowLatencyWindow(), {}, slowLatencyWindow()}
+
+	for _, overview := range rounds {
+		repo.overview = overview
+		svc.evaluateOnce(time.Minute)
+	}
+
+	require.Empty(t, repo.created, "a window without successful requests restarts the count like other overview metrics")
+	require.Equal(t, 1, svc.ruleStates[3].ConsecutiveBreaches)
+	require.NotContains(t, repo.heartbeat, "latency_timeouts")
+}

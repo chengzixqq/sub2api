@@ -198,6 +198,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 	rulesTotal := len(rules)
 	rulesEnabled := 0
 	rulesEvaluated := 0
+	latencyTimeouts := 0
 	eventsCreated := 0
 	eventsResolved := 0
 	emailsSent := 0
@@ -235,9 +236,14 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		windowStart := safeEnd.Add(-time.Duration(windowMinutes) * time.Minute)
 		windowEnd := safeEnd
 
-		metricValue, ok := s.computeRuleMetric(ctx, rule, systemMetrics, windowStart, windowEnd, scopePlatform, scopeGroupID)
-		if !ok {
+		metricValue, outcome := s.evaluateRuleMetric(ctx, rule, systemMetrics, windowStart, windowEnd, scopePlatform, scopeGroupID)
+		switch outcome {
+		case opsRuleMetricUnavailable:
 			s.resetRuleState(rule.ID, now)
+			continue
+		case opsRuleMetricDeferred:
+			latencyTimeouts++
+			s.holdRuleState(rule.ID, now)
 			continue
 		}
 		rulesEvaluated++
@@ -314,7 +320,11 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 		}
 	}
 
-	result := truncateString(fmt.Sprintf("rules=%d enabled=%d evaluated=%d created=%d resolved=%d emails_sent=%d", rulesTotal, rulesEnabled, rulesEvaluated, eventsCreated, eventsResolved, emailsSent), 2048)
+	summary := fmt.Sprintf("rules=%d enabled=%d evaluated=%d created=%d resolved=%d emails_sent=%d", rulesTotal, rulesEnabled, rulesEvaluated, eventsCreated, eventsResolved, emailsSent)
+	if latencyTimeouts > 0 {
+		summary += fmt.Sprintf(" latency_timeouts=%d", latencyTimeouts)
+	}
+	result := truncateString(summary, 2048)
 	s.recordHeartbeatSuccess(runAt, time.Since(startedAt), result)
 }
 
@@ -587,16 +597,7 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 		return float64(n), true
 	}
 
-	overview, err := s.opsRepo.GetDashboardOverview(ctx, &OpsDashboardFilter{
-		StartTime: start,
-		EndTime:   end,
-		Platform:  platform,
-		GroupID:   groupID,
-		QueryMode: OpsQueryModeRaw,
-	})
-	if err != nil {
-		return 0, false
-	}
+	overview := s.ruleWindowOverview(ctx, start, end, platform, groupID)
 	if overview == nil {
 		return 0, false
 	}
@@ -617,18 +618,9 @@ func (s *OpsAlertEvaluatorService) computeRuleMetric(
 			return 0, false
 		}
 		return overview.UpstreamErrorRate * 100, true
-	case "p95_latency_ms":
-		// nil means no successful sample in the window or the raw latency query timed out:
-		// not evaluable, never 0 ms.
-		if overview.Duration.P95 == nil {
-			return 0, false
-		}
-		return float64(*overview.Duration.P95), true
-	case "p99_latency_ms":
-		if overview.Duration.P99 == nil {
-			return 0, false
-		}
-		return float64(*overview.Duration.P99), true
+	case "p95_latency_ms", "p99_latency_ms":
+		value, outcome := latencyRuleMetric(rule.MetricType, overview)
+		return value, outcome == opsRuleMetricEvaluated
 	default:
 		return 0, false
 	}
