@@ -4,6 +4,8 @@ package service
 
 import (
 	"encoding/json"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -270,4 +272,37 @@ func TestStampTokenRefreshedAtOnCreate_KeepsOnlyValidImportedValue(t *testing.T)
 	outOfRange := map[string]any{"access_token": "at", CredentialKeyTokenRefreshedAt: "9999-12-31T23:59:59-01:00"}
 	stampTokenRefreshedAtOnCreate(AccountTypeOAuth, outOfRange, now)
 	require.Equal(t, "2026-10-17T09:40:01Z", outOfRange[CredentialKeyTokenRefreshedAt])
+}
+
+func TestStampTokenRefreshedAtOnCreate_KeepsImportedTokenVersionFallback(t *testing.T) {
+	now := time.Date(2026, 10, 17, 9, 40, 1, 0, time.UTC)
+	refreshed := time.Date(2026, 10, 17, 4, 40, 1, 0, time.UTC)
+
+	for name, version := range map[string]any{
+		"float64": float64(refreshed.UnixMilli()),
+		"string":  strconv.FormatInt(refreshed.UnixMilli(), 10),
+	} {
+		t.Run(name, func(t *testing.T) {
+			creds := map[string]any{"access_token": "at", "_token_version": version}
+			stampTokenRefreshedAtOnCreate(AccountTypeOAuth, creds, now)
+			require.NotContains(t, creds, CredentialKeyTokenRefreshedAt)
+
+			status := AccountTokenStatusFromAccount(&Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: creds})
+			require.NotNil(t, status.RefreshedAt)
+			require.Equal(t, refreshed, *status.RefreshedAt)
+		})
+	}
+
+	invalidRefreshedAt := map[string]any{"access_token": "at", "_token_version": refreshed.UnixMilli(), CredentialKeyTokenRefreshedAt: "not-a-time"}
+	stampTokenRefreshedAtOnCreate(AccountTypeOAuth, invalidRefreshedAt, now)
+	status := AccountTokenStatusFromAccount(&Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth, Credentials: invalidRefreshedAt})
+	require.Equal(t, refreshed, *status.RefreshedAt)
+
+	for name, version := range map[string]any{"zero": 0, "out_of_range": int64(math.MaxInt64)} {
+		t.Run(name, func(t *testing.T) {
+			creds := map[string]any{"access_token": "at", "_token_version": version}
+			stampTokenRefreshedAtOnCreate(AccountTypeOAuth, creds, now)
+			require.Equal(t, "2026-10-17T09:40:01Z", creds[CredentialKeyTokenRefreshedAt])
+		})
+	}
 }

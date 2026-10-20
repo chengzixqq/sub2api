@@ -103,12 +103,12 @@ func stampTokenRefreshedAtOnNewAccessToken(accountType, previousAccessToken stri
 
 // stampTokenRefreshedAtOnCreate stamps a newly created OAuth / setup-token
 // account that carries an access token, unless the input (e.g. a data import)
-// already records a valid refresh time.
+// already yields a valid refresh time: a valid _token_refreshed_at, or a
+// _token_version exported by an instance that predates _token_refreshed_at.
+// Stamping over the latter would hide the real refresh time behind the import.
 func stampTokenRefreshedAtOnCreate(accountType string, creds map[string]any, now time.Time) {
-	if raw, ok := creds[CredentialKeyTokenRefreshedAt].(string); ok {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil && normalizeTokenStatusTime(parsed) != nil {
-			return
-		}
+	if accountTokenRefreshedAt(&Account{Credentials: creds}) != nil {
+		return
 	}
 	stampTokenRefreshedAtOnNewAccessToken(accountType, "", creds, now)
 }

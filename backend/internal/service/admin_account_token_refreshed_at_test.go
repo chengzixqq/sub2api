@@ -167,6 +167,25 @@ func TestCreateAccount_OAuthStampsTokenRefreshedAt(t *testing.T) {
 	require.Equal(t, "2026-10-01T08:00:00Z", imported.Credentials[CredentialKeyTokenRefreshedAt],
 		"an import that already carries a valid refresh time keeps it")
 
+	legacyRefreshedAt := time.Date(2026, 10, 1, 3, 0, 0, 0, time.UTC)
+	legacyExport, err := svc.CreateAccount(ctx, &CreateAccountInput{
+		Name:                 "imported-legacy-oauth",
+		Platform:             PlatformAnthropic,
+		Type:                 AccountTypeOAuth,
+		SkipDefaultGroupBind: true,
+		Credentials: map[string]any{
+			"access_token":   "at",
+			"refresh_token":  "rt",
+			"_token_version": float64(legacyRefreshedAt.UnixMilli()),
+		},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, legacyExport.Credentials, CredentialKeyTokenRefreshedAt,
+		"an export from an instance predating _token_refreshed_at keeps its _token_version fallback")
+	legacyStatus := AccountTokenStatusFromAccount(legacyExport)
+	require.NotNil(t, legacyStatus.RefreshedAt)
+	require.Equal(t, legacyRefreshedAt, *legacyStatus.RefreshedAt)
+
 	apiKey, err := svc.CreateAccount(ctx, &CreateAccountInput{
 		Name:                 "claude-apikey",
 		Platform:             PlatformAnthropic,
