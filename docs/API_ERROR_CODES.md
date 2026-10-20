@@ -50,6 +50,7 @@
 | 400 | INVALID_SINCE_ID、SINCE_ID_WITH_PAGE | 参数校验类：`/admin/usage`、`/admin/ops/request-errors` 的增量游标 `since_id` 必须是不小于 0 的整数，且不能与 `page` > 1 同时传；去掉 `page` 或改用 `page=1` 全量刷新 |
 | 400 | INVALID_TIMEZONE、INVALID_INCLUDE | 参数校验类：`/admin/dashboard/home` 的 `timezone` 须为 IANA 时区名（如 `Asia/Shanghai`，不传为服务器时区），`include` 只接受 stats、rates、hourly、ops、alerts、availability、channels 的逗号分隔组合（不传为全部）；按 message 修正参数，不要原样重试 |
 | 400 | INVALID_GROUP_FILTER | 参数校验类：分组过滤参数 `group_id` 必须是正整数（`GET /admin/accounts/status-summary` 的查询参数、`POST /api/v1/admin/accounts/today-stats/batch` 请求体里的可选 `group_id`；后者传 null 等于不传）；按 message 修正参数，不要原样重试。vendor 对 today-stats/batch 传未授权的分组返回 404 RESOURCE_NOT_FOUND（不区分分组不存在） |
+| 400 | INVALID_ACCOUNT_STATUS_FILTER | 参数校验类：`GET /api/v1/admin/accounts`（以及账号导出、`/admin/accounts/upstream-billing-rates` 等共用账号列表筛选的接口）的 `status` 按逗号拆分、去空白、去重后超过 16 个值（`metadata.max`=16）。减少筛选值后重试，不要原样重试；单个值不会触发 |
 | 409 | ACCOUNT_TEST_RUNNING | `POST /api/v1/admin/accounts/:id/test-runs`：该账号已有一个运行中的异步测试，`metadata.run_id` 是它的 run_id，改为轮询 `GET /api/v1/admin/account-test-runs/:run_id`，不要重复提交 |
 | 404 | ACCOUNT_TEST_RUN_NOT_FOUND | `GET /api/v1/admin/accounts/:id/test-runs/latest` 与 `GET /api/v1/admin/account-test-runs/:run_id`：没有测试记录、run_id 不存在或不属于本工作区的账号；latest 返回它时显示“还没有测试记录” |
 | 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试；该账号已有运行中的测试时优先返回 409 ACCOUNT_TEST_RUNNING |

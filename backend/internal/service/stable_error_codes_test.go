@@ -70,6 +70,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrReauthUnsupported, http.StatusBadRequest, "REAUTH_UNSUPPORTED"},
 		{ErrOAuthExchangeFailed, http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED"},
 		{ErrReauthPersistFailed, http.StatusInternalServerError, "REAUTH_PERSIST_FAILED"},
+		{ErrInvalidAccountStatusFilter, http.StatusBadRequest, "INVALID_ACCOUNT_STATUS_FILTER"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

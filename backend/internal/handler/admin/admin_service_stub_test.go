@@ -71,6 +71,12 @@ type stubAdminService struct {
 		sortOrder   string
 		calls       int
 	}
+	accountListCounts     *service.AccountListCounts
+	accountListCountsErr  error
+	lastAccountListCounts struct {
+		filter service.AccountListCountsFilter
+		calls  int
+	}
 	lastListUsers struct {
 		page      int
 		pageSize  int
@@ -478,6 +484,15 @@ func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int,
 		end = total
 	}
 	return accounts[start:end], int64(total), nil
+}
+
+func (s *stubAdminService) CountAccountsForList(_ context.Context, filter service.AccountListCountsFilter) (*service.AccountListCounts, error) {
+	s.lastAccountListCounts.filter = filter
+	s.lastAccountListCounts.calls++
+	if s.accountListCountsErr != nil {
+		return nil, s.accountListCountsErr
+	}
+	return s.accountListCounts, nil
 }
 
 func (s *stubAdminService) ListAccountsForSchedulerScoreFilter(_ context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {

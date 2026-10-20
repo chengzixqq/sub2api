@@ -727,6 +727,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	lite := parseBoolQueryWithDefault(c.Query("lite"), false)
 	// 调度分需要跨候选池批量打分并读取负载，默认列表不计算；只有前端列可见时才显式开启。
 	includeSchedulerScore := parseBoolQueryWithDefault(c.Query("include_scheduler_score"), false)
+	includeCounts := parseBoolQueryWithDefault(c.Query("include_counts"), false)
 
 	var groupID int64
 	if groupIDStr := c.Query("group"); groupIDStr != "" {
@@ -747,6 +748,13 @@ func (h *AccountHandler) List(c *gin.Context) {
 	}
 
 	accounts, total, err := h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	counts, err := h.accountListCounts(c.Request.Context(), includeCounts, service.AccountListCountsFilter{
+		Platform: platform, AccountType: accountType, Search: search, GroupID: groupID, PrivacyMode: privacyMode,
+	})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -829,7 +837,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 				SchedulingRPM:        item.SchedulingRPM,
 			}
 		}
-		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true)
+		etag := buildAccountsListETag(compact, total, page, pageSize, platform, accountType, status, search, true, counts)
 		if etag != "" {
 			c.Header("ETag", etag)
 			c.Header("Vary", "If-None-Match")
@@ -838,11 +846,11 @@ func (h *AccountHandler) List(c *gin.Context) {
 				return
 			}
 		}
-		response.Paginated(c, compact, total, page, pageSize)
+		response.Success(c, accountListPayload(compact, total, page, pageSize, counts))
 		return
 	}
 
-	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, false)
+	etag := buildAccountsListETag(result, total, page, pageSize, platform, accountType, status, search, false, counts)
 	if etag != "" {
 		c.Header("ETag", etag)
 		c.Header("Vary", "If-None-Match")
@@ -852,26 +860,30 @@ func (h *AccountHandler) List(c *gin.Context) {
 		}
 	}
 
-	response.Paginated(c, result, total, page, pageSize)
+	response.Success(c, accountListPayload(result, total, page, pageSize, counts))
 }
 
+// buildAccountsListETag hashes the list representation. counts is omitted
+// when nil so lists without include_counts keep their pre-counts ETag.
 func buildAccountsListETag[T any](
 	items []T,
 	total int64,
 	page, pageSize int,
 	platform, accountType, status, search string,
 	lite bool,
+	counts *service.AccountListCounts,
 ) string {
 	payload := struct {
-		Total       int64  `json:"total"`
-		Page        int    `json:"page"`
-		PageSize    int    `json:"page_size"`
-		Platform    string `json:"platform"`
-		AccountType string `json:"type"`
-		Status      string `json:"status"`
-		Search      string `json:"search"`
-		Lite        bool   `json:"lite"`
-		Items       []T    `json:"items"`
+		Total       int64                      `json:"total"`
+		Page        int                        `json:"page"`
+		PageSize    int                        `json:"page_size"`
+		Platform    string                     `json:"platform"`
+		AccountType string                     `json:"type"`
+		Status      string                     `json:"status"`
+		Search      string                     `json:"search"`
+		Lite        bool                       `json:"lite"`
+		Items       []T                        `json:"items"`
+		Counts      *service.AccountListCounts `json:"counts,omitempty"`
 	}{
 		Total:       total,
 		Page:        page,
@@ -882,6 +894,7 @@ func buildAccountsListETag[T any](
 		Search:      search,
 		Lite:        lite,
 		Items:       items,
+		Counts:      counts,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
