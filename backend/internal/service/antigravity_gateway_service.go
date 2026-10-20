@@ -92,6 +92,7 @@ type AntigravityAccountSwitchError struct {
 	OriginalAccountID int64
 	RateLimitedModel  string
 	IsStickySession   bool // 是否为粘性会话切换（决定是否缓存计费）
+	UpstreamStatus    int  // 触发切换的上游 HTTP 状态码；本地限流预检查未发请求时为 0
 }
 
 func (e *AntigravityAccountSwitchError) Error() string {
@@ -225,7 +226,7 @@ func (s *AntigravityGatewayService) applyErrorPolicy(p antigravityRetryLoopParam
 	case ErrorPolicyTempUnscheduled:
 		slog.Info("temp_unschedulable_matched",
 			"prefix", p.prefix, "status_code", statusCode, "account_id", p.account.ID)
-		return true, statusCode, &AntigravityAccountSwitchError{OriginalAccountID: p.account.ID, RateLimitedModel: p.requestedModel, IsStickySession: p.isStickySession}
+		return true, statusCode, &AntigravityAccountSwitchError{OriginalAccountID: p.account.ID, RateLimitedModel: p.requestedModel, IsStickySession: p.isStickySession, UpstreamStatus: statusCode}
 	}
 	return false, statusCode, nil
 }
@@ -351,6 +352,17 @@ type TestConnectionResult struct {
 	StatusCode  int    // 上游响应的 HTTP 状态码
 }
 
+// antigravityTestRateLimitedError 是 TestConnection 收到账号切换信号（模型限流）时返回的错误：
+// 文本不变，另带触发限流的上游状态码，供账号测试 trace 记录（本地限流预检查未发请求时为 0）。
+type antigravityTestRateLimitedError struct {
+	model          string
+	upstreamStatus int
+}
+
+func (e *antigravityTestRateLimitedError) Error() string {
+	return fmt.Sprintf("该账号模型 %s 当前限流中，请稍后重试", e.model)
+}
+
 // TestConnection 测试 Antigravity 账号连接。
 // 复用 antigravityRetryLoop 的完整重试 / credits overages / 智能重试逻辑，
 // 与真实调度行为一致。差异：不做账号切换（测试指定账号）、不记录 ops 错误。
@@ -416,7 +428,7 @@ func (s *AntigravityGatewayService) TestConnection(ctx context.Context, account 
 		// AccountSwitchError → 测试时不切换账号，返回友好提示
 		var switchErr *AntigravityAccountSwitchError
 		if errors.As(err, &switchErr) {
-			return nil, fmt.Errorf("该账号模型 %s 当前限流中，请稍后重试", switchErr.RateLimitedModel)
+			return nil, &antigravityTestRateLimitedError{model: switchErr.RateLimitedModel, upstreamStatus: switchErr.UpstreamStatus}
 		}
 		return nil, err
 	}

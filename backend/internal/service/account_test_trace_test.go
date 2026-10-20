@@ -320,3 +320,67 @@ func TestAccountTestTrace_AntigravityOAuthSuccessRecordsUpstreamStatus(t *testin
 	require.Equal(t, http.StatusOK, *result.UpstreamStatus)
 	require.NotNil(t, result.FirstTokenMs)
 }
+
+// antigravityRateLimitedBody is an upstream 429 RESOURCE_EXHAUSTED body with
+// RATE_LIMIT_EXCEEDED for model and the given retryDelay.
+func antigravityRateLimitedBody(model, retryDelay string) string {
+	return `{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","metadata":{"model":"` + model + `"},"reason":"RATE_LIMIT_EXCEEDED"},` +
+		`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"` + retryDelay + `"}]}}`
+}
+
+func newAntigravityOAuthTestService(upstream HTTPUpstream) *AccountTestService {
+	account := &Account{
+		ID:          91,
+		Name:        "ag-oauth-429",
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token": "token",
+			antigravityProjectIDFallbackCredentialKey: "test-project",
+		},
+	}
+	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
+	gateway := &AntigravityGatewayService{
+		settingService: NewSettingService(&antigravitySettingRepoStub{}, &config.Config{}),
+		tokenProvider:  &AntigravityTokenProvider{},
+		httpUpstream:   upstream,
+	}
+	return &AccountTestService{accountRepo: repo, antigravityGatewayService: gateway}
+}
+
+func TestRunTestBackground_AntigravityLongDelay429RecordsUpstreamStatus(t *testing.T) {
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{
+		newJSONResponse(http.StatusTooManyRequests, antigravityRateLimitedBody("claude-sonnet-4-5", "30s")),
+	}}
+	svc := newAntigravityOAuthTestService(upstream)
+
+	result, err := svc.RunTestBackground(t.Context(), 91, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, upstream.callCount, "a long retryDelay switches immediately without retrying")
+	require.Equal(t, "failed", result.Status)
+	require.Contains(t, result.ErrorMessage, "当前限流中", "the friendly rate-limit text is unchanged")
+	require.NotNil(t, result.UpstreamStatusCode, "the 429 that triggered the switch signal is recorded")
+	require.Equal(t, http.StatusTooManyRequests, *result.UpstreamStatusCode)
+	require.NotNil(t, result.ErrorKind)
+	require.Equal(t, AccountErrorKindRateLimit, *result.ErrorKind)
+}
+
+func TestRunTestBackground_AntigravitySmartRetryExhausted429RecordsUpstreamStatus(t *testing.T) {
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{
+		newJSONResponse(http.StatusTooManyRequests, antigravityRateLimitedBody("claude-sonnet-4-5", "0.5s")),
+		newJSONResponse(http.StatusTooManyRequests, antigravityRateLimitedBody("claude-sonnet-4-5", "0.5s")),
+	}}
+	svc := newAntigravityOAuthTestService(upstream)
+
+	result, err := svc.RunTestBackground(t.Context(), 91, "")
+	require.NoError(t, err)
+	require.Equal(t, 2, upstream.callCount, "a short retryDelay retries once before switching")
+	require.Equal(t, "failed", result.Status)
+	require.NotNil(t, result.UpstreamStatusCode)
+	require.Equal(t, http.StatusTooManyRequests, *result.UpstreamStatusCode)
+	require.NotNil(t, result.ErrorKind)
+	require.Equal(t, AccountErrorKindRateLimit, *result.ErrorKind)
+}

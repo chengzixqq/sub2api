@@ -2536,6 +2536,10 @@ func (s *AccountTestService) testAntigravityAccountConnection(c *gin.Context, ac
 	// 调用 AntigravityGatewayService.TestConnection（复用协议转换逻辑）
 	result, err := s.antigravityGatewayService.TestConnection(ctx, account, testModelID)
 	if err != nil {
+		var rateLimited *antigravityTestRateLimitedError
+		if errors.As(err, &rateLimited) {
+			noteAccountTestUpstreamStatus(c, rateLimited.upstreamStatus)
+		}
 		return s.sendErrorAndEnd(c, err.Error())
 	}
 	noteAccountTestUpstreamStatus(c, result.StatusCode)

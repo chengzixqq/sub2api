@@ -165,6 +165,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				OriginalAccountID: p.account.ID,
 				RateLimitedModel:  modelName,
 				IsStickySession:   p.isStickySession,
+				UpstreamStatus:    resp.StatusCode,
 			},
 		}
 	}
@@ -320,6 +321,12 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		// 清除粘性会话绑定，避免下次请求仍命中限流账号
 		s.clearStickySession(p.ctx, p.groupID, p.sessionHash)
 
+		// 切换信号带最后一次上游响应的状态码（重试全是网络错误时为首次响应的状态码）
+		switchStatus := resp.StatusCode
+		if lastRetryResp != nil {
+			switchStatus = lastRetryResp.StatusCode
+		}
+
 		// 返回账号切换信号，让上层切换账号重试
 		return &smartRetryResult{
 			action: smartRetryActionBreakWithResp,
@@ -327,6 +334,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				OriginalAccountID: p.account.ID,
 				RateLimitedModel:  modelName,
 				IsStickySession:   p.isStickySession,
+				UpstreamStatus:    switchStatus,
 			},
 		}
 	}
@@ -1161,6 +1169,7 @@ func (s *AntigravityGatewayService) handleModelRateLimit(p *handleModelRateLimit
 			OriginalAccountID: p.account.ID,
 			RateLimitedModel:  info.ModelName,
 			IsStickySession:   p.isStickySession,
+			UpstreamStatus:    p.statusCode,
 		},
 	}
 }
