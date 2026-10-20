@@ -12,8 +12,9 @@ type AdminMetaCatalog struct {
 	// filtering (CreateAccountRequest.Type).
 	AccountTypes []string `json:"account_types"`
 	// PlatformAuth maps each concrete platform the caller may create accounts
-	// on to the account types its creation form offers. It is a form hint and
-	// does not take part in CreateAccount validation.
+	// on to the account types the caller can complete in its creation form
+	// (a vendor gets no OAuth flow whose helpers it cannot reach). It is a
+	// form hint and does not take part in CreateAccount validation.
 	PlatformAuth map[string][]string `json:"platform_auth"`
 	// AccountStatusFilters lists the status values GET /admin/accounts accepts.
 	AccountStatusFilters []string `json:"account_status_filters"`
@@ -44,6 +45,25 @@ var adminMetaPlatformAuth = map[string][]string{
 }
 
 var adminMetaDefaultPlatformAuth = []string{AccountTypeAPIKey}
+
+// adminMetaOAuthFlowTypes are the account types created through a platform's
+// OAuth helper endpoints (auth URL, code exchange) instead of by posting
+// credentials to /admin/accounts.
+var adminMetaOAuthFlowTypes = map[string]struct{}{
+	AccountTypeOAuth:      {},
+	AccountTypeSetupToken: {},
+}
+
+// adminMetaVendorOAuthPlatforms are the platforms whose OAuth helpers a vendor
+// with account management can reach. Claude's live under the /admin/accounts
+// write prefix and constrain proxy_id to the workspace; the OpenAI, Gemini
+// and Antigravity helpers stay station-owner only (see the middleware test
+// TestVendorOAuthProxyHelpersReachability), and Grok creation is forbidden
+// outright. TestMetaCatalogVendorOAuthMatchesReachableHelpers keeps this set
+// in step with the vendor route allowlist.
+var adminMetaVendorOAuthPlatforms = map[string]struct{}{
+	PlatformAnthropic: {},
+}
 
 // adminMetaAccountStatusFilters follows accountStatusPredicate: the status
 // column values, the legacy derived values and the C14 derived values.
@@ -84,9 +104,11 @@ func BuildAdminMetaCatalog(scope Scope) AdminMetaCatalog {
 	}
 }
 
-// adminMetaPlatformAuthFor keeps the platforms scope may create accounts on:
-// all for the station owner, all but those vendors may not create for a
-// vendor with account management, none otherwise (including a missing scope).
+// adminMetaPlatformAuthFor keeps the platforms and account types scope can
+// actually create: everything for the station owner; for a vendor with
+// account management, every platform but those vendors may not create (Grok),
+// without the OAuth-flow types whose helpers vendors cannot reach; nothing
+// otherwise (including a missing scope).
 func adminMetaPlatformAuthFor(scope Scope) map[string][]string {
 	out := map[string][]string{}
 	if scope.RequireAccountManage() != nil {
@@ -100,7 +122,23 @@ func adminMetaPlatformAuthFor(scope Scope) map[string][]string {
 		if !ok {
 			types = adminMetaDefaultPlatformAuth
 		}
-		out[platform] = append([]string(nil), types...)
+		if kept := adminMetaAuthTypesFor(scope, platform, types); len(kept) > 0 {
+			out[platform] = kept
+		}
 	}
 	return out
+}
+
+// adminMetaAuthTypesFor returns a copy of types without the OAuth-flow types
+// a vendor cannot complete on platform.
+func adminMetaAuthTypesFor(scope Scope, platform string, types []string) []string {
+	_, vendorOAuth := adminMetaVendorOAuthPlatforms[platform]
+	kept := make([]string, 0, len(types))
+	for _, accountType := range types {
+		if _, oauthFlow := adminMetaOAuthFlowTypes[accountType]; oauthFlow && scope.IsVendor() && !vendorOAuth {
+			continue
+		}
+		kept = append(kept, accountType)
+	}
+	return kept
 }

@@ -62,8 +62,22 @@ func TestAdminMetaCatalogPlatformAuthCoversConcretePlatforms(t *testing.T) {
 func TestAdminMetaCatalogVendorPlatformAuthTrimmed(t *testing.T) {
 	manager := BuildAdminMetaCatalog(VendorScope(7, WorkspacePermissions{AccountManage: true}))
 	require.NotContains(t, manager.PlatformAuth, PlatformGrok, "vendors may not create Grok accounts")
-	require.Contains(t, manager.PlatformAuth, PlatformAnthropic)
 	require.Len(t, manager.PlatformAuth, len(domain.ConcretePlatformIDs())-1)
+	// Claude's OAuth and setup-token helpers live under /admin/accounts and are
+	// open to vendors with account management.
+	require.Equal(t, []string{AccountTypeOAuth, AccountTypeSetupToken, AccountTypeAPIKey, AccountTypeBedrock, AccountTypeServiceAccount},
+		manager.PlatformAuth[PlatformAnthropic])
+	// The OpenAI, Gemini and Antigravity OAuth helpers stay station-owner only,
+	// so a vendor cannot finish an OAuth creation on those platforms.
+	require.Equal(t, []string{AccountTypeAPIKey}, manager.PlatformAuth[PlatformOpenAI])
+	require.Equal(t, []string{AccountTypeAPIKey, AccountTypeServiceAccount}, manager.PlatformAuth[PlatformGemini])
+	require.Equal(t, []string{AccountTypeAPIKey}, manager.PlatformAuth[PlatformAntigravity])
+	require.Equal(t, []string{AccountTypeAPIKey}, manager.PlatformAuth[PlatformKimi])
+	full := BuildAdminMetaCatalog(AdminScope()).PlatformAuth
+	for platform, types := range manager.PlatformAuth {
+		require.NotEmptyf(t, types, "platform %s has an empty vendor auth list", platform)
+		require.Subsetf(t, full[platform], types, "vendor auth for %s must be a subset of the full table", platform)
+	}
 
 	monitor := BuildAdminMetaCatalog(VendorScope(7, WorkspacePermissions{MonitorView: true}))
 	missing := BuildAdminMetaCatalog(Scope{})

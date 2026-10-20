@@ -231,3 +231,67 @@ func TestVendorRoutesAllowMetaCatalog(t *testing.T) {
 		t.Errorf("%s reads no usage rows and must not trigger the account allowlist lookup", path)
 	}
 }
+
+// TestMetaCatalogVendorOAuthMatchesReachableHelpers keeps the vendor
+// platform_auth of GET /meta/catalog in step with the vendor route allowlist:
+// a vendor with account management is offered an OAuth-flow type (oauth,
+// setup-token) on a platform only when every helper that flow calls is
+// reachable. Adding an OAuth platform to the catalog fails here until its
+// helpers are listed below.
+func TestMetaCatalogVendorOAuthMatchesReachableHelpers(t *testing.T) {
+	oauthHelpers := map[string]map[string][]string{
+		service.PlatformAnthropic: {
+			service.AccountTypeOAuth: {
+				"/api/v1/admin/accounts/generate-auth-url",
+				"/api/v1/admin/accounts/exchange-code",
+				"/api/v1/admin/accounts/cookie-auth",
+			},
+			service.AccountTypeSetupToken: {
+				"/api/v1/admin/accounts/generate-setup-token-url",
+				"/api/v1/admin/accounts/exchange-setup-token-code",
+				"/api/v1/admin/accounts/setup-token-cookie-auth",
+			},
+		},
+		service.PlatformOpenAI: {
+			service.AccountTypeOAuth: {"/api/v1/admin/openai/generate-auth-url", "/api/v1/admin/openai/exchange-code"},
+		},
+		service.PlatformGemini: {
+			service.AccountTypeOAuth: {"/api/v1/admin/gemini/oauth/auth-url", "/api/v1/admin/gemini/oauth/exchange-code"},
+		},
+		service.PlatformAntigravity: {
+			service.AccountTypeOAuth: {"/api/v1/admin/antigravity/oauth/auth-url", "/api/v1/admin/antigravity/oauth/exchange-code"},
+		},
+		service.PlatformGrok: {
+			service.AccountTypeOAuth: {"/api/v1/admin/grok/oauth/auth-url", "/api/v1/admin/grok/oauth/exchange-code"},
+		},
+	}
+	full := service.BuildAdminMetaCatalog(service.AdminScope()).PlatformAuth
+	vendorAuth := service.BuildAdminMetaCatalog(service.VendorScope(7, service.WorkspacePermissions{AccountManage: true})).PlatformAuth
+	scope := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{AccountManage: true}}
+
+	for platform, types := range full {
+		for _, accountType := range types {
+			if accountType != service.AccountTypeOAuth && accountType != service.AccountTypeSetupToken {
+				continue
+			}
+			helpers, ok := oauthHelpers[platform][accountType]
+			if !ok {
+				t.Fatalf("%s/%s is an OAuth flow without listed helper routes", platform, accountType)
+			}
+			if _, creatable := vendorAuth[platform]; !creatable {
+				// Creation itself is forbidden for vendors (Grok).
+				continue
+			}
+			reachable := true
+			for _, path := range helpers {
+				if !vendorRouteAllowed(newFullPathContext("POST", path), scope) {
+					reachable = false
+				}
+			}
+			offered := containsString(vendorAuth[platform], accountType)
+			if offered != reachable {
+				t.Errorf("vendor platform_auth[%s] offers %s=%v but its helpers reachable=%v", platform, accountType, offered, reachable)
+			}
+		}
+	}
+}

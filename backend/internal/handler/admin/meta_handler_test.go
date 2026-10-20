@@ -104,6 +104,8 @@ func TestMetaCatalogETagDiffersByScope(t *testing.T) {
 	require.NotEqual(t, adminRec.Header().Get("ETag"), vendorRec.Header().Get("ETag"))
 	require.NotContains(t, vendorBody.Data.PlatformAuth, service.PlatformGrok)
 	require.Contains(t, vendorBody.Data.PlatformAuth, service.PlatformAnthropic)
+	require.Equal(t, []string{service.AccountTypeAPIKey}, vendorBody.Data.PlatformAuth[service.PlatformOpenAI],
+		"vendors cannot reach the OpenAI OAuth helpers")
 
 	// The admin validator never revalidates a vendor's copy.
 	cross, _ := getMetaCatalog(t, newMetaCatalogRouter(&vendor), adminRec.Header().Get("ETag"))
