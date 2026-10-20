@@ -2834,7 +2834,7 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	cacheKey := buildAccountTodayStatsBatchCacheKeyForGroup(accountIDs, groupID)
+	cacheKey := buildAccountTodayStatsBatchCacheKeyForGroup(accountIDs, groupID, timezone.Today())
 	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
 		if cached.ETag != "" {
 			c.Header("ETag", cached.ETag)

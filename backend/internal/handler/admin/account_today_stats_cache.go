@@ -23,16 +23,20 @@ func buildAccountTodayStatsBatchCacheKey(accountIDs []int64) string {
 }
 
 // buildAccountTodayStatsBatchCacheKeyForGroup 是带 group_id 时的缓存键。
-// groupID <= 0（不按分组）时与 buildAccountTodayStatsBatchCacheKey 逐字相同；
-// 否则形如 accounts_today_stats:g7:1,2,3，不同分组之间、分组与不分组之间不会串用。
-func buildAccountTodayStatsBatchCacheKeyForGroup(accountIDs []int64, groupID int64) string {
+// groupID <= 0（不按分组）时与 buildAccountTodayStatsBatchCacheKey 逐字相同，day 不参与；
+// 否则形如 accounts_today_stats:g7:2026-10-20:1,2,3，不同分组之间、分组与不分组之间不会串用。
+// day 是服务器时区的“今天”（timezone.Today()）：键里必须带日期，否则跨零点后 30 秒内
+// 会把昨天整天在该分组的用量当成今日返回，和 groups/usage-summary 的分组今日对不上。
+func buildAccountTodayStatsBatchCacheKeyForGroup(accountIDs []int64, groupID int64, day time.Time) string {
 	if groupID <= 0 {
 		return buildAccountTodayStatsBatchCacheKey(accountIDs)
 	}
 	var b strings.Builder
-	b.Grow(len(accountIDs)*6 + 32)
+	b.Grow(len(accountIDs)*6 + 48)
 	_, _ = b.WriteString("accounts_today_stats:g")
 	_, _ = b.WriteString(strconv.FormatInt(groupID, 10))
+	_ = b.WriteByte(':')
+	_, _ = b.WriteString(day.Format(time.DateOnly))
 	_ = b.WriteByte(':')
 	writeTodayStatsCacheKeyIDs(&b, accountIDs)
 	return b.String()

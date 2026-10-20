@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -24,6 +27,7 @@ type todayStatsGroupHandlerRepo struct {
 	groupCalls  int
 	gotGroupID  int64
 	gotGroupIDs []int64
+	gotStarts   []time.Time
 }
 
 func (r *todayStatsGroupHandlerRepo) GetAccountWindowStatsBatch(_ context.Context, accountIDs []int64, _ time.Time) (map[int64]*usagestats.AccountStats, error) {
@@ -37,12 +41,13 @@ func (r *todayStatsGroupHandlerRepo) GetAccountWindowStatsBatch(_ context.Contex
 	return out, nil
 }
 
-func (r *todayStatsGroupHandlerRepo) GetAccountWindowStatsBatchByGroup(_ context.Context, accountIDs []int64, groupID int64, _ time.Time) (map[int64]*usagestats.AccountStats, error) {
+func (r *todayStatsGroupHandlerRepo) GetAccountWindowStatsBatchByGroup(_ context.Context, accountIDs []int64, groupID int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.groupCalls++
 	r.gotGroupID = groupID
 	r.gotGroupIDs = append([]int64(nil), accountIDs...)
+	r.gotStarts = append(r.gotStarts, startTime)
 	if r.groupErr != nil {
 		return nil, r.groupErr
 	}
@@ -60,9 +65,11 @@ func (r *todayStatsGroupHandlerRepo) counts() (batch, group int) {
 }
 
 // todayStatsGroupScopeAdmin 模拟 vendor：分组授权与账号收窄都可配置，并记录调用次数。
+// ownedAccounts 为 nil 时账号原样放行；否则只保留其中的账号，模拟按工作区收窄。
 type todayStatsGroupScopeAdmin struct {
 	*stubAdminService
 	grantedGroups map[int64]bool
+	ownedAccounts map[int64]bool
 	groupCalls    int
 	accountCalls  int
 }
@@ -80,14 +87,28 @@ func (s *todayStatsGroupScopeAdmin) FilterGroupIDsByScope(_ context.Context, ids
 
 func (s *todayStatsGroupScopeAdmin) FilterAccountIDsByScope(_ context.Context, ids []int64) ([]int64, error) {
 	s.accountCalls++
-	return ids, nil
+	if s.ownedAccounts == nil {
+		return ids, nil
+	}
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if s.ownedAccounts[id] {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func newTodayStatsGroupRouter(t *testing.T, repo *todayStatsGroupHandlerRepo, adminService service.AdminService) *gin.Engine {
 	t.Helper()
+	return newTodayStatsGroupRouterWithTTL(t, repo, adminService, 30*time.Second)
+}
+
+func newTodayStatsGroupRouterWithTTL(t *testing.T, repo *todayStatsGroupHandlerRepo, adminService service.AdminService, ttl time.Duration) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	previous := accountTodayStatsBatchCache
-	accountTodayStatsBatchCache = newSnapshotCache(30 * time.Second)
+	accountTodayStatsBatchCache = newSnapshotCache(ttl)
 	t.Cleanup(func() { accountTodayStatsBatchCache = previous })
 
 	svc := service.NewAccountUsageService(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
@@ -205,16 +226,72 @@ func TestBatchTodayStats_VendorUnauthorizedGroupReturns404(t *testing.T) {
 
 func TestBatchTodayStats_VendorAuthorizedGroupStillScopesAccounts(t *testing.T) {
 	repo := &todayStatsGroupHandlerRepo{}
-	scope := &todayStatsGroupScopeAdmin{stubAdminService: &stubAdminService{}, grantedGroups: map[int64]bool{8: true}}
+	// 917052 属于别家工作区：即使分组 8 已授权（共享分组），也不能查到它在该分组的用量。
+	scope := &todayStatsGroupScopeAdmin{
+		stubAdminService: &stubAdminService{},
+		grantedGroups:    map[int64]bool{8: true},
+		ownedAccounts:    map[int64]bool{917051: true},
+	}
 	router := newTodayStatsGroupRouter(t, repo, scope)
+	const body = `{"account_ids":[917051,917052],"group_id":8}`
 
-	rec := postTodayStatsBatch(router, `{"account_ids":[917051],"group_id":8}`, "")
+	// 站长先用同一组 ID 查询并写入缓存，vendor 随后不能命中这条更宽的结果。
+	adminRec := postTodayStatsBatch(newTodayStatsGroupRouterSharingCache(repo, &stubAdminService{}), body, "")
+	require.Equal(t, http.StatusOK, adminRec.Code, adminRec.Body.String())
+	require.Len(t, decodeTodayStatsBatch(t, adminRec).Data.Stats, 2)
+
+	rec := postTodayStatsBatch(router, body, "")
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, "miss", rec.Header().Get("X-Snapshot-Cache"), "vendor 不能命中站长写入的未收窄缓存")
 	require.Equal(t, 1, scope.groupCalls)
 	require.Equal(t, 1, scope.accountCalls, "分组授权之后仍要按工作区收窄账号")
 	_, group := repo.counts()
-	require.Equal(t, 1, group)
+	require.Equal(t, 2, group)
+	require.Equal(t, []int64{917051}, repo.gotGroupIDs, "仓储只能收到收窄后的账号")
+	got := decodeTodayStatsBatch(t, rec)
+	require.Contains(t, got.Data.Stats, "917051")
+	require.NotContains(t, got.Data.Stats, "917052", "响应不能含别家工作区账号")
+	require.Len(t, got.Data.Stats, 1)
+}
+
+// newTodayStatsGroupRouterSharingCache 复用当前测试已替换好的 accountTodayStatsBatchCache，
+// 用另一个作用域构造 handler，验证不同作用域之间不串用缓存。
+func newTodayStatsGroupRouterSharingCache(repo *todayStatsGroupHandlerRepo, adminService service.AdminService) *gin.Engine {
+	svc := service.NewAccountUsageService(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := &AccountHandler{adminService: adminService, accountUsageService: svc}
+	router := gin.New()
+	router.POST("/api/v1/admin/accounts/today-stats/batch", handler.GetBatchTodayStats)
+	return router
+}
+
+// 分组路径的缓存键必须带服务器时区的当天日期：跨零点后即使旧条目还没过期，
+// 也要重新取数，不能把昨天整天在该分组的用量当成“今日”返回。
+func TestBatchTodayStats_GroupCacheChangesAtServerMidnight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		repo := &todayStatsGroupHandlerRepo{}
+		// 有效期远长于到零点的时间，确保换天靠的是键里的日期而不是过期。
+		router := newTodayStatsGroupRouterWithTTL(t, repo, &stubAdminService{}, 48*time.Hour)
+		const body = `{"account_ids":[917081],"group_id":7}`
+
+		first := postTodayStatsBatch(router, body, "")
+		require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+		require.Equal(t, "miss", first.Header().Get("X-Snapshot-Cache"))
+		same := postTodayStatsBatch(router, body, "")
+		require.Equal(t, "hit", same.Header().Get("X-Snapshot-Cache"), "同一天内仍应命中缓存")
+
+		firstDay := timezone.Today()
+		time.Sleep(firstDay.AddDate(0, 0, 1).Sub(timezone.Now()) + time.Second)
+		require.NotEqual(t, firstDay, timezone.Today())
+
+		next := postTodayStatsBatch(router, body, "")
+		require.Equal(t, http.StatusOK, next.Code, next.Body.String())
+		require.Equal(t, "miss", next.Header().Get("X-Snapshot-Cache"), "跨零点后不能复用昨天的分组今日统计")
+		_, group := repo.counts()
+		require.Equal(t, 2, group)
+		require.Len(t, repo.gotStarts, 2)
+		require.True(t, repo.gotStarts[1].Equal(timezone.Today()), "第二次取数的起点应为新的一天")
+	})
 }
 
 func TestBatchTodayStats_GroupQueryFailureReturns503AndNotCached(t *testing.T) {
