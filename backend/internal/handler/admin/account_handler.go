@@ -2889,8 +2889,11 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 }
 
 // BatchTodayStatsRequest 批量今日统计请求体。
+// GroupID 可选：带上时只统计 usage_logs.group_id（Key 所属分组）等于它的用量，
+// 与 groups/usage-summary 同口径；不带或为 null 时行为、缓存键、响应都与原来一致。
 type BatchTodayStatsRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required"`
+	GroupID    *int64  `json:"group_id"`
 }
 
 type BatchUsageRequest struct {
@@ -2906,10 +2909,14 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	groupID, ok := h.resolveTodayStatsGroupFilter(c, req.GroupID)
+	if !ok {
+		return
+	}
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
 	if len(accountIDs) == 0 {
-		response.Success(c, emptyTodayStatsBatchPayload())
+		response.Success(c, withTodayStatsGroup(emptyTodayStatsBatchPayload(), groupID))
 		return
 	}
 
@@ -2922,11 +2929,11 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 	if len(accountIDs) == 0 {
-		response.Success(c, emptyTodayStatsBatchPayload())
+		response.Success(c, withTodayStatsGroup(emptyTodayStatsBatchPayload(), groupID))
 		return
 	}
 
-	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
+	cacheKey := buildAccountTodayStatsBatchCacheKeyForGroup(accountIDs, groupID)
 	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
 		if cached.ETag != "" {
 			c.Header("ETag", cached.ETag)
@@ -2941,13 +2948,13 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	stats, failedIDs, degraded, err := h.accountUsageService.GetTodayStatsBatchDetailed(c.Request.Context(), accountIDs)
+	stats, failedIDs, degraded, err := h.fetchTodayStatsBatch(c.Request.Context(), accountIDs, groupID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	payload := todayStatsBatchPayload(stats, failedIDs, degraded)
+	payload := withTodayStatsGroup(todayStatsBatchPayload(stats, failedIDs, degraded), groupID)
 	// 有失败项时不写缓存：失败补出的 0 不能在 30 秒内被后续请求当成真实数据命中。
 	if len(failedIDs) > 0 {
 		c.Header("X-Snapshot-Cache", "miss")

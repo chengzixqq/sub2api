@@ -27,6 +27,7 @@ var adminMeCapabilities = []string{
 	"accounts.test_result",
 	"accounts.test_runs",
 	"accounts.today_stats_failures",
+	"accounts.today_stats_group",
 	"accounts.token_status",
 	"api_keys.masked_view",
 	"dashboard.account_cost",

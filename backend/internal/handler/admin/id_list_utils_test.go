@@ -55,3 +55,20 @@ func TestBuildAccountTodayStatsBatchCacheKey(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildAccountTodayStatsBatchCacheKeyForGroup(t *testing.T) {
+	ids := []int64{1, 2, 3}
+	ungrouped := buildAccountTodayStatsBatchCacheKey(ids)
+
+	require.Equal(t, "accounts_today_stats:1,2,3", buildAccountTodayStatsBatchCacheKeyForGroup(ids, 0))
+	require.Equal(t, ungrouped, buildAccountTodayStatsBatchCacheKeyForGroup(ids, -5))
+	require.Equal(t, "accounts_today_stats:g7:1,2,3", buildAccountTodayStatsBatchCacheKeyForGroup(ids, 7))
+
+	g7 := buildAccountTodayStatsBatchCacheKeyForGroup(ids, 7)
+	g9 := buildAccountTodayStatsBatchCacheKeyForGroup(ids, 9)
+	require.NotEqual(t, g7, g9)
+	require.NotEqual(t, ungrouped, g7)
+	require.NotEqual(t, ungrouped, g9)
+	// 分组 1 + 账号 2 与不分组的账号 "1:2" 之类的拼接不能撞键。
+	require.NotEqual(t, buildAccountTodayStatsBatchCacheKeyForGroup([]int64{2}, 1), buildAccountTodayStatsBatchCacheKey([]int64{12}))
+}

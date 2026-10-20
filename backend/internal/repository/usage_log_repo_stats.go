@@ -361,6 +361,45 @@ func (r *usageLogRepository) GetAccountWindowStatsBatch(ctx context.Context, acc
 	}
 	defer func() { _ = rows.Close() }()
 
+	return scanAccountWindowStatsBatchRows(rows, accountIDs, result)
+}
+
+// GetAccountWindowStatsBatchByGroup 与 GetAccountWindowStatsBatch 同口径，但只统计
+// usage_logs.group_id（请求时 Key 所属分组）等于 groupID 的行，与 groups/usage-summary 一致。
+// groupID 必须为正数：传 0 或负数直接报错，绝不退化成不分组的查询。
+func (r *usageLogRepository) GetAccountWindowStatsBatchByGroup(ctx context.Context, accountIDs []int64, groupID int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error) {
+	if groupID <= 0 {
+		return nil, fmt.Errorf("account window stats by group: group_id must be positive, got %d", groupID)
+	}
+	result := make(map[int64]*usagestats.AccountStats, len(accountIDs))
+	if len(accountIDs) == 0 {
+		return result, nil
+	}
+
+	query := `
+		SELECT
+			account_id,
+			COUNT(*) as requests,
+			COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as tokens,
+			COALESCE(SUM(CASE WHEN provider_cost_recorded THEN COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) ELSE 0 END), 0) as cost,
+			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as standard_cost,
+			COALESCE(SUM(actual_cost), 0) as user_cost
+		FROM usage_logs
+		WHERE account_id = ANY($1) AND created_at >= $2 AND group_id = $3
+		GROUP BY account_id
+	`
+	rows, err := r.sql.QueryContext(ctx, query, pq.Array(accountIDs), startTime, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanAccountWindowStatsBatchRows(rows, accountIDs, result)
+}
+
+// scanAccountWindowStatsBatchRows 扫描按 account_id 分组的窗口统计行写入 result，
+// 并给结果里没有的账号补零值统计。
+func scanAccountWindowStatsBatchRows(rows *sql.Rows, accountIDs []int64, result map[int64]*usagestats.AccountStats) (map[int64]*usagestats.AccountStats, error) {
 	for rows.Next() {
 		var accountID int64
 		stats := &usagestats.AccountStats{}

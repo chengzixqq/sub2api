@@ -8,6 +8,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -19,6 +20,18 @@ var ErrAccountStatsUnavailable = infraerrors.ServiceUnavailable(
 	"ACCOUNT_STATS_UNAVAILABLE",
 	"account today stats are temporarily unavailable",
 )
+
+// ErrInvalidGroupFilter 表示 group_id 参数不是正整数。
+var ErrInvalidGroupFilter = infraerrors.BadRequest(
+	"INVALID_GROUP_FILTER",
+	"group_id must be a positive integer",
+)
+
+// accountWindowStatsGroupBatchReader 是按分组批量读取账号窗口统计的可选仓储能力。
+// 不并入 UsageLogRepository，避免为一个新方法改动所有测试桩。
+type accountWindowStatsGroupBatchReader interface {
+	GetAccountWindowStatsBatchByGroup(ctx context.Context, accountIDs []int64, groupID int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error)
+}
 
 // GetTodayStatsBatchDetailed 批量获取账号今日统计，并报告哪些账号查询失败。
 //
@@ -72,6 +85,48 @@ func (s *AccountUsageService) GetTodayStatsBatchDetailed(ctx context.Context, ac
 		return result, failed, true, ErrAccountStatsUnavailable
 	}
 	return result, failed, true, nil
+}
+
+// GetTodayStatsBatchByGroup 批量获取账号今日在指定分组下的统计，只计 usage_logs.group_id
+// （请求时 Key 所属分组）等于 groupID 的用量，与 groups/usage-summary 同口径；
+// “今天”的起点与不分组路径相同（timezone.Today()，等于站长分组汇总的 GroupUsageTodayStart）。
+//
+// 返回值与 GetTodayStatsBatchDetailed 同形，但这条路径不做逐个账号回退：
+//   - 成功：每个有效账号 ID 都有一项（今天在该分组没有请求的补 0），failed 为空，degraded=false。
+//   - groupID 不是正数：ErrInvalidGroupFilter。
+//   - 分组 SQL 失败或仓储不支持分组读取：stats 为 nil，failed 为全部账号，
+//     err 为 ErrAccountStatsUnavailable。宁可失败也不返回未按分组过滤或补 0 的数字。
+func (s *AccountUsageService) GetTodayStatsBatchByGroup(ctx context.Context, accountIDs []int64, groupID int64) (map[int64]*WindowStats, []int64, bool, error) {
+	if groupID <= 0 {
+		return nil, []int64{}, false, ErrInvalidGroupFilter
+	}
+	uniqueIDs := uniquePositiveAccountIDs(accountIDs)
+	if len(uniqueIDs) == 0 {
+		return map[int64]*WindowStats{}, []int64{}, false, nil
+	}
+
+	groupReader, ok := s.usageLogRepo.(accountWindowStatsGroupBatchReader)
+	if !ok {
+		slog.Error("account_today_stats_group_reader_unsupported",
+			"accounts", len(uniqueIDs),
+			"group_id", groupID)
+		return nil, uniqueIDs, false, ErrAccountStatsUnavailable
+	}
+
+	statsByAccount, err := groupReader.GetAccountWindowStatsBatchByGroup(ctx, uniqueIDs, groupID, timezone.Today())
+	if err != nil {
+		slog.Warn("account_today_stats_group_query_failed",
+			"accounts", len(uniqueIDs),
+			"group_id", groupID,
+			"error", err)
+		return nil, uniqueIDs, false, ErrAccountStatsUnavailable
+	}
+
+	result := make(map[int64]*WindowStats, len(uniqueIDs))
+	for _, accountID := range uniqueIDs {
+		result[accountID] = windowStatsFromAccountStats(statsByAccount[accountID])
+	}
+	return result, []int64{}, false, nil
 }
 
 // fillTodayStatsOneByOne 逐个查询账号今日统计，成功的写入 result，返回遇到的第一个错误。
