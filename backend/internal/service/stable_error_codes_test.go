@@ -39,6 +39,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{newOpsRequestAmbiguousError([]*OpsRequestAttemptErrorRow{{ClientRequestID: "a"}, {ClientRequestID: "b"}}), http.StatusConflict, "OPS_REQUEST_AMBIGUOUS"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{ErrCaptchaProviderConflict, http.StatusServiceUnavailable, "CAPTCHA_PROVIDER_CONFLICT"},
+		{ErrAccountStatsUnavailable, http.StatusServiceUnavailable, "ACCOUNT_STATS_UNAVAILABLE"},
 		{ErrAdminAccessTokenInvalid, http.StatusUnauthorized, "INVALID_ADMIN_KEY"},
 		{ErrAdminAccessTokenExpired, http.StatusUnauthorized, "ACCESS_TOKEN_EXPIRED"},
 		{ErrAdminAccessTokenReadOnly, http.StatusForbidden, "ACCESS_TOKEN_READ_ONLY"},

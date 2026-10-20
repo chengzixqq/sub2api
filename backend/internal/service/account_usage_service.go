@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -16,7 +17,6 @@ import (
 	httppool "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	openaipkg "github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -1410,62 +1410,13 @@ func (s *AccountUsageService) GetTodayStats(ctx context.Context, accountID int64
 }
 
 // GetTodayStatsBatch 批量获取账号今日统计，优先走批量 SQL，失败时回退单账号查询。
+// 保持旧语义：查询失败的账号补 0，整体永远成功。需要失败明细时用 GetTodayStatsBatchDetailed。
 func (s *AccountUsageService) GetTodayStatsBatch(ctx context.Context, accountIDs []int64) (map[int64]*WindowStats, error) {
-	uniqueIDs := make([]int64, 0, len(accountIDs))
-	seen := make(map[int64]struct{}, len(accountIDs))
-	for _, accountID := range accountIDs {
-		if accountID <= 0 {
-			continue
-		}
-		if _, exists := seen[accountID]; exists {
-			continue
-		}
-		seen[accountID] = struct{}{}
-		uniqueIDs = append(uniqueIDs, accountID)
+	stats, _, _, err := s.GetTodayStatsBatchDetailed(ctx, accountIDs)
+	if err != nil && !errors.Is(err, ErrAccountStatsUnavailable) {
+		return nil, err
 	}
-
-	result := make(map[int64]*WindowStats, len(uniqueIDs))
-	if len(uniqueIDs) == 0 {
-		return result, nil
-	}
-
-	startTime := timezone.Today()
-	if batchReader, ok := s.usageLogRepo.(accountWindowStatsBatchReader); ok {
-		statsByAccount, err := batchReader.GetAccountWindowStatsBatch(ctx, uniqueIDs, startTime)
-		if err == nil {
-			for _, accountID := range uniqueIDs {
-				result[accountID] = windowStatsFromAccountStats(statsByAccount[accountID])
-			}
-			return result, nil
-		}
-	}
-
-	var mu sync.Mutex
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
-
-	for _, accountID := range uniqueIDs {
-		id := accountID
-		g.Go(func() error {
-			stats, err := s.usageLogRepo.GetAccountWindowStats(gctx, id, startTime)
-			if err != nil {
-				return nil
-			}
-			mu.Lock()
-			result[id] = windowStatsFromAccountStats(stats)
-			mu.Unlock()
-			return nil
-		})
-	}
-
-	_ = g.Wait()
-
-	for _, accountID := range uniqueIDs {
-		if _, ok := result[accountID]; !ok {
-			result[accountID] = &WindowStats{}
-		}
-	}
-	return result, nil
+	return stats, nil
 }
 
 func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {

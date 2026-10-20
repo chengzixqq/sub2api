@@ -2909,7 +2909,7 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 
 	accountIDs := normalizeInt64IDList(req.AccountIDs)
 	if len(accountIDs) == 0 {
-		response.Success(c, gin.H{"stats": map[string]any{}})
+		response.Success(c, emptyTodayStatsBatchPayload())
 		return
 	}
 
@@ -2922,7 +2922,7 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 	if len(accountIDs) == 0 {
-		response.Success(c, gin.H{"stats": map[string]any{}})
+		response.Success(c, emptyTodayStatsBatchPayload())
 		return
 	}
 
@@ -2941,13 +2941,19 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
+	stats, failedIDs, degraded, err := h.accountUsageService.GetTodayStatsBatchDetailed(c.Request.Context(), accountIDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	payload := gin.H{"stats": stats}
+	payload := todayStatsBatchPayload(stats, failedIDs, degraded)
+	// 有失败项时不写缓存：失败补出的 0 不能在 30 秒内被后续请求当成真实数据命中。
+	if len(failedIDs) > 0 {
+		c.Header("X-Snapshot-Cache", "miss")
+		response.Success(c, payload)
+		return
+	}
 	cached := accountTodayStatsBatchCache.Set(cacheKey, payload)
 	if cached.ETag != "" {
 		c.Header("ETag", cached.ETag)
