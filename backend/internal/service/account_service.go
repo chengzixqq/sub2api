@@ -15,7 +15,9 @@ var (
 	ErrAccountNilInput      = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
 	ErrAccountNotInFallback = infraerrors.BadRequest("ACCOUNT_NOT_IN_FALLBACK", "account is not in proxy fallback state")
 	// ErrAccountRecoveredSchedulableFailed 表示 recover-state 已恢复账号状态，
-	// 但随后设置调度开关失败；调用方可单独重试 /schedulable。
+	// 但随后启用调度（schedulable=true）报错；开关可能已写入（回读失败时），
+	// 调用方以读回的 schedulable 为准，再单独重试 /schedulable。
+	// schedulable=false 在恢复之前写入，不会返回此错误。
 	ErrAccountRecoveredSchedulableFailed = infraerrors.InternalServer("ACCOUNT_RECOVERED_SCHEDULABLE_FAILED", "account state recovered but updating schedulable failed")
 )
 

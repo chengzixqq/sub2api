@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
@@ -73,6 +74,24 @@ func (r *recoverStateRepo) ClearError(_ context.Context, _ int64) error {
 	r.account.ErrorAt = nil
 	return nil
 }
+
+// The rate-limit family below is what RateLimitService.ClearRateLimit touches;
+// only ClearRateLimit is recorded since the rest always follow it.
+func (r *recoverStateRepo) ClearRateLimit(_ context.Context, _ int64) error {
+	r.record("ClearRateLimit")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.account.RateLimitedAt = nil
+	r.account.RateLimitResetAt = nil
+	r.account.OverloadUntil = nil
+	return nil
+}
+
+func (r *recoverStateRepo) ClearAntigravityQuotaScopes(context.Context, int64) error { return nil }
+
+func (r *recoverStateRepo) ClearModelRateLimits(context.Context, int64) error { return nil }
+
+func (r *recoverStateRepo) ClearTempUnschedulable(context.Context, int64) error { return nil }
 
 type recoverStateAdmin struct {
 	*stubAdminService
@@ -195,14 +214,68 @@ func TestAccountHandlerRecoverState_SchedulableTrueEnablesAfterRecovery(t *testi
 	require.Equal(t, "", data["error_message"])
 }
 
-func TestAccountHandlerRecoverState_SchedulableFalseExplicitlyPauses(t *testing.T) {
+// newRateLimitedRecoverFixture is the realistic {"schedulable":false} case:
+// rate limiting never writes schedulable=false, so the account is active and
+// schedulable and recovery alone would put it straight back into rotation.
+func newRateLimitedRecoverFixture() *recoverStateAdmin {
+	admin := newRecoverStateFixture(true)
+	resetAt := time.Now().Add(time.Hour)
+	admin.repo.account.Status = service.StatusActive
+	admin.repo.account.ErrorMessage = ""
+	admin.repo.account.RateLimitedAt = &resetAt
+	admin.repo.account.RateLimitResetAt = &resetAt
+	return admin
+}
+
+func TestAccountHandlerRecoverState_SchedulableFalsePausesBeforeRecovery(t *testing.T) {
+	admin := newRateLimitedRecoverFixture()
+
+	rec, out := doRecoverState(t, admin, recoverBody(`{"schedulable":false}`))
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []bool{false}, admin.setSchedValues)
+	require.Equal(t, []string{"SetAccountSchedulable", "GetByID", "ClearRateLimit"}, admin.repo.calls)
+	data := recoverStateData(t, out)
+	require.Equal(t, false, data["schedulable"])
+	require.Equal(t, service.StatusActive, data["status"])
+	require.Nil(t, admin.repo.snapshot().RateLimitResetAt)
+}
+
+func TestAccountHandlerRecoverState_SchedulableFalseErrorAccountPausesBeforeRecovery(t *testing.T) {
 	admin := newRecoverStateFixture(true)
 
 	rec, out := doRecoverState(t, admin, recoverBody(`{"schedulable":false}`))
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, []bool{false}, admin.setSchedValues)
+	require.Equal(t, []string{"SetAccountSchedulable", "GetByID", "ClearError"}, admin.repo.calls)
 	require.Equal(t, false, recoverStateData(t, out)["schedulable"])
+}
+
+func TestAccountHandlerRecoverState_SchedulableFalseWriteFailureSkipsRecovery(t *testing.T) {
+	admin := newRateLimitedRecoverFixture()
+	admin.setSchedErr = errors.New("db down")
+
+	rec, out := doRecoverState(t, admin, recoverBody(`{"schedulable":false}`))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	require.NotEqual(t, "ACCOUNT_RECOVERED_SCHEDULABLE_FAILED", out["reason"])
+	require.Nil(t, out["metadata"])
+	require.Equal(t, 0, admin.repo.count("ClearRateLimit"))
+	require.NotNil(t, admin.repo.snapshot().RateLimitResetAt, "recovery must not run when the pause was not written")
+}
+
+func TestAccountHandlerRecoverState_SchedulableFalseRecoverFailureStaysPaused(t *testing.T) {
+	admin := newRecoverStateFixture(true)
+	admin.repo.clearErrorErr = errors.New("clear failed")
+
+	rec, out := doRecoverState(t, admin, recoverBody(`{"schedulable":false}`))
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	require.Nil(t, out["metadata"])
+	acc := admin.repo.snapshot()
+	require.False(t, acc.Schedulable)
+	require.Equal(t, service.StatusError, acc.Status)
 }
 
 func TestAccountHandlerRecoverState_SchedulableFailureReportsRecovered(t *testing.T) {

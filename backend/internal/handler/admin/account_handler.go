@@ -1490,7 +1490,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 
 // RecoverState handles unified recovery of recoverable account runtime state.
 // POST /api/v1/admin/accounts/:id/recover-state
-// Optional body {"schedulable": bool} sets the switch after recovery; see RecoverStateRequest.
+// Optional body {"schedulable": bool} also sets the switch (false before recovery, true after); see RecoverStateRequest.
 func (h *AccountHandler) RecoverState(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -1515,6 +1515,9 @@ func (h *AccountHandler) RecoverState(c *gin.Context) {
 		return
 	}
 
+	if !h.pauseBeforeRecovery(c, accountID, req.Schedulable) {
+		return
+	}
 	if _, err := h.rateLimitService.RecoverAccountState(c.Request.Context(), accountID, service.AccountRecoveryOptions{
 		InvalidateToken: true,
 	}); err != nil {
