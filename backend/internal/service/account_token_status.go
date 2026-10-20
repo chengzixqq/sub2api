@@ -40,8 +40,7 @@ func AccountTokenStatusFromAccount(a *Account) *AccountTokenStatus {
 		AutoRefresh: strings.TrimSpace(a.GetCredential("refresh_token")) != "" && !a.IsOpenAIPersonalAccessToken(),
 	}
 	if expiresAt := a.GetCredentialAsTime("expires_at"); expiresAt != nil {
-		normalized := expiresAt.UTC().Truncate(time.Second)
-		status.ExpiresAt = &normalized
+		status.ExpiresAt = normalizeTokenStatusTime(*expiresAt)
 	}
 	if lifetime := a.GetCredentialAsInt64("expires_in"); lifetime > 0 {
 		status.LifetimeSeconds = &lifetime
@@ -52,15 +51,27 @@ func AccountTokenStatusFromAccount(a *Account) *AccountTokenStatus {
 func accountTokenRefreshedAt(a *Account) *time.Time {
 	if raw := strings.TrimSpace(a.GetCredential(CredentialKeyTokenRefreshedAt)); raw != "" {
 		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
-			normalized := parsed.UTC().Truncate(time.Second)
-			return &normalized
+			if normalized := normalizeTokenStatusTime(parsed); normalized != nil {
+				return normalized
+			}
 		}
 	}
 	if version := a.GetCredentialAsInt64("_token_version"); version > 0 {
-		normalized := time.UnixMilli(version).UTC().Truncate(time.Second)
-		return &normalized
+		return normalizeTokenStatusTime(time.UnixMilli(version))
 	}
 	return nil
+}
+
+// normalizeTokenStatusTime converts t to UTC at second precision. Times whose
+// year falls outside 1..9999 (e.g. a millisecond value stored where Unix
+// seconds are expected) cannot be encoded by time.Time.MarshalJSON and would
+// break the whole account response, so they are reported as unknown (nil).
+func normalizeTokenStatusTime(t time.Time) *time.Time {
+	normalized := t.UTC().Truncate(time.Second)
+	if year := normalized.Year(); year < 1 || year > 9999 {
+		return nil
+	}
+	return &normalized
 }
 
 func formatTokenRefreshedAt(now time.Time) string {
@@ -95,7 +106,7 @@ func stampTokenRefreshedAtOnNewAccessToken(accountType, previousAccessToken stri
 // already records a valid refresh time.
 func stampTokenRefreshedAtOnCreate(accountType string, creds map[string]any, now time.Time) {
 	if raw, ok := creds[CredentialKeyTokenRefreshedAt].(string); ok {
-		if _, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil {
+		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil && normalizeTokenStatusTime(parsed) != nil {
 			return
 		}
 	}

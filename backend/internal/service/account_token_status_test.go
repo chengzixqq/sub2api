@@ -3,6 +3,7 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -223,4 +224,50 @@ func TestStampTokenRefreshedAtOnNewAccessToken(t *testing.T) {
 	require.NotPanics(t, func() {
 		stampTokenRefreshedAtOnNewAccessToken(AccountTypeOAuth, "old", nil, now)
 	})
+}
+
+func TestAccountTokenStatusFromAccount_OutOfRangeTimesAreNull(t *testing.T) {
+	for name, creds := range map[string]map[string]any{
+		"millis expires_at string":    {"expires_at": "1792215600000"},
+		"millis expires_at number":    {"expires_at": float64(1792215600000)},
+		"year 10000 expires_at":       {"expires_at": "253402300800"},
+		"negative expires_at":         {"expires_at": "-99999999999"},
+		"offset past year 9999":       {"expires_at": "9999-12-31T23:59:59-01:00"},
+		"huge _token_version":         {"_token_version": int64(1) << 62},
+		"refreshed_at past year 9999": {CredentialKeyTokenRefreshedAt: "9999-12-31T23:59:59-01:00"},
+		"refreshed_at before year 1":  {CredentialKeyTokenRefreshedAt: "0000-01-01T00:00:00+01:00"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status := AccountTokenStatusFromAccount(&Account{
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeOAuth,
+				Credentials: creds,
+			})
+			require.NotNil(t, status)
+			require.Nil(t, status.ExpiresAt)
+			require.Nil(t, status.RefreshedAt)
+			_, err := json.Marshal(status)
+			require.NoError(t, err)
+		})
+	}
+
+	boundary := AccountTokenStatusFromAccount(&Account{
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"expires_at": "9999-12-31T23:59:59Z"},
+	})
+	require.NotNil(t, boundary.ExpiresAt)
+	require.Equal(t, time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), *boundary.ExpiresAt)
+}
+
+func TestStampTokenRefreshedAtOnCreate_KeepsOnlyValidImportedValue(t *testing.T) {
+	now := time.Date(2026, 10, 17, 9, 40, 1, 0, time.UTC)
+
+	kept := map[string]any{"access_token": "at", CredentialKeyTokenRefreshedAt: "2026-01-01T00:00:00Z"}
+	stampTokenRefreshedAtOnCreate(AccountTypeOAuth, kept, now)
+	require.Equal(t, "2026-01-01T00:00:00Z", kept[CredentialKeyTokenRefreshedAt])
+
+	outOfRange := map[string]any{"access_token": "at", CredentialKeyTokenRefreshedAt: "9999-12-31T23:59:59-01:00"}
+	stampTokenRefreshedAtOnCreate(AccountTypeOAuth, outOfRange, now)
+	require.Equal(t, "2026-10-17T09:40:01Z", outOfRange[CredentialKeyTokenRefreshedAt])
 }

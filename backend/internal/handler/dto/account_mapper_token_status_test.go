@@ -90,3 +90,31 @@ func TestAccountFromService_TokenStatusNullForAPIKey(t *testing.T) {
 	item := decodeJSONObject(t, AccountListItemFromAccount(AccountFromService(src)))
 	require.NotContains(t, item, "token_status")
 }
+
+func TestAccountFromService_TokenStatusOutOfRangeTimesStillMarshal(t *testing.T) {
+	src := &service.Account{
+		ID:       14,
+		Name:     "millis",
+		Platform: service.PlatformAnthropic,
+		Type:     service.AccountTypeSetupToken,
+		Status:   service.StatusActive,
+		Credentials: map[string]any{
+			"access_token":   "secret",
+			"expires_at":     "1792215600000",
+			"_token_version": int64(1) << 62,
+		},
+	}
+
+	for name, v := range map[string]any{
+		"detail":    AccountFromService(src),
+		"shallow":   AccountFromServiceShallow(src),
+		"list item": AccountListItemFromAccount(AccountFromService(src)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, ok := decodeJSONObject(t, v)["token_status"].(map[string]any)
+			require.True(t, ok)
+			require.Nil(t, status["expires_at"])
+			require.Nil(t, status["refreshed_at"])
+		})
+	}
+}
