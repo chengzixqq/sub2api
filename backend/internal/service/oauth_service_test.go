@@ -373,6 +373,33 @@ func TestOAuthService_ExchangeCode_UpstreamRetryableUnchanged(t *testing.T) {
 	}
 }
 
+func TestOAuthService_ExchangeCode_UpstreamBlockedOrMisconfiguredUnchanged(t *testing.T) {
+	t.Parallel()
+
+	for _, upstreamErr := range []*oauth.TokenExchangeError{
+		{StatusCode: http.StatusForbidden, Body: `<!DOCTYPE html><html><title>Just a moment...</title></html>`},
+		{StatusCode: http.StatusUnauthorized, Body: `{"error":"invalid_client"}`},
+		{StatusCode: http.StatusBadRequest, Body: `{"error":"unauthorized_client"}`},
+	} {
+		client := &mockClaudeOAuthClient{
+			exchangeCodeFunc: func(ctx context.Context, code, codeVerifier, state, proxyURL string, isSetupToken bool) (*oauth.TokenResponse, error) {
+				return nil, upstreamErr
+			},
+		}
+		svc := NewOAuthService(&mockProxyRepoForOAuth{}, client)
+		result, err := svc.GenerateAuthURL(context.Background(), nil)
+		require.NoError(t, err)
+
+		_, err = svc.ExchangeCode(context.Background(), &ExchangeCodeInput{SessionID: result.SessionID, Code: "code"})
+		_, sessionKept := svc.sessionStore.Get(result.SessionID)
+		svc.Stop()
+		require.Error(t, err)
+		require.Equal(t, http.StatusInternalServerError, infraerrors.Code(err), "status %d", upstreamErr.StatusCode)
+		require.Empty(t, infraerrors.Reason(err), "代理被拦截或客户端配置错误不是授权码被拒: status %d", upstreamErr.StatusCode)
+		require.True(t, sessionKept, "授权码没用掉，会话保留可原样重试: status %d", upstreamErr.StatusCode)
+	}
+}
+
 func TestOAuthService_CookieAuth_UpstreamRejectedStillInternal(t *testing.T) {
 	t.Parallel()
 

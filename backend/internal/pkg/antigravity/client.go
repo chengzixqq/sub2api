@@ -31,7 +31,7 @@ func (e *ForbiddenError) Error() string {
 }
 
 // TokenExchangeError 表示换码时 token 端点返回非 200；文本与原来的 fmt 错误一致，
-// UpstreamStatusCode 供 service 层区分“授权码被拒”与上游故障
+// UpstreamStatusCode / UpstreamBody 供 service 层区分“授权码被拒”与上游故障、请求被拦截
 type TokenExchangeError struct {
 	StatusCode int
 	Body       string
@@ -44,6 +44,11 @@ func (e *TokenExchangeError) Error() string {
 // UpstreamStatusCode 返回 token 端点的 HTTP 状态码
 func (e *TokenExchangeError) UpstreamStatusCode() int {
 	return e.StatusCode
+}
+
+// UpstreamBody 返回 token 端点的响应体
+func (e *TokenExchangeError) UpstreamBody() string {
+	return e.Body
 }
 
 // NewAPIRequestWithURL 使用指定的 base URL 创建 Antigravity API 请求（v1internal 端点）

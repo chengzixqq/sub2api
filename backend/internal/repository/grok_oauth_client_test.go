@@ -146,7 +146,9 @@ func TestGrokOAuthClientExchangeClassifiesRejectedCode(t *testing.T) {
 		wantMeta   map[string]string
 	}{
 		{name: "invalid grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant","refresh_token":"leak-secret"}`, wantCode: http.StatusBadRequest, wantReason: "GROK_OAUTH_CODE_REJECTED", wantMeta: map[string]string{"upstream_status": "400"}},
-		{name: "unauthorized client", status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`, wantCode: http.StatusBadRequest, wantReason: "GROK_OAUTH_CODE_REJECTED", wantMeta: map[string]string{"upstream_status": "401"}},
+		{name: "invalid grant on 401", status: http.StatusUnauthorized, body: `{"error":"invalid_grant"}`, wantCode: http.StatusBadRequest, wantReason: "GROK_OAUTH_CODE_REJECTED", wantMeta: map[string]string{"upstream_status": "401"}},
+		{name: "unauthorized client", status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
+		{name: "cloudflare block", status: http.StatusForbidden, body: `<html>403 Forbidden</html>`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
 		{name: "explicit entitlement wins", status: http.StatusForbidden, body: `{"error":"access_denied"}`, wantCode: http.StatusForbidden, wantReason: "GROK_OAUTH_ENTITLEMENT_DENIED"},
 		{name: "rate limited", status: http.StatusTooManyRequests, body: `slow down`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},
 		{name: "upstream error", status: http.StatusInternalServerError, body: `oops`, wantCode: http.StatusBadGateway, wantReason: "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"},

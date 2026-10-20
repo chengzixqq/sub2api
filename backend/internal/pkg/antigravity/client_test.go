@@ -969,6 +969,9 @@ func TestClient_ExchangeCode_ServerError_RealCall(t *testing.T) {
 	if exchangeErr.StatusCode != http.StatusBadRequest || exchangeErr.UpstreamStatusCode() != http.StatusBadRequest {
 		t.Errorf("StatusCode 应为 400: got %d", exchangeErr.StatusCode)
 	}
+	if got := exchangeErr.UpstreamBody(); got != `{"error":"invalid_grant","error_description":"code expired"}` {
+		t.Errorf("UpstreamBody 应为上游响应体: got %q", got)
+	}
 	want := `token 交换失败 (HTTP 400): {"error":"invalid_grant","error_description":"code expired"}`
 	if err.Error() != want {
 		t.Errorf("错误文本变了: got %q want %q", err.Error(), want)

@@ -240,6 +240,42 @@ func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_RetryableKeepsExchangeFai
 	}
 }
 
+func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_BlockedOrMisconfiguredKeepsExchangeFailed() {
+	for _, tc := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusForbidden, `<!DOCTYPE html><html><title>Attention Required! | Cloudflare</title></html>`},
+		{http.StatusUnauthorized, `{"error":"invalid_client"}`},
+		{http.StatusBadRequest, `{"error":"unsupported_grant_type"}`},
+	} {
+		s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = io.WriteString(w, tc.body)
+		}))
+
+		_, err := s.svc.ExchangeCode(s.ctx, "code", "ver", openai.DefaultRedirectURI, "", "")
+		require.Error(s.T(), err)
+		require.Equal(s.T(), http.StatusBadGateway, infraerrors.Code(err), "status %d", tc.status)
+		require.Equal(s.T(), "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", infraerrors.Reason(err), "status %d", tc.status)
+		s.srv.Close()
+		s.srv = nil
+	}
+}
+
+func (s *OpenAIOAuthServiceSuite) TestNonSuccessStatus_InvalidGrantAnyClientErrorIsRejected() {
+	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"Invalid authorization code"}`)
+	}))
+
+	_, err := s.svc.ExchangeCode(s.ctx, "code", "ver", openai.DefaultRedirectURI, "", "")
+	require.Error(s.T(), err)
+	require.Equal(s.T(), http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(s.T(), "OPENAI_OAUTH_CODE_REJECTED", infraerrors.Reason(err))
+	require.Equal(s.T(), map[string]string{"upstream_status": "403"}, infraerrors.FromError(err).Metadata)
+}
+
 func (s *OpenAIOAuthServiceSuite) TestRequestError_ClosedServer() {
 	s.setupServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	s.srv.Close()

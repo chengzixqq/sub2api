@@ -213,12 +213,12 @@ func grokOAuthStatusError(code, message string, resp *req.Response) error {
 }
 
 // grokOAuthExchangeStatusError classifies a failed code exchange: an explicit
-// entitlement denial stays 403, a refused code becomes 400
-// GROK_OAUTH_CODE_REJECTED, everything else keeps 502 TOKEN_EXCHANGE_FAILED.
+// entitlement denial stays 403, a refused code (oauth.IsCodeRejected) becomes
+// 400 GROK_OAUTH_CODE_REJECTED, everything else keeps 502 TOKEN_EXCHANGE_FAILED.
 func grokOAuthExchangeStatusError(resp *req.Response) error {
 	const exchangeFailedReason = "GROK_OAUTH_TOKEN_EXCHANGE_FAILED"
 	err := grokOAuthStatusError(exchangeFailedReason, "token exchange failed", resp)
-	if resp == nil || infraerrors.Reason(err) != exchangeFailedReason || !oauth.IsCodeRejectedStatus(resp.StatusCode) {
+	if resp == nil || infraerrors.Reason(err) != exchangeFailedReason || !oauth.IsCodeRejected(resp.StatusCode, resp.String()) {
 		return err
 	}
 	return service.NewOAuthCodeRejectedError(service.GrokOAuthCodeRejectedReason, infraerrors.Message(err), resp.StatusCode)

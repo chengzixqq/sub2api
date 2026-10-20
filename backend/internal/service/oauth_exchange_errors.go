@@ -46,17 +46,21 @@ func NewOAuthCodeRejectedError(reason, message string, upstreamStatus int) *infr
 		WithMetadata(map[string]string{"upstream_status": strconv.Itoa(upstreamStatus)})
 }
 
-// oauthCodeRejected converts a token-exchange error carrying an upstream status
-// into the platform's CODE_REJECTED error when that status means the code was
-// refused. Transient statuses, outages and transport errors return ok=false so
-// callers keep their previous behavior.
+// oauthCodeRejected converts a token-exchange error carrying an upstream
+// response into the platform's CODE_REJECTED error when oauth.IsCodeRejected
+// says the code was refused. Transient statuses, outages, blocked requests,
+// client misconfiguration and transport errors return ok=false so callers keep
+// their previous behavior.
 func oauthCodeRejected(reason, message string, err error) (error, bool) {
-	var statusErr interface{ UpstreamStatusCode() int }
-	if !errors.As(err, &statusErr) {
+	var upstreamErr interface {
+		UpstreamStatusCode() int
+		UpstreamBody() string
+	}
+	if !errors.As(err, &upstreamErr) {
 		return nil, false
 	}
-	status := statusErr.UpstreamStatusCode()
-	if !oauth.IsCodeRejectedStatus(status) {
+	status := upstreamErr.UpstreamStatusCode()
+	if !oauth.IsCodeRejected(status, upstreamErr.UpstreamBody()) {
 		return nil, false
 	}
 	return NewOAuthCodeRejectedError(reason, message, status).WithCause(err), true

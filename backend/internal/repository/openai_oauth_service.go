@@ -65,8 +65,9 @@ func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifie
 	}
 
 	if !resp.IsSuccessState() {
-		message := fmt.Sprintf("token exchange failed: status %d, body: %s", resp.StatusCode, resp.String())
-		if oauth.IsCodeRejectedStatus(resp.StatusCode) {
+		body := resp.String()
+		message := fmt.Sprintf("token exchange failed: status %d, body: %s", resp.StatusCode, body)
+		if oauth.IsCodeRejected(resp.StatusCode, body) {
 			return nil, service.NewOAuthCodeRejectedError(service.OpenAIOAuthCodeRejectedReason, message, resp.StatusCode)
 		}
 		return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_OAUTH_TOKEN_EXCHANGE_FAILED", message)

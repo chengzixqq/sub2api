@@ -23,10 +23,14 @@ func TestOAuthCodeRejectedClassification(t *testing.T) {
 		want bool
 	}{
 		{"oauth 400", &oauth.TokenExchangeError{StatusCode: http.StatusBadRequest}, true},
-		{"oauth 401", &oauth.TokenExchangeError{StatusCode: http.StatusUnauthorized}, true},
-		{"oauth 403", &oauth.TokenExchangeError{StatusCode: http.StatusForbidden}, true},
+		{"oauth 400 invalid_grant", &oauth.TokenExchangeError{StatusCode: http.StatusBadRequest, Body: `{"error":"invalid_grant"}`}, true},
+		{"oauth 403 invalid_grant", &oauth.TokenExchangeError{StatusCode: http.StatusForbidden, Body: `{"error":"invalid_grant"}`}, true},
+		{"oauth 401 invalid_client", &oauth.TokenExchangeError{StatusCode: http.StatusUnauthorized, Body: `{"error":"invalid_client"}`}, false},
+		{"oauth 403 cloudflare", &oauth.TokenExchangeError{StatusCode: http.StatusForbidden, Body: `<html>Just a moment...</html>`}, false},
+		{"oauth 401 empty", &oauth.TokenExchangeError{StatusCode: http.StatusUnauthorized}, false},
 		{"antigravity 400", &antigravity.TokenExchangeError{StatusCode: http.StatusBadRequest}, true},
-		{"wrapped antigravity 401", fmt.Errorf("token 交换失败: %w", &antigravity.TokenExchangeError{StatusCode: http.StatusUnauthorized}), true},
+		{"wrapped antigravity 401 invalid_grant", fmt.Errorf("token 交换失败: %w", &antigravity.TokenExchangeError{StatusCode: http.StatusUnauthorized, Body: `{"error":"invalid_grant"}`}), true},
+		{"wrapped antigravity 401 invalid_client", fmt.Errorf("token 交换失败: %w", &antigravity.TokenExchangeError{StatusCode: http.StatusUnauthorized, Body: `{"error":"invalid_client"}`}), false},
 		{"oauth 408", &oauth.TokenExchangeError{StatusCode: http.StatusRequestTimeout}, false},
 		{"oauth 429", &oauth.TokenExchangeError{StatusCode: http.StatusTooManyRequests}, false},
 		{"oauth 500", &oauth.TokenExchangeError{StatusCode: http.StatusInternalServerError}, false},
