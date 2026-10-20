@@ -192,13 +192,15 @@ func (h *AccountHandler) resolveReauthProxy(ctx context.Context, scope service.S
 }
 
 // reauthorizeOnce exchanges the code (unless a previous attempt already did)
-// and saves the credentials. A replay after a successful save returns the
-// account unchanged.
+// and saves the credentials. A replay after a successful save reads the
+// account again without writing.
 func (h *AccountHandler) reauthorizeOnce(ctx context.Context, key string, accountID int64, existing *service.Account, req *ReauthorizeAccountRequest, proxyID *int64) (*service.Account, error) {
 	stash := h.reauth.credentialStash()
 	entry, found := stash.lookup(key)
 	if found && entry.done {
-		return existing, nil
+		// existing may predate the save: a retry can read the account just
+		// before the first request saved and get here just after it finished.
+		return h.reloadReauthorizedAccount(ctx, accountID)
 	}
 	creds := reauthCredentials{accountType: entry.accountType, credentials: entry.credentials, extra: entry.extra}
 	if !found {
@@ -231,9 +233,25 @@ func (h *AccountHandler) reauthorizeOnce(ctx context.Context, key string, accoun
 			"reason", infraerrors.Reason(err),
 			"err", logredact.RedactText(err.Error()),
 		)
+		// Restart the stash window so retry_within_seconds counts from this
+		// response rather than from the exchange (the save may take up to
+		// reauthorizePersistTimeout).
+		stash.put(key, reauthStashEntry{accountType: creds.accountType, credentials: creds.credentials, extra: creds.extra})
 		return nil, reauthPersistFailed(err)
 	}
 	stash.markDone(key)
+	return account, nil
+}
+
+// reloadReauthorizedAccount answers a replay with the account as stored now.
+func (h *AccountHandler) reloadReauthorizedAccount(ctx context.Context, accountID int64) (*service.Account, error) {
+	account, err := h.adminService.GetAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if account == nil {
+		return nil, service.ErrAccountNotFound
+	}
 	return account, nil
 }
 

@@ -134,11 +134,18 @@ func (h *AccountHandler) exchangeAntigravityReauth(ctx context.Context, req *Rea
 	if err != nil {
 		return nil, err
 	}
+	return antigravityReauthCredentials(h.antigravityOAuthService, info), nil
+}
+
+// antigravityReauthCredentials builds what reauthorize saves for an
+// Antigravity exchange: the service's credentials, and privacy_mode in extra
+// when the exchange set it.
+func antigravityReauthCredentials(svc *service.AntigravityOAuthService, info *service.AntigravityTokenInfo) *reauthCredentials {
 	return &reauthCredentials{
 		accountType: service.AccountTypeOAuth,
-		credentials: h.antigravityOAuthService.BuildAccountCredentials(info),
+		credentials: svc.BuildAccountCredentials(info),
 		extra:       nonEmptyReauthExtra(map[string]string{"privacy_mode": info.PrivacyMode}),
-	}, nil
+	}
 }
 
 func (h *AccountHandler) exchangeGrokReauth(ctx context.Context, req *ReauthorizeAccountRequest, proxyID *int64) (*reauthCredentials, error) {

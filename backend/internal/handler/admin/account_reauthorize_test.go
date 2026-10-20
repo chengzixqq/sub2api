@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -17,10 +18,12 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,7 +33,10 @@ const (
 )
 
 // reauthAdmin keeps accounts in memory so persisted credentials and status
-// show up in the response, and records how errors were cleared.
+// show up in the response, and records how errors were cleared. Account and
+// proxy lookups are workspace scoped like the real AdminService: a vendor
+// cannot see another workspace's account, or a proxy listed in
+// proxyWorkspaces under another workspace.
 type reauthAdmin struct {
 	*stubAdminService
 	lock                  sync.Mutex
@@ -40,6 +46,11 @@ type reauthAdmin struct {
 	lastClearOptions      service.ClearAccountErrorOptions
 	extraUpdates          []map[string]any
 	proxyLookups          []int64
+	proxyWorkspaces       map[int64]int64
+	// afterGetAccount runs once, after the next GetAccount has read its snapshot.
+	afterGetAccount func()
+	// beforeUpdateAccount runs inside every UpdateAccount call.
+	beforeUpdateAccount func()
 }
 
 func newReauthAdmin(accounts ...*service.Account) *reauthAdmin {
@@ -57,19 +68,30 @@ func cloneReauthAccount(account *service.Account) *service.Account {
 	return &out
 }
 
-func (a *reauthAdmin) GetAccount(_ context.Context, id int64) (*service.Account, error) {
+func (a *reauthAdmin) GetAccount(ctx context.Context, id int64) (*service.Account, error) {
 	a.lock.Lock()
-	defer a.lock.Unlock()
-	account, ok := a.store[id]
-	if !ok {
+	var snapshot *service.Account
+	if account, ok := a.store[id]; ok && service.ScopeFromContextOrDeny(ctx).OwnsWorkspaceID(account.WorkspaceID) {
+		snapshot = cloneReauthAccount(account)
+	}
+	hook := a.afterGetAccount
+	a.afterGetAccount = nil
+	a.lock.Unlock()
+	if hook != nil {
+		hook()
+	}
+	if snapshot == nil {
 		return nil, service.ErrAccountNotFound
 	}
-	return cloneReauthAccount(account), nil
+	return snapshot, nil
 }
 
 func (a *reauthAdmin) UpdateAccount(ctx context.Context, id int64, input *service.UpdateAccountInput) (*service.Account, error) {
 	a.lock.Lock()
 	defer a.lock.Unlock()
+	if a.beforeUpdateAccount != nil {
+		a.beforeUpdateAccount()
+	}
 	if _, err := a.stubAdminService.UpdateAccount(ctx, id, input); err != nil {
 		return nil, err
 	}
@@ -118,7 +140,11 @@ func (a *reauthAdmin) ClearAccountErrorWithOptions(_ context.Context, id int64, 
 func (a *reauthAdmin) GetProxy(ctx context.Context, id int64) (*service.Proxy, error) {
 	a.lock.Lock()
 	a.proxyLookups = append(a.proxyLookups, id)
+	workspaceID, listed := a.proxyWorkspaces[id]
 	a.lock.Unlock()
+	if listed && !service.ScopeFromContextOrDeny(ctx).OwnsWorkspaceID(workspaceID) {
+		return nil, service.ErrProxyNotFound
+	}
 	return a.stubAdminService.GetProxy(ctx, id)
 }
 
@@ -657,6 +683,69 @@ func TestReauthorizeConcurrentRetryWaitsForInflightExchange(t *testing.T) {
 	require.Equal(t, 1, admin.updateAccountCalls)
 }
 
+// A retry can read the account just before the first request saves and reach
+// the flight just after it finished; the replay must answer with the saved
+// account, not with the snapshot taken before the save.
+func TestReauthorizeReplayAfterSaveReturnsSavedAccount(t *testing.T) {
+	client := &fakeClaudeOAuthClient{}
+	claude := newClaudeReauthService(t, client)
+	admin := newReauthAdmin(claudeReauthAccount(1, service.StatusError))
+	handler := newReauthHandler(admin, reauthDeps{claude: claude})
+	router := newReauthRouter(handler, service.AdminScope())
+	sessionID := newClaudeReauthSession(t, claude, false)
+	admin.afterGetAccount = func() {
+		admin.lock.Lock()
+		admin.store[1].Status = service.StatusActive
+		admin.store[1].Credentials["access_token"] = reauthTestAccessToken
+		admin.lock.Unlock()
+		handler.reauth.credentialStash().markDone(reauthStashKey(service.PlatformAnthropic, sessionID, 1))
+	}
+
+	rec, envelope := postReauth(t, router, "/accounts/1/reauthorize", reauthBody(sessionID, ""))
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, service.StatusActive, envelope.Data["status"], "the replay reads the account again")
+	require.Zero(t, client.calls())
+	require.Zero(t, admin.updateAccountCalls)
+}
+
+// retry_within_seconds counts from the failed save, not from the exchange, and
+// a replay works for the full window after the successful save.
+func TestReauthorizeStashWindowsCountFromFailureAndSave(t *testing.T) {
+	client := &fakeClaudeOAuthClient{}
+	claude := newClaudeReauthService(t, client)
+	admin := newReauthAdmin(claudeReauthAccount(1, service.StatusError))
+	handler := newReauthHandler(admin, reauthDeps{claude: claude})
+	now := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	handler.reauth.credentialStash().now = func() time.Time { return now }
+	router := newReauthRouter(handler, service.AdminScope())
+	body := reauthBody(newClaudeReauthSession(t, claude, false), "")
+
+	// The exchange stashes at T0; the save then runs into its 30 second timeout.
+	admin.updateAccountErr = errors.New("db down")
+	admin.beforeUpdateAccount = func() { now = now.Add(reauthorizePersistTimeout) }
+	rec, envelope := postReauth(t, router, "/accounts/1/reauthorize", body)
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+	require.Equal(t, "300", envelope.Metadata["retry_within_seconds"])
+
+	// Retry 4m50s after the 500 (5m20s after the exchange): saved from the stash.
+	admin.updateAccountErr = nil
+	admin.beforeUpdateAccount = nil
+	now = now.Add(4*time.Minute + 50*time.Second)
+	rec, _ = postReauth(t, router, "/accounts/1/reauthorize", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, client.calls(), "no new exchange within the advertised window")
+	require.Equal(t, 2, admin.updateAccountCalls)
+
+	// Replay 4m50s after the save: still answered from the done marker.
+	now = now.Add(4*time.Minute + 50*time.Second)
+	rec, envelope = postReauth(t, router, "/accounts/1/reauthorize", body)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, 1, client.calls())
+	require.Equal(t, 2, admin.updateAccountCalls)
+	require.Equal(t, service.StatusActive, envelope.Data["status"])
+}
+
 func TestReauthorizeDoesNotLogTokens(t *testing.T) {
 	var buf bytes.Buffer
 	oldSlog, oldWriter, oldFlags := slog.Default(), log.Writer(), log.Flags()
@@ -737,6 +826,83 @@ func TestReauthorizeVendorUsesAccountProxy(t *testing.T) {
 	}
 }
 
+// A vendor's account bound to a proxy of another workspace stops before any
+// exchange; the same account with its own workspace's proxy goes through, so
+// the rejection comes from the workspace check.
+func TestReauthorizeVendorAccountProxyOutsideWorkspaceStopsBeforeExchange(t *testing.T) {
+	vendor := service.VendorScope(7, service.WorkspacePermissions{AccountManage: true})
+	cases := []struct {
+		name           string
+		proxyWorkspace int64
+		wantCode       int
+		wantReason     string
+		wantExchanges  int
+	}{
+		{"foreign proxy", 8, http.StatusNotFound, "PROXY_NOT_FOUND", 0},
+		{"own proxy", 7, http.StatusOK, "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			grok := &fakeGrokReauthService{}
+			admin := newReauthAdmin(newGrokReauthAccount(""))
+			admin.proxyWorkspaces = map[int64]int64{9: tc.proxyWorkspace}
+			router := newReauthRouter(newReauthHandler(admin, reauthDeps{grok: grok}), vendor)
+
+			rec, envelope := postReauth(t, router, "/accounts/5/reauthorize", reauthBody("grok-sess", `"state":"s","proxy_id":42`))
+
+			require.Equal(t, tc.wantCode, rec.Code, rec.Body.String())
+			require.Equal(t, tc.wantReason, envelope.Reason)
+			require.Equal(t, tc.wantExchanges, grok.exchangeCalls)
+			require.Equal(t, []int64{9}, admin.proxyLookups, "only the account's own proxy is looked up")
+			if tc.wantCode != http.StatusOK {
+				require.Zero(t, admin.updateAccountCalls)
+				require.Empty(t, admin.extraUpdates)
+				require.Equal(t, "old-access", admin.store[5].Credentials["access_token"])
+			}
+		})
+	}
+}
+
+// Another workspace's account is not found for a vendor: no proxy lookup, no
+// exchange and no write.
+func TestReauthorizeVendorForeignAccountNotFound(t *testing.T) {
+	vendor := service.VendorScope(7, service.WorkspacePermissions{AccountManage: true})
+
+	t.Run("grok", func(t *testing.T) {
+		account := newGrokReauthAccount("")
+		account.WorkspaceID = 8
+		grok := &fakeGrokReauthService{}
+		admin := newReauthAdmin(account)
+		router := newReauthRouter(newReauthHandler(admin, reauthDeps{grok: grok}), vendor)
+
+		rec, envelope := postReauth(t, router, "/accounts/5/reauthorize", reauthBody("grok-sess", `"state":"s"`))
+
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		require.Equal(t, "ACCOUNT_NOT_FOUND", envelope.Reason)
+		require.Zero(t, grok.exchangeCalls)
+		require.Empty(t, admin.proxyLookups)
+		require.Zero(t, admin.updateAccountCalls)
+		require.Empty(t, admin.extraUpdates)
+	})
+
+	t.Run("claude without proxy", func(t *testing.T) {
+		client := &fakeClaudeOAuthClient{}
+		claude := newClaudeReauthService(t, client)
+		account := claudeReauthAccount(1, service.StatusError)
+		account.WorkspaceID = 8
+		admin := newReauthAdmin(account)
+		router := newReauthRouter(newReauthHandler(admin, reauthDeps{claude: claude}), vendor)
+
+		rec, envelope := postReauth(t, router, "/accounts/1/reauthorize", reauthBody(newClaudeReauthSession(t, claude, false), ""))
+
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		require.Equal(t, "ACCOUNT_NOT_FOUND", envelope.Reason)
+		require.Zero(t, client.calls())
+		require.Zero(t, admin.updateAccountCalls)
+		require.Equal(t, service.StatusError, admin.store[1].Status)
+	})
+}
+
 func TestReauthorizeGrokKeepsBaseURLAndClearsReauthFlag(t *testing.T) {
 	grok := &fakeGrokReauthService{}
 	admin := newReauthAdmin(newGrokReauthAccount("https://grok.custom.example/v1"))
@@ -756,4 +922,173 @@ func TestReauthorizeGrokKeepsBaseURLAndClearsReauthFlag(t *testing.T) {
 	rec, _ = postReauth(t, router, "/accounts/5/reauthorize", reauthBody("grok-sess-2", `"state":"s"`))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.NotContains(t, admin.lastUpdateAccountInput.Credentials, "base_url", "like the Web flow, base_url is left to the system default")
+}
+
+// succeedingOpenAIOAuthClient answers every code exchange with resp.
+type succeedingOpenAIOAuthClient struct{ resp *openai.TokenResponse }
+
+func (f succeedingOpenAIOAuthClient) ExchangeCode(context.Context, string, string, string, string, string) (*openai.TokenResponse, error) {
+	resp := *f.resp
+	return &resp, nil
+}
+
+func (f succeedingOpenAIOAuthClient) RefreshToken(context.Context, string, string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not used")
+}
+
+func (f succeedingOpenAIOAuthClient) RefreshTokenWithClientID(context.Context, string, string, string) (*openai.TokenResponse, error) {
+	return nil, errors.New("not used")
+}
+
+// unsignedTestJWT builds a JWT the OpenAI service can decode (it does not
+// verify signatures).
+func unsignedTestJWT(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(claims)
+	require.NoError(t, err)
+	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`)) + "." +
+		base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+func TestReauthorizeOpenAISavesCredentialsAndExtraLikeWeb(t *testing.T) {
+	idToken := unsignedTestJWT(t, map[string]any{
+		"email": "openai-owner@example.com",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_account_id": "acct-openai",
+			"chatgpt_plan_type":  "plus",
+		},
+	})
+	svc := service.NewOpenAIOAuthService(nil, succeedingOpenAIOAuthClient{resp: &openai.TokenResponse{
+		AccessToken:  reauthTestAccessToken,
+		RefreshToken: reauthTestRefreshToken,
+		IDToken:      idToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    864000,
+	}})
+	t.Cleanup(svc.Stop)
+	// The privacy call fails offline, which still yields a privacy_mode value.
+	svc.SetPrivacyClientFactory(func(string) (*req.Client, error) { return nil, errors.New("offline in tests") })
+	account := &service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusError,
+		Credentials: map[string]any{"access_token": "old-access", "refresh_token": "old-refresh", "model_mapping": map[string]any{"gpt-x": "gpt-y"}}}
+	admin := newReauthAdmin(account)
+	router := newReauthRouter(newReauthHandler(admin, reauthDeps{openai: svc}), service.AdminScope())
+	sessionID, state := newOpenAIReauthSession(t, svc)
+
+	rec, envelope := postReauth(t, router, "/accounts/1/reauthorize", reauthBody(sessionID, `"state":"`+state+`"`))
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	input := admin.lastUpdateAccountInput
+	require.Equal(t, service.AccountTypeOAuth, input.Type)
+	require.Equal(t, reauthTestAccessToken, input.Credentials["access_token"])
+	require.Equal(t, reauthTestRefreshToken, input.Credentials["refresh_token"])
+	require.Equal(t, "openai-owner@example.com", input.Credentials["email"])
+	require.Equal(t, "acct-openai", input.Credentials["chatgpt_account_id"])
+	require.Equal(t, "plus", input.Credentials["plan_type"])
+	require.Equal(t, "864000", input.Credentials["expires_in"])
+	expiresAt, ok := input.Credentials["expires_at"].(string)
+	require.True(t, ok)
+	_, err := time.Parse(time.RFC3339, expiresAt)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"gpt-x": "gpt-y"}, input.Credentials["model_mapping"])
+	require.Equal(t, []map[string]any{{"email": "openai-owner@example.com", "privacy_mode": service.PrivacyModeFailed}}, admin.extraUpdates)
+	require.Equal(t, service.StatusActive, envelope.Data["status"])
+	require.NotContains(t, rec.Body.String(), reauthTestAccessToken)
+	require.NotContains(t, rec.Body.String(), reauthTestRefreshToken)
+}
+
+type fakeGeminiReauthOAuthClient struct{}
+
+func (fakeGeminiReauthOAuthClient) ExchangeCode(context.Context, string, string, string, string, string) (*geminicli.TokenResponse, error) {
+	return &geminicli.TokenResponse{AccessToken: reauthTestAccessToken, RefreshToken: reauthTestRefreshToken, TokenType: "Bearer", ExpiresIn: 3600, Scope: "drive.readonly"}, nil
+}
+
+func (fakeGeminiReauthOAuthClient) RefreshToken(context.Context, string, string, string) (*geminicli.TokenResponse, error) {
+	return nil, errors.New("not used")
+}
+
+type fakeGeminiDriveClient struct {
+	info *geminicli.DriveStorageInfo
+	err  error
+}
+
+func (f fakeGeminiDriveClient) GetStorageQuota(context.Context, string, string) (*geminicli.DriveStorageInfo, error) {
+	return f.info, f.err
+}
+
+// Gemini (google_one): the Drive storage info goes to extra, never into the
+// credentials, and without a detected tier the stored tier_id is kept.
+func TestReauthorizeGeminiDriveInfoGoesToExtraAndTierDefaultsToStored(t *testing.T) {
+	const driveLimit = int64(3) << 40 // 3 TiB
+	cases := []struct {
+		name       string
+		drive      fakeGeminiDriveClient
+		wantTierID string
+		wantExtra  bool
+	}{
+		{"drive tier detected", fakeGeminiDriveClient{info: &geminicli.DriveStorageInfo{Limit: driveLimit, Usage: 1024}}, service.GeminiTierGoogleAIPro, true},
+		{"drive unavailable keeps stored tier", fakeGeminiDriveClient{err: errors.New("status 403")}, service.GeminiTierGoogleAIUltra, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gemini := service.NewGeminiOAuthService(nil, fakeGeminiReauthOAuthClient{}, nil, tc.drive, &config.Config{})
+			t.Cleanup(gemini.Stop)
+			session, err := gemini.GenerateAuthURL(context.Background(), nil, "", "proj-1", "google_one", "")
+			require.NoError(t, err)
+			account := &service.Account{ID: 1, Platform: service.PlatformGemini, Type: service.AccountTypeOAuth, Status: service.StatusError,
+				Credentials: map[string]any{"access_token": "old-access", "oauth_type": "google_one", "tier_id": service.GeminiTierGoogleAIUltra, "project_id": "proj-1"}}
+			admin := newReauthAdmin(account)
+			router := newReauthRouter(newReauthHandler(admin, reauthDeps{gemini: gemini}), service.AdminScope())
+
+			rec, _ := postReauth(t, router, "/accounts/1/reauthorize", reauthBody(session.SessionID, `"state":"`+session.State+`"`))
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			creds := admin.lastUpdateAccountInput.Credentials
+			require.Equal(t, reauthTestAccessToken, creds["access_token"])
+			require.Equal(t, reauthTestRefreshToken, creds["refresh_token"])
+			require.Equal(t, "google_one", creds["oauth_type"])
+			require.Equal(t, "proj-1", creds["project_id"])
+			require.Equal(t, tc.wantTierID, creds["tier_id"])
+			for _, key := range []string{"drive_storage_limit", "drive_storage_usage", "drive_tier_updated_at"} {
+				require.NotContains(t, creds, key, "Drive info stays out of the credentials")
+			}
+			if !tc.wantExtra {
+				require.Empty(t, admin.extraUpdates)
+				return
+			}
+			require.Len(t, admin.extraUpdates, 1)
+			extra := admin.extraUpdates[0]
+			require.Equal(t, driveLimit, extra["drive_storage_limit"])
+			require.Equal(t, int64(1024), extra["drive_storage_usage"])
+			require.NotEmpty(t, extra["drive_tier_updated_at"])
+		})
+	}
+}
+
+// Antigravity's exchange always calls Google, so the handler's mapping from
+// the token info is checked directly.
+func TestAntigravityReauthCredentialsWritePrivacyModeToExtra(t *testing.T) {
+	svc := &service.AntigravityOAuthService{}
+	info := &service.AntigravityTokenInfo{
+		AccessToken:  reauthTestAccessToken,
+		RefreshToken: reauthTestRefreshToken,
+		ExpiresIn:    3600,
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		TokenType:    "Bearer",
+		Email:        "ag@example.com",
+		ProjectID:    "ag-project",
+		PlanType:     "pro",
+		PrivacyMode:  "privacy_set",
+	}
+
+	creds := antigravityReauthCredentials(svc, info)
+	require.Equal(t, service.AccountTypeOAuth, creds.accountType)
+	require.Equal(t, svc.BuildAccountCredentials(info), creds.credentials)
+	require.Equal(t, "ag@example.com", creds.credentials["email"])
+	require.Equal(t, "ag-project", creds.credentials["project_id"])
+	require.NotContains(t, creds.credentials, "privacy_mode")
+	require.Equal(t, map[string]any{"privacy_mode": "privacy_set"}, creds.extra)
+
+	info.PrivacyMode = ""
+	require.Nil(t, antigravityReauthCredentials(svc, info).extra, "no privacy_mode, no extra update")
 }

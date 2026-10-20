@@ -75,6 +75,25 @@ func TestReauthCredentialStashPutPrunesExpired(t *testing.T) {
 	require.Len(t, stash.entries, 1)
 }
 
+// The done marker lives a full ttl from the successful save, however late in
+// the stash window the save happened.
+func TestReauthCredentialStashMarkDoneRestartsTTL(t *testing.T) {
+	stash, now := newTestReauthStash(t, 256)
+	key := reauthStashKey("openai", "sess", 2)
+	stash.put(key, reauthStashEntry{accountType: "oauth", credentials: map[string]any{"access_token": "at"}})
+
+	*now = now.Add(4*time.Minute + 50*time.Second)
+	stash.markDone(key)
+	*now = now.Add(4*time.Minute + 50*time.Second)
+	got, ok := stash.lookup(key)
+	require.True(t, ok, "replays within ttl of the save still find the marker")
+	require.True(t, got.done)
+
+	*now = now.Add(11 * time.Second)
+	_, ok = stash.lookup(key)
+	require.False(t, ok)
+}
+
 func TestReauthCredentialStashMarkDoneWithoutEntry(t *testing.T) {
 	stash, _ := newTestReauthStash(t, 256)
 	key := reauthStashKey("gemini", "sess", 3)
