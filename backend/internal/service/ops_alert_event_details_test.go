@@ -24,6 +24,15 @@ type evaluatorCaptureRepo struct {
 	resolvedAt   *time.Time
 	resolvedBy   *int64
 	resolveCalls int
+	orphanCalls  int
+	orphanAt     time.Time
+	orphanCount  int64
+}
+
+func (r *evaluatorCaptureRepo) ResolveOrphanedAlertEvents(_ context.Context, resolvedAt time.Time) (int64, error) {
+	r.orphanCalls++
+	r.orphanAt = resolvedAt
+	return r.orphanCount, nil
 }
 
 func (r *evaluatorCaptureRepo) ListAlertRules(context.Context) ([]*OpsAlertRule, error) {
@@ -82,6 +91,41 @@ func TestOpsAlertEvaluator_FiredEventCarriesRuleSnapshot(t *testing.T) {
 	require.Equal(t, OpsAlertStatusResolved, repo.resolvedTo)
 	require.NotNil(t, repo.resolvedAt)
 	require.Nil(t, repo.resolvedBy)
+}
+
+// Events of disabled or deleted rules are never evaluated again, so each round closes them; otherwise they stay firing
+// and keep the alert counts up forever.
+func TestOpsAlertEvaluator_ResolvesEventsOfDisabledOrDeletedRules(t *testing.T) {
+	repo := &evaluatorCaptureRepo{
+		rules: []*OpsAlertRule{{
+			ID: 41, Name: "CPU 过高", Enabled: false, Severity: "P1",
+			MetricType: "cpu_usage_percent", Operator: ">", Threshold: 80, WindowMinutes: 5, SustainedMinutes: 1,
+		}},
+		cpu:         95,
+		orphanCount: 2,
+	}
+	heartbeat := &evaluatorHeartbeatRepo{evaluatorCaptureRepo: repo}
+	svc := NewOpsAlertEvaluatorService(nil, heartbeat, nil, nil, nil, nil)
+
+	before := time.Now().UTC()
+	svc.evaluateOnce(time.Minute)
+
+	require.Equal(t, 1, repo.orphanCalls)
+	require.False(t, repo.orphanAt.Before(before.Truncate(time.Second)))
+	require.Empty(t, repo.created, "a disabled rule does not fire")
+	require.Contains(t, heartbeat.result, "resolved=2")
+}
+
+type evaluatorHeartbeatRepo struct {
+	*evaluatorCaptureRepo
+	result string
+}
+
+func (r *evaluatorHeartbeatRepo) UpsertJobHeartbeat(_ context.Context, input *OpsUpsertJobHeartbeatInput) error {
+	if input != nil && input.LastResult != nil {
+		r.result = *input.LastResult
+	}
+	return nil
 }
 
 func TestOpsAlertEventRuleFromRule_NormalizesWindow(t *testing.T) {

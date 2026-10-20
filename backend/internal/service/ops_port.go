@@ -52,6 +52,9 @@ type OpsRepository interface {
 	UpdateAlertEventEmailSent(ctx context.Context, eventID int64, emailSent bool) error
 	// CountAlertEventsBySeverity counts the events matching filter's status, severity, time and scope filters, by severity.
 	CountAlertEventsBySeverity(ctx context.Context, filter *OpsAlertEventFilter) (map[string]int64, error)
+	// ResolveOrphanedAlertEvents resolves (without a resolver) the firing events whose rule was deleted or disabled;
+	// the evaluator never revisits them. Events without a rule are left alone. Returns the number resolved.
+	ResolveOrphanedAlertEvents(ctx context.Context, resolvedAt time.Time) (int64, error)
 
 	// Alert silences
 	CreateAlertSilence(ctx context.Context, input *OpsAlertSilence) (*OpsAlertSilence, error)

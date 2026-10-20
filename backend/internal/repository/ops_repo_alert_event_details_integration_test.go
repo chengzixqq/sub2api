@@ -112,3 +112,102 @@ VALUES ($1, 'P2', 'firing', 't', '', jsonb_build_object('group_id', $2::BIGINT),
 	require.NoError(t, err)
 	require.Nil(t, auto.Rule)
 }
+
+// Firing events whose rule was deleted or disabled are resolved without a resolver; events of enabled rules, events
+// without a rule and events that are already closed are left alone.
+func TestOpsAlertEvents_ResolveOrphaned_RealDatabase(t *testing.T) {
+	ctx := context.Background()
+	repo, ok := NewOpsRepository(integrationDB).(*opsRepository)
+	require.True(t, ok)
+	suffix := uuid.NewString()
+
+	newRule := func(name string, enabled bool) *service.OpsAlertRule {
+		rule, err := repo.CreateAlertRule(ctx, &service.OpsAlertRule{
+			Name: name + "-" + suffix, Enabled: enabled, Severity: "P2",
+			MetricType: "error_rate", Operator: ">", Threshold: 5, WindowMinutes: 5, SustainedMinutes: 1, CooldownMinutes: 10,
+		})
+		require.NoError(t, err)
+		return rule
+	}
+	enabled := newRule("d06-orphan-enabled", true)
+	disabled := newRule("d06-orphan-disabled", false)
+	deleted := newRule("d06-orphan-deleted", true)
+
+	var eventIDs []int64
+	t.Cleanup(func() {
+		bg := context.Background()
+		for _, id := range eventIDs {
+			_, _ = integrationDB.ExecContext(bg, "DELETE FROM ops_alert_events WHERE id = $1", id)
+		}
+		for _, id := range []int64{enabled.ID, disabled.ID, deleted.ID} {
+			_, _ = integrationDB.ExecContext(bg, "DELETE FROM ops_alert_rules WHERE id = $1", id)
+		}
+	})
+
+	firedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	insertEvent := func(ruleID *int64, status string, resolvedBy *int64) int64 {
+		var resolvedAt *time.Time
+		if status != service.OpsAlertStatusFiring {
+			resolvedAt = &firedAt
+		}
+		var id int64
+		require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO ops_alert_events (rule_id, severity, status, title, description, fired_at, resolved_at, resolved_by_user_id, email_sent, created_at)
+VALUES ($1, 'P2', $2, 't', '', $3, $4, $5, false, NOW()) RETURNING id`,
+			ruleID, status, firedAt, resolvedAt, resolvedBy).Scan(&id))
+		eventIDs = append(eventIDs, id)
+		return id
+	}
+	resolverID := int64(424242)
+	enabledFiring := insertEvent(&enabled.ID, service.OpsAlertStatusFiring, nil)
+	disabledFiring := insertEvent(&disabled.ID, service.OpsAlertStatusFiring, nil)
+	disabledManual := insertEvent(&disabled.ID, service.OpsAlertStatusManualResolved, &resolverID)
+	deletedFiring := insertEvent(&deleted.ID, service.OpsAlertStatusFiring, nil)
+	noRuleFiring := insertEvent(nil, service.OpsAlertStatusFiring, nil)
+	require.NoError(t, repo.DeleteAlertRule(ctx, deleted.ID))
+
+	resolvedAt := time.Now().UTC().Truncate(time.Second)
+	n, err := repo.ResolveOrphanedAlertEvents(ctx, resolvedAt)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, n, int64(2))
+
+	type state struct {
+		status     string
+		resolvedAt *time.Time
+		resolvedBy *int64
+	}
+	read := func(id int64) state {
+		var s state
+		require.NoError(t, integrationDB.QueryRowContext(ctx,
+			"SELECT status, resolved_at, resolved_by_user_id FROM ops_alert_events WHERE id = $1", id).Scan(&s.status, &s.resolvedAt, &s.resolvedBy))
+		return s
+	}
+
+	for _, id := range []int64{disabledFiring, deletedFiring} {
+		s := read(id)
+		require.Equal(t, service.OpsAlertStatusResolved, s.status)
+		require.NotNil(t, s.resolvedAt)
+		require.True(t, resolvedAt.Equal(*s.resolvedAt))
+		require.Nil(t, s.resolvedBy, "closing an orphaned event is automatic, not a manual resolution")
+	}
+	for _, id := range []int64{enabledFiring, noRuleFiring} {
+		s := read(id)
+		require.Equal(t, service.OpsAlertStatusFiring, s.status)
+		require.Nil(t, s.resolvedAt)
+	}
+	manual := read(disabledManual)
+	require.Equal(t, service.OpsAlertStatusManualResolved, manual.status)
+	require.NotNil(t, manual.resolvedBy)
+	require.Equal(t, resolverID, *manual.resolvedBy)
+	require.True(t, firedAt.Equal(*manual.resolvedAt), "already closed events keep their resolution")
+
+	// The detail read path sees the resolution.
+	ev, err := repo.GetAlertEventByID(ctx, deletedFiring)
+	require.NoError(t, err)
+	require.Equal(t, service.OpsAlertStatusResolved, ev.Status)
+
+	// Idempotent: nothing of ours is left to resolve.
+	_, err = repo.ResolveOrphanedAlertEvents(ctx, resolvedAt.Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, resolvedAt.Equal(*read(disabledFiring).resolvedAt), "a second pass does not move resolved_at")
+	require.Equal(t, service.OpsAlertStatusFiring, read(enabledFiring).status)
+}

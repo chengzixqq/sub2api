@@ -203,6 +203,10 @@ func (m *opsRepoMock) CountAlertEventsBySeverity(ctx context.Context, filter *Op
 	return map[string]int64{}, nil
 }
 
+func (m *opsRepoMock) ResolveOrphanedAlertEvents(ctx context.Context, resolvedAt time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (m *opsRepoMock) UpdateAlertEventEmailSent(ctx context.Context, eventID int64, emailSent bool) error {
 	return nil
 }

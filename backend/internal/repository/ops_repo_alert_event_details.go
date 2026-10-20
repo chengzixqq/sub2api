@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -140,6 +141,25 @@ func scanOpsAlertEventDetail(row opsAlertEventRow) (*service.OpsAlertEvent, erro
 		ev.ResolvedByUserName = &v
 	}
 	return ev, nil
+}
+
+// ResolveOrphanedAlertEvents resolves firing events whose rule no longer exists or is disabled. There is no foreign key
+// on rule_id, so deleted rules leave their events behind.
+func (r *opsRepository) ResolveOrphanedAlertEvents(ctx context.Context, resolvedAt time.Time) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("nil ops repository")
+	}
+	q := `
+UPDATE ops_alert_events e
+SET status = $1, resolved_at = $2, resolved_by_user_id = NULL
+WHERE e.status = $3
+  AND e.rule_id > 0
+  AND NOT EXISTS (SELECT 1 FROM ops_alert_rules r WHERE r.id = e.rule_id AND r.enabled)`
+	res, err := r.db.ExecContext(ctx, q, service.OpsAlertStatusResolved, resolvedAt, service.OpsAlertStatusFiring)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // CountAlertEventsBySeverity counts events matching filter (the list's filters, without limit) by severity.

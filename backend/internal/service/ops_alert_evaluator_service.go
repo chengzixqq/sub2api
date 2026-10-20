@@ -213,6 +213,13 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 	// Cleanup stale state for removed rules.
 	s.pruneRuleStates(rules)
 
+	// Disabled and deleted rules are skipped below, so their firing events would otherwise stay firing forever.
+	if n, err := s.opsRepo.ResolveOrphanedAlertEvents(ctx, now); err != nil {
+		logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] resolve orphaned events failed: %v", err)
+	} else {
+		eventsResolved += int(n)
+	}
+
 	for _, rule := range rules {
 		if rule == nil || !rule.Enabled || rule.ID <= 0 {
 			continue
