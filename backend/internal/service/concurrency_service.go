@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -833,6 +834,10 @@ func (s *ConcurrencyService) GetAccountConcurrencyBatch(ctx context.Context, acc
 // GetAccountConcurrencyBreakdownBatch returns ordinary and probe counts for
 // administrative views. The existing GetAccountConcurrencyBatch method keeps
 // its original raw-slot semantics for schedulers and operational callers.
+//
+// The ordinary count still includes the probe slots, so a failed probe read
+// makes the whole split unknown: it returns an error instead of reporting
+// probe=0 next to an inflated ordinary count.
 func (s *ConcurrencyService) GetAccountConcurrencyBreakdownBatch(ctx context.Context, accountIDs []int64) (map[int64]AccountConcurrencyBreakdown, error) {
 	result := make(map[int64]AccountConcurrencyBreakdown, len(accountIDs))
 	if len(accountIDs) == 0 {
@@ -846,11 +851,12 @@ func (s *ConcurrencyService) GetAccountConcurrencyBreakdownBatch(ctx context.Con
 		return nil, err
 	}
 	probe := make(map[int64]int, len(accountIDs))
-	if s != nil && s.cache != nil {
-		if cache, ok := s.cache.(ProbeConcurrencyCache); ok {
-			probeCtx, cancel := context.WithTimeout(context.Background(), probeSlotOperationTimeout)
-			probe, _ = cache.GetProbeAccountConcurrencyBatch(probeCtx, accountIDs)
-			cancel()
+	if cache, ok := s.cache.(ProbeConcurrencyCache); ok {
+		probeCtx, cancel := context.WithTimeout(context.Background(), probeSlotOperationTimeout)
+		probe, err = cache.GetProbeAccountConcurrencyBatch(probeCtx, accountIDs)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("probe account concurrency batch: %w", err)
 		}
 	}
 	for _, accountID := range accountIDs {

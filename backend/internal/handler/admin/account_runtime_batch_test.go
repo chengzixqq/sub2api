@@ -85,6 +85,37 @@ func (s *runtimeConcurrencyCacheStub) GetAccountConcurrencyBatch(_ context.Conte
 	return out, nil
 }
 
+// runtimeProbeConcurrencyCacheStub also reads the probe slots, which are a
+// subset of the ordinary count and are split out for admin views.
+type runtimeProbeConcurrencyCacheStub struct {
+	*runtimeConcurrencyCacheStub
+	probeCounts map[int64]int
+	probeErr    error
+	probeCalls  int
+}
+
+func (s *runtimeProbeConcurrencyCacheStub) TrackProbeAccountSlot(context.Context, int64, string) error {
+	return nil
+}
+
+func (s *runtimeProbeConcurrencyCacheStub) ReleaseProbeAccountSlot(context.Context, int64, string) error {
+	return nil
+}
+
+func (s *runtimeProbeConcurrencyCacheStub) GetProbeAccountConcurrencyBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	s.probeCalls++
+	if s.probeErr != nil {
+		return nil, s.probeErr
+	}
+	out := make(map[int64]int, len(ids))
+	for _, id := range ids {
+		out[id] = s.probeCounts[id]
+	}
+	return out, nil
+}
+
+var _ service.ProbeConcurrencyCache = (*runtimeProbeConcurrencyCacheStub)(nil)
+
 type runtimeWindowStatsRepo struct {
 	service.UsageLogRepository
 	mu    sync.Mutex
@@ -273,6 +304,97 @@ func TestAccountRuntimeBatchConcurrencyReadFailureIsUnavailable(t *testing.T) {
 	require.Equal(t, false, bareOut.Data.Items["21"]["concurrency_available"])
 	require.Nil(t, bareOut.Data.Items["21"]["current_concurrency"])
 	require.NotContains(t, bareOut.Data.Items["21"], "current_rpm")
+}
+
+// The probe slots are read separately from the ordinary ones. When only that
+// second read fails, the split is unknown: neither probe_concurrency=0 nor the
+// raw ordinary count (which still includes the probe slots) may be reported.
+func TestAccountRuntimeBatchProbeReadFailureIsUnavailable(t *testing.T) {
+	accounts := []service.Account{
+		{ID: 61, Name: "a", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true},
+		{ID: 62, Name: "b", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true},
+	}
+	gin.SetMode(gin.TestMode)
+	admin := newRuntimeBatchAdminStub(accounts...)
+	adminSvc := newStubAdminService()
+	adminSvc.accounts = accounts
+	adminSvc.getAccountResult = &accounts[0]
+	rpm := &accountRuntimeRPMCacheStub{counts: map[int64]int{61: 9, 62: 4}, schedulingCounts: map[int64]int{}}
+	conc := &runtimeProbeConcurrencyCacheStub{
+		runtimeConcurrencyCacheStub: &runtimeConcurrencyCacheStub{counts: map[int64]int{61: 5, 62: 1}},
+		probeCounts:                 map[int64]int{61: 2},
+	}
+	concurrency := service.NewConcurrencyService(conc)
+	router := gin.New()
+	batch := NewAccountHandler(admin, nil, nil, nil, nil, nil, nil, nil, nil, concurrency, nil, nil, rpm, nil)
+	router.POST("/api/v1/admin/accounts/runtime/batch", batch.GetBatchRuntime)
+	views := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, concurrency, nil, nil, nil, nil)
+	router.GET("/api/v1/admin/accounts", views.List)
+	router.GET("/api/v1/admin/accounts/:id", views.GetByID)
+
+	postBatch := func() runtimeBatchResponse {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/runtime/batch", strings.NewReader(`{"account_ids":[61,62]}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		return decodeRuntimeBatch(t, rec)
+	}
+	getJSON := func(url string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		var payload struct {
+			Data map[string]any `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+		return payload.Data
+	}
+	listFirst := func(url string) map[string]any {
+		t.Helper()
+		items, ok := getJSON(url)["items"].([]any)
+		require.True(t, ok, url)
+		require.Len(t, items, 2, url)
+		first, ok := items[0].(map[string]any)
+		require.True(t, ok, url)
+		return first
+	}
+
+	// Both reads succeed: probe slots are split out of the ordinary count.
+	out := postBatch()
+	require.Equal(t, float64(3), out.Data.Items["61"]["current_concurrency"])
+	require.Equal(t, float64(2), out.Data.Items["61"]["probe_concurrency"])
+	require.Equal(t, true, out.Data.Items["61"]["concurrency_available"])
+	require.Equal(t, float64(1), out.Data.Items["62"]["current_concurrency"])
+	require.Equal(t, float64(0), out.Data.Items["62"]["probe_concurrency"], "a real zero from a successful probe read")
+	require.Equal(t, 1, conc.probeCalls)
+
+	// Only the probe read fails.
+	conc.probeErr = errors.New("redis TIME: i/o timeout")
+	out = postBatch()
+	require.Len(t, out.Data.Items, 2)
+	for id, item := range out.Data.Items {
+		require.Equal(t, false, item["concurrency_available"], id)
+		require.Contains(t, item, "current_concurrency", id)
+		require.Nil(t, item["current_concurrency"], "no raw count that still includes probe slots: %s", id)
+		require.Contains(t, item, "probe_concurrency", id)
+		require.Nil(t, item["probe_concurrency"], "no fake probe 0: %s", id)
+		require.NotNil(t, item["current_rpm"], "other counters still report: %s", id)
+	}
+
+	// The list (full and lite) and the detail keep int placeholders for the
+	// Web but no longer claim the counts were observed.
+	for _, url := range []string{"/api/v1/admin/accounts?page=1&page_size=20", "/api/v1/admin/accounts?page=1&page_size=20&lite=1"} {
+		first := listFirst(url)
+		require.Equal(t, false, first["concurrency_available"], url)
+		require.Equal(t, float64(0), first["current_concurrency"], url)
+	}
+	detail := getJSON("/api/v1/admin/accounts/61")
+	require.Equal(t, false, detail["concurrency_available"])
+	require.Equal(t, float64(0), detail["current_concurrency"])
+	require.Equal(t, float64(0), detail["probe_concurrency"])
 }
 
 func TestAccountRuntimeBatchScopesIDsBeforeReading(t *testing.T) {

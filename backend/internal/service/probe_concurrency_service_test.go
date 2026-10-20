@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,7 @@ import (
 type probeConcurrencyCacheForTest struct {
 	stubConcurrencyCacheForTest
 	probeCounts       map[int64]int
+	probeErr          error
 	trackedAccountID  []int64
 	trackedRequestID  []string
 	releasedAccountID []int64
@@ -31,6 +33,9 @@ func (c *probeConcurrencyCacheForTest) ReleaseProbeAccountSlot(_ context.Context
 }
 
 func (c *probeConcurrencyCacheForTest) GetProbeAccountConcurrencyBatch(_ context.Context, accountIDs []int64) (map[int64]int, error) {
+	if c.probeErr != nil {
+		return nil, c.probeErr
+	}
 	result := make(map[int64]int, len(accountIDs))
 	for _, accountID := range accountIDs {
 		result[accountID] = c.probeCounts[accountID]
@@ -52,6 +57,23 @@ func TestGetAccountConcurrencyBreakdownBatchSeparatesProbeLeaders(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, AccountConcurrencyBreakdown{Current: 3, Probe: 2}, breakdown[42])
 	require.Equal(t, AccountConcurrencyBreakdown{Current: 5, Probe: 0}, breakdown[43])
+}
+
+// A failed probe read must not be reported as probe=0: the ordinary count
+// still includes the probe slots, so the split is unknown as a whole.
+func TestGetAccountConcurrencyBreakdownBatchFailsWhenProbeReadFails(t *testing.T) {
+	cache := &probeConcurrencyCacheForTest{
+		stubConcurrencyCacheForTest: stubConcurrencyCacheForTest{concurrency: 5},
+		probeCounts:                 map[int64]int{42: 2},
+		probeErr:                    errors.New("redis TIME: i/o timeout"),
+	}
+	svc := NewConcurrencyService(cache)
+
+	breakdown, err := svc.GetAccountConcurrencyBreakdownBatch(context.Background(), []int64{42, 43})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "probe")
+	require.Nil(t, breakdown)
 }
 
 func TestAcquireAccountSlotTracksOnlyMarkedProbeLeaders(t *testing.T) {
