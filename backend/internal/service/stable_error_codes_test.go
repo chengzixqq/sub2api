@@ -62,6 +62,10 @@ func TestStableErrorReasons(t *testing.T) {
 		{NewOAuthCodeRejectedError(AntigravityOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "ANTIGRAVITY_OAUTH_CODE_REJECTED"},
 		{NewOAuthCodeRejectedError(OpenAIOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "OPENAI_OAUTH_CODE_REJECTED"},
 		{NewOAuthCodeRejectedError(GrokOAuthCodeRejectedReason, "m", http.StatusBadRequest), http.StatusBadRequest, "GROK_OAUTH_CODE_REJECTED"},
+		{ErrAccountNotOAuth, http.StatusBadRequest, "NOT_OAUTH"},
+		{ErrReauthUnsupported, http.StatusBadRequest, "REAUTH_UNSUPPORTED"},
+		{ErrOAuthExchangeFailed, http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED"},
+		{ErrReauthPersistFailed, http.StatusInternalServerError, "REAUTH_PERSIST_FAILED"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

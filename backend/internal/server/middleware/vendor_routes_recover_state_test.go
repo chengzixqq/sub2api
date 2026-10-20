@@ -1,6 +1,10 @@
 package middleware
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
+)
 
 // TestVendorRecoverStateFollowsAccountManage 锁住 recover-state 与调度开关
 // 对 vendor 的放行条件一致。
@@ -23,5 +27,19 @@ func TestVendorRecoverStateFollowsAccountManage(t *testing.T) {
 		if vendorRouteAllowed(newFullPathContext("POST", path), denied) {
 			t.Errorf("POST %s must be denied without AccountManage", path)
 		}
+	}
+}
+
+// TestVendorRoutesReauthorizeNeedsAccountManage: reauthorize writes new
+// credentials like apply-oauth-credentials, so it is open to vendors only with
+// AccountManage (the handler additionally pins the account's own proxy).
+func TestVendorRoutesReauthorizeNeedsAccountManage(t *testing.T) {
+	path := "/api/v1/admin/accounts/:id/reauthorize"
+	if !vendorRouteAllowed(newFullPathContext("POST", path), VendorScope{WorkspaceID: 7, Perms: allPermsOn()}) {
+		t.Fatal("vendor with AccountManage may reauthorize its accounts")
+	}
+	monitorOnly := VendorScope{WorkspaceID: 7, Perms: service.WorkspacePermissions{MonitorView: true}}
+	if vendorRouteAllowed(newFullPathContext("POST", path), monitorOnly) {
+		t.Fatal("MonitorView alone must not reauthorize accounts")
 	}
 }
