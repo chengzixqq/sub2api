@@ -2246,20 +2246,24 @@ describe("admin SettingsView ops monitoring card", () => {
     return updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
   }
 
-  it("saves the ops sub-settings and sends the master switch only after it changes", async () => {
+  const opsSubSettingKeys = [
+    "ops_realtime_monitoring_enabled",
+    "ops_query_mode_default",
+    "ops_metrics_interval_seconds",
+  ];
+
+  it("sends each ops setting only after the admin changes it", async () => {
     const wrapper = mountView();
     await flushPromises();
     await wrapper.get("#settings-tab-features").trigger("click");
     const card = wrapper.get('[data-testid="ops-monitoring-settings"]');
     expect(card.text()).toContain("admin.settings.opsMonitoring.title");
 
+    // Untouched: the server keeps its current values (e.g. a realtime switch the App just changed).
     let payload = await submit(wrapper);
-    expect(payload).toEqual(expect.objectContaining({
-      ops_realtime_monitoring_enabled: true,
-      ops_query_mode_default: "auto",
-      ops_metrics_interval_seconds: 60,
-    }));
-    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+    for (const key of ["ops_monitoring_enabled", ...opsSubSettingKeys]) {
+      expect(payload).not.toHaveProperty(key);
+    }
 
     await card.get('[data-testid="ops-query-mode-select"] select').setValue("raw");
     await card.get('[data-testid="ops-metrics-interval-input"]').setValue("5000");
@@ -2272,13 +2276,18 @@ describe("admin SettingsView ops monitoring card", () => {
     }));
     expect(payload).not.toHaveProperty("ops_monitoring_enabled");
 
+    // The saved values become the new baseline: only the master switch changed now.
     await wrapper.get('[data-testid="ops-monitoring-enabled-toggle"]').setValue(false);
     payload = await submit(wrapper);
     expect(payload.ops_monitoring_enabled).toBe(false);
+    for (const key of opsSubSettingKeys) {
+      expect(payload).not.toHaveProperty(key);
+    }
 
-    // The saved value becomes the new baseline: an untouched save omits it again.
     payload = await submit(wrapper);
-    expect(payload).not.toHaveProperty("ops_monitoring_enabled");
+    for (const key of ["ops_monitoring_enabled", ...opsSubSettingKeys]) {
+      expect(payload).not.toHaveProperty(key);
+    }
     expect(getMonitoringStatus).toHaveBeenCalled();
   });
 

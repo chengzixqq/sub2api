@@ -9120,8 +9120,9 @@ import BackupSettings from "@/views/admin/BackupView.vue";
 import EmailTemplateEditor from "@/views/admin/settings/EmailTemplateEditor.vue";
 import OpsMonitoringSettingsCard from "@/views/admin/settings/OpsMonitoringSettingsCard.vue";
 import {
-  clampOpsMetricsIntervalSeconds,
-  shouldSendOpsMonitoringEnabled,
+  buildOpsMonitoringSettingsUpdate,
+  pickOpsMonitoringSettings,
+  type OpsMonitoringSettingsValues,
 } from "@/views/admin/settings/opsMonitoringSettings";
 import RechargeBonusTierEditor from "@/components/admin/settings/RechargeBonusTierEditor.vue";
 import {
@@ -9268,8 +9269,8 @@ const loading = ref(true);
 const loadFailed = ref(false);
 // Config hard switch from ops/monitoring-status; null while unknown (old server or failure).
 const opsMonitoringConfigEnabled = ref<boolean | null>(null);
-// ops_monitoring_enabled as last loaded / saved, to send it only when the admin changes it.
-const loadedOpsMonitoringEnabled = ref<boolean | null>(null);
+// ops_* settings as last loaded / saved, to send each one only when the admin changes it.
+const loadedOpsMonitoringSettings = ref<OpsMonitoringSettingsValues | null>(null);
 const saving = ref(false);
 const testingSmtp = ref(false);
 const sendingTestEmail = ref(false);
@@ -11176,7 +11177,7 @@ async function loadSettings() {
     if (settings.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }
-    loadedOpsMonitoringEnabled.value = form.ops_monitoring_enabled;
+    loadedOpsMonitoringSettings.value = pickOpsMonitoringSettings(form);
     syncCaptchaProviderSelection();
     if (!form.claude_oauth_system_prompt_blocks?.trim()) {
       form.claude_oauth_system_prompt_blocks =
@@ -11955,12 +11956,6 @@ async function saveSettings() {
       channel_monitor_hide_throughput: Boolean(form.channel_monitor_hide_throughput),
       channel_monitor_show_quota: Boolean(form.channel_monitor_show_quota),
       channel_monitor_hide_user_ranking: Boolean(form.channel_monitor_hide_user_ranking),
-      // Ops monitoring (the master switch is added below only when changed)
-      ops_realtime_monitoring_enabled: Boolean(form.ops_realtime_monitoring_enabled),
-      ops_query_mode_default: form.ops_query_mode_default || "auto",
-      ops_metrics_interval_seconds: clampOpsMetricsIntervalSeconds(
-        form.ops_metrics_interval_seconds,
-      ),
       // Available Channels feature switch
       available_channels_enabled: form.available_channels_enabled,
       // Subscription feature switch
@@ -12024,15 +12019,15 @@ async function saveSettings() {
       form.account_scheduling_thresholds,
     );
     appendAuthSourceDefaultsToUpdateRequest(payload, authSourceDefaults);
-    if (
-      shouldSendOpsMonitoringEnabled(
-        form.ops_monitoring_enabled,
-        loadedOpsMonitoringEnabled.value,
+    // Ops monitoring: only the fields changed on this page.
+    Object.assign(
+      payload,
+      buildOpsMonitoringSettingsUpdate(
+        form,
+        loadedOpsMonitoringSettings.value,
         opsMonitoringConfigEnabled.value,
-      )
-    ) {
-      payload.ops_monitoring_enabled = form.ops_monitoring_enabled;
-    }
+      ),
+    );
 
     const updated = await settingsStepUp.run(() =>
       adminAPI.settings.updateSettings(payload),
@@ -12046,7 +12041,7 @@ async function saveSettings() {
     if (updated.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }
-    loadedOpsMonitoringEnabled.value = form.ops_monitoring_enabled;
+    loadedOpsMonitoringSettings.value = pickOpsMonitoringSettings(form);
     void loadOpsMonitoringStatus();
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(updated));
     form.default_platform_quotas = normalizePlatformQuotasMap(updated.default_platform_quotas);
