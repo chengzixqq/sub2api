@@ -749,7 +749,7 @@ export default {
       vertexSaJsonRequired: '请上传 Service Account JSON',
       oauthSetupToken: 'OAuth / Setup Token',
       addMethod: '添加方式',
-      setupTokenLongLived: 'Setup Token（长期有效）',
+      setupTokenLongLived: 'Setup Token（访问令牌 8 小时，自动刷新）',
       baseUrl: 'Base URL',
       baseUrlHint: '留空使用官方 Anthropic API',
       apiKeyRequired: 'API Key *',

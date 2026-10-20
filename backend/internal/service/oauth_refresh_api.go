@@ -163,7 +163,7 @@ func (api *OAuthRefreshAPI) getLocalLock(cacheKey string) *contextMutex {
 //  2. 从 DB 重读最新 account（防止使用过时的 refresh_token）
 //  3. 二次检查是否仍需刷新
 //  4. 调用 executor.Refresh() 执行平台特定刷新逻辑
-//  5. 设置 _token_version + 更新 DB
+//  5. 设置 _token_version 与 _token_refreshed_at（同一时刻）+ 更新 DB
 //  6. 释放锁
 func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	ctx context.Context,
@@ -290,9 +290,11 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		return result, refreshErr
 	}
 
-	// 5. 设置版本号 + 更新 DB
+	// 5. 设置版本号与刷新时间 + 更新 DB
 	if newCredentials != nil {
-		newCredentials["_token_version"] = time.Now().UnixMilli()
+		now := time.Now()
+		newCredentials["_token_version"] = now.UnixMilli()
+		stampTokenRefreshedAt(newCredentials, now)
 		if freshAccount.IsGrokOAuth() {
 			conditionalRepo, ok := api.accountRepo.(GrokOAuthRefreshSuccessRepository)
 			if !ok {

@@ -906,7 +906,9 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 			}
 			attemptTimedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 			if err == nil && newCredentials != nil && !attemptTimedOut {
-				newCredentials["_token_version"] = time.Now().UnixMilli()
+				now := time.Now()
+				newCredentials["_token_version"] = now.UnixMilli()
+				stampTokenRefreshedAt(newCredentials, now)
 				if saveErr := persistAccountCredentials(attemptCtx, s.accountRepo, account, newCredentials); saveErr != nil {
 					err = fmt.Errorf("failed to save credentials: %w", saveErr)
 				} else {

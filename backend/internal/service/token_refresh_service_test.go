@@ -1636,3 +1636,29 @@ func TestPathA_DBUpdateFailed(t *testing.T) {
 	require.Equal(t, 1, repo.updateCalls)  // DB 更新被尝试
 	require.Equal(t, 0, invalidator.calls) // DB 失败时不应触发缓存失效
 }
+
+func TestTokenRefreshService_RefreshWithRetry_LegacyPathStampsTokenRefreshedAt(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, cfg, nil)
+	account := &Account{ID: 91, Platform: PlatformGemini, Type: AccountTypeOAuth}
+	refresher := &tokenRefresherStub{credentials: map[string]any{"access_token": "new-token"}}
+	before := time.Now()
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.updateCredentialsCalls)
+	stamped, parseErr := time.Parse(time.RFC3339, account.GetCredential(CredentialKeyTokenRefreshedAt))
+	require.NoError(t, parseErr)
+	require.False(t, stamped.Before(before.Truncate(time.Second)))
+	require.WithinDuration(t, time.Now(), stamped, 2*time.Second)
+	version := account.GetCredentialAsInt64("_token_version")
+	require.NotZero(t, version)
+	require.Equal(t, time.UnixMilli(version).UTC().Truncate(time.Second), stamped)
+}

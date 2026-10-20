@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -352,6 +353,9 @@ func (s *GrokOAuthService) BuildAccountCredentials(tokenInfo *GrokTokenInfo) map
 	creds := map[string]any{
 		"access_token": tokenInfo.AccessToken,
 		"expires_at":   expiresAt,
+	}
+	if tokenInfo.ExpiresIn > 0 {
+		creds["expires_in"] = strconv.FormatInt(tokenInfo.ExpiresIn, 10)
 	}
 	if tokenInfo.RefreshToken != "" {
 		creds["refresh_token"] = tokenInfo.RefreshToken

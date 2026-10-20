@@ -631,7 +631,7 @@ export default {
       vertexSaJsonRequired: 'Please upload a Service Account JSON',
       oauthSetupToken: 'OAuth / Setup Token',
       addMethod: 'Add Method',
-      setupTokenLongLived: 'Setup Token (Long-lived)',
+      setupTokenLongLived: 'Setup Token (8-hour access token, auto-refreshed)',
       baseUrl: 'Base URL',
       baseUrlHint: 'Leave default for official Anthropic API',
       apiKeyRequired: 'API Key *',

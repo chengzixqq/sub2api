@@ -628,6 +628,8 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
+	// 只在新建入口记刷新时间；复制账号走 buildAccountForCreate，凭据须与源账号一致。
+	stampTokenRefreshedAtOnCreate(input.Type, input.Credentials, time.Now())
 
 	// 授权校验必须早于 Create：绑定发生在账号入库之后，
 	// 放到那里失败会留下一个不属于任何分组的孤儿账号。
@@ -811,6 +813,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
+		previousAccessToken := account.GetCredential("access_token")
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
 		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
@@ -823,6 +826,8 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
+		// 手动刷新、apply / 重新授权、换令牌都经过这里：access_token 变了就记刷新时间。
+		stampTokenRefreshedAtOnNewAccessToken(account.Type, previousAccessToken, account.Credentials, time.Now())
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。

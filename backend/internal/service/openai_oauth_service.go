@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -400,6 +401,12 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	// 仅在刷新响应返回了新的 refresh_token 时才更新，防止用空值覆盖已有令牌
 	if strings.TrimSpace(tokenInfo.RefreshToken) != "" {
 		creds["refresh_token"] = tokenInfo.RefreshToken
+		// expires_in 是上游签发的令牌寿命（token_status.lifetime_seconds）。只有带
+		// refresh_token 的换码 / 刷新响应才可信：仅有访问令牌的兜底路径与 PAT 的
+		// ExpiresIn 是剩余秒数而非寿命（PAT 的该键另由 Normalize 剥掉）。
+		if tokenInfo.ExpiresIn > 0 {
+			creds["expires_in"] = strconv.FormatInt(tokenInfo.ExpiresIn, 10)
+		}
 	}
 
 	if tokenInfo.IDToken != "" {

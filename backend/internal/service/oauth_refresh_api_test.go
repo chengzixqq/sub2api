@@ -1123,3 +1123,65 @@ func TestAntigravityProviderRefreshPolicy(t *testing.T) {
 	require.Equal(t, ProviderLockHeldUseExistingToken, p.OnLockHeld)
 	require.Equal(t, time.Duration(0), p.FailureTTL)
 }
+
+func requireTokenRefreshStampNearNow(t *testing.T, creds map[string]any, before time.Time) {
+	t.Helper()
+	raw, ok := creds[CredentialKeyTokenRefreshedAt].(string)
+	require.True(t, ok, "credentials must carry %s as an RFC3339 string", CredentialKeyTokenRefreshedAt)
+	stamped, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+	require.Equal(t, time.UTC, stamped.Location())
+	require.False(t, stamped.Before(before.Truncate(time.Second)))
+	require.WithinDuration(t, time.Now(), stamped, 2*time.Second)
+	version, ok := creds["_token_version"].(int64)
+	require.True(t, ok)
+	require.Equal(t, time.UnixMilli(version).UTC().Truncate(time.Second), stamped,
+		"_token_refreshed_at and _token_version must come from the same instant")
+}
+
+func TestRefreshIfNeeded_StampsTokenRefreshedAt(t *testing.T) {
+	account := &Account{ID: 81, Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive}
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials:  map[string]any{"access_token": "new-token"},
+	}
+	before := time.Now()
+
+	result, err := NewOAuthRefreshAPI(repo, &refreshAPICacheStub{lockResult: true}).
+		RefreshIfNeeded(context.Background(), account, executor, 3*time.Minute)
+
+	require.NoError(t, err)
+	require.True(t, result.Refreshed)
+	requireTokenRefreshStampNearNow(t, result.NewCredentials, before)
+	requireTokenRefreshStampNearNow(t, repo.account.Credentials, before)
+}
+
+func TestRefreshIfNeeded_GrokSuccessCASStampsTokenRefreshedAt(t *testing.T) {
+	account := &Account{
+		ID:       82,
+		Platform: PlatformGrok,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Credentials: map[string]any{
+			"access_token":  "attempted-access",
+			"refresh_token": "attempted-refresh",
+		},
+	}
+	repo := &refreshAPIAccountRepo{account: account}
+	executor := &refreshAPIExecutorStub{
+		needsRefresh: true,
+		credentials: map[string]any{
+			"access_token":  "provider-access",
+			"refresh_token": "provider-refresh",
+		},
+	}
+	before := time.Now()
+
+	result, err := NewOAuthRefreshAPI(repo, nil).RefreshIfNeeded(context.Background(), account, executor, time.Hour)
+
+	require.NoError(t, err)
+	require.True(t, result.Refreshed)
+	require.Equal(t, 1, repo.successCASCalls)
+	requireTokenRefreshStampNearNow(t, repo.account.Credentials, before)
+}

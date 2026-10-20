@@ -885,6 +885,9 @@ func (s *GeminiOAuthService) BuildAccountCredentials(tokenInfo *GeminiTokenInfo)
 		"access_token": tokenInfo.AccessToken,
 		"expires_at":   strconv.FormatInt(tokenInfo.ExpiresAt, 10),
 	}
+	if tokenInfo.ExpiresIn > 0 {
+		creds["expires_in"] = strconv.FormatInt(tokenInfo.ExpiresIn, 10)
+	}
 	if tokenInfo.RefreshToken != "" {
 		creds["refresh_token"] = tokenInfo.RefreshToken
 	}
