@@ -217,6 +217,47 @@ func TestPushDispatcher_DemotedAdminAndUndecryptable(t *testing.T) {
 	require.Equal(t, PushDisabledSecretUndecryptable, repo.device(broken.ID).DisabledReason)
 }
 
+// account.error is throttled to one push per device and account per 30 minutes. error_at moves on every SetError, so
+// a burst of failures (in-flight requests of an account already in error) can cross a 30-minute bucket of error_at;
+// that must not push the same incident again.
+func TestPushDispatcher_AccountErrorAtMostOncePer30Minutes(t *testing.T) {
+	ctx := context.Background()
+	repo := newPushMemRepo()
+	sender := &pushFakeSender{}
+	sub := DefaultPushSubscription()
+	device := repo.addDevice(pushTestDevice(1, "tok-a", sub))
+	quietSub := DefaultPushSubscription()
+	quietSub.QuietHours = &PushQuietHours{Start: "00:00", End: "23:59"}
+	quiet := repo.addDevice(pushTestDevice(1, "tok-quiet", quietSub))
+	d := newPushDispatcherForTest(repo, sender, nil)
+	errorAt := func(at time.Time) {
+		repo.mu.Lock()
+		repo.accounts = []*PushAccountErrorRow{{AccountID: 42, Platform: "anthropic", ErrorMessage: "401 Unauthorized", ErrorAt: at}}
+		repo.mu.Unlock()
+	}
+	runAt := func(at time.Time) {
+		d.now = func() time.Time { return at }
+		d.RunOnce(ctx)
+	}
+	boundary := time.Date(2026, 10, 21, 12, 30, 0, 0, time.UTC) // a 30-minute bucket boundary of error_at, after the devices were added
+
+	errorAt(boundary.Add(-5 * time.Second))
+	runAt(boundary.Add(5 * time.Second))
+	require.Len(t, sender.sends(), 1)
+
+	errorAt(boundary.Add(20 * time.Second)) // the next 401 of the same incident, in the next bucket
+	runAt(boundary.Add(35 * time.Second))
+	runAt(boundary.Add(5 * time.Minute))
+	require.Len(t, sender.sends(), 1, "the same account is not pushed again within 30 minutes")
+	require.Len(t, repo.deliveriesFor(device.ID), 1)
+
+	errorAt(boundary.Add(31 * time.Minute)) // still failing half an hour later
+	runAt(boundary.Add(31*time.Minute + 10*time.Second))
+	require.Len(t, sender.sends(), 2, "30 minutes after the last push the account is pushed again")
+	require.Len(t, repo.deliveriesFor(device.ID), 2)
+	require.Len(t, repo.deliveriesFor(quiet.ID), 3, "skipped deliveries (quiet hours) were never pushed and do not throttle")
+}
+
 // A target that does not answer (timeout, refused) is dialled once per round: its other deliveries reuse that failure
 // and are retried later, and the round keeps claiming batches, so a dead endpoint does not hold back other devices.
 func TestPushDispatcher_UnreachableTargetDoesNotHoldBackOthers(t *testing.T) {

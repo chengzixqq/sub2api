@@ -95,6 +95,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrInvalidAPNsConfig, http.StatusBadRequest, "INVALID_APNS_CONFIG"},
 		{ErrPushDeviceNotFound, http.StatusNotFound, "PUSH_DEVICE_NOT_FOUND"},
 		{ErrPushDeviceLimit, http.StatusConflict, "PUSH_DEVICE_LIMIT_REACHED"},
+		{ErrPushTargetInUse, http.StatusConflict, "PUSH_TARGET_IN_USE"},
 		{ErrPushDeliveryFailed, http.StatusBadGateway, "PUSH_DELIVERY_FAILED"},
 		{ErrPushNotConfigured, http.StatusServiceUnavailable, "PUSH_NOT_CONFIGURED"},
 		{ErrSecretEncryptionKeyNotConfigured, http.StatusBadRequest, "SECRET_ENCRYPTION_KEY_NOT_CONFIGURED"},

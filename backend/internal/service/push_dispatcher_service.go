@@ -226,9 +226,11 @@ func (s *PushDispatcherService) alertSilencer(ctx context.Context, now time.Time
 }
 
 // fanout writes one delivery per matching (device, event). Devices in quiet hours get a skipped row so the event is
-// not pushed later; events older than the device are ignored.
+// not pushed later; events older than the device are ignored, and so is an account.error of an account pushed to the
+// device within the last 30 minutes.
 func (s *PushDispatcherService) fanout(ctx context.Context, now time.Time, devices []*PushDevice, events []PushEvent) {
 	s.pruneSeen(now)
+	recent := s.recentAccountErrorPushes(ctx, now, events)
 	for i := range events {
 		ev := &events[i]
 		for _, d := range devices {
@@ -242,6 +244,13 @@ func (s *PushDispatcherService) fanout(ctx context.Context, now time.Time, devic
 			if s.wasSeen(seenKey) {
 				continue
 			}
+			var throttle pushThrottleSlot
+			if ev.Type == PushEventAccountError {
+				throttle = pushThrottleSlot{deviceID: d.ID, key: pushAccountErrorThrottleKey(ev.DedupKey)}
+				if recent[throttle] {
+					continue
+				}
+			}
 			delivery := &PushDelivery{
 				DeviceID:      d.ID,
 				DedupKey:      ev.DedupKey,
@@ -253,13 +262,51 @@ func (s *PushDispatcherService) fanout(ctx context.Context, now time.Time, devic
 			if d.Subscription.QuietHours.Contains(now, d.Location()) {
 				delivery.Status, delivery.LastError = PushDeliverySkipped, "quiet hours"
 			}
-			if _, err := s.repo.InsertDelivery(ctx, delivery); err != nil {
+			inserted, err := s.repo.InsertDelivery(ctx, delivery)
+			if err != nil {
 				logger.LegacyPrintf("service.push", "[Push] insert delivery failed: device=%d key=%s err=%v", d.ID, ev.DedupKey, err)
 				continue
+			}
+			if inserted && throttle.key != "" && delivery.Status != PushDeliverySkipped {
+				recent[throttle] = true
 			}
 			s.markSeen(seenKey, now)
 		}
 	}
+}
+
+// pushThrottleSlot is one account (account.error throttle key) on one device.
+type pushThrottleSlot struct {
+	deviceID int64
+	key      string
+}
+
+// recentAccountErrorPushes returns the (device, account) pairs that got an account.error delivery within
+// pushAccountErrorBucket. The dedup key buckets error_at, but error_at moves on every SetError (for example in-flight
+// requests of an account already in error), so one incident can fall in two buckets; this keeps account.error to one
+// push per device and account per 30 minutes. Skipped deliveries (quiet hours) were never pushed and do not count. It
+// is read only when the scan found account errors; when the read fails the bucketed dedup key alone applies.
+func (s *PushDispatcherService) recentAccountErrorPushes(ctx context.Context, now time.Time, events []PushEvent) map[pushThrottleSlot]bool {
+	recent := map[pushThrottleSlot]bool{}
+	hasAccountErrors := false
+	for i := range events {
+		if events[i].Type == PushEventAccountError {
+			hasAccountErrors = true
+			break
+		}
+	}
+	if !hasAccountErrors {
+		return recent
+	}
+	keys, err := s.repo.ListDeliveryKeysSince(ctx, PushEventAccountError, now.Add(-pushAccountErrorBucket))
+	if err != nil {
+		logger.LegacyPrintf("service.push", "[Push] read recent account.error deliveries failed: %v", err)
+		return recent
+	}
+	for _, k := range keys {
+		recent[pushThrottleSlot{deviceID: k.DeviceID, key: pushAccountErrorThrottleKey(k.DedupKey)}] = true
+	}
+	return recent
 }
 
 func (s *PushDispatcherService) wasSeen(key string) bool {

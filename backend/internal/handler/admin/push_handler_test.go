@@ -72,6 +72,29 @@ func (r *pushHandlerRepo) ListDevicesByUser(_ context.Context, userID int64) ([]
 	return out, nil
 }
 
+func (r *pushHandlerRepo) UpdateDevicePrefs(_ context.Context, userID, id int64, prefs service.PushSubscription) (*service.PushDevice, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[id]
+	if !ok || d.UserID != userID {
+		return nil, service.ErrPushDeviceNotFound
+	}
+	d.Subscription = prefs
+	cp := *d
+	return &cp, nil
+}
+
+func (r *pushHandlerRepo) DeleteDeviceForUser(_ context.Context, userID, id int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.devices[id]
+	if !ok || d.UserID != userID {
+		return service.ErrPushDeviceNotFound
+	}
+	delete(r.devices, id)
+	return nil
+}
+
 func (r *pushHandlerRepo) MarkDeviceError(context.Context, int64, string, string, time.Time) error {
 	return nil
 }
@@ -100,6 +123,7 @@ func pushHandlerRouter(h *PushHandler, userID int64, extra ...gin.HandlerFunc) *
 	g := r.Group("/api/v1/admin/push")
 	g.POST("/devices", h.RegisterDevice)
 	g.GET("/devices", h.ListDevices)
+	g.DELETE("/devices/:id", h.DeleteDevice)
 	g.POST("/devices/:id/test", h.TestDevice)
 	g.PUT("/devices/:id/subscription", h.UpdateSubscription)
 	g.GET("/config", h.GetConfig)
@@ -118,7 +142,8 @@ func doPushRequest(t *testing.T, r *gin.Engine, method, path, body string) (int,
 }
 
 func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
-	r := pushHandlerRouter(newPushHandlerForTest(), 7)
+	h := newPushHandlerForTest()
+	r := pushHandlerRouter(h, 7)
 	token := strings.Repeat("ab", 32)
 	body := `{"platform":"ios","apns_token":"` + token + `","bundle_id":"com.example.sub2mobile","environment":"production","device_name":"我的 iPhone","locale":"zh-Hans","timezone":"Asia/Shanghai"}`
 
@@ -155,10 +180,27 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	require.Len(t, resp["data"].(map[string]any)["items"], 1)
 
-	other := pushHandlerRouter(newPushHandlerForTest(), 8)
-	code, resp = doPushRequest(t, other, http.MethodPost, "/api/v1/admin/push/devices/1/test", "")
-	require.Equal(t, http.StatusNotFound, code)
-	require.Equal(t, "PUSH_DEVICE_NOT_FOUND", resp["reason"])
+	// Another admin on the same handler and repository: device 1 exists but belongs to user 7, so every device route
+	// answers 404 to user 8 and leaves the device alone.
+	other := pushHandlerRouter(h, 8)
+	for _, req := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/v1/admin/push/devices/1/test", ""},
+		{http.MethodPut, "/api/v1/admin/push/devices/1/subscription", `{"events":["account.error"],"min_severity":"P3"}`},
+		{http.MethodDelete, "/api/v1/admin/push/devices/1", ""},
+	} {
+		code, resp = doPushRequest(t, other, req.method, req.path, req.body)
+		require.Equal(t, http.StatusNotFound, code, req.method+" "+req.path)
+		require.Equal(t, "PUSH_DEVICE_NOT_FOUND", resp["reason"], req.method+" "+req.path)
+	}
+	code, resp = doPushRequest(t, other, http.MethodGet, "/api/v1/admin/push/devices", "")
+	require.Equal(t, http.StatusOK, code)
+	require.Empty(t, resp["data"].(map[string]any)["items"], "another admin does not see the device")
+	code, resp = doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/devices", "")
+	require.Equal(t, http.StatusOK, code)
+	items := resp["data"].(map[string]any)["items"].([]any)
+	require.Len(t, items, 1, "the owner still has the device")
+	sub := items[0].(map[string]any)["subscription"].(map[string]any)
+	require.Equal(t, "P1", sub["min_severity"], "the other admin's subscription change was not applied")
 
 	code, resp = doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/config", "")
 	require.Equal(t, http.StatusOK, code)

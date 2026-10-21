@@ -91,6 +91,9 @@ func (r *pushRepository) UpsertDevice(ctx context.Context, d *service.PushDevice
 		return false, err
 	}
 	// SET expressions read the existing row, so "push_devices.user_id <> EXCLUDED.user_id" is the ownership change.
+	// An APNs token moves to the admin now signed in on the phone. A Bark / ntfy / webhook target is identified by a
+	// URL (plus key or topic) that another admin may know, so it only moves when its owner is no longer an active
+	// admin (as in ListActiveAdminDevices); otherwise no row is updated and the caller gets ErrPushTargetInUse.
 	var created bool
 	var stored []byte
 	err = r.db.QueryRowContext(ctx, `
@@ -117,10 +120,16 @@ ON CONFLICT (platform, token_hash) DO UPDATE SET
   disabled_reason = '',
   disabled_at = NULL,
   updated_at = NOW()
+WHERE $16::BOOLEAN OR push_devices.user_id = EXCLUDED.user_id OR NOT EXISTS (
+  SELECT 1 FROM users u WHERE u.id = push_devices.user_id AND u.role = $17 AND u.status = $18 AND u.deleted_at IS NULL)
 RETURNING id, (xmax = 0), prefs, created_at, updated_at`,
 		d.UserID, d.Platform, d.TokenHash, d.CredentialsRaw, d.CredentialsEncrypted, d.TokenHint, d.EndpointHost,
 		d.BundleID, d.Environment, d.DeviceName, d.Locale, d.Timezone, d.SiteTag, string(prefs), replacePrefs,
+		d.Platform == service.PushPlatformIOS, service.RoleAdmin, service.StatusActive,
 	).Scan(&d.ID, &created, &stored, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, service.ErrPushTargetInUse
+	}
 	if err != nil {
 		return false, err
 	}
@@ -259,6 +268,24 @@ func pushNullableTime(t *time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: *t, Valid: true}
+}
+
+func (r *pushRepository) ListDeliveryKeysSince(ctx context.Context, eventType string, since time.Time) ([]service.PushDeliveryKey, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT device_id, dedup_key FROM push_deliveries
+ WHERE created_at >= $1 AND event_type = $2 AND status <> $3`, since, eventType, service.PushDeliverySkipped)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []service.PushDeliveryKey{}
+	for rows.Next() {
+		var k service.PushDeliveryKey
+		if err := rows.Scan(&k.DeviceID, &k.DedupKey); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
 }
 
 func (r *pushRepository) PurgeDeliveriesBefore(ctx context.Context, before time.Time) (int64, error) {

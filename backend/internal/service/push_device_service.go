@@ -103,8 +103,9 @@ func pushSiteFor(d *PushDevice, fallback string) string {
 	return fallback
 }
 
-// Register creates the device, or updates the device with the same token (moving it to userID when another admin
-// registered it before). It reports whether a new device was created.
+// Register creates the device, or updates the device with the same token. An APNs token registered by another admin
+// moves to userID; a Bark / ntfy / webhook target of another active admin returns ErrPushTargetInUse. It reports
+// whether a new device was created.
 func (s *PushDeviceService) Register(ctx context.Context, userID int64, in PushDeviceInput) (*PushDevice, bool, error) {
 	d, creds, err := s.buildDevice(userID, in)
 	if err != nil {

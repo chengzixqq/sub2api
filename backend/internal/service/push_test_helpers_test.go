@@ -80,6 +80,9 @@ func (r *pushMemRepo) UpsertDevice(_ context.Context, d *PushDevice, replacePref
 	for _, existing := range r.devices {
 		if existing.Platform == d.Platform && existing.TokenHash == d.TokenHash {
 			ownerChanged := existing.UserID != d.UserID
+			if ownerChanged && existing.Platform != PushPlatformIOS && r.users[existing.UserID] {
+				return false, ErrPushTargetInUse
+			}
 			prefs := existing.Subscription
 			if replacePrefs || ownerChanged {
 				prefs = d.Subscription
@@ -99,6 +102,9 @@ func (r *pushMemRepo) UpsertDevice(_ context.Context, d *PushDevice, replacePref
 	d.ID = r.nextID
 	d.CreatedAt = time.Now()
 	r.devices[d.ID] = clonePushDevice(d)
+	if _, known := r.users[d.UserID]; !known {
+		r.users[d.UserID] = true // whoever registers is an active admin
+	}
 	return true, nil
 }
 
@@ -210,8 +216,23 @@ func (r *pushMemRepo) InsertDelivery(_ context.Context, d *PushDelivery) (bool, 
 	r.nextID++
 	cp := *d
 	cp.ID = r.nextID
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = cp.NextAttemptAt // fanout sets it to the dispatcher's clock, like the database's NOW()
+	}
 	r.deliveries = append(r.deliveries, &cp)
 	return true, nil
+}
+
+func (r *pushMemRepo) ListDeliveryKeysSince(_ context.Context, eventType string, since time.Time) ([]PushDeliveryKey, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []PushDeliveryKey
+	for _, d := range r.deliveries {
+		if d.EventType == eventType && d.Status != PushDeliverySkipped && !d.CreatedAt.Before(since) {
+			out = append(out, PushDeliveryKey{DeviceID: d.DeviceID, DedupKey: d.DedupKey})
+		}
+	}
+	return out, nil
 }
 
 func (r *pushMemRepo) ClaimDueDeliveries(_ context.Context, now time.Time, lease time.Duration, limit int) ([]*PushDelivery, error) {

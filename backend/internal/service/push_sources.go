@@ -17,7 +17,8 @@ import (
 const (
 	pushTitleMaxRunes = 120
 	pushBodyMaxRunes  = 240
-	// pushAccountErrorBucket throttles account.error: one push per account per 30-minute bucket of error_at.
+	// pushAccountErrorBucket throttles account.error: the dedup key buckets error_at by 30 minutes, and since error_at
+	// moves on every SetError the dispatcher also skips an account pushed to the device within the last 30 minutes.
 	pushAccountErrorBucket = 30 * time.Minute
 	pushModelMaxRunes      = 64
 )
@@ -190,6 +191,15 @@ func newAccountErrorPushEvent(row *PushAccountErrorRow) PushEvent {
 		Content: pushContent("账号异常 #"+id, joinPushParts(row.Platform, kindZh), "Account error #"+id, joinPushParts(row.Platform, kindEn),
 			"account", pushInterruptionActive, map[string]any{"account_id": row.AccountID, "error_kind": kind}),
 	}
+}
+
+// pushAccountErrorThrottleKey is the account part of an account.error dedup key ("account.error:<id>"), without the
+// error_at bucket.
+func pushAccountErrorThrottleKey(dedupKey string) string {
+	if i := strings.LastIndexByte(dedupKey, ':'); i > 0 {
+		return dedupKey[:i]
+	}
+	return dedupKey
 }
 
 func newAccountTestFinishedPushEvent(row *PushTestRunRow) PushEvent {

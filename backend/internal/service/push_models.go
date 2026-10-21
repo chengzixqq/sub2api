@@ -72,6 +72,7 @@ var (
 	ErrInvalidPushSubscription = infraerrors.BadRequest("INVALID_PUSH_SUBSCRIPTION", "invalid push subscription")
 	ErrPushDeviceNotFound      = infraerrors.NotFound("PUSH_DEVICE_NOT_FOUND", "push device not found")
 	ErrPushDeviceLimit         = infraerrors.Conflict("PUSH_DEVICE_LIMIT_REACHED", "too many push devices, delete one first")
+	ErrPushTargetInUse         = infraerrors.Conflict("PUSH_TARGET_IN_USE", "this push target is registered by another admin")
 	ErrPushNotConfigured       = infraerrors.ServiceUnavailable("PUSH_NOT_CONFIGURED", "APNs push is not configured or not enabled on this site")
 	ErrPushDeliveryFailed      = infraerrors.New(http.StatusBadGateway, "PUSH_DELIVERY_FAILED", "the push provider did not accept the notification")
 	ErrInvalidAPNsConfig       = infraerrors.BadRequest("INVALID_APNS_CONFIG", "invalid APNs configuration")
@@ -402,6 +403,12 @@ type PushDelivery struct {
 	CreatedAt     time.Time
 }
 
+// PushDeliveryKey identifies a stored delivery: one event (dedup key) on one device.
+type PushDeliveryKey struct {
+	DeviceID int64
+	DedupKey string
+}
+
 // PushAlertEventRow is an ops alert event as the dispatcher reads it.
 type PushAlertEventRow struct {
 	EventID        int64
@@ -450,6 +457,7 @@ type PushTestRunRow struct {
 type PushRepository interface {
 	// UpsertDevice inserts d or updates the device with the same (platform, token_hash), moving it to d.UserID.
 	// Prefs are replaced when replacePrefs is set or the owner changes. It fills d.ID, CreatedAt and UpdatedAt.
+	// A Bark / ntfy / webhook target of another active admin is not moved: ErrPushTargetInUse.
 	UpsertDevice(ctx context.Context, d *PushDevice, replacePrefs bool) (created bool, err error)
 	// CountDevicesByUserExcept counts the user's devices other than (platform, tokenHash).
 	CountDevicesByUserExcept(ctx context.Context, userID int64, platform, tokenHash string) (int, error)
@@ -473,6 +481,9 @@ type PushRepository interface {
 	// FinishDelivery writes the outcome of a claimed delivery; a non-nil retryAt puts it back to pending.
 	FinishDelivery(ctx context.Context, id int64, status, lastError string, retryAt, sentAt *time.Time) error
 	PurgeDeliveriesBefore(ctx context.Context, before time.Time) (int64, error)
+	// ListDeliveryKeysSince returns the deliveries of eventType created at or after since, except skipped ones
+	// (quiet hours, device gone), which were never pushed.
+	ListDeliveryKeysSince(ctx context.Context, eventType string, since time.Time) ([]PushDeliveryKey, error)
 
 	ListAlertEventsFiredBetween(ctx context.Context, from, to time.Time) ([]*PushAlertEventRow, error)
 	ListAlertEventsResolvedBetween(ctx context.Context, from, to time.Time) ([]*PushAlertEventRow, error)

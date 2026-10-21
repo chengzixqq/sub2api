@@ -94,6 +94,96 @@ func TestPushRepo_RegisterUpsertAndOwnership(t *testing.T) {
 	require.ErrorIs(t, repo.DeleteDeviceForUser(ctx, other.ID, firstID), service.ErrPushDeviceNotFound)
 }
 
+// A Bark / ntfy / webhook target is identified by its URL (plus key or topic), which another admin may know. It does
+// not move to another active admin, so the owner keeps the device, its secret and subscription; the owner can still
+// update it, and it moves once the owner is no longer an active admin. (APNs tokens still move: one phone, another
+// admin signed in, see TestPushRepo_RegisterUpsertAndOwnership.)
+func TestPushRepo_EndpointTargetIsNotTakenOver(t *testing.T) {
+	ctx := context.Background()
+	repo := NewPushRepository(integrationDB)
+	owner, other := newPushTestAdmin(t), newPushTestAdmin(t)
+	hash := uuid.NewString()
+	webhook := func(userID int64, creds string) *service.PushDevice {
+		d := pushTestDeviceRow(userID, hash)
+		d.Platform, d.CredentialsRaw, d.EndpointHost, d.Environment = service.PushPlatformWebhook, creds, "hooks.example.com", ""
+		return d
+	}
+
+	d := webhook(owner.ID, `{"endpoint":"https://hooks.example.com/x","secret":"owner-secret"}`)
+	created, err := repo.UpsertDevice(ctx, d, false)
+	require.NoError(t, err)
+	require.True(t, created)
+	sub := service.DefaultPushSubscription()
+	sub.MinSeverity = "P3"
+	_, err = repo.UpdateDevicePrefs(ctx, owner.ID, d.ID, sub)
+	require.NoError(t, err)
+
+	_, err = repo.UpsertDevice(ctx, webhook(other.ID, `{"endpoint":"https://hooks.example.com/x"}`), true)
+	require.ErrorIs(t, err, service.ErrPushTargetInUse)
+	got, err := repo.GetDeviceForUser(ctx, owner.ID, d.ID)
+	require.NoError(t, err, "the device stays with its owner")
+	require.Contains(t, got.CredentialsRaw, "owner-secret", "the owner's secret is not overwritten")
+	require.Equal(t, "P3", got.Subscription.MinSeverity)
+	list, err := repo.ListDevicesByUser(ctx, other.ID)
+	require.NoError(t, err)
+	require.Empty(t, list)
+
+	again := webhook(owner.ID, `{"endpoint":"https://hooks.example.com/x","secret":"rotated"}`)
+	created, err = repo.UpsertDevice(ctx, again, false)
+	require.NoError(t, err, "the owner can update the target")
+	require.False(t, created)
+	require.Equal(t, d.ID, again.ID)
+
+	_, err = integrationDB.ExecContext(ctx, "UPDATE users SET status = $2 WHERE id = $1", owner.ID, service.StatusDisabled)
+	require.NoError(t, err)
+	moved := webhook(other.ID, `{"endpoint":"https://hooks.example.com/x"}`)
+	created, err = repo.UpsertDevice(ctx, moved, false)
+	require.NoError(t, err, "a target whose owner is no longer an active admin can be taken over")
+	require.False(t, created)
+	require.Equal(t, d.ID, moved.ID)
+	_, err = repo.GetDeviceForUser(ctx, other.ID, d.ID)
+	require.NoError(t, err)
+}
+
+// ListDeliveryKeysSince feeds the account.error throttle: deliveries of one event type created since a time, without
+// skipped ones (quiet hours, device gone), which were never pushed.
+func TestPushRepo_ListDeliveryKeysSince(t *testing.T) {
+	ctx := context.Background()
+	repo := NewPushRepository(integrationDB)
+	owner := newPushTestAdmin(t)
+	d := pushTestDeviceRow(owner.ID, uuid.NewString())
+	_, err := repo.UpsertDevice(ctx, d, false)
+	require.NoError(t, err)
+
+	tag := uuid.NewString()
+	insert := func(key, eventType, status string) *service.PushDelivery {
+		row := &service.PushDelivery{
+			DeviceID: d.ID, DedupKey: key, EventType: eventType, Status: status, NextAttemptAt: time.Now().Add(time.Hour),
+			Payload: service.PushMessage{Type: eventType, Title: "t"},
+		}
+		ok, err := repo.InsertDelivery(ctx, row)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return row
+	}
+	recent := insert("account.error:"+tag+":1", service.PushEventAccountError, service.PushDeliveryPending)
+	insert("account.error:"+tag+":2", service.PushEventAccountError, service.PushDeliverySkipped)
+	insert("ops_alert.fired:"+tag, service.PushEventOpsAlertFired, service.PushDeliveryPending)
+	old := insert("account.error:"+tag+":3", service.PushEventAccountError, service.PushDeliverySent)
+	_, err = integrationDB.ExecContext(ctx, "UPDATE push_deliveries SET created_at = NOW() - INTERVAL '1 hour' WHERE id = $1", old.ID)
+	require.NoError(t, err)
+
+	keys, err := repo.ListDeliveryKeysSince(ctx, service.PushEventAccountError, time.Now().Add(-30*time.Minute))
+	require.NoError(t, err)
+	var mine []service.PushDeliveryKey
+	for _, k := range keys {
+		if k.DeviceID == d.ID {
+			mine = append(mine, k)
+		}
+	}
+	require.Equal(t, []service.PushDeliveryKey{{DeviceID: d.ID, DedupKey: recent.DedupKey}}, mine)
+}
+
 func TestPushRepo_DeliveryClaimOnce(t *testing.T) {
 	ctx := context.Background()
 	repo := NewPushRepository(integrationDB)

@@ -169,6 +169,33 @@ func TestAPNsSender_NotConfigured(t *testing.T) {
 	require.ErrorIs(t, err, ErrPushNotConfigured, "without a bundle_id or apns_topic there is nothing to push to")
 }
 
+// A storage error while reading the APNs settings (database hiccup, timeout) is not "APNs not configured": the push
+// is retried later and the device's last_error gets a fixed text, not the internal error.
+func TestAPNsSender_SettingsReadFailureIsRetryable(t *testing.T) {
+	sender := newAPNsSender(func(context.Context) (*PushAPNsRuntime, error) {
+		return nil, errors.New("pq: canceling statement due to statement timeout")
+	}, http.DefaultClient)
+	res, err := sender.Send(context.Background(), PushTarget{Platform: PushPlatformIOS, Token: "aa"}, &PushMessage{})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrPushNotConfigured)
+	require.True(t, res.Retryable)
+	require.Zero(t, res.ProviderStatus)
+	require.Equal(t, "APNs settings unavailable", res.ProviderReason)
+	require.NotContains(t, describePushFailure(res, err), "pq:")
+
+	repo := newPushMemRepo()
+	device := repo.addDevice(pushTestDevice(1, "tok", DefaultPushSubscription()))
+	repo.fired = []*PushAlertEventRow{firedRow(7, "P0", pushTestNow.Add(-time.Minute))}
+	d := newPushDispatcherForTest(repo, &pushFakeSender{}, nil)
+	d.senders = &PushSenders{byPlatform: map[string]PushSender{PushPlatformIOS: sender}}
+	d.RunOnce(context.Background())
+	rows := repo.deliveriesFor(device.ID)
+	require.Len(t, rows, 1)
+	require.Equal(t, PushDeliveryPending, rows[0].Status, "retried with backoff, not failed for good")
+	require.Equal(t, pushTestNow.Add(30*time.Second), rows[0].NextAttemptAt)
+	require.Equal(t, "APNs settings unavailable", repo.device(device.ID).LastError)
+}
+
 type recordedChannelRequest struct {
 	method  string
 	path    string

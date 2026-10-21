@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,7 +24,13 @@ const (
 	// 20 minutes, which Apple throttles).
 	apnsTokenRefresh = 50 * time.Minute
 	apnsExpiration   = time.Hour
+	// apnsSettingsUnavailable is the provider reason (and device last_error) when the APNs settings cannot be read.
+	apnsSettingsUnavailable = "APNs settings unavailable"
 )
+
+// errAPNsSettingsUnavailable: reading the APNs settings failed (database hiccup, timeout). Unlike
+// ErrPushNotConfigured the push is retried; the storage error itself is only logged.
+var errAPNsSettingsUnavailable = errors.New("apns settings unavailable")
 
 // apnsSender pushes to APNs over HTTP/2 with an ES256 provider token signed by the site's p8 key.
 type apnsSender struct {
@@ -85,8 +92,12 @@ func (s *apnsSender) providerToken(rt *PushAPNsRuntime, refresh bool) (string, e
 
 func (s *apnsSender) Send(ctx context.Context, target PushTarget, msg *PushMessage) (PushSendResult, error) {
 	rt, err := s.resolve(ctx)
-	if err != nil {
+	if errors.Is(err, ErrPushNotConfigured) {
 		return PushSendResult{}, err
+	}
+	if err != nil {
+		logger.LegacyPrintf("service.push", "[Push] read APNs settings failed: %v", err)
+		return PushSendResult{ProviderReason: apnsSettingsUnavailable, Retryable: true}, errAPNsSettingsUnavailable
 	}
 	topic := target.BundleID
 	if topic == "" {

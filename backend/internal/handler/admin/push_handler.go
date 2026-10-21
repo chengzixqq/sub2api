@@ -102,7 +102,8 @@ func pushDeviceID(c *gin.Context) (int64, bool) {
 }
 
 // RegisterDevice registers a push target of the current admin; 201 when created, 200 when the same token was
-// registered before (it may have belonged to another admin and moves to the current one).
+// registered before (an APNs token of another admin moves to the current one; a Bark / ntfy / webhook target of
+// another active admin is 409 PUSH_TARGET_IN_USE).
 // POST /api/v1/admin/push/devices
 func (h *PushHandler) RegisterDevice(c *gin.Context) {
 	userID, ok := pushSubject(c)

@@ -201,6 +201,31 @@ func TestPushDeviceService_OwnershipAndSubscription(t *testing.T) {
 	require.Empty(t, list)
 }
 
+// Another admin registering the same Bark / ntfy / webhook target gets 409 PUSH_TARGET_IN_USE instead of taking the
+// device over and overwriting its secret; an APNs token still moves to the admin now signed in on the phone.
+func TestPushDeviceService_EndpointTargetIsNotTakenOver(t *testing.T) {
+	ctx := context.Background()
+	repo := newPushMemRepo()
+	svc := newPushDeviceServiceForTest(repo, false, &pushFakeSender{})
+
+	hook, created, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "webhook", Endpoint: "https://hooks.example.com/x", Secret: "owner-secret"})
+	require.NoError(t, err)
+	require.True(t, created)
+	_, _, err = svc.Register(ctx, 2, PushDeviceInput{Platform: "webhook", Endpoint: "https://hooks.example.com/x", Secret: "mine"})
+	require.ErrorIs(t, err, ErrPushTargetInUse)
+	require.Equal(t, http.StatusConflict, infraerrors.Code(err))
+	require.Equal(t, int64(1), repo.device(hook.ID).UserID)
+	require.Contains(t, repo.device(hook.ID).CredentialsRaw, "owner-secret")
+
+	phone, _, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken})
+	require.NoError(t, err)
+	moved, created, err := svc.Register(ctx, 2, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken})
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Equal(t, phone.ID, moved.ID)
+	require.Equal(t, int64(2), repo.device(phone.ID).UserID)
+}
+
 func TestPushDeviceService_Test(t *testing.T) {
 	ctx := context.Background()
 	repo := newPushMemRepo()
