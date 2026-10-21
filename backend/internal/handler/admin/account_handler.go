@@ -1023,7 +1023,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 	// 幂等重放时闭包不会执行 → createdAccount 为 nil → 不重复调度。
 	var createdAccount *service.Account
 
-	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	result, err := executeAdminOptionalIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
 			Name:                  req.Name,
 			Notes:                 req.Notes,
@@ -1066,9 +1066,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if result != nil && result.Replayed {
-		c.Header("X-Idempotency-Replayed", "true")
-	}
+	writeAdminIdempotentSuccessHeaders(c, result)
 	// OpenAI APIKey 账号创建后异步探测上游 /v1/responses 能力。
 	// 探测失败不影响账号创建响应。
 	h.scheduleOpenAIResponsesProbe(createdAccount)
@@ -2146,7 +2144,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 		return
 	}
 
-	executeAdminIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminOptionalIdempotentJSON(c, "admin.accounts.batch_create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		success := 0
 		failed := 0
 		results := make([]gin.H, 0, len(req.Accounts))

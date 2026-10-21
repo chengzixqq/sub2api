@@ -825,7 +825,9 @@ usage_cleanup:
 idempotency:
   # Observe-only 模式：
   # true: 观察期，不带 Idempotency-Key 仍放行（但会记录）
-  # false: 强制期，不带 Idempotency-Key 直接拒绝（仅对接入幂等保护的接口生效）
+  # false: 强制期，强制幂等接口（余额调整、复制账号 / 分组 / 渠道监控、订阅批量操作、create-and-redeem 等）
+  #        不带 Idempotency-Key 直接返回 400 IDEMPOTENCY_KEY_REQUIRED；Web 不带 key 的新建、导入、生成、续期、
+  #        用量清理与系统更新 / 回滚 / 重启为可选幂等，不带 key 照常执行，带 key 时可重放
   observe_only: true
   # 关键写接口幂等记录 TTL（秒）
   default_ttl_seconds: 86400

@@ -322,3 +322,23 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
+
+// The Web sends system update / rollback without an Idempotency-Key; they must still run once observe_only is off.
+// Restart is covered by TestWebCalledWriteHandlersUseOptionalIdempotency (a route test would really restart).
+func TestSystemHandlerUpdateAndRollback_RunWithoutKeyWhenKeysAreEnforced(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{}
+	router := newSystemHandlerTestRouter(t, updateSvc, newMemoryIdempotencyRepoStub())
+	cfg := service.DefaultIdempotencyConfig()
+	cfg.ObserveOnly = false
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(newMemoryIdempotencyRepoStub(), cfg))
+
+	update := httptest.NewRecorder()
+	router.ServeHTTP(update, httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update", nil))
+	require.Equal(t, http.StatusOK, update.Code, update.Body.String())
+	require.Equal(t, 1, updateSvc.performCall)
+
+	rollback := httptest.NewRecorder()
+	router.ServeHTTP(rollback, httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/rollback", nil))
+	require.Equal(t, http.StatusOK, rollback.Code, rollback.Body.String())
+	require.Equal(t, 1, updateSvc.rollbackCall)
+}

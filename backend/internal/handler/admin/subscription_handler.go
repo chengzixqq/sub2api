@@ -226,7 +226,7 @@ func (h *SubscriptionHandler) Extend(c *gin.Context) {
 		SubscriptionID: subscriptionID,
 		Body:           req,
 	}
-	executeAdminIdempotentJSON(c, "admin.subscriptions.extend", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminOptionalIdempotentJSON(c, "admin.subscriptions.extend", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		subscription, execErr := h.subscriptionService.ExtendSubscription(ctx, subscriptionID, req.Days)
 		if execErr != nil {
 			return nil, execErr

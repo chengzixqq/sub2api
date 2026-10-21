@@ -143,7 +143,7 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 		return
 	}
 
-	executeAdminIdempotentJSON(c, "admin.proxies.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+	executeAdminOptionalIdempotentJSON(c, "admin.proxies.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		var expiresAt *time.Time
 		if req.ExpiresAt != nil && *req.ExpiresAt > 0 {
 			t := time.Unix(*req.ExpiresAt, 0).UTC()

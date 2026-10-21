@@ -21,6 +21,9 @@ const (
 	idempotencyStoreUnavailableFailOpen
 )
 
+// executeAdminIdempotent requires an Idempotency-Key once observe_only is off. Use it only where every caller sends a
+// key (the Web already does for duplicate account / group / channel monitor); Web writes that send no key use
+// executeAdminOptionalIdempotent instead.
 func executeAdminIdempotent(
 	c *gin.Context,
 	scope string,
@@ -81,6 +84,19 @@ func executeAdminIdempotentWithOptions(
 	}, execute)
 }
 
+// executeAdminOptionalIdempotent is the optional-key variant of executeAdminIdempotent: a request without a key runs
+// directly even when keys are enforced, a keyed request replays. It returns the coordinator outcome so the handler can
+// post-process it (account creation schedules probes and maps the mixed-channel conflict).
+func executeAdminOptionalIdempotent(
+	c *gin.Context,
+	scope string,
+	payload any,
+	ttl time.Duration,
+	execute func(context.Context) (any, error),
+) (*service.IdempotencyExecuteResult, error) {
+	return executeAdminIdempotentWithOptions(c, scope, payload, ttl, 0, false, false, execute)
+}
+
 func adminActorScope(c *gin.Context) string {
 	actorScope := "admin:0"
 	if subject, ok := middleware2.GetAuthSubjectFromContext(c); ok {
@@ -89,6 +105,9 @@ func adminActorScope(c *gin.Context) string {
 	return actorScope
 }
 
+// executeAdminIdempotentJSON requires an Idempotency-Key once observe_only is off. Use it only for endpoints whose
+// callers all send a key (balance adjustments, subscription bulk actions and the like); writes the Web sends without
+// a key use executeAdminOptionalIdempotentJSON.
 func executeAdminIdempotentJSON(
 	c *gin.Context,
 	scope string,
@@ -111,7 +130,7 @@ func executeAdminIdempotentJSONWithTimeout(
 }
 
 func idempotencyBusinessResultCommitted(result *service.IdempotencyExecuteResult, err error) bool {
-	if result == nil || infraerrors.Code(err) != infraerrors.Code(service.ErrIdempotencyStoreUnavail) {
+	if result == nil || !isIdempotencyStoreUnavailable(err) {
 		return false
 	}
 	return infraerrors.FromError(err).Metadata["stage"] == "mark_succeeded"
@@ -164,41 +183,9 @@ func executeAdminOptionalIdempotentJSONWithOptions(
 	reclaimStale bool,
 	execute func(context.Context) (any, error),
 ) {
-	coordinator := service.DefaultIdempotencyCoordinator()
-	if coordinator == nil {
-		ctx := c.Request.Context()
-		if executionTimeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), executionTimeout)
-			defer cancel()
-		}
-		data, err := execute(ctx)
-		if err != nil {
-			response.ErrorFrom(c, err)
-			return
-		}
-		response.Success(c, data)
-		return
-	}
-	result, err := coordinator.Execute(c.Request.Context(), service.IdempotencyExecuteOptions{
-		Scope: scope, ActorScope: adminActorScope(c), Method: c.Request.Method, Route: c.FullPath(),
-		IdempotencyKey: c.GetHeader("Idempotency-Key"), Payload: payload, RequireKey: false, TTL: ttl,
-		ExecutionTimeout: executionTimeout, ReclaimStaleProcessing: reclaimStale,
-	}, execute)
-	if idempotencyBusinessResultCommitted(result, err) {
-		c.Header("X-Idempotency-Degraded", "result-committed")
-		response.Success(c, result.Data)
-		return
-	}
-	if err != nil {
-		if retryAfter := service.RetryAfterSecondsFromError(err); retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
-		}
-		response.ErrorFrom(c, err)
-		return
-	}
-	writeAdminIdempotentSuccessHeaders(c, result)
-	response.Success(c, result.Data)
+	// Same response path as the required variant; only a missing key is treated differently (runs directly).
+	result, err := executeAdminIdempotentWithOptions(c, scope, payload, ttl, executionTimeout, false, reclaimStale, execute)
+	writeAdminIdempotentResult(c, scope, result, err, idempotencyStoreUnavailableFailClose, execute)
 }
 
 func executeAdminIdempotentJSONFailOpenOnStoreUnavailable(
@@ -240,7 +227,7 @@ func writeAdminIdempotentResult(
 		return
 	}
 	if err != nil {
-		if infraerrors.Code(err) == infraerrors.Code(service.ErrIdempotencyStoreUnavail) {
+		if isIdempotencyStoreUnavailable(err) {
 			strategy := "fail_close"
 			if mode == idempotencyStoreUnavailableFailOpen {
 				strategy = "fail_open"
@@ -266,6 +253,12 @@ func writeAdminIdempotentResult(
 	}
 	writeAdminIdempotentSuccessHeaders(c, result)
 	response.Success(c, result.Data)
+}
+
+// isIdempotencyStoreUnavailable matches the store outage by reason, not by status: a business error that happens to be
+// a 503 (for example a disabled feature) must not be counted as an outage or re-executed by the fail-open mode.
+func isIdempotencyStoreUnavailable(err error) bool {
+	return err != nil && infraerrors.Reason(err) == infraerrors.Reason(service.ErrIdempotencyStoreUnavail)
 }
 
 // writeAdminIdempotentSuccessHeaders marks replays and tells the client until when the key replays, after which only
