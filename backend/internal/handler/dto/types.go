@@ -209,6 +209,10 @@ type AdminGroup struct {
 	AccountCount            int64          `json:"account_count,omitempty"`
 	ActiveAccountCount      int64          `json:"active_account_count,omitempty"`
 	RateLimitedAccountCount int64          `json:"rate_limited_account_count,omitempty"`
+	// 错误与暂停 · 停用两桶不加 omitempty：App 按键是否存在判断服务端是否已支持四桶计数，
+	// account_count = active + rate_limited + error + idle。
+	ErrorAccountCount int64 `json:"error_account_count"`
+	IdleAccountCount  int64 `json:"idle_account_count"`
 
 	// 分组排序
 	SortOrder int `json:"sort_order"`

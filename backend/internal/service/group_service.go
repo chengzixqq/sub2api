@@ -71,14 +71,29 @@ type GroupSortOrderUpdate struct {
 	SortOrder int   `json:"sort_order"`
 }
 
-// GroupAccountCounts 是单个分组的账号数量三联。
+// GroupAccountCounts 是单个分组的账号数量分桶。
 //
 // 与 Group 上的同名字段一一对应，作为 LoadAccountCountsScoped 的返回单元：
 // vendor 视角下用它覆盖列表里的全站计数。
+// Active、RateLimited、Error 与 Idle() 两两不相交，四项之和等于 Total。
 type GroupAccountCounts struct {
 	Total       int64
 	Active      int64
 	RateLimited int64
+	// Error 是 status='error' 的未删除账号数，与账号状态汇总的 state=error 同口径。
+	Error int64
+}
+
+// Idle 返回暂停 · 停用桶：Total 扣掉可用、受限、错误后的余数，不小于 0。
+//
+// 包括停用、停止调度、到期自动暂停的账号，也包括停了调度但仍在
+// 限流 / 过载 / 临时不可调度窗口里的账号（分组列表按调度口径分桶）。
+func (c GroupAccountCounts) Idle() int64 {
+	idle := c.Total - c.Active - c.RateLimited - c.Error
+	if idle < 0 {
+		return 0
+	}
+	return idle
 }
 
 // CreateGroupRequest 创建分组请求

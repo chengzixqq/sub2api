@@ -152,12 +152,24 @@ func (s *adminServiceImpl) rescopeGroupAccountCounts(ctx context.Context, groups
 		return err
 	}
 	for i := range groups {
-		c := counts[groups[i].ID]
-		groups[i].AccountCount = c.Total
-		groups[i].ActiveAccountCount = c.Active
-		groups[i].RateLimitedAccountCount = c.RateLimited
+		groups[i].ApplyAccountCounts(counts[groups[i].ID])
 	}
 	return nil
+}
+
+// scopeAllGroups 是 /groups/all 三条路径的收口：先按授权过滤行，再把行内计数改写为本工作区口径。
+//
+// 只过滤不重算时，vendor 在下拉框里能看到共享分组的全站账号数。
+// filterGroupsByScope 本身不动：它还被不注入 groupRepo 的测试直接调用。
+func (s *adminServiceImpl) scopeAllGroups(ctx context.Context, groups []Group) ([]Group, error) {
+	visible, err := s.filterGroupsByScope(ctx, groups)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rescopeGroupAccountCounts(ctx, visible); err != nil {
+		return nil, err
+	}
+	return visible, nil
 }
 
 func (s *adminServiceImpl) GetAllGroups(ctx context.Context) ([]Group, error) {
@@ -165,7 +177,7 @@ func (s *adminServiceImpl) GetAllGroups(ctx context.Context) ([]Group, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.filterGroupsByScope(ctx, groups)
+	return s.scopeAllGroups(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetAllGroupsByPlatform(ctx context.Context, platform string) ([]Group, error) {
@@ -173,7 +185,7 @@ func (s *adminServiceImpl) GetAllGroupsByPlatform(ctx context.Context, platform 
 	if err != nil {
 		return nil, err
 	}
-	return s.filterGroupsByScope(ctx, groups)
+	return s.scopeAllGroups(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetAllGroupsIncludingInactive(ctx context.Context) ([]Group, error) {
@@ -183,7 +195,7 @@ func (s *adminServiceImpl) GetAllGroupsIncludingInactive(ctx context.Context) ([
 	if err != nil {
 		return nil, err
 	}
-	return s.filterGroupsByScope(ctx, groups)
+	return s.scopeAllGroups(ctx, groups)
 }
 
 func (s *adminServiceImpl) GetGroup(ctx context.Context, id int64) (*Group, error) {
@@ -921,6 +933,13 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	if err := s.validateSimpleModeGroupAccess(group); err != nil {
 		return nil, err
 	}
+	// 编辑响应回显这个分组：vendor 视角先把计数改写为本工作区口径，
+	// 失败就在写库前返回，宁可整个 PUT 报错也不回显全站计数。
+	scoped := []Group{*group}
+	if err := s.rescopeGroupAccountCounts(ctx, scoped); err != nil {
+		return nil, err
+	}
+	group = &scoped[0]
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && input.Platform == PlatformComposite {
 		return nil, infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
 	}

@@ -158,6 +158,8 @@ type simpleModeGroupResponse struct {
 	AccountCount            int64     `json:"account_count,omitempty"`
 	ActiveAccountCount      int64     `json:"active_account_count,omitempty"`
 	RateLimitedAccountCount int64     `json:"rate_limited_account_count,omitempty"`
+	ErrorAccountCount       int64     `json:"error_account_count"`
+	IdleAccountCount        int64     `json:"idle_account_count"`
 	SortOrder               int       `json:"sort_order"`
 	CreatedAt               time.Time `json:"created_at"`
 	UpdatedAt               time.Time `json:"updated_at"`
@@ -173,6 +175,7 @@ func groupForSimpleMode(group *service.Group) *simpleModeGroupResponse {
 		I18n:               group.I18n,
 		AccountCount:       group.AccountCount,
 		ActiveAccountCount: group.ActiveAccountCount, RateLimitedAccountCount: group.RateLimitedAccountCount,
+		ErrorAccountCount: group.ErrorAccountCount, IdleAccountCount: group.IdleAccountCount,
 		SortOrder: group.SortOrder, CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
 	}
 }

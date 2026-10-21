@@ -143,6 +143,17 @@ type Group struct {
 	AccountCount            int64
 	ActiveAccountCount      int64
 	RateLimitedAccountCount int64
+	ErrorAccountCount       int64
+	IdleAccountCount        int64
+}
+
+// ApplyAccountCounts 一次写入五个账号计数，Idle 由其余四项推导。
+func (g *Group) ApplyAccountCounts(c GroupAccountCounts) {
+	g.AccountCount = c.Total
+	g.ActiveAccountCount = c.Active
+	g.RateLimitedAccountCount = c.RateLimited
+	g.ErrorAccountCount = c.Error
+	g.IdleAccountCount = c.Idle()
 }
 
 // IsGroupBindableInSimpleMode is the shared policy for groups that may be

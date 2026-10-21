@@ -147,7 +147,7 @@ func TestGroupHandlerSimpleModeResponseUsesFieldAllowlist(t *testing.T) {
 	svc := newStubAdminService()
 	svc.groups = []service.Group{{
 		ID: 1, Name: "basic", Description: "allowed", Platform: service.PlatformAnthropic,
-		AccountCount: 3, ActiveAccountCount: 2, RateLimitedAccountCount: 1,
+		AccountCount: 3, ActiveAccountCount: 2, RateLimitedAccountCount: 1, ErrorAccountCount: 1,
 		Status: service.StatusActive, RateMultiplier: 9, RPMLimit: 42,
 		LongContextPricingEnabled: true,
 		ModelPricing:              []service.ChannelModelPricing{{Models: []string{"claude"}}},
@@ -172,9 +172,12 @@ func TestGroupHandlerSimpleModeResponseUsesFieldAllowlist(t *testing.T) {
 	require.Equal(t, "allowed", item["description"])
 	require.Equal(t, "anthropic", item["platform"])
 	require.Equal(t, float64(3), item["account_count"])
+	require.Equal(t, float64(1), item["error_account_count"])
+	require.Equal(t, float64(0), item["idle_account_count"], "zero bucket counts must stay present")
 	require.ElementsMatch(t, []string{
 		"id", "name", "description", "platform", "status", "account_count",
-		"active_account_count", "rate_limited_account_count", "sort_order", "created_at", "updated_at",
+		"active_account_count", "rate_limited_account_count", "error_account_count", "idle_account_count",
+		"sort_order", "created_at", "updated_at",
 	}, mapKeys(item))
 	for _, forbidden := range []string{
 		"rate_multiplier", "rpm_limit", "long_context_pricing_enabled", "model_pricing",

@@ -54,6 +54,8 @@ type GroupMemberCounts struct {
 	AccountCount            int64 `json:"account_count"`
 	ActiveAccountCount      int64 `json:"active_account_count"`
 	RateLimitedAccountCount int64 `json:"rate_limited_account_count"`
+	ErrorAccountCount       int64 `json:"error_account_count"`
+	IdleAccountCount        int64 `json:"idle_account_count"`
 }
 
 type UpdateGroupMembersResult struct {
@@ -266,7 +268,13 @@ func (s *adminServiceImpl) groupMemberCounts(ctx context.Context, groupID int64)
 	if err != nil {
 		return nil, err
 	}
-	return &GroupMemberCounts{AccountCount: group.AccountCount, ActiveAccountCount: group.ActiveAccountCount, RateLimitedAccountCount: group.RateLimitedAccountCount}, nil
+	return &GroupMemberCounts{
+		AccountCount:            group.AccountCount,
+		ActiveAccountCount:      group.ActiveAccountCount,
+		RateLimitedAccountCount: group.RateLimitedAccountCount,
+		ErrorAccountCount:       group.ErrorAccountCount,
+		IdleAccountCount:        group.IdleAccountCount,
+	}, nil
 }
 
 func appendGroupMemberChangeResults(result *UpdateGroupMembersResult, adds []GroupMemberAdd, removes []int64, change *GroupMemberChange) {

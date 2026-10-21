@@ -48,6 +48,10 @@ func (s *AccountRepoSuite) TestStatusSummary_MatchesGroupListCounts() {
 	s.Require().NoError(err)
 	s.Require().Equal(listed.ActiveAccountCount, group.Available, "available must match the group list's active_account_count")
 	s.Require().Equal(listed.AccountCount, group.Total)
+	s.Require().Equal(listed.ErrorAccountCount, group.Error, "error must match the group list's error_account_count")
+	// 分组列表按调度口径：停了调度但仍在限流窗口的 limited 账号算 idle，
+	// D02 把它算进 rate_limited 并另记 stopped，所以 idle = paused + inactive + stopped。
+	s.Require().Equal(listed.IdleAccountCount, group.Paused+group.Inactive+group.Stopped)
 
 	var limitedItem *service.AccountStatusItem
 	for i := range summary.Accounts {

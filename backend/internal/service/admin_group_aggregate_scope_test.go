@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
 // countScopeGroupRepo 只实现聚合计数一个方法。
@@ -112,6 +113,229 @@ func TestRescopeGroupAccountCountsPropagatesError(t *testing.T) {
 	groups := []Group{{ID: 3, AccountCount: 10}}
 	if err := svc.rescopeGroupAccountCounts(vendorGroupCtx(7), groups); !errors.Is(err, boom) {
 		t.Errorf("聚合失败应向上传递，实得 %v", err)
+	}
+}
+
+// TestGroupAccountCountsIdleIsRemainderAndNeverNegative 锁定 idle 的减法口径。
+//
+// 四个桶两两不相交，idle 是 total 扣掉其余三桶后的余数，这样
+// account_count 恒等于四项之和；口径不一致的输入（理论上不会出现）
+// 也不能算出负数让客户端画出负宽度的色格。
+func TestGroupAccountCountsIdleIsRemainderAndNeverNegative(t *testing.T) {
+	c := GroupAccountCounts{Total: 10, Active: 3, RateLimited: 2, Error: 1}
+	if got := c.Idle(); got != 4 {
+		t.Fatalf("idle 应为 10-3-2-1=4，实得 %d", got)
+	}
+	if got := (GroupAccountCounts{Total: 1, Active: 2}).Idle(); got != 0 {
+		t.Fatalf("口径不一致时 idle 应取 0，实得 %d", got)
+	}
+
+	g := Group{ID: 3}
+	g.ApplyAccountCounts(c)
+	if g.AccountCount != 10 || g.ActiveAccountCount != 3 || g.RateLimitedAccountCount != 2 ||
+		g.ErrorAccountCount != 1 || g.IdleAccountCount != 4 {
+		t.Fatalf("ApplyAccountCounts 应一次写入五项，实得 %+v", g)
+	}
+}
+
+// TestRescopeGroupAccountCountsOverwritesErrorAndIdle 锁定新增的两个桶同样按工作区重算。
+//
+// 只改写老三项而漏掉 error / idle，vendor 就能用全站的错误数、停用数
+// 反推别家的账号规模，与不重算等价。
+func TestRescopeGroupAccountCountsOverwritesErrorAndIdle(t *testing.T) {
+	repo := &countScopeGroupRepo{counts: map[int64]GroupAccountCounts{
+		3: {Total: 5, Active: 1, RateLimited: 1, Error: 1},
+	}}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	groups := []Group{
+		{ID: 3, AccountCount: 30, ActiveAccountCount: 9, RateLimitedAccountCount: 3, ErrorAccountCount: 9, IdleAccountCount: 9},
+		{ID: 4, AccountCount: 30, ErrorAccountCount: 9, IdleAccountCount: 9},
+	}
+	if err := svc.rescopeGroupAccountCounts(vendorGroupCtx(7), groups); err != nil {
+		t.Fatalf("改写计数失败: %v", err)
+	}
+	if groups[0].ErrorAccountCount != 1 || groups[0].IdleAccountCount != 2 {
+		t.Fatalf("error / idle 应改写为本工作区口径 1 / 2，实得 %d / %d",
+			groups[0].ErrorAccountCount, groups[0].IdleAccountCount)
+	}
+	if groups[1].ErrorAccountCount != 0 || groups[1].IdleAccountCount != 0 || groups[1].AccountCount != 0 {
+		t.Fatalf("缺键分组五项都应归零，实得 %+v", groups[1])
+	}
+
+	adminRepo := &countScopeGroupRepo{counts: map[int64]GroupAccountCounts{3: {Total: 1}}}
+	adminSvc := &adminServiceImpl{groupRepo: adminRepo}
+	adminGroups := []Group{{ID: 3, AccountCount: 30, ErrorAccountCount: 9, IdleAccountCount: 9}}
+	if err := adminSvc.rescopeGroupAccountCounts(adminGroupCtx(), adminGroups); err != nil {
+		t.Fatalf("站长视角不应出错: %v", err)
+	}
+	if adminRepo.calls != 0 || adminGroups[0].ErrorAccountCount != 9 || adminGroups[0].IdleAccountCount != 9 {
+		t.Fatalf("站长视角应不查询且保持全站值，calls=%d group=%+v", adminRepo.calls, adminGroups[0])
+	}
+}
+
+// allGroupsCountRepo 供 /groups/all 三条服务路径使用：每次返回一份全站计数的分组副本。
+type allGroupsCountRepo struct {
+	countScopeGroupRepo
+	groups []Group
+}
+
+func (r *allGroupsCountRepo) cloneGroups() []Group {
+	return append([]Group(nil), r.groups...)
+}
+
+func (r *allGroupsCountRepo) ListActive(context.Context) ([]Group, error) {
+	return r.cloneGroups(), nil
+}
+
+func (r *allGroupsCountRepo) ListActiveByPlatform(context.Context, string) ([]Group, error) {
+	return r.cloneGroups(), nil
+}
+
+func (r *allGroupsCountRepo) ListWithFilters(context.Context, pagination.PaginationParams, string, string, string, *bool) ([]Group, *pagination.PaginationResult, error) {
+	groups := r.cloneGroups()
+	return groups, &pagination.PaginationResult{Total: int64(len(groups))}, nil
+}
+
+func newAllGroupsCountRepo(err error) *allGroupsCountRepo {
+	return &allGroupsCountRepo{
+		countScopeGroupRepo: countScopeGroupRepo{
+			counts: map[int64]GroupAccountCounts{3: {Total: 4, Active: 1, RateLimited: 1, Error: 1}},
+			err:    err,
+		},
+		groups: []Group{
+			{ID: 3, Platform: PlatformAnthropic, AccountCount: 10, ActiveAccountCount: 8, RateLimitedAccountCount: 1, ErrorAccountCount: 1},
+			{ID: 4, Platform: PlatformAnthropic, AccountCount: 6, ActiveAccountCount: 6},
+		},
+	}
+}
+
+// TestGetAllGroupsPathsRescopeCountsForVendor 锁定 /groups/all 的三条服务路径按工作区重算计数。
+//
+// 这三条路径此前只做行级过滤，vendor 在下拉框里就能看到共享分组的全站账号数。
+func TestGetAllGroupsPathsRescopeCountsForVendor(t *testing.T) {
+	paths := map[string]func(*adminServiceImpl, context.Context) ([]Group, error){
+		"GetAllGroups": func(s *adminServiceImpl, ctx context.Context) ([]Group, error) { return s.GetAllGroups(ctx) },
+		"GetAllGroupsByPlatform": func(s *adminServiceImpl, ctx context.Context) ([]Group, error) {
+			return s.GetAllGroupsByPlatform(ctx, PlatformAnthropic)
+		},
+		"GetAllGroupsIncludingInactive": func(s *adminServiceImpl, ctx context.Context) ([]Group, error) {
+			return s.GetAllGroupsIncludingInactive(ctx)
+		},
+	}
+	for name, call := range paths {
+		t.Run(name+"/vendor", func(t *testing.T) {
+			repo := newAllGroupsCountRepo(nil)
+			svc := &adminServiceImpl{groupRepo: repo, workspaceScopeCache: &stubGroupScopeCache{granted: []int64{3}}}
+			got, err := call(svc, vendorGroupCtx(7))
+			if err != nil {
+				t.Fatalf("vendor 读取失败: %v", err)
+			}
+			if len(got) != 1 || got[0].ID != 3 {
+				t.Fatalf("只应返回已授权的 3 号分组，实得 %+v", got)
+			}
+			g := got[0]
+			if g.AccountCount != 4 || g.ActiveAccountCount != 1 || g.RateLimitedAccountCount != 1 ||
+				g.ErrorAccountCount != 1 || g.IdleAccountCount != 1 {
+				t.Fatalf("计数应为本工作区口径 4/1/1/1/1，实得 %+v", g)
+			}
+			if len(repo.gotIDs) != 1 || repo.gotIDs[0] != 3 || repo.gotWS != 7 {
+				t.Fatalf("应只按工作区 7 聚合 3 号分组，实得 ids=%v ws=%d", repo.gotIDs, repo.gotWS)
+			}
+		})
+		t.Run(name+"/admin", func(t *testing.T) {
+			repo := newAllGroupsCountRepo(nil)
+			svc := &adminServiceImpl{groupRepo: repo, workspaceScopeCache: &stubGroupScopeCache{granted: []int64{3}}}
+			got, err := call(svc, adminGroupCtx())
+			if err != nil {
+				t.Fatalf("站长读取失败: %v", err)
+			}
+			if len(got) != 2 || got[0].AccountCount != 10 || got[0].ErrorAccountCount != 1 {
+				t.Fatalf("站长应看到全部分组与全站计数，实得 %+v", got)
+			}
+			if repo.calls != 0 {
+				t.Fatalf("站长视角不应触发聚合查询，实际查了 %d 次", repo.calls)
+			}
+		})
+		t.Run(name+"/rescope-error", func(t *testing.T) {
+			boom := errors.New("聚合查询不可达")
+			repo := newAllGroupsCountRepo(boom)
+			svc := &adminServiceImpl{groupRepo: repo, workspaceScopeCache: &stubGroupScopeCache{granted: []int64{3}}}
+			got, err := call(svc, vendorGroupCtx(7))
+			if !errors.Is(err, boom) || got != nil {
+				t.Fatalf("聚合失败应整体报错、不带全站计数返回，实得 groups=%+v err=%v", got, err)
+			}
+		})
+	}
+}
+
+// updateGroupCountRepo 让 UpdateGroup 读到全站计数，并记录是否写过库。
+type updateGroupCountRepo struct {
+	countScopeGroupRepo
+	group   Group
+	updated *Group
+}
+
+func (r *updateGroupCountRepo) GetByID(context.Context, int64) (*Group, error) {
+	cloned := r.group
+	return &cloned, nil
+}
+
+func (r *updateGroupCountRepo) Update(_ context.Context, group *Group) error {
+	r.updated = group
+	return nil
+}
+
+func newUpdateGroupCountRepo(err error) *updateGroupCountRepo {
+	return &updateGroupCountRepo{
+		countScopeGroupRepo: countScopeGroupRepo{
+			counts: map[int64]GroupAccountCounts{7: {Total: 3, Active: 1, Error: 1}},
+			err:    err,
+		},
+		group: Group{
+			ID: 7, Name: "g", Platform: PlatformAnthropic, Status: StatusActive,
+			AccountCount: 20, ActiveAccountCount: 15, RateLimitedAccountCount: 2, ErrorAccountCount: 2, IdleAccountCount: 1,
+		},
+	}
+}
+
+// TestUpdateGroupVendorResponseUsesWorkspaceCounts 锁定 PUT 响应对 vendor 也按工作区计数。
+//
+// 编辑响应直接回显 GetByID 读到的分组，此前带的是全站计数。
+func TestUpdateGroupVendorResponseUsesWorkspaceCounts(t *testing.T) {
+	newSvc := func(repo *updateGroupCountRepo) *adminServiceImpl {
+		return &adminServiceImpl{groupRepo: repo, workspaceScopeCache: &stubGroupScopeCache{granted: []int64{7}}}
+	}
+
+	repo := newUpdateGroupCountRepo(nil)
+	got, err := newSvc(repo).UpdateGroup(vendorGroupCtx(7), 7, &UpdateGroupInput{Name: "x"})
+	if err != nil {
+		t.Fatalf("vendor 编辑失败: %v", err)
+	}
+	if got.AccountCount != 3 || got.ActiveAccountCount != 1 || got.RateLimitedAccountCount != 0 ||
+		got.ErrorAccountCount != 1 || got.IdleAccountCount != 1 {
+		t.Fatalf("PUT 响应应为本工作区计数 3/1/0/1/1，实得 %+v", got)
+	}
+	if repo.updated == nil {
+		t.Fatal("正常编辑应写库")
+	}
+
+	boom := errors.New("聚合查询不可达")
+	failing := newUpdateGroupCountRepo(boom)
+	if _, err := newSvc(failing).UpdateGroup(vendorGroupCtx(7), 7, &UpdateGroupInput{Name: "x"}); !errors.Is(err, boom) {
+		t.Fatalf("重算失败应返回该错误，实得 %v", err)
+	}
+	if failing.updated != nil {
+		t.Fatal("重算失败必须在写库之前返回")
+	}
+
+	adminRepo := newUpdateGroupCountRepo(nil)
+	adminGot, err := newSvc(adminRepo).UpdateGroup(adminGroupCtx(), 7, &UpdateGroupInput{Name: "x"})
+	if err != nil {
+		t.Fatalf("站长编辑失败: %v", err)
+	}
+	if adminGot.AccountCount != 20 || adminGot.ErrorAccountCount != 2 || adminGot.IdleAccountCount != 1 || adminRepo.calls != 0 {
+		t.Fatalf("站长应保持全站计数且不查询，实得 %+v calls=%d", adminGot, adminRepo.calls)
 	}
 }
 

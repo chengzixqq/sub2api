@@ -15,6 +15,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -1179,6 +1180,129 @@ func (s *GroupRepoSuite) TestListWithFilters_RateLimitedAccountCount() {
 	s.Assert().Equal(found.AccountCount, detail.AccountCount, "GetByID AccountCount must match ListWithFilters")
 	s.Assert().Equal(found.ActiveAccountCount, detail.ActiveAccountCount, "GetByID ActiveAccountCount must match ListWithFilters")
 	s.Assert().Equal(found.RateLimitedAccountCount, detail.RateLimitedAccountCount, "GetByID RateLimitedAccountCount must match ListWithFilters")
+}
+
+// insertBucketAccount 在套件事务里插入一个账号并绑定到分组，extraCols / extraVals 追加任意列。
+func (s *GroupRepoSuite) insertBucketAccount(groupID, workspaceID int64, name, extraCols, extraVals string) int64 {
+	var id int64
+	s.Require().NoError(scanSingleRow(s.ctx, s.tx,
+		"INSERT INTO accounts (name, platform, type, workspace_id"+extraCols+") VALUES ($1, $2, $3, $4"+extraVals+") RETURNING id",
+		[]any{name, service.PlatformAnthropic, service.AccountTypeOAuth, workspaceID},
+		&id))
+	_, err := s.tx.ExecContext(s.ctx,
+		"INSERT INTO account_groups (account_id, group_id, priority, created_at) VALUES ($1, $2, 1, NOW())",
+		id, groupID)
+	s.Require().NoError(err)
+	return id
+}
+
+func (s *GroupRepoSuite) createBucketGroup(prefix string) *service.Group {
+	g := &service.Group{
+		Name:             prefix + uuid.NewString(),
+		Platform:         service.PlatformAnthropic,
+		RateMultiplier:   1.0,
+		Status:           service.StatusActive,
+		SubscriptionType: service.SubscriptionTypeStandard,
+	}
+	s.Require().NoError(s.repo.Create(s.ctx, g))
+	return g
+}
+
+// TestGroupAccountCounts_ErrorAndIdleBuckets 锁定四桶计数：
+// account_count = active + rate_limited + error + idle，五条读取路径口径一致。
+func (s *GroupRepoSuite) TestGroupAccountCounts_ErrorAndIdleBuckets() {
+	g := s.createBucketGroup("g-buckets-")
+	empty := s.createBucketGroup("g-buckets-empty-")
+	prefix := "bucket-" + uuid.NewString()[:8] + "-"
+
+	s.insertBucketAccount(g.ID, 1, prefix+"normal", "", "")
+	s.insertBucketAccount(g.ID, 1, prefix+"limited", ", rate_limit_reset_at", ", NOW() + INTERVAL '1 hour'")
+	s.insertBucketAccount(g.ID, 1, prefix+"error", ", status", ", 'error'")
+	s.insertBucketAccount(g.ID, 1, prefix+"disabled", ", status", ", 'disabled'")
+	s.insertBucketAccount(g.ID, 1, prefix+"unschedulable", ", schedulable", ", FALSE")
+	s.insertBucketAccount(g.ID, 1, prefix+"expired", ", expires_at, auto_pause_on_expired", ", NOW() - INTERVAL '1 hour', TRUE")
+	// 停了调度但仍在限流窗口：分组列表按调度口径算 idle，不算 rate_limited。
+	s.insertBucketAccount(g.ID, 1, prefix+"stopped-limited", ", schedulable, rate_limit_reset_at", ", FALSE, NOW() + INTERVAL '1 hour'")
+	s.insertBucketAccount(g.ID, 1, prefix+"deleted", ", status, deleted_at", ", 'error', NOW()")
+
+	assertBuckets := func(path string, got *service.Group) {
+		s.Require().NotNil(got, "%s must return the group", path)
+		s.Assert().Equal(int64(7), got.AccountCount, "%s total", path)
+		s.Assert().Equal(int64(1), got.ActiveAccountCount, "%s active", path)
+		s.Assert().Equal(int64(1), got.RateLimitedAccountCount, "%s rate_limited", path)
+		s.Assert().Equal(int64(1), got.ErrorAccountCount, "%s error", path)
+		s.Assert().Equal(int64(4), got.IdleAccountCount, "%s idle", path)
+		s.Assert().Equal(got.AccountCount,
+			got.ActiveAccountCount+got.RateLimitedAccountCount+got.ErrorAccountCount+got.IdleAccountCount,
+			"%s four buckets must sum to account_count", path)
+	}
+	assertEmpty := func(path string, got *service.Group) {
+		s.Require().NotNil(got, "%s must return the empty group", path)
+		s.Assert().Zero(got.AccountCount+got.ActiveAccountCount+got.RateLimitedAccountCount+got.ErrorAccountCount+got.IdleAccountCount,
+			"%s empty group must have all-zero counts", path)
+	}
+	find := func(groups []service.Group, id int64) *service.Group {
+		for i := range groups {
+			if groups[i].ID == id {
+				return &groups[i]
+			}
+		}
+		return nil
+	}
+
+	listed, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10000}, service.PlatformAnthropic, "", "", nil)
+	s.Require().NoError(err)
+	assertBuckets("ListWithFilters", find(listed, g.ID))
+	assertEmpty("ListWithFilters", find(listed, empty.ID))
+
+	sorted, _, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10000, SortBy: "account_count"}, service.PlatformAnthropic, "", "", nil)
+	s.Require().NoError(err)
+	assertBuckets("ListWithFilters(account_count)", find(sorted, g.ID))
+	assertEmpty("ListWithFilters(account_count)", find(sorted, empty.ID))
+
+	detail, err := s.repo.GetByID(s.ctx, g.ID)
+	s.Require().NoError(err)
+	assertBuckets("GetByID", detail)
+	emptyDetail, err := s.repo.GetByID(s.ctx, empty.ID)
+	s.Require().NoError(err)
+	assertEmpty("GetByID", emptyDetail)
+
+	active, err := s.repo.ListActive(s.ctx)
+	s.Require().NoError(err)
+	assertBuckets("ListActive", find(active, g.ID))
+
+	byPlatform, err := s.repo.ListActiveByPlatform(s.ctx, service.PlatformAnthropic)
+	s.Require().NoError(err)
+	assertBuckets("ListActiveByPlatform", find(byPlatform, g.ID))
+}
+
+// TestLoadAccountCountsScoped_ErrorAndIdle 锁定按工作区聚合时 error / idle 同样只算本工作区。
+func (s *GroupRepoSuite) TestLoadAccountCountsScoped_ErrorAndIdle() {
+	workspace, err := s.tx.Client().Workspace.Create().SetName("f04-buckets-" + uuid.NewString()).Save(s.ctx)
+	s.Require().NoError(err)
+	g := s.createBucketGroup("g-scoped-buckets-")
+	prefix := "scoped-bucket-" + uuid.NewString()[:8] + "-"
+
+	s.insertBucketAccount(g.ID, workspace.ID, prefix+"error", ", status", ", 'error'")
+	s.insertBucketAccount(g.ID, workspace.ID, prefix+"disabled", ", status", ", 'disabled'")
+	s.insertBucketAccount(g.ID, 1, prefix+"normal-1", "", "")
+	s.insertBucketAccount(g.ID, 1, prefix+"normal-2", "", "")
+
+	scoped, err := s.repo.LoadAccountCountsScoped(s.ctx, []int64{g.ID}, workspace.ID)
+	s.Require().NoError(err)
+	c := scoped[g.ID]
+	s.Assert().Equal(int64(2), c.Total)
+	s.Assert().Equal(int64(0), c.Active)
+	s.Assert().Equal(int64(0), c.RateLimited)
+	s.Assert().Equal(int64(1), c.Error)
+	s.Assert().Equal(int64(1), c.Idle())
+
+	global, err := s.repo.loadAccountCounts(s.ctx, []int64{g.ID})
+	s.Require().NoError(err)
+	s.Assert().Equal(int64(4), global[g.ID].Total)
+	s.Assert().Equal(int64(2), global[g.ID].Active)
+	s.Assert().Equal(int64(1), global[g.ID].Error)
+	s.Assert().Equal(int64(1), global[g.ID].Idle())
 }
 
 // --- DeleteAccountGroupsByGroupID ---

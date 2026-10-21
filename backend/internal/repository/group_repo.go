@@ -262,10 +262,7 @@ func (r *groupRepository) GetByID(ctx context.Context, id int64) (*service.Group
 	}
 	counts, err := r.loadAccountCounts(ctx, []int64{out.ID})
 	if err == nil {
-		c := counts[out.ID]
-		out.AccountCount = c.Total
-		out.ActiveAccountCount = c.Active
-		out.RateLimitedAccountCount = c.RateLimited
+		out.ApplyAccountCounts(counts[out.ID])
 	}
 	return out, nil
 }
@@ -527,10 +524,7 @@ func (r *groupRepository) listWithFiltersQuery(ctx context.Context, q *dbent.Gro
 	counts, err := r.loadAccountCounts(ctx, groupIDs)
 	if err == nil {
 		for i := range outGroups {
-			c := counts[outGroups[i].ID]
-			outGroups[i].AccountCount = c.Total
-			outGroups[i].ActiveAccountCount = c.Active
-			outGroups[i].RateLimitedAccountCount = c.RateLimited
+			outGroups[i].ApplyAccountCounts(counts[outGroups[i].ID])
 		}
 	}
 
@@ -612,10 +606,7 @@ func (r *groupRepository) listWithAccountCountSort(ctx context.Context, q *dbent
 	outGroups := make([]service.Group, len(page))
 	for i := range groups {
 		g := groupEntityToService(groups[i])
-		c := counts[g.ID]
-		g.AccountCount = c.Total
-		g.ActiveAccountCount = c.Active
-		g.RateLimitedAccountCount = c.RateLimited
+		g.ApplyAccountCounts(counts[g.ID])
 		if idx, ok := pageIdx[g.ID]; ok {
 			outGroups[idx] = *g
 		}
@@ -698,10 +689,7 @@ func (r *groupRepository) ListActive(ctx context.Context) ([]service.Group, erro
 	counts, err := r.loadAccountCounts(ctx, groupIDs)
 	if err == nil {
 		for i := range outGroups {
-			c := counts[outGroups[i].ID]
-			outGroups[i].AccountCount = c.Total
-			outGroups[i].ActiveAccountCount = c.Active
-			outGroups[i].RateLimitedAccountCount = c.RateLimited
+			outGroups[i].ApplyAccountCounts(counts[outGroups[i].ID])
 		}
 	}
 
@@ -771,10 +759,7 @@ func (r *groupRepository) ListActiveByPlatform(ctx context.Context, platform str
 	counts, err := r.loadAccountCounts(ctx, groupIDs)
 	if err == nil {
 		for i := range outGroups {
-			c := counts[outGroups[i].ID]
-			outGroups[i].AccountCount = c.Total
-			outGroups[i].ActiveAccountCount = c.Active
-			outGroups[i].RateLimitedAccountCount = c.RateLimited
+			outGroups[i].ApplyAccountCounts(counts[outGroups[i].ID])
 		}
 	}
 
@@ -1003,12 +988,6 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 	return affectedUserIDs, nil
 }
 
-type groupAccountCounts struct {
-	Total       int64
-	Active      int64
-	RateLimited int64
-}
-
 const (
 	// 分组页的"可用"账号数必须与账号仓储的 ListSchedulableByGroupID 过滤口径一致。
 	groupAccountAvailableSQL = `a.deleted_at IS NULL
@@ -1029,24 +1008,33 @@ const (
 					a.overload_until > NOW() OR
 					a.temp_unschedulable_until > NOW()
 				)`
+
+	// 错误桶与账号状态汇总的 state=error 同口径；暂停 · 停用桶在 Go 里由其余四列相减得出。
+	groupAccountErrorSQL = `a.deleted_at IS NULL AND a.status = 'error'`
 )
 
-func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int64) (counts map[int64]groupAccountCounts, err error) {
-	counts = make(map[int64]groupAccountCounts, len(groupIDs))
+// groupAccountCountColumns 是两条分组计数聚合共用的列，保证全站与按工作区两条 SQL 口径不分叉。
+// 扫描顺序：total、active、rate_limited、error_count。
+var groupAccountCountColumns = fmt.Sprintf(`COUNT(*) FILTER (WHERE a.deleted_at IS NULL) AS total,
+			COUNT(*) FILTER (WHERE %s) AS active,
+			COUNT(*) FILTER (WHERE %s) AS rate_limited,
+			COUNT(*) FILTER (WHERE %s) AS error_count`,
+	groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL, groupAccountErrorSQL)
+
+func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int64) (counts map[int64]service.GroupAccountCounts, err error) {
+	counts = make(map[int64]service.GroupAccountCounts, len(groupIDs))
 	if len(groupIDs) == 0 {
 		return counts, nil
 	}
 
 	rows, err := r.sql.QueryContext(
 		ctx,
-		fmt.Sprintf(`SELECT ag.group_id,
-			COUNT(*) FILTER (WHERE a.deleted_at IS NULL) AS total,
-			COUNT(*) FILTER (WHERE %s) AS active,
-			COUNT(*) FILTER (WHERE %s) AS rate_limited
+		`SELECT ag.group_id,
+			`+groupAccountCountColumns+`
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
 		WHERE ag.group_id = ANY($1)
-		GROUP BY ag.group_id`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
+		GROUP BY ag.group_id`,
 		pq.Array(groupIDs),
 	)
 	if err != nil {
@@ -1061,8 +1049,8 @@ func (r *groupRepository) loadAccountCounts(ctx context.Context, groupIDs []int6
 
 	for rows.Next() {
 		var groupID int64
-		var c groupAccountCounts
-		if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited); err != nil {
+		var c service.GroupAccountCounts
+		if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited, &c.Error); err != nil {
 			return nil, err
 		}
 		counts[groupID] = c
@@ -1095,14 +1083,12 @@ func (r *groupRepository) LoadAccountCountsScoped(
 
 	rows, err := r.sql.QueryContext(
 		ctx,
-		fmt.Sprintf(`SELECT ag.group_id,
-			COUNT(*) FILTER (WHERE a.deleted_at IS NULL) AS total,
-			COUNT(*) FILTER (WHERE %s) AS active,
-			COUNT(*) FILTER (WHERE %s) AS rate_limited
+		`SELECT ag.group_id,
+			`+groupAccountCountColumns+`
 		FROM account_groups ag
 		JOIN accounts a ON a.id = ag.account_id
 		WHERE ag.group_id = ANY($1) AND a.workspace_id = $2
-		GROUP BY ag.group_id`, groupAccountAvailableSQL, groupAccountTemporarilyLimitedSQL),
+		GROUP BY ag.group_id`,
 		pq.Array(groupIDs),
 		workspaceID,
 	)
@@ -1119,7 +1105,7 @@ func (r *groupRepository) LoadAccountCountsScoped(
 	for rows.Next() {
 		var groupID int64
 		var c service.GroupAccountCounts
-		if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited); err != nil {
+		if err = rows.Scan(&groupID, &c.Total, &c.Active, &c.RateLimited, &c.Error); err != nil {
 			return nil, err
 		}
 		counts[groupID] = c

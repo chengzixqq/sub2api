@@ -130,6 +130,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "dashboard.request_types")
 	require.Contains(t, server["capabilities"], "dashboard.users_ranking_sort")
 	require.Contains(t, server["capabilities"], "dashboard.users_trend_filtered_metric")
+	require.Contains(t, server["capabilities"], "groups.account_buckets")
 	require.Contains(t, server["capabilities"], "ops.alert_event_counts")
 	require.Contains(t, server["capabilities"], "ops.alert_event_details")
 	require.Contains(t, server["capabilities"], "ops.alert_latency_metrics")
