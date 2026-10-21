@@ -590,11 +590,13 @@ type AdminBalanceHistoryItem struct {
 	OperatorEmail *string `json:"operator_email"`
 }
 
-// RechargeBreakdown splits balance-history's total_recharged by source; total_recharged is redeem + admin, affiliate
-// and promo are reported beside it.
+// RechargeBreakdown splits balance-history's total_recharged by source; total_recharged is redeem + admin + grant
+// (grant: site default-balance grants at signup / first bind, which have no operator), affiliate and promo are
+// reported beside it.
 type RechargeBreakdown struct {
 	Redeem    float64 `json:"redeem"`
 	Admin     float64 `json:"admin"`
+	Grant     float64 `json:"grant"`
 	Affiliate float64 `json:"affiliate"`
 	Promo     float64 `json:"promo"`
 }

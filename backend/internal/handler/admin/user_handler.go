@@ -309,6 +309,8 @@ func (h *UserHandler) Create(c *gin.Context) {
 	payload := createUserIdempotencyPayload(req)
 	// A positive initial balance is a ledger entry (E10). Its action id is derived from the Idempotency-Key, so the
 	// first call and a replay name the same action; the client finds it in /admin/user-adjustments?action_id=….
+	// The header is set before execution, when the stored balance is not known yet: a user created with 0 (or a
+	// conflicting key, which executes nothing) carries an action id without a ledger row (docs/API_ERROR_CODES.md).
 	if actionID, derived := adminAdjustmentActionID(c, "admin.users.create", payload); derived {
 		c.Header("X-Admin-Adjustment-Action-ID", actionID.String())
 	}

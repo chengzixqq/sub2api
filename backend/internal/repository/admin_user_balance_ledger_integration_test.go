@@ -391,13 +391,63 @@ func TestUserRechargeBreakdownSumsEachSource(t *testing.T) {
 	require.InDelta(t, 5, breakdown.Affiliate, 1e-9)
 	require.InDelta(t, 3, breakdown.Promo, 1e-9)
 
+	require.Zero(t, breakdown.Grant)
+
 	totalRecharged, err := redeemRepo.SumPositiveBalanceByUser(ctx, target.ID)
 	require.NoError(t, err)
-	require.InDelta(t, breakdown.Redeem+breakdown.Admin, totalRecharged, 1e-9, "total_recharged stays redeem + admin")
+	require.InDelta(t, breakdown.Redeem+breakdown.Admin+breakdown.Grant, totalRecharged, 1e-9, "total_recharged is redeem + admin + grant")
 
 	empty, err := adminService.GetUserRechargeBreakdown(ctx, operator.ID)
 	require.NoError(t, err)
 	require.Equal(t, service.UserRechargeBreakdown{}, *empty)
+}
+
+// Site grants (signup and first-bind default balance, no operator) are admin_balance rows like an admin top-up, but
+// the breakdown reports them apart so a free grant is not shown as an admin recharge. An admin-created user's initial
+// balance, even when taken from the site default, has an operator and stays an admin credit.
+func TestUserRechargeBreakdownSeparatesSiteGrants(t *testing.T) {
+	client := testEntClient(t)
+	redeemRepo := NewRedeemCodeRepository(client)
+	adjustmentRepo := NewAdminUserAdjustmentRepository(client)
+	settings := ledgerSettingService(map[string]string{
+		service.SettingKeyRegistrationEnabled:                      "true",
+		service.SettingKeyDefaultBalance:                           "3",
+		service.SettingKeyAuthSourceDefaultLinuxDoBalance:          "4",
+		service.SettingKeyAuthSourceDefaultLinuxDoGrantOnFirstBind: "true",
+	})
+	auth := newLedgerAuthService(client, redeemRepo, adjustmentRepo, settings)
+	adminService := newLedgerAdminService(client, redeemRepo, adjustmentRepo, settings)
+	operator := mustCreateUser(t, client, &service.User{Email: "e10-grant-owner-" + uuid.NewString() + "@example.com", Role: service.RoleAdmin})
+	ctx := context.Background()
+
+	_, signedUp, err := auth.Register(ctx, "e10-grant-signup-"+uuid.NewString()+"@example.com", "Strong-password-123!")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM user_provider_default_grants WHERE user_id = $1`, signedUp.ID)
+	})
+	require.NoError(t, auth.ApplyProviderDefaultSettingsOnFirstBind(ctx, signedUp.ID, "linuxdo"))
+	_, err = adminService.UpdateUserBalance(adjustmentIntegrationContext(operator, "top up"), signedUp.ID, "20", service.AdjustmentOperationAdd, "top up")
+	require.NoError(t, err)
+
+	breakdown, err := adminService.GetUserRechargeBreakdown(ctx, signedUp.ID)
+	require.NoError(t, err)
+	require.NotNil(t, breakdown)
+	require.InDelta(t, 7, breakdown.Grant, 1e-9, "signup and first-bind grants")
+	require.InDelta(t, 20, breakdown.Admin, 1e-9, "only the admin top-up")
+	require.Zero(t, breakdown.Redeem)
+	totalRecharged, err := redeemRepo.SumPositiveBalanceByUser(ctx, signedUp.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 27, totalRecharged, 1e-9)
+	require.InDelta(t, breakdown.Redeem+breakdown.Admin+breakdown.Grant, totalRecharged, 1e-9)
+
+	created, err := adminService.CreateUser(adjustmentIntegrationContext(operator, ""), &service.CreateUserInput{
+		Email: "e10-grant-created-" + uuid.NewString() + "@example.com", Password: "Strong-password-123!",
+	})
+	require.NoError(t, err)
+	createdBreakdown, err := adminService.GetUserRechargeBreakdown(ctx, created.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 3, createdBreakdown.Admin, 1e-9, "an admin-created initial balance is an admin credit")
+	require.Zero(t, createdBreakdown.Grant)
 }
 
 func TestRedeemCodeCreateBatchExactReturnsIDs(t *testing.T) {
@@ -600,7 +650,8 @@ func TestQuickTopupRecentSkipsSiteGrants(t *testing.T) {
 
 	quick, ok := adjustmentRepo.(service.QuickTopupRepository)
 	require.True(t, ok)
-	result, err := quick.QuickTopup(context.Background(), service.QuickTopupQuery{RecentLimit: 50, RecentDays: 1})
+	// The shared database holds other tests' adjustments: a large limit keeps ours in the result.
+	result, err := quick.QuickTopup(context.Background(), service.QuickTopupQuery{RecentLimit: 100000, RecentDays: 1})
 	require.NoError(t, err)
 	recent := make(map[int64]bool, len(result.Recent))
 	for _, item := range result.Recent {

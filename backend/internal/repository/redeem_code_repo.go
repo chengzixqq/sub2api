@@ -621,15 +621,26 @@ func (r *redeemCodeRepository) SumPositiveBalanceByUser(ctx context.Context, use
 }
 
 // SumRechargeBreakdownByUser splits the user's top-ups by source for balance-history (E10): positive balance redeem
-// codes, positive admin_balance rows, affiliate rebates transferred to the balance and promo-code bonuses. redeem +
-// admin equals SumPositiveBalanceByUser.
+// codes, positive admin_balance rows credited by an admin, positive admin_balance rows of site grants (linked through
+// redeem_code_id to a ledger row with source default_balance and no operator, the same test as the quick top-up
+// strip), affiliate rebates transferred to the balance and promo-code bonuses. redeem + admin + grant equals
+// SumPositiveBalanceByUser. redeem_code_id is unique, so the join adds at most one ledger row per code.
 func (r *redeemCodeRepository) SumRechargeBreakdownByUser(ctx context.Context, userID int64) (breakdown service.UserRechargeBreakdown, err error) {
 	rows, err := r.client.QueryContext(ctx, `
+WITH admin_rows AS (
+    SELECT rc.value, (a.id IS NOT NULL) AS site_grant
+    FROM redeem_codes rc
+    LEFT JOIN admin_user_adjustments a
+        ON a.redeem_code_id = rc.id AND a.source = $2 AND a.operator_user_id IS NULL
+    WHERE rc.used_by = $1 AND rc.type = 'admin_balance' AND rc.value > 0
+)
 SELECT
     COALESCE((SELECT SUM(value) FROM redeem_codes WHERE used_by = $1 AND type = 'balance' AND value > 0), 0)::float8,
-    COALESCE((SELECT SUM(value) FROM redeem_codes WHERE used_by = $1 AND type = 'admin_balance' AND value > 0), 0)::float8,
+    COALESCE((SELECT SUM(value) FROM admin_rows WHERE NOT site_grant), 0)::float8,
+    COALESCE((SELECT SUM(value) FROM admin_rows WHERE site_grant), 0)::float8,
     COALESCE((SELECT SUM(amount) FROM user_affiliate_ledger WHERE user_id = $1 AND action = 'transfer' AND amount > 0), 0)::float8,
-    COALESCE((SELECT SUM(bonus_amount) FROM promo_code_usages WHERE user_id = $1 AND bonus_amount > 0), 0)::float8`, userID)
+    COALESCE((SELECT SUM(bonus_amount) FROM promo_code_usages WHERE user_id = $1 AND bonus_amount > 0), 0)::float8`,
+		userID, service.AdjustmentSourceDefaultBalance)
 	if err != nil {
 		return breakdown, err
 	}
@@ -644,7 +655,7 @@ SELECT
 		}
 		return breakdown, errors.New("recharge breakdown returned no row")
 	}
-	if err := rows.Scan(&breakdown.Redeem, &breakdown.Admin, &breakdown.Affiliate, &breakdown.Promo); err != nil {
+	if err := rows.Scan(&breakdown.Redeem, &breakdown.Admin, &breakdown.Grant, &breakdown.Affiliate, &breakdown.Promo); err != nil {
 		return breakdown, err
 	}
 	return breakdown, rows.Err()

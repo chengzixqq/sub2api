@@ -111,7 +111,7 @@ func TestUserHandler_GetBalanceHistory_AdjustmentFieldsAndBreakdown(t *testing.T
 				Adjustment: &service.AdminAdjustmentLink{AdjustmentID: adjustmentID, BeforeValue: &before, AfterValue: &after, OperatorEmail: &operator}},
 			{ID: 902, Code: "B", Type: service.RedeemTypeBalance, Value: 40, Status: service.StatusUsed, UsedBy: &userID, UsedAt: &usedAt},
 		},
-		breakdown: &service.UserRechargeBreakdown{Redeem: 40, Admin: 20, Affiliate: 5, Promo: 3},
+		breakdown: &service.UserRechargeBreakdown{Redeem: 30, Admin: 20, Grant: 10, Affiliate: 5, Promo: 3},
 	}
 	router := newBalanceLedgerRouter(admin)
 
@@ -140,7 +140,7 @@ func TestUserHandler_GetBalanceHistory_AdjustmentFieldsAndBreakdown(t *testing.T
 	require.JSONEq(t, `60`, string(envelope.Data["total_recharged"]))
 	require.JSONEq(t, `2`, string(envelope.Data["total"]))
 	require.JSONEq(t, `1`, string(envelope.Data["pages"]))
-	require.JSONEq(t, `{"redeem":40,"admin":20,"affiliate":5,"promo":3}`, string(envelope.Data["total_recharged_breakdown"]))
+	require.JSONEq(t, `{"redeem":30,"admin":20,"grant":10,"affiliate":5,"promo":3}`, string(envelope.Data["total_recharged_breakdown"]))
 
 	// A server without the breakdown reader still answers, with null.
 	admin.breakdown = nil

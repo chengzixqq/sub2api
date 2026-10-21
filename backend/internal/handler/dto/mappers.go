@@ -695,7 +695,7 @@ func RechargeBreakdownFromService(b *service.UserRechargeBreakdown) *RechargeBre
 	if b == nil {
 		return nil
 	}
-	return &RechargeBreakdown{Redeem: b.Redeem, Admin: b.Admin, Affiliate: b.Affiliate, Promo: b.Promo}
+	return &RechargeBreakdown{Redeem: b.Redeem, Admin: b.Admin, Grant: b.Grant, Affiliate: b.Affiliate, Promo: b.Promo}
 }
 
 func redeemCodeFromServiceBase(rc *service.RedeemCode) RedeemCode {

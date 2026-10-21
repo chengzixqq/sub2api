@@ -21,12 +21,15 @@ var ErrUserBalanceNotEditable = infraerrors.BadRequest(
 )
 
 // UserRechargeBreakdown splits a user's top-ups by source. Redeem is positive balance redeem codes (payment orders
-// are credited this way too), Admin is positive admin_balance rows (admin top-ups, a raise by set, initial balances
-// and site default grants), Affiliate is affiliate rebates transferred to the balance and Promo is promo-code bonuses.
-// balance-history's total_recharged is Redeem + Admin.
+// are credited this way too); Admin is positive admin_balance rows credited by an admin (top-ups, a raise by set, the
+// initial balance of an admin-created user, also when taken from the site default); Grant is positive admin_balance
+// rows of site grants (signup, third-party first login and first-bind default balance: source default_balance without
+// an operator); Affiliate is affiliate rebates transferred to the balance and Promo is promo-code bonuses.
+// balance-history's total_recharged is Redeem + Admin + Grant.
 type UserRechargeBreakdown struct {
 	Redeem    float64
 	Admin     float64
+	Grant     float64
 	Affiliate float64
 	Promo     float64
 }
