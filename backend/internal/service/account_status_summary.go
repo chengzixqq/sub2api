@@ -55,8 +55,11 @@ type AccountStatusGroupRow struct {
 	Status   string
 }
 
-// AccountScheduleState classifies an account with the same predicates as the
-// group list's available / temporarily-limited counts (groupAccountAvailableSQL).
+// AccountScheduleState classifies an account. Available uses the same predicates
+// as the group list's active count (groupAccountAvailableSQL). Timed windows are
+// checked before the schedulable switch and expiry, so the group list's
+// temporarily-limited count (schedulable and unexpired only) is a subset of the
+// three timed states here; the rest of them are idle in the group list.
 func AccountScheduleState(a *AccountStatusRow, now time.Time) string {
 	switch {
 	case a.Status == StatusError:
