@@ -99,6 +99,8 @@
 
 带 key 的请求一经受理，客户端断开也会执行完并保存结果（受上表时限约束，到时未完成的部分按失败处理），之后用同一个 key 重发即可拿回结果；不带 key 的请求仍跟随客户端连接，没有额外时限。`POST /api/v1/admin/users` 的指纹不含 `password`：同一个 key 只改密码重发，得到的是首次创建的重放。业务错误（如混合渠道 409、`GROUP_EXISTS`）不会被重放，原样返回，5 秒退避后可用同一个 key 重试。老服务端会忽略这个头，没有 `admin.idempotent_writes` 时超时后不要自动重发，改为读回核对。
 
+`POST /api/v1/admin/announcements`（新建公告，scope `admin.announcements.create`）在 `/admin/me` 的 capabilities 含 `announcements.idempotent_create` 时接受可选的 key，规则与上表相同：不带 key 时照常执行（Web 不带），关闭 `idempotency.observe_only` 后也不会返回 `IDEMPOTENCY_KEY_REQUIRED`；带 key 时执行上限 30 秒，同 key 同请求体重发返回首次创建的那条公告（重放快照，期间若被编辑过需再 GET），不会再建一条、也不会再弹一次窗。指纹即请求体（title、content、status、notify_mode、targeting、starts_at、ends_at），业务校验失败（如 `ANNOUNCEMENT_TITLE_INVALID`）后改了内容必须换新 key。老服务端会忽略这个头，没有该能力时超时后不要自动重发，先按标题搜最近几条核对。
+
 用户端 `POST /api/v1/keys`（新建 API Key，scope `user.api_keys.create`）同样接受可选的 key：不带 key 时照常执行（Web 不带），关闭 `idempotency.observe_only` 后也不会返回 `IDEMPOTENCY_KEY_REQUIRED`；带 key 时重放、冲突与存储不可用的处理同上，没有执行上限。
 
 ## 首页聚合各段的 error

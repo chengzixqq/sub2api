@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -102,6 +103,10 @@ func (h *AnnouncementHandler) GetByID(c *gin.Context) {
 
 // Create handles creating a new announcement
 // POST /api/v1/admin/announcements
+//
+// The Idempotency-Key header is optional. Without it every request creates an announcement (the Web sends none). With
+// it a retry replays the first announcement (X-Idempotency-Replayed: true) instead of creating, and showing a popup,
+// twice; the keyed create keeps running if the client disconnects.
 func (h *AnnouncementHandler) Create(c *gin.Context) {
 	var req CreateAnnouncementRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -133,13 +138,13 @@ func (h *AnnouncementHandler) Create(c *gin.Context) {
 		input.EndsAt = &t
 	}
 
-	created, err := h.announcementService.Create(c.Request.Context(), input)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	response.Success(c, dto.AnnouncementFromService(created))
+	executeAdminOptionalWriteJSON(c, "admin.announcements.create", req, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		created, err := h.announcementService.Create(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		return dto.AnnouncementFromService(created), nil
+	})
 }
 
 // Update handles updating an announcement

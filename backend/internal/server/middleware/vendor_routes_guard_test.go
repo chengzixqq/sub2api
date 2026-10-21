@@ -41,6 +41,7 @@ func TestVendorRoutesDenyStationOnlyEndpoints(t *testing.T) {
 		{"/api/v1/admin/redeem", "GET"},
 		{"/api/v1/admin/subscriptions", "GET"},
 		{"/api/v1/admin/announcements", "GET"},
+		{"/api/v1/admin/announcements", "POST"},
 		{"/api/v1/admin/backup", "POST"},
 		{"/api/v1/admin/data", "GET"},
 		{"/api/v1/admin/settings", "GET"},

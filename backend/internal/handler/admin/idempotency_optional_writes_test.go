@@ -301,6 +301,7 @@ func TestOptionalIdempotentRequestPayloadsHaveNoOpaqueFields(t *testing.T) {
 		UpdateAccountRequest{},
 		SetSchedulableRequest{},
 		BulkUpdateAccountsRequest{},
+		CreateAnnouncementRequest{},
 	}
 	for _, payload := range payloads {
 		typ := reflect.TypeOf(payload)
@@ -517,13 +518,15 @@ func TestKeylessOptionalWrite_StaysOnRequestContext(t *testing.T) {
 	requireNoIdempotencyHeaders(t, rec)
 }
 
-// TestOptionalKeyedWriteHandlersUseKeyedHelpers keeps the G06 writes on the helpers that only detach keyed requests.
+// TestOptionalKeyedWriteHandlersUseKeyedHelpers keeps the G06 writes (and the H07 announcement create) on the helpers
+// that only detach keyed requests.
 // The money-write helpers detach every request (changing the Web path) and the required ones reject keyless calls.
 func TestOptionalKeyedWriteHandlersUseKeyedHelpers(t *testing.T) {
 	targets := map[string][]string{
-		"user_handler.go":    {"UserHandler.Create", "UserHandler.Update"},
-		"group_handler.go":   {"GroupHandler.Create", "GroupHandler.Update", "GroupHandler.Delete"},
-		"account_handler.go": {"AccountHandler.Update", "AccountHandler.SetSchedulable", "AccountHandler.BulkUpdate", "AccountHandler.Refresh", "AccountHandler.BatchRefresh"},
+		"user_handler.go":         {"UserHandler.Create", "UserHandler.Update"},
+		"group_handler.go":        {"GroupHandler.Create", "GroupHandler.Update", "GroupHandler.Delete"},
+		"account_handler.go":      {"AccountHandler.Update", "AccountHandler.SetSchedulable", "AccountHandler.BulkUpdate", "AccountHandler.Refresh", "AccountHandler.BatchRefresh"},
+		"announcement_handler.go": {"AnnouncementHandler.Create"},
 	}
 
 	found := 0
@@ -568,5 +571,5 @@ func TestOptionalKeyedWriteHandlersUseKeyedHelpers(t *testing.T) {
 			require.True(t, usesKeyedHelper, "%s must use executeAdminOptionalWrite or executeAdminOptionalWriteJSON", name)
 		}
 	}
-	require.Equal(t, 10, found, "every guarded handler method must still exist")
+	require.Equal(t, 11, found, "every guarded handler method must still exist")
 }
