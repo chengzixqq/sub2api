@@ -71,6 +71,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrOAuthExchangeFailed, http.StatusBadGateway, "OAUTH_EXCHANGE_FAILED"},
 		{ErrReauthPersistFailed, http.StatusInternalServerError, "REAUTH_PERSIST_FAILED"},
 		{ErrInvalidAccountStatusFilter, http.StatusBadRequest, "INVALID_ACCOUNT_STATUS_FILTER"},
+		{ErrAnnouncementInvalidReadStatusFilter, http.StatusBadRequest, "INVALID_READ_STATUS_FILTER"},
 		{(&MixedChannelError{GroupID: 7, GroupName: "g", CurrentPlatform: "Antigravity", OtherPlatform: "Anthropic"}).ConflictError(), http.StatusConflict, "MIXED_CHANNEL_WARNING"},
 		{ErrIdempotencyKeyRequired, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED"},
 		{ErrIdempotencyKeyInvalid, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID"},

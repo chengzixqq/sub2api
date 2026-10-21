@@ -34,6 +34,7 @@ var adminMeCapabilities = []string{
 	"accounts.today_stats_group",
 	"accounts.token_status",
 	"announcements.idempotent_create",
+	"announcements.read_stats",
 	"api_keys.masked_view",
 	"dashboard.account_cost",
 	"dashboard.accounts_ranking",

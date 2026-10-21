@@ -80,6 +80,9 @@ func (h *AnnouncementHandler) List(c *gin.Context) {
 	for i := range items {
 		out = append(out, *dto.AnnouncementFromService(&items[i]))
 	}
+	if includeAnnouncementReadStats(c) && !h.attachAnnouncementReadStats(c, items, out) {
+		return
+	}
 	response.Paginated(c, out, paginationResult.Total, page, pageSize)
 }
 
@@ -98,7 +101,15 @@ func (h *AnnouncementHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.AnnouncementFromService(item))
+	out := dto.AnnouncementFromService(item)
+	if includeAnnouncementReadStats(c) {
+		single := []dto.Announcement{*out}
+		if !h.attachAnnouncementReadStats(c, []service.Announcement{*item}, single) {
+			return
+		}
+		out = &single[0]
+	}
+	response.Success(c, out)
 }
 
 // Create handles creating a new announcement
@@ -227,6 +238,9 @@ func (h *AnnouncementHandler) Delete(c *gin.Context) {
 
 // ListReadStatus handles listing users read status for an announcement
 // GET /api/v1/admin/announcements/:id/read-status
+//
+// Optional read_state=read|unread, eligible=true|false and sort_by=read_at
+// (unread last) filter and order in SQL; total and pages count the filtered rows.
 func (h *AnnouncementHandler) ListReadStatus(c *gin.Context) {
 	announcementID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || announcementID <= 0 {
@@ -245,12 +259,17 @@ func (h *AnnouncementHandler) ListReadStatus(c *gin.Context) {
 	if len(search) > 200 {
 		search = search[:200]
 	}
+	filter, err := parseAnnouncementReadStatusFilter(c, search)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 
-	items, paginationResult, err := h.announcementService.ListUserReadStatus(
+	items, paginationResult, err := h.announcementService.ListUserReadStatusFiltered(
 		c.Request.Context(),
 		announcementID,
 		params,
-		search,
+		filter,
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)

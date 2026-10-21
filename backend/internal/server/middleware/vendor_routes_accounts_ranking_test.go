@@ -167,6 +167,21 @@ func TestVendorRoutesDenyOpsRequestAttempts(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyAnnouncementReadStats: read summaries and read lists cover
+// every user on the site (emails, balances), so they stay owner-only.
+func TestVendorRoutesDenyAnnouncementReadStats(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, path := range []string{
+		"/api/v1/admin/announcements/:id/read-summary",
+		"/api/v1/admin/announcements/:id/read-status",
+		"/api/v1/admin/announcements/:id",
+	} {
+		if vendorRouteAllowed(newFullPathContext("GET", path), scope) {
+			t.Fatalf("vendor must not reach GET %s", path)
+		}
+	}
+}
+
 // TestVendorRoutesAccountRuntimeBatchFollowsAccountRead: the live-counter batch
 // is a read at the same tier as GET /accounts, so either AccountManage or
 // MonitorView opens it. It must be listed as a batch route so the broad

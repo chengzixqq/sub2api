@@ -345,8 +345,11 @@ func (s *AnnouncementService) ListUserReadStatus(
 		return nil, nil, err
 	}
 
+	// The batch-loaded subscriptions replace one ListActiveByUserID query per user.
+	includeSubscriptions := true
 	filters := UserListFilters{
-		Search: strings.TrimSpace(search),
+		Search:               strings.TrimSpace(search),
+		IncludeSubscriptions: &includeSubscriptions,
 	}
 
 	users, page, err := s.userRepo.ListWithFilters(ctx, params, filters)
@@ -367,14 +370,7 @@ func (s *AnnouncementService) ListUserReadStatus(
 	out := make([]AnnouncementUserReadStatus, 0, len(users))
 	for i := range users {
 		u := users[i]
-		subs, err := s.userSubRepo.ListActiveByUserID(ctx, u.ID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("list active subscriptions: %w", err)
-		}
-		activeGroupIDs := make(map[int64]struct{}, len(subs))
-		for j := range subs {
-			activeGroupIDs[subs[j].GroupID] = struct{}{}
-		}
+		activeGroupIDs := activeSubscriptionGroupIDs(u.Subscriptions)
 
 		readAt, ok := readMap[u.ID]
 		var ptr *time.Time

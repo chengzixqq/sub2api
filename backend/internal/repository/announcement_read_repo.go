@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -11,10 +12,15 @@ import (
 
 type announcementReadRepository struct {
 	client *dbent.Client
+	sql    sqlExecutor
 }
 
-func NewAnnouncementReadRepository(client *dbent.Client) service.AnnouncementReadRepository {
-	return &announcementReadRepository{client: client}
+func NewAnnouncementReadRepository(client *dbent.Client, sqlDB *sql.DB) service.AnnouncementReadRepository {
+	return newAnnouncementReadRepositoryWithSQL(client, sqlDB)
+}
+
+func newAnnouncementReadRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *announcementReadRepository {
+	return &announcementReadRepository{client: client, sql: sqlq}
 }
 
 func (r *announcementReadRepository) MarkRead(ctx context.Context, announcementID, userID int64, readAt time.Time) error {
