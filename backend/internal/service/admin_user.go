@@ -13,6 +13,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/authidentity"
 	"github.com/Wei-Shaw/sub2api/ent/authidentitychannel"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -1087,6 +1088,7 @@ func (s *adminServiceImpl) GetUserRPMStatus(ctx context.Context, userID int64) (
 	if err != nil {
 		return nil, err
 	}
+	countersActive := s.rpmCountersActive()
 
 	userRPMUsed, err := s.userRPMCache.GetUserRPM(ctx, userID)
 	if err != nil {
@@ -1142,15 +1144,24 @@ func (s *adminServiceImpl) GetUserRPMStatus(ctx context.Context, userID int64) (
 				entry.Source = "override"
 			}
 		}
+		entry.Tracked = countersActive && entry.Limit > 0
 
 		perGroup = append(perGroup, entry)
 	}
 
 	return &UserRPMStatus{
-		UserRPMUsed:  userRPMUsed,
-		UserRPMLimit: user.RPMLimit,
-		PerGroup:     perGroup,
+		UserRPMUsed:    userRPMUsed,
+		UserRPMLimit:   user.RPMLimit,
+		UserRPMTracked: countersActive && user.RPMLimit > 0,
+		PerGroup:       perGroup,
 	}, nil
+}
+
+// rpmCountersActive reports whether the gateway increments RPM counters at all.
+// In simple run mode CheckBillingEligibility returns before checkRPM, so no
+// user or user-group minute counter is ever incremented.
+func (s *adminServiceImpl) rpmCountersActive() bool {
+	return s.cfg == nil || s.cfg.RunMode != config.RunModeSimple
 }
 
 func (s *adminServiceImpl) GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error) {

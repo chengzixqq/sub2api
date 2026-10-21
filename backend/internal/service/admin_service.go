@@ -557,9 +557,14 @@ type ReplaceUserGroupResult struct {
 
 // UserRPMStatus describes a user's current per-minute RPM usage.
 type UserRPMStatus struct {
-	UserRPMUsed  int                  `json:"user_rpm_used"`
-	UserRPMLimit int                  `json:"user_rpm_limit"`
-	PerGroup     []UserGroupRPMStatus `json:"per_group"`
+	UserRPMUsed  int `json:"user_rpm_used"`
+	UserRPMLimit int `json:"user_rpm_limit"`
+	// UserRPMTracked 表示网关是否累加用户级分钟计数（与 checkRPM 同口径：
+	// user.rpm_limit>0 且不是简易模式）。false 时网关不计数，user_rpm_used 不反映
+	// 本分钟实际请求数（通常为 0）。true 也不保证 used 非零：Redis 故障放行、
+	// 在 RPM 检查之前就被拒绝或分组级先超限的请求都不会累加用户级计数。
+	UserRPMTracked bool                 `json:"user_rpm_tracked"`
+	PerGroup       []UserGroupRPMStatus `json:"per_group"`
 }
 
 // UserGroupRPMStatus describes current per-minute RPM usage for one user/group pair.
@@ -569,6 +574,10 @@ type UserGroupRPMStatus struct {
 	Used      int    `json:"used"`
 	Limit     int    `json:"limit"`
 	Source    string `json:"source"` // "group" | "override"
+	// Tracked 表示网关是否累加该 (用户, 分组) 的分钟计数，与 checkRPM 同口径：
+	// rpm_override>0，或没有 override 且分组 rpm_limit>0，并且不是简易模式。
+	// override=0（免检）不计数。false 时 used 不反映本分钟实际请求数（通常为 0）。
+	Tracked bool `json:"tracked"`
 }
 
 // BulkUpdateAccountsResult is the aggregated response for bulk updates.

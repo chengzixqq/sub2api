@@ -4,8 +4,11 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -102,11 +105,109 @@ func TestAdminService_GetUserRPMStatus_AggregatesUserAndGroupLimits(t *testing.T
 	status, err := svc.GetUserRPMStatus(context.Background(), 42)
 	require.NoError(t, err)
 	require.Equal(t, &UserRPMStatus{
-		UserRPMUsed:  5,
-		UserRPMLimit: 20,
+		UserRPMUsed:    5,
+		UserRPMLimit:   20,
+		UserRPMTracked: true,
 		PerGroup: []UserGroupRPMStatus{
-			{GroupID: groupOneID, GroupName: "group-one", Used: 3, Limit: 10, Source: "group"},
-			{GroupID: groupTwoID, GroupName: "group-two", Used: 4, Limit: 7, Source: "override"},
+			{GroupID: groupOneID, GroupName: "group-one", Used: 3, Limit: 10, Source: "group", Tracked: true},
+			{GroupID: groupTwoID, GroupName: "group-two", Used: 4, Limit: 7, Source: "override", Tracked: true},
 		},
 	}, status)
+}
+
+func newRPMStatusServiceForTest(user *User, groups map[int64]*Group, overrides map[int64]*int, cfg *config.Config) *adminServiceImpl {
+	keys := make([]APIKey, 0, len(groups))
+	for id := range groups {
+		groupID := id
+		keys = append(keys, APIKey{ID: 1000 + groupID, UserID: user.ID, GroupID: &groupID})
+	}
+	return &adminServiceImpl{
+		cfg:               cfg,
+		userRepo:          &rpmStatusUserRepoStub{user: user},
+		apiKeyRepo:        &rpmStatusAPIKeyRepoStub{keys: keys},
+		groupRepo:         &rpmStatusGroupRepoStub{groups: groups},
+		userGroupRateRepo: &rpmStatusRateRepoStub{overrides: overrides},
+		userRPMCache:      &rpmStatusCacheStub{groupUsed: map[int64]int{}},
+	}
+}
+
+func TestAdminService_GetUserRPMStatus_TrackedFalseWhenUnlimited(t *testing.T) {
+	groups := map[int64]*Group{
+		1: {ID: 1, Name: "a", RPMLimit: 0},
+		2: {ID: 2, Name: "b", RPMLimit: 30},
+		3: {ID: 3, Name: "c", RPMLimit: 0},
+		4: {ID: 4, Name: "d", RPMLimit: 10},
+	}
+	overrides := map[int64]*int{
+		2: intPtr(0),
+		3: intPtr(5),
+	}
+	svc := newRPMStatusServiceForTest(&User{ID: 42, RPMLimit: 0}, groups, overrides, nil)
+
+	status, err := svc.GetUserRPMStatus(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, &UserRPMStatus{
+		UserRPMUsed:    0,
+		UserRPMLimit:   0,
+		UserRPMTracked: false,
+		PerGroup: []UserGroupRPMStatus{
+			{GroupID: 1, GroupName: "a", Limit: 0, Source: "group", Tracked: false},
+			{GroupID: 2, GroupName: "b", Limit: 0, Source: "override", Tracked: false},
+			{GroupID: 3, GroupName: "c", Limit: 5, Source: "override", Tracked: true},
+			{GroupID: 4, GroupName: "d", Limit: 10, Source: "group", Tracked: true},
+		},
+	}, status)
+}
+
+func TestAdminService_GetUserRPMStatus_SimpleModeNeverTracked(t *testing.T) {
+	groups := map[int64]*Group{1: {ID: 1, Name: "a", RPMLimit: 10}}
+	svc := newRPMStatusServiceForTest(&User{ID: 42, RPMLimit: 60}, groups, map[int64]*int{}, &config.Config{RunMode: config.RunModeSimple})
+
+	status, err := svc.GetUserRPMStatus(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, 60, status.UserRPMLimit)
+	require.False(t, status.UserRPMTracked)
+	require.Len(t, status.PerGroup, 1)
+	require.Equal(t, 10, status.PerGroup[0].Limit)
+	require.Equal(t, "group", status.PerGroup[0].Source)
+	require.False(t, status.PerGroup[0].Tracked)
+}
+
+// TestAdminService_GetUserRPMStatus_TrackedMatchesCheckRPMCounting 保证 rpm-status 的
+// tracked 与网关 checkRPM 实际是否累加计数器保持同一口径。
+func TestAdminService_GetUserRPMStatus_TrackedMatchesCheckRPMCounting(t *testing.T) {
+	overrideCases := []*int{nil, intPtr(0), intPtr(3)}
+	for _, userLimit := range []int{0, 5} {
+		for _, groupLimit := range []int{0, 10} {
+			for _, override := range overrideCases {
+				overrideLabel := "none"
+				if override != nil {
+					overrideLabel = fmt.Sprintf("%d", *override)
+				}
+				name := fmt.Sprintf("user=%d/group=%d/override=%s", userLimit, groupLimit, overrideLabel)
+				t.Run(name, func(t *testing.T) {
+					cache := &userRPMCacheStub{}
+					billing := newBillingServiceForRPM(t, cache, &rpmOverrideRepoStub{override: override})
+					user := &User{ID: 42, RPMLimit: userLimit}
+					group := &Group{ID: 1, Name: "g", RPMLimit: groupLimit}
+					require.NoError(t, billing.checkRPM(context.Background(), user, group))
+
+					svc := newRPMStatusServiceForTest(&User{ID: 42, RPMLimit: userLimit},
+						map[int64]*Group{1: group}, map[int64]*int{1: override}, &config.Config{})
+					status, err := svc.GetUserRPMStatus(context.Background(), 42)
+					require.NoError(t, err)
+					require.Len(t, status.PerGroup, 1)
+					require.Equal(t, cache.userGroupCalls > 0, status.PerGroup[0].Tracked, "group tracked")
+					require.Equal(t, cache.userCalls > 0, status.UserRPMTracked, "user tracked")
+				})
+			}
+		}
+	}
+}
+
+func TestUserRPMStatus_JSONIncludesTrackedFalse(t *testing.T) {
+	raw, err := json.Marshal(UserRPMStatus{PerGroup: []UserGroupRPMStatus{{GroupID: 1}}})
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"user_rpm_tracked":false`)
+	require.Contains(t, string(raw), `"tracked":false`)
 }

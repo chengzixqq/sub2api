@@ -66,6 +66,7 @@ var adminMeCapabilities = []string{
 	"usage.model_source",
 	"users.platform_quota_item",
 	"users.quick_topup",
+	"users.rpm_tracked",
 }
 
 // adminMeEmbeddedWebCapabilities are Web frontend features. They are listed
