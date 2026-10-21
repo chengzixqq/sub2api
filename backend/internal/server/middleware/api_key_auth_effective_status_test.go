@@ -5,6 +5,7 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,8 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// effectiveStatusAuthCases are key states whose gateway verdict must match APIKey.EffectiveStatus(): the derived
-// status shown to admins must not drift from what the auth middleware actually rejects.
+// effectiveStatusAuthCases are key states whose standard-mode gateway verdict must match APIKey.EffectiveStatus():
+// the derived status shown to admins must not drift from what the auth middleware actually rejects.
 func effectiveStatusAuthCases() []struct {
 	name string
 	key  service.APIKey
@@ -46,7 +47,7 @@ func effectiveStatusAuthCases() []struct {
 	}
 }
 
-func effectiveStatusAuthService(key service.APIKey) (*service.APIKeyService, *config.Config, string) {
+func effectiveStatusAuthService(key service.APIKey, runMode string) (*service.APIKeyService, *config.Config, string) {
 	user := &service.User{ID: 21, Role: service.RoleUser, Status: service.StatusActive, Balance: 10, Concurrency: 3}
 	key.ID, key.UserID, key.Key = 4099, user.ID, "sk-effective-status"
 	lookup := func(_ context.Context, raw string) (*service.APIKey, error) {
@@ -58,75 +59,106 @@ func effectiveStatusAuthService(key service.APIKey) (*service.APIKeyService, *co
 		clone.User = &userClone
 		return &clone, nil
 	}
-	cfg := &config.Config{RunMode: config.RunModeStandard}
+	cfg := &config.Config{RunMode: runMode}
 	return service.NewAPIKeyService(&stubApiKeyRepo{getByKey: lookup}, nil, nil, nil, nil, nil, cfg), cfg, key.Key
+}
+
+// mainAuthVerdict maps the main auth middleware's answer for the key onto an effective_status value.
+func mainAuthVerdict(t *testing.T, key service.APIKey, runMode string) string {
+	t.Helper()
+	svc, cfg, raw := effectiveStatusAuthService(key, runMode)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("x-api-key", raw)
+	newAuthTestRouter(svc, nil, cfg).ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		return service.StatusAPIKeyActive
+	}
+	var resp ErrorResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+	switch resp.Code {
+	case "API_KEY_DISABLED":
+		return service.StatusAPIKeyInactive
+	case "API_KEY_EXPIRED":
+		return service.StatusAPIKeyExpired
+	case "API_KEY_QUOTA_EXHAUSTED":
+		return service.StatusAPIKeyQuotaExhausted
+	}
+	return fmt.Sprintf("unexpected %d %s", w.Code, w.Body.String())
+}
+
+// googleAuthVerdict maps the Gemini auth middleware's answer for the key onto an effective_status value.
+func googleAuthVerdict(t *testing.T, key service.APIKey, runMode string) string {
+	t.Helper()
+	svc, cfg, raw := effectiveStatusAuthService(key, runMode)
+	r := gin.New()
+	r.Use(APIKeyAuthWithSubscriptionGoogle(svc, nil, cfg))
+	r.GET("/v1beta/models", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
+	req.Header.Set("x-goog-api-key", raw)
+	r.ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		return service.StatusAPIKeyActive
+	}
+	var resp struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+	switch resp.Error.Message {
+	case "API key is disabled":
+		return service.StatusAPIKeyInactive
+	case "API key 已过期":
+		return service.StatusAPIKeyExpired
+	case "API key 额度已用完":
+		return service.StatusAPIKeyQuotaExhausted
+	}
+	return fmt.Sprintf("unexpected %d %s", w.Code, w.Body.String())
 }
 
 func TestAPIKeyAuthRejectionMatchesEffectiveStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range effectiveStatusAuthCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, cfg, raw := effectiveStatusAuthService(tc.key)
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-			req.Header.Set("x-api-key", raw)
-			newAuthTestRouter(svc, nil, cfg).ServeHTTP(w, req)
-
-			got := "unexpected"
-			if w.Code == http.StatusOK {
-				got = service.StatusAPIKeyActive
-			} else {
-				var resp ErrorResponse
-				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
-				switch resp.Code {
-				case "API_KEY_DISABLED":
-					got = service.StatusAPIKeyInactive
-				case "API_KEY_EXPIRED":
-					got = service.StatusAPIKeyExpired
-				case "API_KEY_QUOTA_EXHAUSTED":
-					got = service.StatusAPIKeyQuotaExhausted
-				}
-			}
 			key := tc.key
-			require.Equal(t, key.EffectiveStatus(), got, "%d %s", w.Code, w.Body.String())
+			require.Equal(t, key.EffectiveStatus(), mainAuthVerdict(t, tc.key, config.RunModeStandard))
 		})
 	}
 }
 
 func TestGoogleAPIKeyAuthRejectionMatchesEffectiveStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	verdicts := map[string]string{
-		"API key is disabled": service.StatusAPIKeyInactive,
-		"API key 已过期":         service.StatusAPIKeyExpired,
-		"API key 额度已用完":       service.StatusAPIKeyQuotaExhausted,
-	}
 	for _, tc := range effectiveStatusAuthCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, cfg, raw := effectiveStatusAuthService(tc.key)
-			r := gin.New()
-			r.Use(APIKeyAuthWithSubscriptionGoogle(svc, nil, cfg))
-			r.GET("/v1beta/models", func(c *gin.Context) { c.Status(http.StatusOK) })
-			w := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/v1beta/models", nil)
-			req.Header.Set("x-goog-api-key", raw)
-			r.ServeHTTP(w, req)
-
-			got := "unexpected"
-			if w.Code == http.StatusOK {
-				got = service.StatusAPIKeyActive
-			} else {
-				var resp struct {
-					Error struct {
-						Message string `json:"message"`
-					} `json:"error"`
-				}
-				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
-				if v, ok := verdicts[resp.Error.Message]; ok {
-					got = v
-				}
-			}
 			key := tc.key
-			require.Equal(t, key.EffectiveStatus(), got, "%d %s", w.Code, w.Body.String())
+			require.Equal(t, key.EffectiveStatus(), googleAuthVerdict(t, tc.key, config.RunModeStandard))
 		})
+	}
+}
+
+// In RUN_MODE=simple both middlewares return before the expiry and quota checks, so only an inactive
+// effective_status is rejected; expired / quota_exhausted keys still authenticate. EffectiveStatus documents that it
+// reflects standard mode only, and clients use run_mode from /api/v1/admin/me to tell; this pins the gap.
+func TestAPIKeyAuthSimpleModeRejectsOnlyInactiveEffectiveStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	verdicts := map[string]func(*testing.T, service.APIKey, string) string{
+		"main":   mainAuthVerdict,
+		"google": googleAuthVerdict,
+	}
+	for _, tc := range effectiveStatusAuthCases() {
+		for name, verdict := range verdicts {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				key := tc.key
+				want := service.StatusAPIKeyActive
+				if key.EffectiveStatus() == service.StatusAPIKeyInactive {
+					want = service.StatusAPIKeyInactive
+				}
+				require.Equal(t, want, verdict(t, tc.key, config.RunModeSimple))
+			})
+		}
 	}
 }

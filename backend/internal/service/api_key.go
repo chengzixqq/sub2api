@@ -86,17 +86,19 @@ func (k *APIKey) IsExpired() bool {
 	return time.Now().After(*k.ExpiresAt)
 }
 
-// EffectiveStatus is the key's own state as the gateway sees it right now; see EffectiveStatusAt.
+// EffectiveStatus is the key's own state as the standard-mode gateway sees it right now; see EffectiveStatusAt.
 func (k *APIKey) EffectiveStatus() string {
 	return k.EffectiveStatusAt(time.Now())
 }
 
-// EffectiveStatusAt derives one of active / inactive / quota_exhausted / expired in the gateway auth order
-// (middleware/api_key_auth.go): any stored status other than active, quota_exhausted and expired (inactive, the
+// EffectiveStatusAt derives one of active / inactive / quota_exhausted / expired in the standard-mode gateway auth
+// order (middleware/api_key_auth.go): any stored status other than active, quota_exhausted and expired (inactive, the
 // legacy disabled, unknown values) is inactive; then the stored quota_exhausted / expired; then a passed expiry;
 // then a used-up quota. So a key that is both past its expiry and out of quota reads expired, as auth rejects it.
 //
-// Only the key itself counts: a disabled user or group, IP rules and the user's balance are not reflected.
+// Only the key itself counts: a disabled user or group, IP rules and the user's balance are not reflected. It does
+// not depend on the run mode: with RUN_MODE=simple the gateway skips the expiry and quota checks, so only inactive is
+// rejected and expired / quota_exhausted keys still authenticate; clients tell the mode from run_mode in /admin/me.
 func (k *APIKey) EffectiveStatusAt(now time.Time) string {
 	switch k.Status {
 	case StatusAPIKeyActive:

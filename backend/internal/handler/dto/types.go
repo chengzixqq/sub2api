@@ -71,9 +71,10 @@ type APIKey struct {
 	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
-	// EffectiveStatus is derived when the response is built, in the gateway auth order: one of active / inactive /
-	// quota_exhausted / expired. A key past its expiry or out of quota can still have status active; this field says
-	// expired / quota_exhausted. It reflects the key alone (not the user, group, IP rules or balance).
+	// EffectiveStatus is derived when the response is built, in the standard-mode gateway auth order: one of active /
+	// inactive / quota_exhausted / expired. A key past its expiry or out of quota can still have status active; this
+	// field says expired / quota_exhausted. It reflects the key alone (not the user, group, IP rules or balance), and
+	// with RUN_MODE=simple the gateway lets expired / quota_exhausted keys through (see APIKey.EffectiveStatusAt).
 	EffectiveStatus string `json:"effective_status"`
 	// CurrentConcurrency is the real-time active request count for this API key.
 	CurrentConcurrency int `json:"current_concurrency"`
