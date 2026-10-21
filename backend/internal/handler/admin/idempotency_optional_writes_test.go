@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -375,8 +377,9 @@ func opaqueJSONStructs(t reflect.Type, path string, seen map[reflect.Type]bool) 
 	return found
 }
 
-func TestOptionalIdempotentRequestPayloadsHaveNoOpaqueFields(t *testing.T) {
-	payloads := []any{
+// optionalIdempotentRequestPayloads are the request types fingerprinted by the optional keyed writes.
+func optionalIdempotentRequestPayloads() []any {
+	return []any{
 		CreateUserRequest{},
 		UpdateUserRequest{},
 		userUpdateIdempotencyPayload{},
@@ -387,11 +390,91 @@ func TestOptionalIdempotentRequestPayloadsHaveNoOpaqueFields(t *testing.T) {
 		BulkUpdateAccountsRequest{},
 		CreateAnnouncementRequest{},
 	}
-	for _, payload := range payloads {
+}
+
+func TestOptionalIdempotentRequestPayloadsHaveNoOpaqueFields(t *testing.T) {
+	for _, payload := range optionalIdempotentRequestPayloads() {
 		typ := reflect.TypeOf(payload)
 		require.Empty(t, opaqueJSONStructs(typ, typ.Name(), map[reflect.Type]bool{}),
 			"these fields marshal to {} and would not be part of the idempotency fingerprint")
 	}
+}
+
+// omitemptyCollectionFields lists "<struct type>.<field>" for map and slice fields reachable from t that carry
+// omitempty: json.Marshal drops both nil and an empty collection, so the fingerprint cannot tell them apart.
+func omitemptyCollectionFields(t reflect.Type, seen map[reflect.Type]bool) []string {
+	if t.Implements(jsonMarshalerType) {
+		return nil
+	}
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		return omitemptyCollectionFields(t.Elem(), seen)
+	case reflect.Struct:
+	default:
+		return nil
+	}
+	if seen[t] {
+		return nil
+	}
+	seen[t] = true
+	var found []string
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if !field.IsExported() || tag == "-" {
+			continue
+		}
+		kind := field.Type.Kind()
+		if (kind == reflect.Map || kind == reflect.Slice) && slices.Contains(strings.Split(tag, ",")[1:], "omitempty") {
+			found = append(found, t.String()+"."+field.Name)
+		}
+		found = append(found, omitemptyCollectionFields(field.Type, seen)...)
+	}
+	return found
+}
+
+// A request field where nil means "leave unchanged" and an empty collection means "clear" must not be omitempty: both
+// would marshal the same, and a retry with the same key that switches between them would replay instead of conflicting.
+// Only collections whose nil and empty values mean the same thing may keep omitempty.
+func TestOptionalIdempotentRequestPayloadsKeepNilAndEmptyCollectionsApart(t *testing.T) {
+	nilEqualsEmpty := map[string]string{
+		"admin.CreateGroupRequest.VideoModelPrices":                   "create: NormalizeVideoModelPrices maps an empty map to nil",
+		"service.ChannelModelPricing.ReasoningEffortMultipliers":      "only ranged over / looked up",
+		"domain.OpenAIMessagesDispatchModelConfig.ExactModelMappings": "normalized by len",
+		"service.GroupModelAllowlist.Models":                          "normalized by len",
+		"domain.GroupCodexModelsManifestConfig.AccountIDs":            "normalized by len",
+		"domain.AnnouncementTargeting.AnyOf":                          "matched and normalized by len",
+		"domain.AnnouncementConditionGroup.AllOf":                     "matched and normalized by len",
+		"domain.AnnouncementCondition.GroupIDs":                       "matched and normalized by len",
+	}
+	for _, payload := range optionalIdempotentRequestPayloads() {
+		typ := reflect.TypeOf(payload)
+		for _, field := range omitemptyCollectionFields(typ, map[reflect.Type]bool{}) {
+			_, ok := nilEqualsEmpty[field]
+			require.True(t, ok, "%s (reached from %s) is omitempty: nil and an empty value drop out of the idempotency fingerprint alike", field, typ.Name())
+		}
+	}
+}
+
+// PUT /admin/groups/:id treats an omitted video_model_prices as "unchanged" and {} as "clear the per-model prices".
+func TestGroupUpdate_SameKeyClearingVideoModelPricesConflicts(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+	installMemoryIdempotency(t)
+
+	first := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/groups/7", `{"name":"g"}`, "group-video-prices")
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	second := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/groups/7", `{"name":"g","video_model_prices":{}}`, "group-video-prices")
+
+	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
+	require.Equal(t, "IDEMPOTENCY_KEY_CONFLICT", responseReason(t, second))
+	require.Len(t, adminSvc.updatedGroups, 1)
+	require.Nil(t, adminSvc.updatedGroups[0].VideoModelPrices, "omitted: leave the per-model prices unchanged")
+
+	clear := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/groups/7", `{"name":"g","video_model_prices":{}}`, "")
+	require.Equal(t, http.StatusOK, clear.Code, clear.Body.String())
+	require.Len(t, adminSvc.updatedGroups, 2)
+	require.NotNil(t, adminSvc.updatedGroups[1].VideoModelPrices, "{} still reaches the service as a clear")
+	require.Empty(t, adminSvc.updatedGroups[1].VideoModelPrices)
 }
 
 func newOptionalWriteAccountRouter(admin service.AdminService, grok service.GrokOAuthTokenService) *gin.Engine {

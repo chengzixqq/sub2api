@@ -311,7 +311,7 @@ type UpdateGroupRequest struct {
 	VideoPrice480P                  *float64                      `json:"video_price_480p"`
 	VideoPrice720P                  *float64                      `json:"video_price_720p"`
 	VideoPrice1080P                 *float64                      `json:"video_price_1080p"`
-	VideoModelPrices                map[string]map[string]float64 `json:"video_model_prices,omitempty"`
+	VideoModelPrices                map[string]map[string]float64 `json:"video_model_prices"` // nil 不修改，{} 清空；不能 omitempty，否则两者的幂等指纹相同
 	WebSearchPricePerCall           *float64                      `json:"web_search_price_per_call"`
 	SearchPricePer1k                *float64                      `json:"search_price_per_1k"`
 	AudioRealtimePricePerMin        *float64                      `json:"audio_realtime_price_per_min"`
