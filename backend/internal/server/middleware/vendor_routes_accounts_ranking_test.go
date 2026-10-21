@@ -161,6 +161,25 @@ func TestVendorRoutesDenyAdminAccessTokens(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyPush: push fans out site-wide alerts and account errors to station admins, and the APNs
+// settings hold the site's p8 key; none of it is workspace data.
+func TestVendorRoutesDenyPush(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, route := range [][2]string{
+		{"GET", "/api/v1/admin/push/devices"},
+		{"POST", "/api/v1/admin/push/devices"},
+		{"DELETE", "/api/v1/admin/push/devices/:id"},
+		{"PUT", "/api/v1/admin/push/devices/:id/subscription"},
+		{"POST", "/api/v1/admin/push/devices/:id/test"},
+		{"GET", "/api/v1/admin/push/config"},
+		{"PUT", "/api/v1/admin/push/config"},
+	} {
+		if vendorRouteAllowed(newFullPathContext(route[0], route[1]), scope) {
+			t.Fatalf("vendor must not reach %s %s", route[0], route[1])
+		}
+	}
+}
+
 // TestVendorRoutesDenyOpsAlertEventCounts: ops monitoring is site-owner only; the alert counts stay closed to vendors.
 func TestVendorRoutesDenyOpsAlertEventCounts(t *testing.T) {
 	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}

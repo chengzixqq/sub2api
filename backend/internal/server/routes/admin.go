@@ -122,6 +122,9 @@ func RegisterAdminRoutes(
 		// 管理访问令牌（sat_，按设备签发）
 		registerAdminAccessTokenRoutes(admin, h, stepUpAuth)
 
+		// 出站推送（APNs / Bark / ntfy / Webhook）
+		registerPushRoutes(admin, h, stepUpAuth)
+
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
 
@@ -209,6 +212,20 @@ func registerAdminAccessTokenRoutes(admin *gin.RouterGroup, h *handler.Handlers,
 		tokens.GET("", h.Admin.AccessToken.List)
 		tokens.POST("", gin.HandlerFunc(stepUpAuth), h.Admin.AccessToken.Create)
 		tokens.DELETE("/:id", h.Admin.AccessToken.Revoke)
+	}
+}
+
+// registerPushRoutes 推送目标只属于当前管理员本人；APNs 配置含 p8 私钥，写入要求 step-up。
+func registerPushRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+	push := admin.Group("/push")
+	{
+		push.GET("/devices", h.Admin.Push.ListDevices)
+		push.POST("/devices", h.Admin.Push.RegisterDevice)
+		push.DELETE("/devices/:id", h.Admin.Push.DeleteDevice)
+		push.PUT("/devices/:id/subscription", h.Admin.Push.UpdateSubscription)
+		push.POST("/devices/:id/test", h.Admin.Push.TestDevice)
+		push.GET("/config", h.Admin.Push.GetConfig)
+		push.PUT("/config", gin.HandlerFunc(stepUpAuth), h.Admin.Push.UpdateConfig)
 	}
 }
 

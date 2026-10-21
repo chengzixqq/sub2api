@@ -151,6 +151,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "users.rpm_tracked")
 	require.Contains(t, server["capabilities"], "redeem_codes.delete_guard")
 	require.Contains(t, server["capabilities"], "redeem_codes.stats")
+	require.Contains(t, server["capabilities"], "push.notifications")
 }
 
 func TestAdminMe_AdminAPIKeyHasNoStepUp(t *testing.T) {

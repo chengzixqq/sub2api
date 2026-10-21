@@ -161,6 +161,8 @@ var auditBodyOmittedRoutes = map[string]struct{}{
 	"POST /api/v1/admin/prompt-audit/events/batch-delete":       {},
 	"POST /api/v1/admin/prompt-audit/events/delete-preview":     {},
 	"POST /api/v1/admin/prompt-audit/events/delete-by-filter":   {},
+	// 推送目标：token、secret 与可能内嵌令牌的 webhook URL 都在普通字符串值里。
+	"POST /api/v1/admin/push/devices": {},
 }
 
 // NewAuditLogMiddleware 创建审计中间件。

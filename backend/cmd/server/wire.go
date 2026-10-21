@@ -133,6 +133,7 @@ func provideCleanup(
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
+	pushDispatcher *service.PushDispatcherService,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -220,6 +221,12 @@ func provideCleanup(
 			{"OpsAlertEvaluatorService", func() error {
 				if opsAlertEvaluator != nil {
 					opsAlertEvaluator.Stop()
+				}
+				return nil
+			}},
+			{"PushDispatcherService", func() error {
+				if pushDispatcher != nil {
+					pushDispatcher.Stop()
 				}
 				return nil
 			}},

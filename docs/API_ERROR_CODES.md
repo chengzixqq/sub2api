@@ -26,7 +26,7 @@
 | 403 | STEP_UP_REQUIRED | 弹 TOTP，`POST /api/v1/user/totp/step-up` 后重试原请求 |
 | 403 | STEP_UP_TOTP_NOT_ENABLED | 提示先启用两步验证 |
 | 403 | STEP_UP_ADMIN_API_KEY_FORBIDDEN | 提示改用账号登录（Admin Key 与管理访问令牌都不能做二次验证） |
-| 403 | ACCESS_TOKEN_READ_ONLY | 只读的管理访问令牌不能执行写操作。例外：撤销自己，以及两个只读的批量 POST `/api/v1/admin/accounts/runtime/batch`、`/api/v1/admin/accounts/today-stats/batch`（`/admin/me` 的 capabilities 含 `accounts.runtime_batch` 起放行；`accounts/usage/batch` 仍拒绝，它带 `force` 时会探测上游） |
+| 403 | ACCESS_TOKEN_READ_ONLY | 只读的管理访问令牌不能执行写操作。例外：撤销自己，以及两个只读的批量 POST `/api/v1/admin/accounts/runtime/batch`、`/api/v1/admin/accounts/today-stats/batch`（`/admin/me` 的 capabilities 含 `accounts.runtime_batch` 起放行；`accounts/usage/batch` 仍拒绝，它带 `force` 时会探测上游）；capabilities 含 `push.notifications` 起，还放行令牌主人自己的推送设备：`POST /api/v1/admin/push/devices`、`DELETE /api/v1/admin/push/devices/:id`、`PUT /api/v1/admin/push/devices/:id/subscription`、`POST /api/v1/admin/push/devices/:id/test`（`PUT /api/v1/admin/push/config` 仍拒绝） |
 | 403 | FORBIDDEN、WORKSPACE_DISABLED、USER_NOT_ACTIVE | 无权限 |
 | 403 | BACKEND_MODE_ADMIN_ONLY | 后端模式只允许管理员登录 |
 | 403 | BACKEND_MODE_SELF_SERVICE_DISABLED | 后端模式下用户自助功能已关闭 |
@@ -70,6 +70,15 @@
 | 409 | IDEMPOTENCY_RETRY_BACKOFF | 同一个 key 的上次执行失败，仍在 5 秒退避期内。按 `Retry-After` 秒后用同一个 key 原样重试；要改请求体（如确认混合渠道风险后带 `confirm_mixed_channel_risk=true`）必须换新 key |
 | 503 | IDEMPOTENCY_STORE_UNAVAILABLE | 幂等存储暂时不可用，带 key 的写请求没有执行（fail-close）。不要换 key 重发，先读回服务器状态核对，稍后再用同一个 key 重试。重放快照超过 64KB 被截断时也会返回这个码，这时只能读回核对 |
 | 404 | ACCOUNT_TEST_RUN_NOT_FOUND | `GET /api/v1/admin/accounts/:id/test-runs/latest` 与 `GET /api/v1/admin/account-test-runs/:run_id`：没有测试记录、run_id 不存在或不属于本工作区的账号；latest 返回它时显示“还没有测试记录” |
+| 400 | INVALID_PUSH_TOKEN | `POST /api/v1/admin/push/devices`：设备令牌格式不对（iOS 的 `apns_token` 须为 64–200 位十六进制；Bark 的 `token` 是设备 key；ntfy 的 `token` 是主题，只能含字母、数字、`-`、`_`），`metadata.field` 指出字段；修正后再注册，不要原样重试 |
+| 400 | INVALID_PUSH_TARGET | 同一接口：`platform` 不是 ios / bark / ntfy / webhook，`endpoint` 不是允许的 URL（默认只接受公网主机的 https；局域网或 http 的 ntfy / Bark 需要站长打开 `security.url_allowlist.allow_private_hosts` / `allow_insecure_http`），或 `bundle_id`、`environment`（production / sandbox）、`timezone`（IANA 名）、`secret` 不合法；请求体不是 JSON 时 `metadata.field` 为 `body` |
+| 400 | INVALID_PUSH_SUBSCRIPTION | 注册时的 `subscription` 或 `PUT /api/v1/admin/push/devices/:id/subscription`：`events` 只能是 ops_alert.fired、ops_alert.resolved、account.error、account.test_finished，`min_severity` 只能是 P0–P3，`quiet_hours` 的 start / end 须为 HH:MM，`group_ids` 至多 100 个正整数，`platforms` 至多 20 个；`metadata.field` 指出字段 |
+| 404 | PUSH_DEVICE_NOT_FOUND | 推送设备不存在或不属于当前管理员（越权与不存在同码）；从设备列表里去掉它 |
+| 409 | PUSH_DEVICE_LIMIT_REACHED | 当前管理员的推送设备已达上限（`metadata.max`，当前 20）；先删除不用的设备。重新注册已有的同一令牌不受限制 |
+| 502 | PUSH_DELIVERY_FAILED | `POST /api/v1/admin/push/devices/:id/test`：推送服务没有接受这条通知，`metadata.provider_status` 为对方的 HTTP 状态码（网络错误为 0），`metadata.provider_reason` 为对方给出的原因（如 APNs 的 `Unregistered`、`BadDeviceToken`）。APNs 410 / BadDeviceToken / DeviceTokenNotForTopic、其他渠道 410 会同时停用设备（列表里 `enabled=false` 与 `disabled_reason`），重新注册同一令牌即可恢复 |
+| 503 | PUSH_NOT_CONFIGURED | 测试 iOS 设备时站点没有启用或没有配全 APNs（`GET /api/v1/admin/push/config` 的 `ready=false`），或保存的 p8 私钥已无法解密；提示站长补全 APNs 配置，或改用 Bark / ntfy / Webhook |
+| 400 | INVALID_APNS_CONFIG | `PUT /api/v1/admin/push/config`：`apns_team_id` / `apns_key_id` 须为 10 位大写字母数字，`apns_private_key` 须为 APNs 的 .p8（P-256）PEM，`apns_topic` 须为 bundle ID，`apns_environment` 只能是 production / sandbox，启用（`apns_enabled=true`）时团队 ID、Key ID、私钥必须齐全；`metadata.field` 指出字段 |
+| 400 | SECRET_ENCRYPTION_KEY_NOT_CONFIGURED | 写入需要加密保存的密钥（S3 SecretAccessKey、APNs p8 私钥）时，服务器没有配置固定的 `TOTP_ENCRYPTION_KEY`：自动生成的密钥每次重启都会变，保存的密文会解不开。提示站长先配置固定密钥 |
 | 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试；该账号已有运行中的测试时优先返回 409 ACCOUNT_TEST_RUNNING |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |
 | 500 | ACCOUNT_RECOVERED_SCHEDULABLE_FAILED | `POST /api/v1/admin/accounts/:id/recover-state` 带 `{"schedulable":true}` 时：恢复已生效，但启用调度这一步报错（`metadata.recovered="true"`）。调度开关可能没改，也可能已经改了（写库成功、随后回读失败时同样返回此码）。不要整体重试，先 GET 账号以读回的 schedulable 为准，仍暂停时显示“已恢复 · 仍暂停”并给“启用调度”按钮（`POST /api/v1/admin/accounts/:id/schedulable` 单独重试）。`{"schedulable":false}` 不会返回此码：暂停在恢复之前写入，写入失败时不做恢复、返回原错误，恢复失败时账号已暂停，两种情况都可以整体重试 |
@@ -125,3 +134,21 @@
 | timeout | SECTION_TIMEOUT | 该段超过自己的时限，其余段照常显示；下次刷新自动重试（带 error / timeout 段的响应不进服务端缓存） |
 | error | INTERNAL_ERROR | 该段的数据源出错且没有稳定 reason（原始错误只写服务端日志）；下次刷新重试 |
 | error | 其他值 | 与对应独立接口的 reason 相同，如 OPS_REPO_UNAVAILABLE、OPS_PREAGG_NOT_READY、SERVICE_UNAVAILABLE |
+
+## 出站推送（A11）
+
+`/admin/me` 的 capabilities 含 `push.notifications` 时可用。推送目标只属于注册它的管理员（只读管理令牌也能管理自己的设备），vendor 不能访问；只推给角色为 admin、状态为 active 的用户。
+
+- `POST /api/v1/admin/push/devices`：iOS `{"platform":"ios","apns_token":"<hex>","bundle_id":"com.example.app","environment":"production","device_name":"…","locale":"zh-Hans","timezone":"Asia/Shanghai","site_tag":"…","subscription":{…}}`；Bark `{"platform":"bark","endpoint":"https://api.day.app","token":"<device key>"}`；ntfy `{"platform":"ntfy","endpoint":"https://ntfy.sh","token":"<topic>","secret":"<access token，可省略>"}`；Webhook `{"platform":"webhook","endpoint":"https://…","secret":"<HMAC 密钥，可省略>"}`。新建返回 201，同一令牌再次注册返回 200（同一个 id，`created=false`；设备被重新启用，省略 `subscription` 时保留原订阅）。另一位管理员注册同一令牌时，设备转给他，订阅与历史重置。返回值不含令牌、secret 和完整 endpoint，只有 `token_hint`（末 4 位）与 `endpoint_host`。
+- `GET /api/v1/admin/push/devices`、`DELETE /api/v1/admin/push/devices/:id`（App 退出登录时调用；会话被吊销不会自动删除设备）、`PUT /api/v1/admin/push/devices/:id/subscription`、`POST /api/v1/admin/push/devices/:id/test`（同步发一条 `push.test`，成功返回 `{"delivered":true,"provider_status":200}`，成功也会重新启用被停用的设备）。
+- 订阅：`{"events":[…],"min_severity":"P1","group_ids":[],"platforms":[],"quiet_hours":{"start":"23:00","end":"07:00"}}`。省略 `events` 时默认 `ops_alert.fired` 与 `account.error`，`[]` 表示暂停推送；`min_severity` 只作用于告警；`group_ids` / `platforms` 只过滤带分组 / 平台信息的事件（全站告警照常推送）；`account.test_finished` 只推给发起测试的管理员，不受这两项过滤；免打扰按设备 `timezone` 计算（未填按 UTC），时段内的事件直接跳过、不会补推，start 等于 end 视为不设免打扰。
+- `GET` / `PUT /api/v1/admin/push/config`：`apns_enabled`、`apns_team_id`、`apns_key_id`、`apns_private_key`（只写，GET 只给 `apns_private_key_configured`）、`apns_topic`（设备没带 `bundle_id` 时用）、`apns_environment`（设备没带 `environment` 时用），另有只读的 `encryption_key_configured`、`ready`。PUT 只改传了的字段，`apns_private_key` 传空串表示保留；PUT 需要 step-up，只限站长。APNs 只适用于用同一 Apple Team 的 p8 私钥构建的 App。
+
+事件与去重：后台每 15 秒扫描最近 10 分钟的事件（多实例时同一时刻只有一个实例在扫），每台设备每个事件只推一次。`ops_alert.fired` / `ops_alert.resolved`（被静默的告警不推，与告警邮件同口径）；`account.error`（同一账号按 error_at 每 30 分钟最多一条）；`account.test_finished`（只推 `POST /api/v1/admin/accounts/:id/test-runs` 发起的异步测试）。所有实例停机超过 10 分钟期间的事件不会补推；失败的投递 30 秒、2 分钟后重试，共 3 次。
+
+推送内容只带可跳转的 ID 和简短文案（按设备 `locale` 选中文或英文），不含账号名、用户数据、凭据或上游原始错误：
+
+- APNs：`{"aps":{"alert":{"title":"[P1] 错误率","body":"当前 12.3（阈值 > 5） · 近 5 分钟"},"thread-id":"ops-alert","interruption-level":"time-sensitive","sound":"default"},"type":"ops_alert.fired","site":"api.example.com","severity":"P1","alert_event_id":881,"rule_id":3}`。`account.error` 带 `account_id`、`error_kind`；`account.test_finished` 带 `account_id`、`run_id`、`status`。`site` 为注册时的 `site_tag`，没有时为 `server.frontend_url` 的主机名。
+- Webhook：`POST` JSON，字段为 `type`、`title`、`body`、`occurred_at`、`site`、`severity`、`delivery_id` 加上述 ID；请求头 `X-Sub2-Event`、`X-Sub2-Delivery`（同一投递重试时不变，可用于去重）、`X-Sub2-Timestamp`（Unix 秒），设置了 secret 时再带 `X-Sub2-Signature: sha256=<hex>`，值为 `HMAC-SHA256(secret, X-Sub2-Timestamp + "." + 原始请求体)`。2xx 视为成功，410 停用设备，408 / 429 / 5xx 重试，不跟随重定向。
+- Bark：`POST {endpoint}/push`，JSON 含 `device_key`、`title`、`body`、`group`、`level`。ntfy：以 JSON 方式发布到 `{endpoint}/`，含 `topic`、`title`、`message`、`priority`（P0→5、P1→4、P2→3、P3→2，其他事件为 3）、`tags`，有 secret 时带 `Authorization: Bearer`。
+- Bark / ntfy / Webhook 发送时在连接层再次校验目标 IP，且不走代理；没开 `allow_private_hosts` 时解析到内网地址会被拒绝（`last_error` 为 blocked by SSRF policy）。设备的令牌、secret 与 endpoint 在配置了固定 `TOTP_ENCRYPTION_KEY` 时加密保存（`credentials_encrypted=true`），否则明文保存；更换密钥后已加密的设备会被停用为 `secret_undecryptable`，重新注册即可。

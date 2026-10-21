@@ -19,11 +19,16 @@ const adminAccessTokenSelfRevokePath = "/api/v1/admin/access-tokens/:id"
 
 // adminAccessTokenReadOnlyAllowedWrites 是只读令牌仍可调用的写方法路由，按「方法 + FullPath」精确匹配。
 //
-// 只登记没有副作用的读：批量读取把 ID 列表放在 POST 请求体里，本质仍是查询。
-// usage/batch 不在此列：force=true 会探测上游并落库快照。
+// 只登记两类：没有副作用的读（批量读取把 ID 列表放在 POST 请求体里，本质仍是查询；usage/batch 不在此列，
+// force=true 会探测上游并落库快照），以及只作用于令牌主人自己推送设备的写（只看告警是只读令牌的主要用途；
+// service 层按 user_id 收窄，碰不到别人的设备）。PUT /api/v1/admin/push/config（站点 APNs 私钥）不在此列。
 var adminAccessTokenReadOnlyAllowedWrites = map[string]struct{}{
-	http.MethodPost + " /api/v1/admin/accounts/runtime/batch":     {},
-	http.MethodPost + " /api/v1/admin/accounts/today-stats/batch": {},
+	http.MethodPost + " /api/v1/admin/accounts/runtime/batch":       {},
+	http.MethodPost + " /api/v1/admin/accounts/today-stats/batch":   {},
+	http.MethodPost + " /api/v1/admin/push/devices":                 {},
+	http.MethodDelete + " /api/v1/admin/push/devices/:id":           {},
+	http.MethodPut + " /api/v1/admin/push/devices/:id/subscription": {},
+	http.MethodPost + " /api/v1/admin/push/devices/:id/test":        {},
 }
 
 type adminAccessTokenAuthenticator interface {

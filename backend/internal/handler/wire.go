@@ -54,6 +54,7 @@ func ProvideAdminHandlers(
 	metaHandler *admin.MetaHandler,
 	accessTokenHandler *admin.AccessTokenHandler,
 	accountTestRunHandler *admin.AccountTestRunHandler,
+	pushHandler *admin.PushHandler,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
@@ -114,6 +115,7 @@ func ProvideAdminHandlers(
 		Meta:                   metaHandler,
 		AccessToken:            accessTokenHandler,
 		AccountTestRun:         accountTestRunHandler,
+		Push:                   pushHandler,
 	}
 }
 
@@ -355,6 +357,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAccessTokenHandler,
 	admin.NewMetaHandler,
 	admin.NewAccountTestRunHandler,
+	admin.NewPushHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

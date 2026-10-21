@@ -586,6 +586,25 @@ func ProvideOpsAlertEvaluatorService(
 	return svc
 }
 
+// ProvidePushDispatcherService creates and starts the outbound push dispatcher (A11).
+func ProvidePushDispatcherService(
+	repo PushRepository,
+	senders *PushSenders,
+	encryptor SecretEncryptor,
+	cfg *config.Config,
+	opsService *OpsService,
+	lockCache LeaderLockCache,
+	db *sql.DB,
+) *PushDispatcherService {
+	var alerts pushAlertSettingsReader
+	if opsService != nil {
+		alerts = opsService
+	}
+	svc := NewPushDispatcherService(repo, senders, encryptor, cfg, alerts, lockCache, db)
+	svc.Start()
+	return svc
+}
+
 // ProvideOpsCleanupService creates and starts OpsCleanupService (cron scheduled).
 // channelMonitorSvc 让维护任务（聚合 + 历史/聚合软删）跟随 ops 清理 cron 一起跑，
 // 共享 leader lock + heartbeat。
@@ -879,6 +898,10 @@ func ProvideAPIKeyService(
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
 	NewAdminAccessTokenService,
+	NewPushConfigService,
+	NewPushSenders,
+	NewPushDeviceService,
+	ProvidePushDispatcherService,
 	// Core services
 	NewAccountStatusSummaryServiceForWire,
 	NewDashboardHomeService,

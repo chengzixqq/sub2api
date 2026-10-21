@@ -49,6 +49,7 @@ type AdminHandlers struct {
 	Meta                   *admin.MetaHandler
 	AccessToken            *admin.AccessTokenHandler
 	AccountTestRun         *admin.AccountTestRunHandler
+	Push                   *admin.PushHandler
 }
 
 // Handlers contains all HTTP handlers

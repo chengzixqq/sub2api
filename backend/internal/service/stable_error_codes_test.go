@@ -89,6 +89,15 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrRedeemCodeDeleteUsed, http.StatusConflict, "REDEEM_CODE_USED"},
 		{ErrRedeemCodeNotFound, http.StatusNotFound, "REDEEM_CODE_NOT_FOUND"},
 		{ErrUserBalanceNotEditable, http.StatusBadRequest, "USER_BALANCE_NOT_EDITABLE"},
+		{ErrInvalidPushToken, http.StatusBadRequest, "INVALID_PUSH_TOKEN"},
+		{ErrInvalidPushTarget, http.StatusBadRequest, "INVALID_PUSH_TARGET"},
+		{ErrInvalidPushSubscription, http.StatusBadRequest, "INVALID_PUSH_SUBSCRIPTION"},
+		{ErrInvalidAPNsConfig, http.StatusBadRequest, "INVALID_APNS_CONFIG"},
+		{ErrPushDeviceNotFound, http.StatusNotFound, "PUSH_DEVICE_NOT_FOUND"},
+		{ErrPushDeviceLimit, http.StatusConflict, "PUSH_DEVICE_LIMIT_REACHED"},
+		{ErrPushDeliveryFailed, http.StatusBadGateway, "PUSH_DELIVERY_FAILED"},
+		{ErrPushNotConfigured, http.StatusServiceUnavailable, "PUSH_NOT_CONFIGURED"},
+		{ErrSecretEncryptionKeyNotConfigured, http.StatusBadRequest, "SECRET_ENCRYPTION_KEY_NOT_CONFIGURED"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

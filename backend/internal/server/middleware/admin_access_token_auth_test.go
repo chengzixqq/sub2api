@@ -51,6 +51,11 @@ func newAccessTokenTestEnv(t *testing.T, users map[int64]*service.User, tokens m
 	group.POST("/accounts/batch-delete", record)
 	group.POST("/accounts/usage/batch", record)
 	group.PUT("/accounts/runtime/batch", record)
+	group.POST("/push/devices", record)
+	group.DELETE("/push/devices/:id", record)
+	group.PUT("/push/devices/:id/subscription", record)
+	group.POST("/push/devices/:id/test", record)
+	group.PUT("/push/config", record)
 	return env
 }
 
@@ -117,6 +122,29 @@ func TestAdminAccessToken_ReadOnlyAllowsReadBatchPOSTs(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, w.Code, "%s %s", tc.method, tc.path)
 		require.Equal(t, "ACCESS_TOKEN_READ_ONLY", decodeErrorBody(t, w)["reason"], "%s %s", tc.method, tc.path)
 	}
+}
+
+// Watching alerts is what read-only tokens are for, so they may manage the owner's own push devices; the site's
+// APNs settings (p8 key) stay write-only.
+func TestAdminAccessTokenReadOnlyMayManageOwnPushDevices(t *testing.T) {
+	owner := &service.User{ID: 42, Role: service.RoleAdmin, Status: service.StatusActive}
+	env := newAccessTokenTestEnv(t, map[int64]*service.User{42: owner}, map[string]*service.AdminAccessToken{
+		"sat_read": {ID: 8, UserID: 42, Scope: service.AdminAccessTokenScopeRead, ExpiresAt: time.Now().Add(time.Hour)},
+	})
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/admin/push/devices"},
+		{http.MethodDelete, "/api/v1/admin/push/devices/3"},
+		{http.MethodPut, "/api/v1/admin/push/devices/3/subscription"},
+		{http.MethodPost, "/api/v1/admin/push/devices/3/test"},
+	} {
+		require.Equal(t, http.StatusOK, env.do(tc.method, tc.path, "sat_read").Code, "%s %s", tc.method, tc.path)
+		subject, ok := GetAuthSubjectFromContext(env.seen)
+		require.True(t, ok)
+		require.Equal(t, int64(42), subject.UserID, "devices are scoped to the token owner")
+	}
+	w := env.do(http.MethodPut, "/api/v1/admin/push/config", "sat_read")
+	require.Equal(t, http.StatusForbidden, w.Code)
+	require.Equal(t, "ACCESS_TOKEN_READ_ONLY", decodeErrorBody(t, w)["reason"])
 }
 
 func TestAdminAccessToken_Rejections(t *testing.T) {
