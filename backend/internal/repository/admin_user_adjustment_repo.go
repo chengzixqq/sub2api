@@ -10,6 +10,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type adminUserAdjustmentRepository struct {
@@ -29,10 +30,10 @@ func (r *adminUserAdjustmentRepository) CreateBatch(ctx context.Context, rows []
 INSERT INTO admin_user_adjustments (
     action_id, kind, operation, requested_value, delta, before_value, after_value,
     user_id, user_email, user_name, operator_user_id, operator_email, operator_name,
-    notes, client_ip, auth_method, request_id, source, legacy_redeem_code_id, created_at
+    notes, client_ip, auth_method, request_id, source, legacy_redeem_code_id, created_at, redeem_code_id
 ) VALUES (
     $1, $2, $3, NULLIF($4, '')::numeric, $5::numeric, NULLIF($6, '')::numeric, NULLIF($7, '')::numeric,
-    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+    $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
 )`
 	for i := range rows {
 		row := rows[i]
@@ -45,7 +46,7 @@ INSERT INTO admin_user_adjustments (
 			stringOrEmpty(row.BeforeValue), stringOrEmpty(row.AfterValue), row.UserID,
 			row.UserEmail, row.UserName, row.OperatorUserID, row.OperatorEmail, row.OperatorName,
 			row.Notes, row.ClientIP, row.AuthMethod, row.RequestID, row.Source,
-			row.LegacyRedeemCodeID, createdAt,
+			row.LegacyRedeemCodeID, createdAt, row.RedeemCodeID,
 		); err != nil {
 			return err
 		}
@@ -142,19 +143,19 @@ const adjustmentSelect = `
 SELECT id, action_id::text, kind, operation,
        requested_value::text, delta::text, before_value::text, after_value::text,
        user_id, user_email, user_name, operator_user_id, operator_email, operator_name, notes,
-       client_ip, auth_method, request_id, source, legacy_redeem_code_id, created_at
+       client_ip, auth_method, request_id, source, legacy_redeem_code_id, created_at, redeem_code_id
 FROM admin_user_adjustments`
 
 func scanAdminUserAdjustment(scanner interface{ Scan(...any) error }) (service.AdminUserAdjustment, error) {
 	var row service.AdminUserAdjustment
 	var requested, before, after sql.NullString
 	var userEmail, userName, operatorEmail, operatorName, notes, clientIP, authMethod, requestID sql.NullString
-	var userID, operatorID, legacyID sql.NullInt64
+	var userID, operatorID, legacyID, redeemCodeID sql.NullInt64
 	err := scanner.Scan(
 		&row.ID, &row.ActionID, &row.Kind, &row.Operation,
 		&requested, &row.Delta, &before, &after,
 		&userID, &userEmail, &userName, &operatorID, &operatorEmail, &operatorName, &notes,
-		&clientIP, &authMethod, &requestID, &row.Source, &legacyID, &row.CreatedAt,
+		&clientIP, &authMethod, &requestID, &row.Source, &legacyID, &row.CreatedAt, &redeemCodeID,
 	)
 	if err != nil {
 		return row, err
@@ -179,7 +180,65 @@ func scanAdminUserAdjustment(scanner interface{ Scan(...any) error }) (service.A
 	if legacyID.Valid {
 		row.LegacyRedeemCodeID = &legacyID.Int64
 	}
+	if redeemCodeID.Valid {
+		row.RedeemCodeID = &redeemCodeID.Int64
+	}
 	return row, nil
+}
+
+// linksByRedeemCodeIDsSQL finds the ledger entry behind each compatibility redeem code of one user. Entries written
+// since E10 carry redeem_code_id; entries migrated by 223 carry legacy_redeem_code_id; entries written in between
+// have neither and are matched on what the writer stored identically in both tables: user, kind, created_at = used_at
+// and delta = value. An exact link wins over the fallback match.
+const linksByRedeemCodeIDsSQL = `
+SELECT rc.id, a.id, a.before_value::text, a.after_value::text, a.operator_email
+FROM redeem_codes rc
+JOIN LATERAL (
+    SELECT adj.id, adj.before_value, adj.after_value, adj.operator_email,
+           CASE WHEN adj.redeem_code_id = rc.id OR adj.legacy_redeem_code_id = rc.id THEN 0 ELSE 1 END AS link_rank
+    FROM admin_user_adjustments adj
+    WHERE adj.user_id = rc.used_by
+      AND adj.kind = CASE rc.type WHEN 'admin_balance' THEN 'balance' ELSE 'concurrency' END
+      AND (
+          adj.redeem_code_id = rc.id
+          OR adj.legacy_redeem_code_id = rc.id
+          OR (
+              adj.redeem_code_id IS NULL AND adj.legacy_redeem_code_id IS NULL
+              AND adj.created_at = rc.used_at AND adj.delta = rc.value
+          )
+      )
+    ORDER BY link_rank, adj.id
+    LIMIT 1
+) a ON TRUE
+WHERE rc.id = ANY($2)
+  AND rc.used_by = $1
+  AND rc.type IN ('admin_balance', 'admin_concurrency')`
+
+// LinksByRedeemCodeIDs returns the ledger entry behind each of the given admin_balance / admin_concurrency redeem
+// codes of the user, keyed by redeem code id. Codes without a matching entry are absent.
+func (r *adminUserAdjustmentRepository) LinksByRedeemCodeIDs(ctx context.Context, userID int64, redeemCodeIDs []int64) (map[int64]service.AdminAdjustmentLink, error) {
+	links := make(map[int64]service.AdminAdjustmentLink, len(redeemCodeIDs))
+	if userID <= 0 || len(redeemCodeIDs) == 0 {
+		return links, nil
+	}
+	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, linksByRedeemCodeIDsSQL, userID, pq.Array(redeemCodeIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var codeID int64
+		var link service.AdminAdjustmentLink
+		var before, after, operatorEmail sql.NullString
+		if err := rows.Scan(&codeID, &link.AdjustmentID, &before, &after, &operatorEmail); err != nil {
+			return nil, err
+		}
+		link.BeforeValue = nullableString(before)
+		link.AfterValue = nullableString(after)
+		link.OperatorEmail = nullableString(operatorEmail)
+		links[codeID] = link
+	}
+	return links, rows.Err()
 }
 
 func nullableString(value sql.NullString) *string {

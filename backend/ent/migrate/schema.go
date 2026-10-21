@@ -289,6 +289,7 @@ var (
 		{Name: "request_id", Type: field.TypeString, Nullable: true, Size: 128},
 		{Name: "source", Type: field.TypeString, Size: 64},
 		{Name: "legacy_redeem_code_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "redeem_code_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 	}
 	// AdminUserAdjustmentsTable holds the schema information for the "admin_user_adjustments" table.
@@ -300,10 +301,10 @@ var (
 			{
 				Name:    "idx_admin_user_adjustments_created",
 				Unique:  false,
-				Columns: []*schema.Column{AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[21], AdminUserAdjustmentsColumns[0]},
 				Annotation: &entsql.IndexAnnotation{
 					DescColumns: map[string]bool{
-						AdminUserAdjustmentsColumns[20].Name: true,
+						AdminUserAdjustmentsColumns[21].Name: true,
 
 						AdminUserAdjustmentsColumns[0].Name: true,
 					},
@@ -312,10 +313,10 @@ var (
 			{
 				Name:    "idx_admin_user_adjustments_user_created",
 				Unique:  false,
-				Columns: []*schema.Column{AdminUserAdjustmentsColumns[8], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[8], AdminUserAdjustmentsColumns[21], AdminUserAdjustmentsColumns[0]},
 				Annotation: &entsql.IndexAnnotation{
 					DescColumns: map[string]bool{
-						AdminUserAdjustmentsColumns[20].Name: true,
+						AdminUserAdjustmentsColumns[21].Name: true,
 
 						AdminUserAdjustmentsColumns[0].Name: true,
 					},
@@ -324,10 +325,10 @@ var (
 			{
 				Name:    "idx_admin_user_adjustments_operator_created",
 				Unique:  false,
-				Columns: []*schema.Column{AdminUserAdjustmentsColumns[11], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[11], AdminUserAdjustmentsColumns[21], AdminUserAdjustmentsColumns[0]},
 				Annotation: &entsql.IndexAnnotation{
 					DescColumns: map[string]bool{
-						AdminUserAdjustmentsColumns[20].Name: true,
+						AdminUserAdjustmentsColumns[21].Name: true,
 
 						AdminUserAdjustmentsColumns[0].Name: true,
 					},
@@ -336,10 +337,10 @@ var (
 			{
 				Name:    "idx_admin_user_adjustments_kind_created",
 				Unique:  false,
-				Columns: []*schema.Column{AdminUserAdjustmentsColumns[2], AdminUserAdjustmentsColumns[20], AdminUserAdjustmentsColumns[0]},
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[2], AdminUserAdjustmentsColumns[21], AdminUserAdjustmentsColumns[0]},
 				Annotation: &entsql.IndexAnnotation{
 					DescColumns: map[string]bool{
-						AdminUserAdjustmentsColumns[20].Name: true,
+						AdminUserAdjustmentsColumns[21].Name: true,
 
 						AdminUserAdjustmentsColumns[0].Name: true,
 					},
@@ -364,6 +365,14 @@ var (
 				Columns: []*schema.Column{AdminUserAdjustmentsColumns[19]},
 				Annotation: &entsql.IndexAnnotation{
 					Where: "legacy_redeem_code_id IS NOT NULL",
+				},
+			},
+			{
+				Name:    "idx_admin_user_adjustments_redeem_code",
+				Unique:  true,
+				Columns: []*schema.Column{AdminUserAdjustmentsColumns[20]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "redeem_code_id IS NOT NULL",
 				},
 			},
 		},

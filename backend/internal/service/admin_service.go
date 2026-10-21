@@ -29,8 +29,13 @@ type AdminService interface {
 	GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error)
 	// GetUserBalanceHistory returns paginated balance/concurrency change records for a user.
 	// codeType is optional - pass empty string to return all types.
-	// Also returns totalRecharged (sum of all positive balance top-ups).
+	// Also returns totalRecharged: the positive balance redeem codes plus the positive admin_balance rows (admin top-ups
+	// and initial balances). This is the "total recharged" figure shown to admins; users.total_recharged (balance
+	// notification thresholds) also counts promo codes and affiliate transfers and was not accrued by admin top-ups
+	// before E10. Admin adjustment rows carry their ledger entry in RedeemCode.Adjustment.
 	GetUserBalanceHistory(ctx context.Context, userID int64, page, pageSize int, codeType string) ([]RedeemCode, int64, float64, error)
+	// GetUserRechargeBreakdown splits the user's top-ups by source (nil when the repository cannot tell).
+	GetUserRechargeBreakdown(ctx context.Context, userID int64) (*UserRechargeBreakdown, error)
 	BindUserAuthIdentity(ctx context.Context, userID int64, input AdminBindAuthIdentityInput) (*AdminBoundAuthIdentity, error)
 
 	// Group management

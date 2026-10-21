@@ -5854,6 +5854,8 @@ type AdminUserAdjustmentMutation struct {
 	source                   *string
 	legacy_redeem_code_id    *int64
 	addlegacy_redeem_code_id *int64
+	redeem_code_id           *int64
+	addredeem_code_id        *int64
 	created_at               *time.Time
 	clearedFields            map[string]struct{}
 	done                     bool
@@ -6888,6 +6890,76 @@ func (m *AdminUserAdjustmentMutation) ResetLegacyRedeemCodeID() {
 	delete(m.clearedFields, adminuseradjustment.FieldLegacyRedeemCodeID)
 }
 
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (m *AdminUserAdjustmentMutation) SetRedeemCodeID(i int64) {
+	m.redeem_code_id = &i
+	m.addredeem_code_id = nil
+}
+
+// RedeemCodeID returns the value of the "redeem_code_id" field in the mutation.
+func (m *AdminUserAdjustmentMutation) RedeemCodeID() (r int64, exists bool) {
+	v := m.redeem_code_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldRedeemCodeID returns the old "redeem_code_id" field's value of the AdminUserAdjustment entity.
+// If the AdminUserAdjustment object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *AdminUserAdjustmentMutation) OldRedeemCodeID(ctx context.Context) (v *int64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldRedeemCodeID is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldRedeemCodeID requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldRedeemCodeID: %w", err)
+	}
+	return oldValue.RedeemCodeID, nil
+}
+
+// AddRedeemCodeID adds i to the "redeem_code_id" field.
+func (m *AdminUserAdjustmentMutation) AddRedeemCodeID(i int64) {
+	if m.addredeem_code_id != nil {
+		*m.addredeem_code_id += i
+	} else {
+		m.addredeem_code_id = &i
+	}
+}
+
+// AddedRedeemCodeID returns the value that was added to the "redeem_code_id" field in this mutation.
+func (m *AdminUserAdjustmentMutation) AddedRedeemCodeID() (r int64, exists bool) {
+	v := m.addredeem_code_id
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (m *AdminUserAdjustmentMutation) ClearRedeemCodeID() {
+	m.redeem_code_id = nil
+	m.addredeem_code_id = nil
+	m.clearedFields[adminuseradjustment.FieldRedeemCodeID] = struct{}{}
+}
+
+// RedeemCodeIDCleared returns if the "redeem_code_id" field was cleared in this mutation.
+func (m *AdminUserAdjustmentMutation) RedeemCodeIDCleared() bool {
+	_, ok := m.clearedFields[adminuseradjustment.FieldRedeemCodeID]
+	return ok
+}
+
+// ResetRedeemCodeID resets all changes to the "redeem_code_id" field.
+func (m *AdminUserAdjustmentMutation) ResetRedeemCodeID() {
+	m.redeem_code_id = nil
+	m.addredeem_code_id = nil
+	delete(m.clearedFields, adminuseradjustment.FieldRedeemCodeID)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *AdminUserAdjustmentMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -6958,7 +7030,7 @@ func (m *AdminUserAdjustmentMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *AdminUserAdjustmentMutation) Fields() []string {
-	fields := make([]string, 0, 20)
+	fields := make([]string, 0, 21)
 	if m.action_id != nil {
 		fields = append(fields, adminuseradjustment.FieldActionID)
 	}
@@ -7016,6 +7088,9 @@ func (m *AdminUserAdjustmentMutation) Fields() []string {
 	if m.legacy_redeem_code_id != nil {
 		fields = append(fields, adminuseradjustment.FieldLegacyRedeemCodeID)
 	}
+	if m.redeem_code_id != nil {
+		fields = append(fields, adminuseradjustment.FieldRedeemCodeID)
+	}
 	if m.created_at != nil {
 		fields = append(fields, adminuseradjustment.FieldCreatedAt)
 	}
@@ -7065,6 +7140,8 @@ func (m *AdminUserAdjustmentMutation) Field(name string) (ent.Value, bool) {
 		return m.Source()
 	case adminuseradjustment.FieldLegacyRedeemCodeID:
 		return m.LegacyRedeemCodeID()
+	case adminuseradjustment.FieldRedeemCodeID:
+		return m.RedeemCodeID()
 	case adminuseradjustment.FieldCreatedAt:
 		return m.CreatedAt()
 	}
@@ -7114,6 +7191,8 @@ func (m *AdminUserAdjustmentMutation) OldField(ctx context.Context, name string)
 		return m.OldSource(ctx)
 	case adminuseradjustment.FieldLegacyRedeemCodeID:
 		return m.OldLegacyRedeemCodeID(ctx)
+	case adminuseradjustment.FieldRedeemCodeID:
+		return m.OldRedeemCodeID(ctx)
 	case adminuseradjustment.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	}
@@ -7258,6 +7337,13 @@ func (m *AdminUserAdjustmentMutation) SetField(name string, value ent.Value) err
 		}
 		m.SetLegacyRedeemCodeID(v)
 		return nil
+	case adminuseradjustment.FieldRedeemCodeID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetRedeemCodeID(v)
+		return nil
 	case adminuseradjustment.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -7282,6 +7368,9 @@ func (m *AdminUserAdjustmentMutation) AddedFields() []string {
 	if m.addlegacy_redeem_code_id != nil {
 		fields = append(fields, adminuseradjustment.FieldLegacyRedeemCodeID)
 	}
+	if m.addredeem_code_id != nil {
+		fields = append(fields, adminuseradjustment.FieldRedeemCodeID)
+	}
 	return fields
 }
 
@@ -7296,6 +7385,8 @@ func (m *AdminUserAdjustmentMutation) AddedField(name string) (ent.Value, bool) 
 		return m.AddedOperatorUserID()
 	case adminuseradjustment.FieldLegacyRedeemCodeID:
 		return m.AddedLegacyRedeemCodeID()
+	case adminuseradjustment.FieldRedeemCodeID:
+		return m.AddedRedeemCodeID()
 	}
 	return nil, false
 }
@@ -7325,6 +7416,13 @@ func (m *AdminUserAdjustmentMutation) AddField(name string, value ent.Value) err
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddLegacyRedeemCodeID(v)
+		return nil
+	case adminuseradjustment.FieldRedeemCodeID:
+		v, ok := value.(int64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddRedeemCodeID(v)
 		return nil
 	}
 	return fmt.Errorf("unknown AdminUserAdjustment numeric field %s", name)
@@ -7375,6 +7473,9 @@ func (m *AdminUserAdjustmentMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(adminuseradjustment.FieldLegacyRedeemCodeID) {
 		fields = append(fields, adminuseradjustment.FieldLegacyRedeemCodeID)
+	}
+	if m.FieldCleared(adminuseradjustment.FieldRedeemCodeID) {
+		fields = append(fields, adminuseradjustment.FieldRedeemCodeID)
 	}
 	return fields
 }
@@ -7431,6 +7532,9 @@ func (m *AdminUserAdjustmentMutation) ClearField(name string) error {
 		return nil
 	case adminuseradjustment.FieldLegacyRedeemCodeID:
 		m.ClearLegacyRedeemCodeID()
+		return nil
+	case adminuseradjustment.FieldRedeemCodeID:
+		m.ClearRedeemCodeID()
 		return nil
 	}
 	return fmt.Errorf("unknown AdminUserAdjustment nullable field %s", name)
@@ -7496,6 +7600,9 @@ func (m *AdminUserAdjustmentMutation) ResetField(name string) error {
 		return nil
 	case adminuseradjustment.FieldLegacyRedeemCodeID:
 		m.ResetLegacyRedeemCodeID()
+		return nil
+	case adminuseradjustment.FieldRedeemCodeID:
+		m.ResetRedeemCodeID()
 		return nil
 	case adminuseradjustment.FieldCreatedAt:
 		m.ResetCreatedAt()

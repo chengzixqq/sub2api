@@ -122,12 +122,7 @@ func normalizeUserRole(role, fallback string) (string, error) {
 }
 
 func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInput) (*User, error) {
-	balance := 0.0
-	if input.Balance != nil {
-		balance = *input.Balance
-	} else if s.settingService != nil {
-		balance = s.settingService.GetDefaultBalance(ctx)
-	}
+	balance, balanceSource := s.resolveInitialBalance(ctx, input)
 
 	// 角色可由管理员在创建时指定(admin/user);未提供时默认 user。
 	role, err := normalizeUserRole(input.Role, RoleUser)
@@ -151,7 +146,13 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 	if err := user.SetPassword(input.Password); err != nil {
 		return nil, err
 	}
-	if err := s.userRepo.Create(ctx, user); err != nil {
+	// E10: a positive initial balance is a ledger entry (admin_create_user, or default_balance when the admin left the
+	// balance out), written in the same transaction as the user.
+	if balance > 0 && s.canPersistAdminAdjustments() {
+		if err := s.createUserWithInitialBalance(ctx, user, balanceSource); err != nil {
+			return nil, err
+		}
+	} else if err := s.userRepo.Create(ctx, user); err != nil {
 		return nil, err
 	}
 	// 创建管理员属权限敏感操作，落审计日志（含操作者），便于事后追溯。
@@ -199,6 +200,10 @@ func (s *adminServiceImpl) assignDefaultSubscriptions(ctx context.Context, userI
 }
 
 func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error) {
+	// Q13: the balance is not editable here (it used to be ignored silently); use UpdateUserBalance.
+	if input.Balance != nil {
+		return nil, ErrUserBalanceNotEditable
+	}
 	// 校验用户专属分组倍率：必须 > 0（nil 合法，表示清除专属倍率）
 	if input.GroupRates != nil {
 		for groupID, rate := range input.GroupRates {
@@ -741,6 +746,12 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		}}, metadata); err != nil {
 			return nil, err
 		}
+		// Q12: a net increase (add, or a raise by set) counts as a top-up for the percentage balance notification.
+		if balanceDiff.IsPositive() {
+			if err := accrueTotalRecharged(opCtx, tx.Client(), userID, deltaValue); err != nil {
+				return nil, err
+			}
+		}
 	}
 	user, err := s.userRepo.GetByID(opCtx, userID)
 	if err != nil {
@@ -885,55 +896,7 @@ func adminAdjustmentUserSnapshot(ctx context.Context, client *dbent.Client, user
 }
 
 func (s *adminServiceImpl) createAdjustmentRecords(ctx context.Context, client *dbent.Client, rows []AdminUserAdjustmentWrite, metadata AdminAdjustmentMetadata) error {
-	if len(rows) == 0 {
-		return nil
-	}
-	var operatorName *string
-	if metadata.OperatorID != nil {
-		operatorEmail, name, err := adminAdjustmentUserSnapshot(ctx, client, *metadata.OperatorID)
-		if err != nil {
-			return fmt.Errorf("snapshot adjustment operator: %w", err)
-		}
-		metadata.OperatorEmail = operatorEmail
-		operatorName = adjustmentStringPtr(name)
-	}
-	now := time.Now()
-	redeemCodes := make([]RedeemCode, 0, len(rows))
-	for i := range rows {
-		code, err := GenerateRedeemCode()
-		if err != nil {
-			return err
-		}
-		recordType := AdjustmentTypeAdminBalance
-		if rows[i].Kind == AdjustmentKindConcurrency {
-			recordType = AdjustmentTypeAdminConcurrency
-		}
-		userID := rows[i].UserID
-		delta, err := decimal.NewFromString(rows[i].Delta)
-		if err != nil {
-			return fmt.Errorf("parse adjustment delta: %w", err)
-		}
-		deltaFloat, _ := delta.Float64()
-		redeemCodes = append(redeemCodes, RedeemCode{
-			Code: code, Type: recordType, Value: deltaFloat, ValueExact: delta.StringFixed(8), Status: StatusUsed,
-			UsedBy: &userID, UsedAt: &now, Notes: metadata.Notes,
-		})
-		rows[i].OperatorUserID = metadata.OperatorID
-		rows[i].OperatorEmail = adjustmentStringPtr(metadata.OperatorEmail)
-		rows[i].OperatorName = operatorName
-		rows[i].Notes = adjustmentStringPtr(metadata.Notes)
-		rows[i].ClientIP = adjustmentStringPtr(metadata.ClientIP)
-		rows[i].AuthMethod = adjustmentStringPtr(metadata.AuthMethod)
-		rows[i].RequestID = adjustmentStringPtr(metadata.RequestID)
-		rows[i].CreatedAt = now
-	}
-	if err := s.redeemCodeRepo.CreateBatch(ctx, redeemCodes); err != nil {
-		return fmt.Errorf("create compatibility adjustment records: %w", err)
-	}
-	if err := s.adjustmentRepo.CreateBatch(ctx, rows); err != nil {
-		return fmt.Errorf("create admin user adjustments: %w", err)
-	}
-	return nil
+	return writeAdjustmentRecords(ctx, client, s.redeemCodeRepo, s.adjustmentRepo, rows, metadata)
 }
 
 func (s *adminServiceImpl) batchUpdateConcurrencyWithLedger(ctx context.Context, userIDs []int64, value int, mode string, rpmLimit *int, source string) (int, error) {
@@ -1198,6 +1161,9 @@ func (s *adminServiceImpl) GetUserBalanceHistory(ctx context.Context, userID int
 	if err != nil {
 		return nil, 0, 0, err
 	}
+	if err := s.attachAdjustmentLinks(ctx, userID, codes); err != nil {
+		return nil, 0, 0, err
+	}
 	total := result.Total
 	// Aggregate total recharged amount (only once, regardless of type filter)
 	totalRecharged, err := s.redeemCodeRepo.SumPositiveBalanceByUser(ctx, userID)
@@ -1222,6 +1188,9 @@ func (s *adminServiceImpl) getAllUserBalanceHistory(ctx context.Context, userID 
 		return nil, 0, 0, err
 	}
 	codes := mergeBalanceHistoryCodes(redeemCodes, affiliateCodes, params)
+	if err := s.attachAdjustmentLinks(ctx, userID, codes); err != nil {
+		return nil, 0, 0, err
+	}
 
 	totalRecharged, err := s.redeemCodeRepo.SumPositiveBalanceByUser(ctx, userID)
 	if err != nil {

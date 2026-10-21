@@ -578,6 +578,27 @@ type AdminRedeemCode struct {
 	CreatedBy *int64  `json:"created_by,omitempty"`
 }
 
+// AdminBalanceHistoryItem is one row of GET /admin/users/:id/balance-history. For admin_balance / admin_concurrency
+// rows the four ledger fields describe the adjustment (before / after are null for rows migrated from old redeem
+// codes); they are always present and null on every other row.
+type AdminBalanceHistoryItem struct {
+	AdminRedeemCode
+
+	AdjustmentID  *int64  `json:"adjustment_id"`
+	BeforeValue   *string `json:"before_value"`
+	AfterValue    *string `json:"after_value"`
+	OperatorEmail *string `json:"operator_email"`
+}
+
+// RechargeBreakdown splits balance-history's total_recharged by source; total_recharged is redeem + admin, affiliate
+// and promo are reported beside it.
+type RechargeBreakdown struct {
+	Redeem    float64 `json:"redeem"`
+	Admin     float64 `json:"admin"`
+	Affiliate float64 `json:"affiliate"`
+	Promo     float64 `json:"promo"`
+}
+
 type NullableTimeField struct {
 	Set   bool
 	Value *time.Time

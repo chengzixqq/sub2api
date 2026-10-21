@@ -163,7 +163,7 @@ func (s *AuthService) RegisterOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.createUserWithRegistrationEmailGuard(ctx, user); err != nil {
+	if err := s.createSignupUser(ctx, user, s.createUserWithRegistrationEmailGuard); err != nil {
 		switch {
 		case errors.Is(err, ErrEmailExists):
 			return nil, nil, ErrEmailExists
@@ -250,7 +250,7 @@ func (s *AuthService) RegisterVerifiedOAuthEmailAccount(
 		SignupSource: signupSource,
 	}
 
-	if err := s.createUserWithRegistrationEmailGuard(ctx, user); err != nil {
+	if err := s.createSignupUser(ctx, user, s.createUserWithRegistrationEmailGuard); err != nil {
 		switch {
 		case errors.Is(err, ErrEmailExists):
 			return nil, nil, ErrEmailExists

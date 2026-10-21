@@ -487,7 +487,8 @@ WHERE user_id = $1 AND notes = 'set after billing lock'`, target.ID).Scan(&befor
 	require.InDelta(t, -73, delta, 1e-9)
 }
 
-func TestCreateUserInitialValuesDoNotCreateAdjustmentLedger(t *testing.T) {
+// E10: the initial balance is a ledger entry (source admin_create_user); the initial concurrency still is not.
+func TestCreateUserInitialValuesLedgerOnlyTheBalance(t *testing.T) {
 	client := testEntClient(t)
 	userRepo := NewUserRepository(client, integrationDB)
 	adminService := newAdjustmentIntegrationAdminService(
@@ -502,7 +503,9 @@ func TestCreateUserInitialValuesDoNotCreateAdjustmentLedger(t *testing.T) {
 		Balance: &balance, Concurrency: 7,
 	})
 	require.NoError(t, err)
-	require.Equal(t, int64(0), adjustmentCountForUsers(t, created.ID))
+	require.Equal(t, int64(1), adjustmentCountForUsers(t, created.ID))
+	require.Equal(t, int64(1), redeemAdjustmentCount(t, created.ID, service.AdjustmentTypeAdminBalance))
+	require.Equal(t, int64(0), redeemAdjustmentCount(t, created.ID, service.AdjustmentTypeAdminConcurrency))
 }
 
 func newAdjustmentIntegrationAdminService(

@@ -32,6 +32,10 @@ type RedeemCode struct {
 
 	User  *User
 	Group *Group
+
+	// Adjustment is the ledger entry behind an admin_balance / admin_concurrency row. Not stored; only the admin
+	// balance-history fills it.
+	Adjustment *AdminAdjustmentLink
 }
 
 func (r *RedeemCode) IsUsed() bool {

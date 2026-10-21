@@ -675,6 +675,29 @@ func RedeemCodeFromServiceAdmin(rc *service.RedeemCode) *AdminRedeemCode {
 	return out
 }
 
+// BalanceHistoryItemFromServiceAdmin converts one balance-history row, adding the ledger entry of admin adjustments.
+func BalanceHistoryItemFromServiceAdmin(rc *service.RedeemCode) *AdminBalanceHistoryItem {
+	if rc == nil {
+		return nil
+	}
+	out := &AdminBalanceHistoryItem{AdminRedeemCode: *RedeemCodeFromServiceAdmin(rc)}
+	if rc.Adjustment != nil {
+		adjustmentID := rc.Adjustment.AdjustmentID
+		out.AdjustmentID = &adjustmentID
+		out.BeforeValue = rc.Adjustment.BeforeValue
+		out.AfterValue = rc.Adjustment.AfterValue
+		out.OperatorEmail = rc.Adjustment.OperatorEmail
+	}
+	return out
+}
+
+func RechargeBreakdownFromService(b *service.UserRechargeBreakdown) *RechargeBreakdown {
+	if b == nil {
+		return nil
+	}
+	return &RechargeBreakdown{Redeem: b.Redeem, Admin: b.Admin, Affiliate: b.Affiliate, Promo: b.Promo}
+}
+
 func redeemCodeFromServiceBase(rc *service.RedeemCode) RedeemCode {
 	out := RedeemCode{
 		ID:           rc.ID,

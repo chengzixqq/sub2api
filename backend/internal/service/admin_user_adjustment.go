@@ -15,6 +15,18 @@ const (
 	AdjustmentOperationSubtract = "subtract"
 	AdjustmentOperationSet      = "set"
 	AdjustmentOperationLegacy   = "legacy"
+
+	// AdjustmentSourceAdminCreateUser is the initial balance an admin gave a new user explicitly (POST /admin/users).
+	AdjustmentSourceAdminCreateUser = "admin_create_user"
+	// AdjustmentSourceDefaultBalance is a balance granted from the site defaults: the default_balance of a user created
+	// without an explicit balance (by an admin, a signup or a third-party first login), or the per-provider grant on a
+	// first third-party bind. Such rows have no operator unless an admin created the user.
+	AdjustmentSourceDefaultBalance = "default_balance"
+
+	// adjustmentInitialBalanceNotes is the note of an initial-balance entry when the caller gave none.
+	adjustmentInitialBalanceNotes = "初始余额"
+	// adjustmentFirstBindGrantNotes is the note of the balance granted on a first third-party bind.
+	adjustmentFirstBindGrantNotes = "首次绑定赠送余额"
 )
 
 type adminAdjustmentMetadataKey struct{}
@@ -69,6 +81,7 @@ type AdminUserAdjustmentWrite struct {
 	RequestID          *string
 	Source             string
 	LegacyRedeemCodeID *int64
+	RedeemCodeID       *int64 // compatibility redeem_codes row written with this entry; createAdjustmentRecords fills it
 	CreatedAt          time.Time
 }
 
@@ -93,7 +106,23 @@ type AdminUserAdjustment struct {
 	RequestID          *string   `json:"request_id"`
 	Source             string    `json:"source"`
 	LegacyRedeemCodeID *int64    `json:"legacy_redeem_code_id"`
+	RedeemCodeID       *int64    `json:"redeem_code_id"` // row in balance-history; nil for entries written before E10
 	CreatedAt          time.Time `json:"created_at"`
+}
+
+// AdminAdjustmentLink is the ledger entry behind one admin_balance / admin_concurrency row of balance-history. Rows
+// migrated from old redeem codes have no before / after values.
+type AdminAdjustmentLink struct {
+	AdjustmentID  int64
+	BeforeValue   *string
+	AfterValue    *string
+	OperatorEmail *string
+}
+
+// adminAdjustmentLinkReader finds the ledger entries behind compatibility redeem codes of one user. It is optional so
+// existing AdminUserAdjustmentRepository test doubles keep compiling; without it balance-history has no before / after.
+type adminAdjustmentLinkReader interface {
+	LinksByRedeemCodeIDs(ctx context.Context, userID int64, redeemCodeIDs []int64) (map[int64]AdminAdjustmentLink, error)
 }
 
 type AdminUserAdjustmentFilter struct {

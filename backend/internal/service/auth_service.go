@@ -89,6 +89,8 @@ type AuthService struct {
 	affiliateService      *AffiliateService
 	defaultSubAssigner    DefaultSubscriptionAssigner
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	// adjustmentRepo records signup / first-bind balance grants in the ledger (E10); nil keeps the plain writes.
+	adjustmentRepo AdminUserAdjustmentRepository
 }
 
 type CaptchaProof struct {
@@ -623,7 +625,7 @@ func (s *AuthService) LoginOrRegisterOAuth(ctx context.Context, email, username 
 				SignupSource: signupSource,
 			}
 
-			if err := s.userRepo.Create(ctx, newUser); err != nil {
+			if err := s.createSignupUser(ctx, newUser, s.userRepo.Create); err != nil {
 				if errors.Is(err, ErrEmailExists) {
 					// 并发场景：GetByEmail 与 Create 之间用户被创建。
 					user, err = s.userRepo.GetByEmail(ctx, email)
@@ -781,7 +783,7 @@ func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 				defer func() { _ = tx.Rollback() }()
 				txCtx := dbent.NewTxContext(ctx, tx)
 
-				if err := s.userRepo.Create(txCtx, newUser); err != nil {
+				if err := s.createSignupUser(txCtx, newUser, s.userRepo.Create); err != nil {
 					if errors.Is(err, ErrEmailExists) {
 						user, err = s.userRepo.GetByEmail(ctx, email)
 						if err != nil {
@@ -809,7 +811,7 @@ func (s *AuthService) loginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 					s.bindOAuthAffiliate(ctx, user.ID, affiliateCode)
 				}
 			} else {
-				if err := s.userRepo.Create(ctx, newUser); err != nil {
+				if err := s.createSignupUser(ctx, newUser, s.userRepo.Create); err != nil {
 					if errors.Is(err, ErrEmailExists) {
 						user, err = s.userRepo.GetByEmail(ctx, email)
 						if err != nil {
@@ -1287,9 +1289,17 @@ func (s *AuthService) createUserWithRegistrationEmailGuard(ctx context.Context, 
 //
 // 无邀请码时保持原单次创建路径（不开事务）；entClient 缺失的异常配置下退化为顺序执行，
 // 并发正确性仍由 Use 的条件更新兜底（可能产生孤儿用户，但不会放行第二个注册）。
+//
+// E10：注册赠送的站点默认余额（default_balance）要写入充值与调整记录，与用户创建同一事务；
+// 因此无邀请码但余额大于 0 且账本依赖齐全时同样开事务。
 func (s *AuthService) createUserAndClaimInvitation(ctx context.Context, user *User, invitation *RedeemCode) error {
 	commitUser := func(execCtx context.Context) error {
 		if err := s.createUserWithRegistrationEmailGuard(execCtx, user); err != nil {
+			return err
+		}
+		// The signup balance is a ledger entry written with the user (E10); recordSignupBalance is a no-op without
+		// a positive balance or the ledger dependencies.
+		if err := s.recordSignupBalance(execCtx, user); err != nil {
 			return err
 		}
 		if invitation == nil {
@@ -1308,7 +1318,7 @@ func (s *AuthService) createUserAndClaimInvitation(ctx context.Context, user *Us
 		return nil
 	}
 
-	if invitation == nil {
+	if invitation == nil && (user.Balance <= 0 || !s.canRecordGrantedBalance()) {
 		return commitUser(ctx)
 	}
 	if s.entClient == nil {

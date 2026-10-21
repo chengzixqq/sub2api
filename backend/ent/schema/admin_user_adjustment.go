@@ -43,6 +43,9 @@ func (AdminUserAdjustment) Fields() []ent.Field {
 		field.String("request_id").MaxLen(128).Optional().Nillable(),
 		field.String("source").MaxLen(64),
 		field.Int64("legacy_redeem_code_id").Optional().Nillable(),
+		// RedeemCodeID is the compatibility redeem_codes row written with this entry (E10, migration 256); nil for rows
+		// written before it.
+		field.Int64("redeem_code_id").Optional().Nillable(),
 		field.Time("created_at").Immutable().Default(time.Now).SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
 	}
 }
@@ -71,5 +74,9 @@ func (AdminUserAdjustment) Indexes() []ent.Index {
 			Unique().
 			StorageKey("idx_admin_user_adjustments_legacy_redeem").
 			Annotations(entsql.IndexWhere("legacy_redeem_code_id IS NOT NULL")),
+		index.Fields("redeem_code_id").
+			Unique().
+			StorageKey("idx_admin_user_adjustments_redeem_code").
+			Annotations(entsql.IndexWhere("redeem_code_id IS NOT NULL")),
 	}
 }

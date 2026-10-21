@@ -87,6 +87,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrRedeemCodeUsed, http.StatusConflict, "REDEEM_CODE_USED"},
 		{ErrRedeemCodeDeleteUsed, http.StatusConflict, "REDEEM_CODE_USED"},
 		{ErrRedeemCodeNotFound, http.StatusNotFound, "REDEEM_CODE_NOT_FOUND"},
+		{ErrUserBalanceNotEditable, http.StatusBadRequest, "USER_BALANCE_NOT_EDITABLE"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

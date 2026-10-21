@@ -56,6 +56,8 @@ type AdminUserAdjustment struct {
 	Source string `json:"source,omitempty"`
 	// LegacyRedeemCodeID holds the value of the "legacy_redeem_code_id" field.
 	LegacyRedeemCodeID *int64 `json:"legacy_redeem_code_id,omitempty"`
+	// RedeemCodeID holds the value of the "redeem_code_id" field.
+	RedeemCodeID *int64 `json:"redeem_code_id,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt    time.Time `json:"created_at,omitempty"`
 	selectValues sql.SelectValues
@@ -66,7 +68,7 @@ func (*AdminUserAdjustment) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case adminuseradjustment.FieldID, adminuseradjustment.FieldUserID, adminuseradjustment.FieldOperatorUserID, adminuseradjustment.FieldLegacyRedeemCodeID:
+		case adminuseradjustment.FieldID, adminuseradjustment.FieldUserID, adminuseradjustment.FieldOperatorUserID, adminuseradjustment.FieldLegacyRedeemCodeID, adminuseradjustment.FieldRedeemCodeID:
 			values[i] = new(sql.NullInt64)
 		case adminuseradjustment.FieldKind, adminuseradjustment.FieldOperation, adminuseradjustment.FieldRequestedValue, adminuseradjustment.FieldDelta, adminuseradjustment.FieldBeforeValue, adminuseradjustment.FieldAfterValue, adminuseradjustment.FieldUserEmail, adminuseradjustment.FieldUserName, adminuseradjustment.FieldOperatorEmail, adminuseradjustment.FieldOperatorName, adminuseradjustment.FieldNotes, adminuseradjustment.FieldClientIP, adminuseradjustment.FieldAuthMethod, adminuseradjustment.FieldRequestID, adminuseradjustment.FieldSource:
 			values[i] = new(sql.NullString)
@@ -223,6 +225,13 @@ func (_m *AdminUserAdjustment) assignValues(columns []string, values []any) erro
 				_m.LegacyRedeemCodeID = new(int64)
 				*_m.LegacyRedeemCodeID = value.Int64
 			}
+		case adminuseradjustment.FieldRedeemCodeID:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field redeem_code_id", values[i])
+			} else if value.Valid {
+				_m.RedeemCodeID = new(int64)
+				*_m.RedeemCodeID = value.Int64
+			}
 		case adminuseradjustment.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -347,6 +356,11 @@ func (_m *AdminUserAdjustment) String() string {
 	builder.WriteString(", ")
 	if v := _m.LegacyRedeemCodeID; v != nil {
 		builder.WriteString("legacy_redeem_code_id=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
+	builder.WriteString(", ")
+	if v := _m.RedeemCodeID; v != nil {
+		builder.WriteString("redeem_code_id=")
 		builder.WriteString(fmt.Sprintf("%v", *v))
 	}
 	builder.WriteString(", ")

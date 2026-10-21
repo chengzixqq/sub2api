@@ -27,11 +27,14 @@ func (r *adminUserAdjustmentRepository) quickTopupRecent(ctx context.Context, q 
 	if q.RecentLimit == 0 {
 		return out, nil
 	}
+	// Site grants (signup / first-bind default balance, E10) are ledger entries without an operator; they are not
+	// admin top-ups and would crowd the strip with every new user.
 	rows, err := clientFromContext(ctx, r.client).QueryContext(ctx, `
 		WITH latest AS (
 			SELECT DISTINCT ON (user_id) user_id, created_at, delta, operation
 			FROM admin_user_adjustments
 			WHERE kind = $1 AND user_id IS NOT NULL AND created_at >= NOW() - make_interval(days => $2)
+			  AND NOT (source = $5 AND operator_user_id IS NULL)
 			ORDER BY user_id, created_at DESC, id DESC
 		)
 		SELECT u.id, u.email, u.username, u.status, u.balance, l.created_at, l.delta::text, l.operation
@@ -40,7 +43,7 @@ func (r *adminUserAdjustmentRepository) quickTopupRecent(ctx context.Context, q 
 		WHERE u.deleted_at IS NULL AND u.status = $3
 		ORDER BY l.created_at DESC, u.id DESC
 		LIMIT $4`,
-		service.AdjustmentKindBalance, q.RecentDays, service.StatusActive, q.RecentLimit)
+		service.AdjustmentKindBalance, q.RecentDays, service.StatusActive, q.RecentLimit, service.AdjustmentSourceDefaultBalance)
 	if err != nil {
 		return nil, err
 	}

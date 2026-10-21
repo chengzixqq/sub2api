@@ -399,6 +399,33 @@ func (_u *AdminUserAdjustmentUpdate) ClearLegacyRedeemCodeID() *AdminUserAdjustm
 	return _u
 }
 
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdate) SetRedeemCodeID(v int64) *AdminUserAdjustmentUpdate {
+	_u.mutation.ResetRedeemCodeID()
+	_u.mutation.SetRedeemCodeID(v)
+	return _u
+}
+
+// SetNillableRedeemCodeID sets the "redeem_code_id" field if the given value is not nil.
+func (_u *AdminUserAdjustmentUpdate) SetNillableRedeemCodeID(v *int64) *AdminUserAdjustmentUpdate {
+	if v != nil {
+		_u.SetRedeemCodeID(*v)
+	}
+	return _u
+}
+
+// AddRedeemCodeID adds value to the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdate) AddRedeemCodeID(v int64) *AdminUserAdjustmentUpdate {
+	_u.mutation.AddRedeemCodeID(v)
+	return _u
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdate) ClearRedeemCodeID() *AdminUserAdjustmentUpdate {
+	_u.mutation.ClearRedeemCodeID()
+	return _u
+}
+
 // Mutation returns the AdminUserAdjustmentMutation object of the builder.
 func (_u *AdminUserAdjustmentUpdate) Mutation() *AdminUserAdjustmentMutation {
 	return _u.mutation
@@ -605,6 +632,15 @@ func (_u *AdminUserAdjustmentUpdate) sqlSave(ctx context.Context) (_node int, er
 	}
 	if _u.mutation.LegacyRedeemCodeIDCleared() {
 		_spec.ClearField(adminuseradjustment.FieldLegacyRedeemCodeID, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.RedeemCodeID(); ok {
+		_spec.SetField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedRedeemCodeID(); ok {
+		_spec.AddField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64, value)
+	}
+	if _u.mutation.RedeemCodeIDCleared() {
+		_spec.ClearField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64)
 	}
 	if _node, err = sqlgraph.UpdateNodes(ctx, _u.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
@@ -997,6 +1033,33 @@ func (_u *AdminUserAdjustmentUpdateOne) ClearLegacyRedeemCodeID() *AdminUserAdju
 	return _u
 }
 
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdateOne) SetRedeemCodeID(v int64) *AdminUserAdjustmentUpdateOne {
+	_u.mutation.ResetRedeemCodeID()
+	_u.mutation.SetRedeemCodeID(v)
+	return _u
+}
+
+// SetNillableRedeemCodeID sets the "redeem_code_id" field if the given value is not nil.
+func (_u *AdminUserAdjustmentUpdateOne) SetNillableRedeemCodeID(v *int64) *AdminUserAdjustmentUpdateOne {
+	if v != nil {
+		_u.SetRedeemCodeID(*v)
+	}
+	return _u
+}
+
+// AddRedeemCodeID adds value to the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdateOne) AddRedeemCodeID(v int64) *AdminUserAdjustmentUpdateOne {
+	_u.mutation.AddRedeemCodeID(v)
+	return _u
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (_u *AdminUserAdjustmentUpdateOne) ClearRedeemCodeID() *AdminUserAdjustmentUpdateOne {
+	_u.mutation.ClearRedeemCodeID()
+	return _u
+}
+
 // Mutation returns the AdminUserAdjustmentMutation object of the builder.
 func (_u *AdminUserAdjustmentUpdateOne) Mutation() *AdminUserAdjustmentMutation {
 	return _u.mutation
@@ -1233,6 +1296,15 @@ func (_u *AdminUserAdjustmentUpdateOne) sqlSave(ctx context.Context) (_node *Adm
 	}
 	if _u.mutation.LegacyRedeemCodeIDCleared() {
 		_spec.ClearField(adminuseradjustment.FieldLegacyRedeemCodeID, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.RedeemCodeID(); ok {
+		_spec.SetField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64, value)
+	}
+	if value, ok := _u.mutation.AddedRedeemCodeID(); ok {
+		_spec.AddField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64, value)
+	}
+	if _u.mutation.RedeemCodeIDCleared() {
+		_spec.ClearField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64)
 	}
 	_node = &AdminUserAdjustment{config: _u.config}
 	_spec.Assign = _node.assignValues

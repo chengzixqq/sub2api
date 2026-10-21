@@ -321,7 +321,7 @@ func init() {
 	// adminuseradjustment.SourceValidator is a validator for the "source" field. It is called by the builders before save.
 	adminuseradjustment.SourceValidator = adminuseradjustmentDescSource.Validators[0].(func(string) error)
 	// adminuseradjustmentDescCreatedAt is the schema descriptor for created_at field.
-	adminuseradjustmentDescCreatedAt := adminuseradjustmentFields[19].Descriptor()
+	adminuseradjustmentDescCreatedAt := adminuseradjustmentFields[20].Descriptor()
 	// adminuseradjustment.DefaultCreatedAt holds the default value on creation for the created_at field.
 	adminuseradjustment.DefaultCreatedAt = adminuseradjustmentDescCreatedAt.Default.(func() time.Time)
 	announcementFields := schema.Announcement{}.Fields()

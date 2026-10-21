@@ -51,6 +51,8 @@ const (
 	FieldSource = "source"
 	// FieldLegacyRedeemCodeID holds the string denoting the legacy_redeem_code_id field in the database.
 	FieldLegacyRedeemCodeID = "legacy_redeem_code_id"
+	// FieldRedeemCodeID holds the string denoting the redeem_code_id field in the database.
+	FieldRedeemCodeID = "redeem_code_id"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// Table holds the table name of the adminuseradjustment in the database.
@@ -79,6 +81,7 @@ var Columns = []string{
 	FieldRequestID,
 	FieldSource,
 	FieldLegacyRedeemCodeID,
+	FieldRedeemCodeID,
 	FieldCreatedAt,
 }
 
@@ -218,6 +221,11 @@ func BySource(opts ...sql.OrderTermOption) OrderOption {
 // ByLegacyRedeemCodeID orders the results by the legacy_redeem_code_id field.
 func ByLegacyRedeemCodeID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldLegacyRedeemCodeID, opts...).ToFunc()
+}
+
+// ByRedeemCodeID orders the results by the redeem_code_id field.
+func ByRedeemCodeID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRedeemCodeID, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

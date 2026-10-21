@@ -210,6 +210,23 @@ func TestVendorRoutesDenyAnnouncementReadStats(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyUserBalanceLedger (E10): creating users with an initial balance, editing users and the
+// balance history (before/after values, operator emails, top-up sources) cover every user on the site, so they stay
+// owner-only (Q19: vendors never see balances).
+func TestVendorRoutesDenyUserBalanceLedger(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	for _, route := range []struct{ method, path string }{
+		{"POST", "/api/v1/admin/users"},
+		{"PUT", "/api/v1/admin/users/:id"},
+		{"GET", "/api/v1/admin/users/:id/balance-history"},
+		{"GET", "/api/v1/admin/user-adjustments"},
+	} {
+		if vendorRouteAllowed(newFullPathContext(route.method, route.path), scope) {
+			t.Fatalf("vendor must not reach %s %s", route.method, route.path)
+		}
+	}
+}
+
 // TestVendorRoutesAccountRuntimeBatchFollowsAccountRead: the live-counter batch
 // is a read at the same tier as GET /accounts, so either AccountManage or
 // MonitorView opens it. It must be listed as a batch route so the broad

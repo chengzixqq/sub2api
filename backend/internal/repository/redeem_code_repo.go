@@ -91,11 +91,14 @@ func (r *redeemCodeRepository) CreateBatch(ctx context.Context, codes []service.
 	return client.RedeemCode.CreateBulk(builders...).Exec(ctx)
 }
 
+// createBatchExact inserts codes with exact DECIMAL values and writes the new id and created_at back into codes, so
+// the admin adjustment ledger can link each entry to its compatibility row (E10).
 func (r *redeemCodeRepository) createBatchExact(ctx context.Context, client *dbent.Client, codes []service.RedeemCode) error {
 	const insertSQL = `
 INSERT INTO redeem_codes (
     code, type, value, status, used_by, used_at, notes, created_at, expires_at, group_id, validity_days
-) VALUES ($1, $2, $3::numeric, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11)`
+) VALUES ($1, $2, $3::numeric, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11)
+RETURNING id, created_at`
 	for i := range codes {
 		code := &codes[i]
 		value := code.ValueExact
@@ -106,14 +109,39 @@ INSERT INTO redeem_codes (
 		if createdAt.IsZero() {
 			createdAt = time.Now()
 		}
-		if _, err := client.ExecContext(ctx, insertSQL,
+		id, storedAt, err := insertRedeemCodeReturningID(ctx, client, insertSQL,
 			code.Code, code.Type, value, code.Status, code.UsedBy, code.UsedAt,
 			code.Notes, createdAt, code.ExpiresAt, code.GroupID, code.ValidityDays,
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
+		code.ID = id
+		code.CreatedAt = storedAt
 	}
 	return nil
+}
+
+func insertRedeemCodeReturningID(ctx context.Context, client *dbent.Client, query string, args ...any) (id int64, createdAt time.Time, err error) {
+	rows, err := client.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, time.Time{}, err
+		}
+		return 0, time.Time{}, errors.New("insert redeem code returned no row")
+	}
+	if err := rows.Scan(&id, &createdAt); err != nil {
+		return 0, time.Time{}, err
+	}
+	return id, createdAt, rows.Err()
 }
 
 func (r *redeemCodeRepository) GetByID(ctx context.Context, id int64) (*service.RedeemCode, error) {
@@ -590,6 +618,36 @@ func (r *redeemCodeRepository) SumPositiveBalanceByUser(ctx context.Context, use
 		return 0, nil
 	}
 	return result[0].Sum, nil
+}
+
+// SumRechargeBreakdownByUser splits the user's top-ups by source for balance-history (E10): positive balance redeem
+// codes, positive admin_balance rows, affiliate rebates transferred to the balance and promo-code bonuses. redeem +
+// admin equals SumPositiveBalanceByUser.
+func (r *redeemCodeRepository) SumRechargeBreakdownByUser(ctx context.Context, userID int64) (breakdown service.UserRechargeBreakdown, err error) {
+	rows, err := r.client.QueryContext(ctx, `
+SELECT
+    COALESCE((SELECT SUM(value) FROM redeem_codes WHERE used_by = $1 AND type = 'balance' AND value > 0), 0)::float8,
+    COALESCE((SELECT SUM(value) FROM redeem_codes WHERE used_by = $1 AND type = 'admin_balance' AND value > 0), 0)::float8,
+    COALESCE((SELECT SUM(amount) FROM user_affiliate_ledger WHERE user_id = $1 AND action = 'transfer' AND amount > 0), 0)::float8,
+    COALESCE((SELECT SUM(bonus_amount) FROM promo_code_usages WHERE user_id = $1 AND bonus_amount > 0), 0)::float8`, userID)
+	if err != nil {
+		return breakdown, err
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return breakdown, err
+		}
+		return breakdown, errors.New("recharge breakdown returned no row")
+	}
+	if err := rows.Scan(&breakdown.Redeem, &breakdown.Admin, &breakdown.Affiliate, &breakdown.Promo); err != nil {
+		return breakdown, err
+	}
+	return breakdown, rows.Err()
 }
 
 func redeemCodeEntityToService(m *dbent.RedeemCode) *service.RedeemCode {

@@ -306,7 +306,14 @@ func (h *UserHandler) Create(c *gin.Context) {
 		}
 	}
 
-	executeAdminOptionalWriteJSON(c, "admin.users.create", createUserIdempotencyPayload(req), adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+	payload := createUserIdempotencyPayload(req)
+	// A positive initial balance is a ledger entry (E10). Its action id is derived from the Idempotency-Key, so the
+	// first call and a replay name the same action; the client finds it in /admin/user-adjustments?action_id=….
+	if actionID, derived := adminAdjustmentActionID(c, "admin.users.create", payload); derived {
+		c.Header("X-Admin-Adjustment-Action-ID", actionID.String())
+	}
+	executeAdminOptionalWriteJSON(c, "admin.users.create", payload, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		ctx = withAdminAdjustmentMetadata(c, ctx, "", "admin.users.create", payload)
 		user, err := h.adminService.CreateUser(ctx, &service.CreateUserInput{
 			Email:                req.Email,
 			Password:             req.Password,
@@ -364,6 +371,12 @@ func (h *UserHandler) Update(c *gin.Context) {
 	var req UpdateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	// Q13: balance used to be accepted and silently ignored; refuse it before the idempotency wrapper, so a refused
+	// request stores nothing under its key. Balances change through POST /admin/users/:id/balance.
+	if req.Balance != nil {
+		response.ErrorFrom(c, service.ErrUserBalanceNotEditable)
 		return
 	}
 
@@ -561,10 +574,17 @@ func (h *UserHandler) GetBalanceHistory(c *gin.Context) {
 		return
 	}
 
-	// Convert to admin DTO (includes notes field for admin visibility)
-	out := make([]dto.AdminRedeemCode, 0, len(codes))
+	// total_recharged keeps its meaning (redeem + admin); the breakdown tells the sources apart (E10).
+	breakdown, err := h.adminService.GetUserRechargeBreakdown(c.Request.Context(), userID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	// Convert to admin DTO (includes notes field for admin visibility); admin adjustment rows carry their ledger entry.
+	out := make([]dto.AdminBalanceHistoryItem, 0, len(codes))
 	for i := range codes {
-		out = append(out, *dto.RedeemCodeFromServiceAdmin(&codes[i]))
+		out = append(out, *dto.BalanceHistoryItemFromServiceAdmin(&codes[i]))
 	}
 
 	// Custom response with total_recharged alongside pagination
@@ -579,6 +599,8 @@ func (h *UserHandler) GetBalanceHistory(c *gin.Context) {
 		"page_size":       pageSize,
 		"pages":           pages,
 		"total_recharged": totalRecharged,
+
+		"total_recharged_breakdown": dto.RechargeBreakdownFromService(breakdown),
 	})
 }
 

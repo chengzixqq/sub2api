@@ -150,6 +150,11 @@ func LegacyRedeemCodeID(v int64) predicate.AdminUserAdjustment {
 	return predicate.AdminUserAdjustment(sql.FieldEQ(FieldLegacyRedeemCodeID, v))
 }
 
+// RedeemCodeID applies equality check predicate on the "redeem_code_id" field. It's identical to RedeemCodeIDEQ.
+func RedeemCodeID(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldEQ(FieldRedeemCodeID, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.AdminUserAdjustment {
 	return predicate.AdminUserAdjustment(sql.FieldEQ(FieldCreatedAt, v))
@@ -1428,6 +1433,56 @@ func LegacyRedeemCodeIDIsNil() predicate.AdminUserAdjustment {
 // LegacyRedeemCodeIDNotNil applies the NotNil predicate on the "legacy_redeem_code_id" field.
 func LegacyRedeemCodeIDNotNil() predicate.AdminUserAdjustment {
 	return predicate.AdminUserAdjustment(sql.FieldNotNull(FieldLegacyRedeemCodeID))
+}
+
+// RedeemCodeIDEQ applies the EQ predicate on the "redeem_code_id" field.
+func RedeemCodeIDEQ(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldEQ(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDNEQ applies the NEQ predicate on the "redeem_code_id" field.
+func RedeemCodeIDNEQ(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldNEQ(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDIn applies the In predicate on the "redeem_code_id" field.
+func RedeemCodeIDIn(vs ...int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldIn(FieldRedeemCodeID, vs...))
+}
+
+// RedeemCodeIDNotIn applies the NotIn predicate on the "redeem_code_id" field.
+func RedeemCodeIDNotIn(vs ...int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldNotIn(FieldRedeemCodeID, vs...))
+}
+
+// RedeemCodeIDGT applies the GT predicate on the "redeem_code_id" field.
+func RedeemCodeIDGT(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldGT(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDGTE applies the GTE predicate on the "redeem_code_id" field.
+func RedeemCodeIDGTE(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldGTE(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDLT applies the LT predicate on the "redeem_code_id" field.
+func RedeemCodeIDLT(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldLT(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDLTE applies the LTE predicate on the "redeem_code_id" field.
+func RedeemCodeIDLTE(v int64) predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldLTE(FieldRedeemCodeID, v))
+}
+
+// RedeemCodeIDIsNil applies the IsNil predicate on the "redeem_code_id" field.
+func RedeemCodeIDIsNil() predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldIsNull(FieldRedeemCodeID))
+}
+
+// RedeemCodeIDNotNil applies the NotNil predicate on the "redeem_code_id" field.
+func RedeemCodeIDNotNil() predicate.AdminUserAdjustment {
+	return predicate.AdminUserAdjustment(sql.FieldNotNull(FieldRedeemCodeID))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

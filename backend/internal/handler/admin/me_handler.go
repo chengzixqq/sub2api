@@ -66,6 +66,7 @@ var adminMeCapabilities = []string{
 	"redeem_codes.stats",
 	"scheduled_tests.upstream_status",
 	"usage.model_source",
+	"users.balance_ledger",
 	"users.platform_quota_item",
 	"users.quick_topup",
 	"users.rpm_tracked",

@@ -72,3 +72,16 @@ func TestAccountTestRunsMigration(t *testing.T) {
 	require.NotContains(t, sql, "DROP ")
 	require.NotContains(t, sql, "+goose")
 }
+
+// E10: each ledger row points at its compatibility redeem_codes row, so balance-history can show before/after. The
+// column is new and nullable: older rows are matched at query time, and the append-only ledger is never updated.
+func TestAdminUserAdjustmentsRedeemCodeIDMigration(t *testing.T) {
+	content, err := FS.ReadFile("256_admin_user_adjustments_redeem_code_id.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE admin_user_adjustments ADD COLUMN IF NOT EXISTS redeem_code_id BIGINT")
+	require.Contains(t, sql, "CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_user_adjustments_redeem_code ON admin_user_adjustments (redeem_code_id) WHERE redeem_code_id IS NOT NULL")
+	require.NotContains(t, sql, "UPDATE ")
+	require.NotContains(t, sql, "TRIGGER")
+	require.NotContains(t, sql, "+goose")
+}

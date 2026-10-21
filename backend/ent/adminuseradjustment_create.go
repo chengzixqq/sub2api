@@ -249,6 +249,20 @@ func (_c *AdminUserAdjustmentCreate) SetNillableLegacyRedeemCodeID(v *int64) *Ad
 	return _c
 }
 
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (_c *AdminUserAdjustmentCreate) SetRedeemCodeID(v int64) *AdminUserAdjustmentCreate {
+	_c.mutation.SetRedeemCodeID(v)
+	return _c
+}
+
+// SetNillableRedeemCodeID sets the "redeem_code_id" field if the given value is not nil.
+func (_c *AdminUserAdjustmentCreate) SetNillableRedeemCodeID(v *int64) *AdminUserAdjustmentCreate {
+	if v != nil {
+		_c.SetRedeemCodeID(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *AdminUserAdjustmentCreate) SetCreatedAt(v time.Time) *AdminUserAdjustmentCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -476,6 +490,10 @@ func (_c *AdminUserAdjustmentCreate) createSpec() (*AdminUserAdjustment, *sqlgra
 	if value, ok := _c.mutation.LegacyRedeemCodeID(); ok {
 		_spec.SetField(adminuseradjustment.FieldLegacyRedeemCodeID, field.TypeInt64, value)
 		_node.LegacyRedeemCodeID = &value
+	}
+	if value, ok := _c.mutation.RedeemCodeID(); ok {
+		_spec.SetField(adminuseradjustment.FieldRedeemCodeID, field.TypeInt64, value)
+		_node.RedeemCodeID = &value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(adminuseradjustment.FieldCreatedAt, field.TypeTime, value)
@@ -860,6 +878,30 @@ func (u *AdminUserAdjustmentUpsert) AddLegacyRedeemCodeID(v int64) *AdminUserAdj
 // ClearLegacyRedeemCodeID clears the value of the "legacy_redeem_code_id" field.
 func (u *AdminUserAdjustmentUpsert) ClearLegacyRedeemCodeID() *AdminUserAdjustmentUpsert {
 	u.SetNull(adminuseradjustment.FieldLegacyRedeemCodeID)
+	return u
+}
+
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsert) SetRedeemCodeID(v int64) *AdminUserAdjustmentUpsert {
+	u.Set(adminuseradjustment.FieldRedeemCodeID, v)
+	return u
+}
+
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *AdminUserAdjustmentUpsert) UpdateRedeemCodeID() *AdminUserAdjustmentUpsert {
+	u.SetExcluded(adminuseradjustment.FieldRedeemCodeID)
+	return u
+}
+
+// AddRedeemCodeID adds v to the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsert) AddRedeemCodeID(v int64) *AdminUserAdjustmentUpsert {
+	u.Add(adminuseradjustment.FieldRedeemCodeID, v)
+	return u
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsert) ClearRedeemCodeID() *AdminUserAdjustmentUpsert {
+	u.SetNull(adminuseradjustment.FieldRedeemCodeID)
 	return u
 }
 
@@ -1290,6 +1332,34 @@ func (u *AdminUserAdjustmentUpsertOne) UpdateLegacyRedeemCodeID() *AdminUserAdju
 func (u *AdminUserAdjustmentUpsertOne) ClearLegacyRedeemCodeID() *AdminUserAdjustmentUpsertOne {
 	return u.Update(func(s *AdminUserAdjustmentUpsert) {
 		s.ClearLegacyRedeemCodeID()
+	})
+}
+
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertOne) SetRedeemCodeID(v int64) *AdminUserAdjustmentUpsertOne {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.SetRedeemCodeID(v)
+	})
+}
+
+// AddRedeemCodeID adds v to the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertOne) AddRedeemCodeID(v int64) *AdminUserAdjustmentUpsertOne {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.AddRedeemCodeID(v)
+	})
+}
+
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *AdminUserAdjustmentUpsertOne) UpdateRedeemCodeID() *AdminUserAdjustmentUpsertOne {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.UpdateRedeemCodeID()
+	})
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertOne) ClearRedeemCodeID() *AdminUserAdjustmentUpsertOne {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.ClearRedeemCodeID()
 	})
 }
 
@@ -1886,6 +1956,34 @@ func (u *AdminUserAdjustmentUpsertBulk) UpdateLegacyRedeemCodeID() *AdminUserAdj
 func (u *AdminUserAdjustmentUpsertBulk) ClearLegacyRedeemCodeID() *AdminUserAdjustmentUpsertBulk {
 	return u.Update(func(s *AdminUserAdjustmentUpsert) {
 		s.ClearLegacyRedeemCodeID()
+	})
+}
+
+// SetRedeemCodeID sets the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertBulk) SetRedeemCodeID(v int64) *AdminUserAdjustmentUpsertBulk {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.SetRedeemCodeID(v)
+	})
+}
+
+// AddRedeemCodeID adds v to the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertBulk) AddRedeemCodeID(v int64) *AdminUserAdjustmentUpsertBulk {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.AddRedeemCodeID(v)
+	})
+}
+
+// UpdateRedeemCodeID sets the "redeem_code_id" field to the value that was provided on create.
+func (u *AdminUserAdjustmentUpsertBulk) UpdateRedeemCodeID() *AdminUserAdjustmentUpsertBulk {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.UpdateRedeemCodeID()
+	})
+}
+
+// ClearRedeemCodeID clears the value of the "redeem_code_id" field.
+func (u *AdminUserAdjustmentUpsertBulk) ClearRedeemCodeID() *AdminUserAdjustmentUpsertBulk {
+	return u.Update(func(s *AdminUserAdjustmentUpsert) {
+		s.ClearRedeemCodeID()
 	})
 }
 
