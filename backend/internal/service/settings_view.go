@@ -363,6 +363,7 @@ type PublicSettings struct {
 	AliyunCaptchaSceneID                string
 	AliyunCaptchaPrefix                 string
 	AliyunCaptchaRegion                 string
+	CaptchaProvider                     string // "" / turnstile / tencent / aliyun / conflict, same as VerifyCaptcha
 	SiteName                            string
 	SiteLogo                            string
 	SiteSubtitle                        string

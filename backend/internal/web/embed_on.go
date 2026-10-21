@@ -453,3 +453,21 @@ func HasEmbeddedFrontend() bool {
 	_, err := frontendFS.ReadFile("dist/index.html")
 	return err == nil
 }
+
+var (
+	mobileVerifyPathOnce sync.Once
+	mobileVerifyPath     string
+)
+
+// MobileVerifyPath returns the native-app captcha bridge route when the
+// embedded frontend ships the bridge page, else "". The embedded files never
+// change at runtime, so the scan runs once.
+func MobileVerifyPath() string {
+	mobileVerifyPathOnce.Do(func() {
+		dist, err := fs.Sub(frontendFS, "dist")
+		if err == nil && distHasMobileVerifyPage(dist) {
+			mobileVerifyPath = MobileVerifyPagePath
+		}
+	})
+	return mobileVerifyPath
+}

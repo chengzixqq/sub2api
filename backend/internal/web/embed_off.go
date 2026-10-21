@@ -46,3 +46,9 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 func HasEmbeddedFrontend() bool {
 	return false
 }
+
+// MobileVerifyPath returns "" because this binary embeds no frontend; a
+// separately deployed frontend cannot be inspected from here.
+func MobileVerifyPath() string {
+	return ""
+}

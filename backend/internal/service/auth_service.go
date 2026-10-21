@@ -48,6 +48,9 @@ var (
 	ErrInvitationCodeInvalid   = infraerrors.BadRequest("INVITATION_CODE_INVALID", "invalid or used invitation code")
 	ErrOAuthInvitationRequired = infraerrors.Forbidden("OAUTH_INVITATION_REQUIRED", "invitation code required to complete oauth registration")
 	ErrCaptchaProviderConflict = infraerrors.ServiceUnavailable("CAPTCHA_PROVIDER_CONFLICT", "multiple captcha providers are enabled")
+	// ErrCaptchaProviderMismatch: the declared captcha_provider is not the one in force;
+	// metadata.captcha_provider carries the current provider ("" when none is enabled).
+	ErrCaptchaProviderMismatch = infraerrors.BadRequest("CAPTCHA_PROVIDER_MISMATCH", "site captcha provider has changed, please verify again")
 )
 
 // maxTokenLength 限制 token 大小，避免超长 header 触发解析时的异常内存分配。
@@ -94,10 +97,15 @@ type AuthService struct {
 }
 
 type CaptchaProof struct {
-	// TurnstileToken 承载 Cloudflare Turnstile token；阿里云验证码复用该字段承载 captchaVerifyParam
+	// TurnstileToken 承载 Cloudflare Turnstile token；AliyunParam 为空时阿里云验证码复用该字段承载 captchaVerifyParam
 	TurnstileToken string
 	TencentTicket  string
 	TencentRandstr string
+	// AliyunParam 承载阿里云验证码 2.0 的 captchaVerifyParam（请求字段 aliyun_captcha_param），非空白时优先于 TurnstileToken
+	AliyunParam string
+	// Provider 是客户端声明的验证码提供方（请求字段 captcha_provider）；空表示未声明，
+	// 非空且与站点当前生效的提供方不一致时返回 CAPTCHA_PROVIDER_MISMATCH
+	Provider string
 }
 
 type DefaultSubscriptionAssigner interface {
@@ -426,8 +434,12 @@ func (s *AuthService) VerifyCaptcha(ctx context.Context, proof CaptchaProof, rem
 	turnstileEnabled := providerConfig.TurnstileEnabled
 	tencentEnabled := providerConfig.Tencent.Enabled
 	aliyunEnabled := providerConfig.Aliyun.Enabled
-	if captchaProvidersConflict(turnstileEnabled, tencentEnabled, aliyunEnabled) {
+	effective := providerConfig.EffectiveProvider()
+	if effective == CaptchaProviderConflict {
 		return ErrCaptchaProviderConflict
+	}
+	if err := checkDeclaredCaptchaProvider(proof.Provider, effective); err != nil {
+		return err
 	}
 	if tencentEnabled {
 		if s.tencentCaptchaService == nil {
@@ -439,7 +451,7 @@ func (s *AuthService) VerifyCaptcha(ctx context.Context, proof CaptchaProof, rem
 		if s.aliyunCaptchaService == nil {
 			return ErrAliyunCaptchaNotConfigured
 		}
-		return s.aliyunCaptchaService.VerifyParamWithConfig(ctx, providerConfig.Aliyun, proof.TurnstileToken)
+		return s.aliyunCaptchaService.VerifyParamWithConfig(ctx, providerConfig.Aliyun, proof.aliyunVerifyParam())
 	}
 	if turnstileEnabled {
 		if s.turnstileService == nil || strings.TrimSpace(providerConfig.TurnstileSecretKey) == "" {
@@ -478,17 +490,23 @@ func (s *AuthService) VerifyActionCaptchaIfEnabled(ctx context.Context, proof Ca
 	}
 	tencentEnabled := providerConfig.Tencent.Enabled
 	aliyunEnabled := providerConfig.Aliyun.Enabled
+	// A conflict always involves Tencent or Aliyun, so checking it before the
+	// Turnstile-only shortcut below keeps the previous outcome.
+	effective := providerConfig.EffectiveProvider()
+	if effective == CaptchaProviderConflict {
+		return ErrCaptchaProviderConflict
+	}
+	if err := checkDeclaredCaptchaProvider(proof.Provider, effective); err != nil {
+		return err
+	}
 	if !tencentEnabled && !aliyunEnabled {
 		return nil
-	}
-	if captchaProvidersConflict(providerConfig.TurnstileEnabled, tencentEnabled, aliyunEnabled) {
-		return ErrCaptchaProviderConflict
 	}
 	if aliyunEnabled {
 		if s.aliyunCaptchaService == nil {
 			return ErrAliyunCaptchaNotConfigured
 		}
-		return s.aliyunCaptchaService.VerifyParamWithConfig(ctx, providerConfig.Aliyun, proof.TurnstileToken)
+		return s.aliyunCaptchaService.VerifyParamWithConfig(ctx, providerConfig.Aliyun, proof.aliyunVerifyParam())
 	}
 	if s.tencentCaptchaService == nil {
 		return ErrTencentCaptchaNotConfigured

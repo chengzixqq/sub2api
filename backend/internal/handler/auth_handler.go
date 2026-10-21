@@ -59,6 +59,8 @@ type RegisterRequest struct {
 	TurnstileToken        string `json:"turnstile_token"`
 	TencentCaptchaTicket  string `json:"tencent_captcha_ticket"`
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr"`
+	CaptchaProvider       string `json:"captcha_provider,omitempty"`
+	AliyunCaptchaParam    string `json:"aliyun_captcha_param,omitempty"`
 	PromoCode             string `json:"promo_code"`      // 注册优惠码
 	InvitationCode        string `json:"invitation_code"` // 邀请码
 	AffCode               string `json:"aff_code"`        // 邀请返利码
@@ -70,6 +72,8 @@ type SendVerifyCodeRequest struct {
 	TurnstileToken        string `json:"turnstile_token"`
 	TencentCaptchaTicket  string `json:"tencent_captcha_ticket"`
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr"`
+	CaptchaProvider       string `json:"captcha_provider,omitempty"`
+	AliyunCaptchaParam    string `json:"aliyun_captcha_param,omitempty"`
 }
 
 // SendVerifyCodeResponse 发送验证码响应
@@ -85,6 +89,11 @@ type LoginRequest struct {
 	TurnstileToken        string `json:"turnstile_token"`
 	TencentCaptchaTicket  string `json:"tencent_captcha_ticket"`
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr"`
+	// CaptchaProvider and AliyunCaptchaParam are optional native-app fields:
+	// the provider the proof came from, and Aliyun's captchaVerifyParam
+	// (Web keeps sending it in turnstile_token).
+	CaptchaProvider    string `json:"captcha_provider,omitempty"`
+	AliyunCaptchaParam string `json:"aliyun_captcha_param,omitempty"`
 	// Client is declared by native apps; it selects the native session binding mode.
 	Client *service.SessionClient `json:"client,omitempty"`
 }
@@ -106,6 +115,14 @@ func captchaProof(turnstileToken, tencentTicket, tencentRandstr string) service.
 		TencentTicket:  tencentTicket,
 		TencentRandstr: tencentRandstr,
 	}
+}
+
+// declaredCaptchaProof adds the optional native-app captcha_provider
+// declaration and aliyun_captcha_param to a proof.
+func declaredCaptchaProof(proof service.CaptchaProof, provider, aliyunParam string) service.CaptchaProof {
+	proof.Provider = provider
+	proof.AliyunParam = aliyunParam
+	return proof
 }
 
 // AuthResponse 认证响应格式（匹配前端期望）
@@ -207,7 +224,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 
 	// 验证当前启用的验证码（邮箱验证码注册场景避免重复校验一次性票据）
-	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
+	proof := declaredCaptchaProof(captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr), req.CaptchaProvider, req.AliyunCaptchaParam)
 	if err := h.authService.VerifyCaptchaForRegister(c.Request.Context(), proof, ip.GetClientIP(c), req.VerifyCode); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -239,7 +256,7 @@ func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
 		return
 	}
 
-	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
+	proof := declaredCaptchaProof(captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr), req.CaptchaProvider, req.AliyunCaptchaParam)
 	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -266,7 +283,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
+	proof := declaredCaptchaProof(captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr), req.CaptchaProvider, req.AliyunCaptchaParam)
 	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -661,6 +678,8 @@ type ForgotPasswordRequest struct {
 	TurnstileToken        string `json:"turnstile_token"`
 	TencentCaptchaTicket  string `json:"tencent_captcha_ticket"`
 	TencentCaptchaRandstr string `json:"tencent_captcha_randstr"`
+	CaptchaProvider       string `json:"captcha_provider,omitempty"`
+	AliyunCaptchaParam    string `json:"aliyun_captcha_param,omitempty"`
 }
 
 // ForgotPasswordResponse 忘记密码响应
@@ -677,7 +696,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
+	proof := declaredCaptchaProof(captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr), req.CaptchaProvider, req.AliyunCaptchaParam)
 	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
 		response.ErrorFrom(c, err)
 		return

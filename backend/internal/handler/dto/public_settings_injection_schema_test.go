@@ -31,6 +31,8 @@ func TestPublicSettingsInjectionPayload_SchemaDoesNotDrift(t *testing.T) {
 	dtoOnlyFields := map[string]string{
 		// force_email_on_third_party_signup lives on the DTO but is not injected via SSR.
 		"force_email_on_third_party_signup": "auth-source default, not a feature flag",
+		// mobile_verify_path is computed in the handler from the embedded dist for native-app discovery.
+		"mobile_verify_path": "native-app discovery only; the SSR page is the Web app itself",
 	}
 
 	var missing []string

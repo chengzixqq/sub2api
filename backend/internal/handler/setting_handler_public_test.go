@@ -157,3 +157,46 @@ func TestSettingHandler_GetPublicSettings_ExposesWeChatOAuthModeCapabilities(t *
 	require.True(t, resp.Data.WeChatOAuthOpenEnabled)
 	require.True(t, resp.Data.WeChatOAuthMPEnabled)
 }
+
+func getPublicSettingsData(t *testing.T, values map[string]string) map[string]any {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	h := NewSettingHandler(service.NewSettingService(&settingHandlerPublicRepoStub{values: values}, &config.Config{}), "test-version")
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/settings/public", nil)
+
+	h.GetPublicSettings(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var resp struct {
+		Code int            `json:"code"`
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	return resp.Data
+}
+
+func TestSettingHandler_GetPublicSettings_ExposesCaptchaProviderAndMobileVerifyPath(t *testing.T) {
+	data := getPublicSettingsData(t, map[string]string{service.SettingKeyAliyunCaptchaEnabled: "true"})
+	require.Equal(t, "aliyun", data["captcha_provider"])
+	// 非 embed 构建没有内嵌前端：键照常返回，值为空表示桥页不可用
+	require.Contains(t, data, "mobile_verify_path")
+	require.Equal(t, "", data["mobile_verify_path"])
+
+	original := publicMobileVerifyPath
+	t.Cleanup(func() { publicMobileVerifyPath = original })
+	publicMobileVerifyPath = func() string { return "/mobile/verify" }
+
+	data = getPublicSettingsData(t, map[string]string{
+		service.SettingKeyTencentCaptchaEnabled: "true",
+		service.SettingKeyTurnstileEnabled:      "true",
+	})
+	require.Equal(t, "conflict", data["captcha_provider"])
+	require.Equal(t, "/mobile/verify", data["mobile_verify_path"])
+
+	data = getPublicSettingsData(t, map[string]string{})
+	require.Contains(t, data, "captcha_provider")
+	require.Equal(t, "", data["captcha_provider"])
+}

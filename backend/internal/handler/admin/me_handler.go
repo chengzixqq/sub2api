@@ -38,6 +38,7 @@ var adminMeCapabilities = []string{
 	"api_keys.current_concurrency",
 	"api_keys.effective_status",
 	"api_keys.masked_view",
+	"auth.captcha_provider",
 	"dashboard.account_cost",
 	"dashboard.accounts_ranking",
 	"dashboard.home",

@@ -181,6 +181,37 @@ func TestPasskeyBeginLoginAcceptsTencentCaptchaProofBeforeCeremony(t *testing.T)
 	require.Equal(t, 1, sessions.storeCalls)
 }
 
+func TestPasskeyBeginLoginRejectsDeclaredCaptchaProviderMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler, verifier, sessions := newTencentProtectedPasskeyHandler(t)
+	ginContext, recorder := newPasskeyBeginLoginContext(
+		`{"captcha_provider":"aliyun","tencent_captcha_ticket":"ticket-value","tencent_captcha_randstr":"@rand-value"}`,
+	)
+
+	handler.BeginLogin(ginContext)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"reason":"CAPTCHA_PROVIDER_MISMATCH"`)
+	require.Contains(t, recorder.Body.String(), `"captcha_provider":"tencent"`)
+	require.Zero(t, verifier.calls)
+	require.Zero(t, sessions.storeCalls)
+}
+
+func TestPasskeyBeginLoginAcceptsMatchingDeclaredProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler, verifier, sessions := newTencentProtectedPasskeyHandler(t)
+	ginContext, recorder := newPasskeyBeginLoginContext(
+		`{"captcha_provider":"tencent","tencent_captcha_ticket":"ticket-value","tencent_captcha_randstr":"@rand-value"}`,
+	)
+
+	handler.BeginLogin(ginContext)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, 1, verifier.calls)
+	require.Equal(t, service.TencentCaptchaProof{Ticket: "ticket-value", Randstr: "@rand-value"}, verifier.proof)
+	require.Equal(t, 1, sessions.storeCalls)
+}
+
 func TestPasskeyCredentialListRemainsAvailableWhenSignInDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewPasskeyHandler(nil, nil, nil)

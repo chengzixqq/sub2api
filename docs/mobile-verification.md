@@ -17,6 +17,20 @@ Aliyun intentionally reuses the backend login request's `turnstile_token` field.
 
 The native receiver must independently verify: main frame; exact expected scheme, host and effective port; expected UUID nonce; version 1; supported provider; provider-specific nonempty fields and no extra fields. A page-side check cannot authenticate a native receiver or protect against compromised same-origin scripts. Use an ephemeral data store, main-frame-only handler, restricted navigation and no native credentials injected into Web content. Discard proof after failed login, expiry or cancellation; do not treat challenge completion as successful login. Do not log proofs.
 
+## Discovery and provider declaration (backend)
+
+`GET /api/v1/settings/public` also returns:
+
+- `captcha_provider`: the provider the backend verifies against, using the same three enabled switches as login: `""` (none), `turnstile`, `tencent`, `aliyun`, or `conflict` (several enabled; captcha-protected requests return 503 `CAPTCHA_PROVIDER_CONFLICT`). An older backend omits the key.
+- `mobile_verify_path`: `/mobile/verify` when the frontend embedded in this binary contains the bridge page, otherwise `""`. A binary built without the embedded frontend always reports `""`, even when a separately deployed frontend serves the page.
+
+`POST /api/v1/auth/login`, `/auth/register`, `/auth/send-verify-code`, `/auth/forgot-password` and `/auth/passkey/login/begin` accept two optional fields:
+
+- `captcha_provider`: the `provider` from the bridge envelope. When it differs from the provider in force the request fails with 400 `CAPTCHA_PROVIDER_MISMATCH` before any captcha verification; `metadata.captcha_provider` carries the current provider. Run a fresh challenge and retry. Omitting it skips the check.
+- `aliyun_captcha_param`: the Aliyun `captchaVerifyParam`. Native apps may map the Aliyun envelope's `proof.turnstile_token` to this field. When it is empty or blank the backend falls back to `turnstile_token`, which Web keeps using.
+
+The bridge page itself is unchanged and still emits `turnstile_token` for Aliyun.
+
 Validation from `frontend/`:
 
 ```sh

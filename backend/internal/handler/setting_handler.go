@@ -9,9 +9,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/web"
 
 	"github.com/gin-gonic/gin"
 )
+
+// publicMobileVerifyPath reports the native captcha bridge page shipped in the
+// embedded frontend ("" when absent); a variable so tests can stub it.
+var publicMobileVerifyPath = web.MobileVerifyPath
 
 // SettingHandler 公开设置处理器（无需认证）
 type SettingHandler struct {
@@ -68,6 +73,8 @@ func (h *SettingHandler) GetPublicSettings(c *gin.Context) {
 		AliyunCaptchaSceneID:                settings.AliyunCaptchaSceneID,
 		AliyunCaptchaPrefix:                 settings.AliyunCaptchaPrefix,
 		AliyunCaptchaRegion:                 settings.AliyunCaptchaRegion,
+		CaptchaProvider:                     settings.CaptchaProvider,
+		MobileVerifyPath:                    publicMobileVerifyPath(),
 		SiteName:                            settings.SiteName,
 		SiteLogo:                            settings.SiteLogo,
 		SiteSubtitle:                        settings.SiteSubtitle,

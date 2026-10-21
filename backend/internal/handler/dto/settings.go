@@ -400,6 +400,8 @@ type PublicSettings struct {
 	AliyunCaptchaSceneID                string                   `json:"aliyun_captcha_scene_id"`
 	AliyunCaptchaPrefix                 string                   `json:"aliyun_captcha_prefix"`
 	AliyunCaptchaRegion                 string                   `json:"aliyun_captcha_region"`
+	CaptchaProvider                     string                   `json:"captcha_provider"`   // "" / turnstile / tencent / aliyun / conflict
+	MobileVerifyPath                    string                   `json:"mobile_verify_path"` // native captcha bridge page in the embedded frontend, else ""
 	SiteName                            string                   `json:"site_name"`
 	SiteLogo                            string                   `json:"site_logo"`
 	SiteSubtitle                        string                   `json:"site_subtitle"`

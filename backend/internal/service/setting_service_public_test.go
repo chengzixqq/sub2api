@@ -309,3 +309,46 @@ func TestSettingService_GetPublicSettings_PaymentBalanceDisabledStrictTrue(t *te
 		})
 	}
 }
+
+// captcha_provider tells native clients which provider VerifyCaptcha will
+// dispatch to, using the same three enabled switches.
+func TestSettingService_GetPublicSettings_ExposesCaptchaProvider(t *testing.T) {
+	cases := []struct {
+		name   string
+		values map[string]string
+		want   string
+	}{
+		{name: "none enabled", values: map[string]string{}, want: ""},
+		{name: "aliyun only", values: map[string]string{SettingKeyAliyunCaptchaEnabled: "true"}, want: CaptchaProviderAliyun},
+		{name: "tencent only", values: map[string]string{SettingKeyTencentCaptchaEnabled: "true"}, want: CaptchaProviderTencent},
+		{name: "turnstile only", values: map[string]string{SettingKeyTurnstileEnabled: "true"}, want: CaptchaProviderTurnstile},
+		{name: "non-true values are disabled", values: map[string]string{SettingKeyAliyunCaptchaEnabled: "1", SettingKeyTurnstileEnabled: "TRUE"}, want: ""},
+		{name: "tencent and turnstile conflict", values: map[string]string{
+			SettingKeyTencentCaptchaEnabled: "true",
+			SettingKeyTurnstileEnabled:      "true",
+		}, want: CaptchaProviderConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewSettingService(&settingPublicRepoStub{values: tc.values}, &config.Config{})
+
+			settings, err := svc.GetPublicSettings(context.Background())
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, settings.CaptchaProvider)
+		})
+	}
+}
+
+func TestSettingService_GetPublicSettingsForInjection_MirrorsCaptchaProvider(t *testing.T) {
+	svc := NewSettingService(&settingPublicRepoStub{values: map[string]string{
+		SettingKeyAliyunCaptchaEnabled: "true",
+	}}, &config.Config{})
+
+	raw, err := svc.GetPublicSettingsForInjection(context.Background())
+
+	require.NoError(t, err)
+	payload, ok := raw.(*PublicSettingsInjectionPayload)
+	require.True(t, ok)
+	require.Equal(t, CaptchaProviderAliyun, payload.CaptchaProvider)
+}

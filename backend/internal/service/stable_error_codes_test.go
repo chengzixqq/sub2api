@@ -39,6 +39,7 @@ func TestStableErrorReasons(t *testing.T) {
 		{newOpsRequestAmbiguousError([]*OpsRequestAttemptErrorRow{{ClientRequestID: "a"}, {ClientRequestID: "b"}}), http.StatusConflict, "OPS_REQUEST_AMBIGUOUS"},
 		{ErrServiceUnavailable, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
 		{ErrCaptchaProviderConflict, http.StatusServiceUnavailable, "CAPTCHA_PROVIDER_CONFLICT"},
+		{ErrCaptchaProviderMismatch, http.StatusBadRequest, "CAPTCHA_PROVIDER_MISMATCH"},
 		{ErrAccountStatsUnavailable, http.StatusServiceUnavailable, "ACCOUNT_STATS_UNAVAILABLE"},
 		{ErrInvalidGroupFilter, http.StatusBadRequest, "INVALID_GROUP_FILTER"},
 		{ErrInvalidCapacityGroupID, http.StatusBadRequest, "INVALID_GROUP_ID"},
