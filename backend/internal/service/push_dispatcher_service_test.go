@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -214,4 +215,49 @@ func TestPushDispatcher_DemotedAdminAndUndecryptable(t *testing.T) {
 	require.Empty(t, sender.sends())
 	require.Empty(t, repo.deliveriesFor(demoted.ID))
 	require.Equal(t, PushDisabledSecretUndecryptable, repo.device(broken.ID).DisabledReason)
+}
+
+// A target that does not answer (timeout, refused) is dialled once per round: its other deliveries reuse that failure
+// and are retried later, and the round keeps claiming batches, so a dead endpoint does not hold back other devices.
+func TestPushDispatcher_UnreachableTargetDoesNotHoldBackOthers(t *testing.T) {
+	ctx := context.Background()
+	repo := newPushMemRepo()
+	sender := &pushFakeSender{}
+	dead := pushTestDevice(1, "tok-dead", DefaultPushSubscription())
+	dead.Platform = PushPlatformWebhook
+	dead = repo.addDevice(dead)
+	ok := repo.addDevice(pushTestDevice(2, "tok-ok", DefaultPushSubscription()))
+	sender.result = func(target PushTarget) (PushSendResult, error) {
+		if target.Token == "tok-dead" {
+			return PushSendResult{ProviderReason: "dial tcp 203.0.113.9:443: i/o timeout", Retryable: true}, errors.New("i/o timeout")
+		}
+		return PushSendResult{ProviderStatus: 200}, nil
+	}
+	const events = 40 // 80 deliveries: more than one claim batch
+	for i := int64(1); i <= events; i++ {
+		repo.fired = append(repo.fired, firedRow(1000+i, "P0", pushTestNow.Add(-time.Minute)))
+	}
+
+	newPushDispatcherForTest(repo, sender, nil).RunOnce(ctx)
+
+	deadSends := 0
+	for _, s := range sender.sends() {
+		if s.Target.Token == "tok-dead" {
+			deadSends++
+		}
+	}
+	require.LessOrEqual(t, deadSends, pushSendConcurrency, "only the deliveries already in flight dial the dead target")
+	for _, row := range repo.deliveriesFor(ok.ID) {
+		require.Equal(t, PushDeliverySent, row.Status, "every delivery of the healthy device goes out in the same round")
+	}
+	require.Len(t, repo.deliveriesFor(ok.ID), events)
+	deadRows := repo.deliveriesFor(dead.ID)
+	require.Len(t, deadRows, events)
+	for _, row := range deadRows {
+		require.Equal(t, PushDeliveryPending, row.Status)
+		require.Equal(t, 1, row.Attempts)
+		require.Equal(t, pushTestNow.Add(30*time.Second), row.NextAttemptAt, "retried with the normal backoff")
+		require.Contains(t, row.LastError, "i/o timeout")
+	}
+	require.Empty(t, repo.device(dead.ID).DisabledReason, "an unreachable target is not disabled")
 }

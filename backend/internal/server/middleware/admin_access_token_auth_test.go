@@ -78,6 +78,7 @@ func TestAdminAccessToken_ActsAsItsOwner(t *testing.T) {
 	subject, ok := GetAuthSubjectFromContext(env.seen)
 	require.True(t, ok)
 	require.Equal(t, int64(42), subject.UserID, "the token's owner, not the first admin")
+	require.False(t, env.seen.GetBool(ContextKeyAdminAccessTokenReadOnly))
 	require.Equal(t, service.AuditAuthMethodAdminAccessToken, env.seen.GetString("auth_method"))
 	require.Equal(t, "second-admin@example.com", env.seen.GetString(ContextKeyAuthEmail))
 	require.Equal(t, int64(7), env.seen.GetInt64(ContextKeyAdminAccessTokenID))
@@ -141,6 +142,7 @@ func TestAdminAccessTokenReadOnlyMayManageOwnPushDevices(t *testing.T) {
 		subject, ok := GetAuthSubjectFromContext(env.seen)
 		require.True(t, ok)
 		require.Equal(t, int64(42), subject.UserID, "devices are scoped to the token owner")
+		require.True(t, env.seen.GetBool(ContextKeyAdminAccessTokenReadOnly), "the handler learns the token is read-only")
 	}
 	w := env.do(http.MethodPut, "/api/v1/admin/push/config", "sat_read")
 	require.Equal(t, http.StatusForbidden, w.Code)

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -313,7 +314,24 @@ func TestPushChannelClient_BlocksPrivateAddressesAtDial(t *testing.T) {
 
 	allowed := &webhookSender{client: newPushChannelHTTPClient(true), now: time.Now}
 	_, err = allowed.Send(context.Background(), PushTarget{Platform: PushPlatformWebhook, Endpoint: srv.URL}, pushTestAlertMessage())
-	require.NoError(t, err, "allow_private_hosts lets LAN targets through")
+	require.NoError(t, err, "push_targets.allow_private_hosts lets LAN targets through")
+}
+
+// The channel senders dial through the SSRF guard unless security.push_targets.allow_private_hosts is set;
+// security.url_allowlist.allow_private_hosts (on by default, for upstream accounts) does not open them.
+func TestNewPushSenders_PrivateDialNeedsPushTargetsSwitch(t *testing.T) {
+	srv, _ := newChannelTestServer(t, http.StatusOK)
+	target := PushTarget{Platform: PushPlatformWebhook, Endpoint: srv.URL}
+
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.AllowPrivateHosts = true
+	res, err := NewPushSenders(cfg, nil).Send(context.Background(), target, pushTestAlertMessage())
+	require.Error(t, err, "a default deployment refuses loopback / LAN targets when sending")
+	require.Contains(t, res.ProviderReason, "SSRF")
+
+	cfg.Security.PushTargets.AllowPrivateHosts = true
+	_, err = NewPushSenders(cfg, nil).Send(context.Background(), target, pushTestAlertMessage())
+	require.NoError(t, err, "security.push_targets.allow_private_hosts lets LAN targets through")
 }
 
 func TestPushSenders_UnknownPlatform(t *testing.T) {

@@ -77,8 +77,8 @@ type PushDeviceService struct {
 func NewPushDeviceService(repo PushRepository, encryptor SecretEncryptor, cfg *config.Config, senders *PushSenders) *PushDeviceService {
 	s := &PushDeviceService{repo: repo, senders: senders, codec: newPushCredentialCodec(encryptor, cfg), now: time.Now}
 	if cfg != nil {
-		s.allowInsecureHTTP = cfg.Security.URLAllowlist.AllowInsecureHTTP
-		s.allowPrivate = cfg.Security.URLAllowlist.AllowPrivateHosts
+		s.allowInsecureHTTP = cfg.Security.PushTargets.AllowInsecureHTTP
+		s.allowPrivate = cfg.Security.PushTargets.AllowPrivateHosts
 		s.defaultSite = pushDefaultSite(cfg)
 	}
 	return s
@@ -173,11 +173,10 @@ func (s *PushDeviceService) iosCredentials(d *PushDevice, in PushDeviceInput) (P
 	if d.BundleID != "" && !pushBundleIDPattern.MatchString(d.BundleID) {
 		return PushCredentials{}, pushFieldError(ErrInvalidPushTarget, "bundle_id", "bundle_id must be an app bundle identifier")
 	}
+	// An omitted environment is stored empty: the sender then uses the site's apns_environment (production when unset),
+	// so one site setting covers development builds that do not send it.
 	env := strings.ToLower(strings.TrimSpace(in.Environment))
-	if env == "" {
-		env = pushEnvProduction
-	}
-	if env != pushEnvProduction && env != pushEnvSandbox {
+	if env != "" && env != pushEnvProduction && env != pushEnvSandbox {
 		return PushCredentials{}, pushFieldError(ErrInvalidPushTarget, "environment", "environment must be production or sandbox")
 	}
 	d.Environment = env
@@ -207,13 +206,13 @@ func (s *PushDeviceService) endpointCredentials(d *PushDevice, in PushDeviceInpu
 	return creds, nil
 }
 
-// validateEndpoint applies the site's outbound URL policy (security.url_allowlist allow_insecure_http /
-// allow_private_hosts) to a target URL; the resolved IP is checked again when sending.
+// validateEndpoint applies the push target policy (security.push_targets allow_insecure_http / allow_private_hosts,
+// both off by default) to a target URL; the resolved IP is checked again when sending.
 func (s *PushDeviceService) validateEndpoint(raw string) (string, string, error) {
 	normalized, err := urlvalidator.ValidateHTTPURL(raw, s.allowInsecureHTTP, urlvalidator.ValidationOptions{AllowPrivate: s.allowPrivate})
 	if err != nil {
 		return "", "", pushFieldError(ErrInvalidPushTarget, "endpoint",
-			"endpoint must be an https URL of a public host (http and private hosts need security.url_allowlist allow_insecure_http / allow_private_hosts)")
+			"endpoint must be an https URL of a public host (http and private hosts need security.push_targets allow_insecure_http / allow_private_hosts)")
 	}
 	u, err := url.Parse(normalized)
 	if err != nil || len(normalized) > pushEndpointMaxLen {

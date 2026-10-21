@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"regexp"
 	"slices"
@@ -323,18 +325,18 @@ func (ev *PushEvent) MessageFor(locale, site string) PushMessage {
 		InterruptionLevel: ev.Content.InterruptionLevel,
 		Severity:          strings.ToUpper(strings.TrimSpace(ev.Severity)),
 		Site:              site,
-		CollapseID:        truncatePushCollapseID(ev.DedupKey),
+		CollapseID:        pushCollapseID(site, ev.DedupKey),
 		OccurredAt:        ev.OccurredAt.UTC(),
 		Data:              ev.Content.Data,
 	}
 }
 
-// truncatePushCollapseID keeps apns-collapse-id within its 64-byte limit.
-func truncatePushCollapseID(key string) string {
-	if len(key) <= 64 {
-		return key
-	}
-	return key[:64]
+// pushCollapseID is the apns-collapse-id of an event: a hash of the site label and the dedup key. The same APNs token
+// can be registered on several sites whose dedup keys repeat (ops_alert.fired:5, account.error:12:<bucket>), and a
+// shared collapse ID would let one site's notification replace the other's. 32 hex characters, within the 64-byte cap.
+func pushCollapseID(site, dedupKey string) string {
+	sum := sha256.Sum256([]byte(site + "\n" + dedupKey))
+	return hex.EncodeToString(sum[:16])
 }
 
 // PushCredentials are the secret parts of a target, stored as (optionally encrypted) JSON.

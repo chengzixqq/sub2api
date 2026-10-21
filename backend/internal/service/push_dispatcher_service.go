@@ -26,11 +26,15 @@ const (
 	pushLeaderLockTTL    = 2 * time.Minute
 	pushClaimLease       = 2 * time.Minute
 	pushClaimBatch       = 50
-	pushSendConcurrency  = 8
-	pushMaxAttempts      = 3
-	pushDeliveryKeep     = 7 * 24 * time.Hour
-	pushPurgeInterval    = time.Hour
-	pushSeenTTL          = pushEventWindow + 5*time.Minute
+	// pushMaxBatches and pushDeliverBudget bound one round of sending: batches are claimed until none is due, this
+	// many were sent or the budget is spent (the tick timeout and the claim lease cover the last batch).
+	pushMaxBatches      = 20
+	pushDeliverBudget   = 30 * time.Second
+	pushSendConcurrency = 8
+	pushMaxAttempts     = 3
+	pushDeliveryKeep    = 7 * 24 * time.Hour
+	pushPurgeInterval   = time.Hour
+	pushSeenTTL         = pushEventWindow + 5*time.Minute
 )
 
 // pushRetryBackoff is the delay after the 1st and 2nd failed attempt.
@@ -281,18 +285,27 @@ func (s *PushDispatcherService) pruneSeen(now time.Time) {
 	}
 }
 
-// deliver sends the claimed deliveries with bounded concurrency.
+// deliver sends due deliveries batch by batch until none is due, pushMaxBatches were claimed or pushDeliverBudget is
+// spent. The round remembers disabled and unreachable devices across batches, so a dead endpoint costs one timeout
+// per round instead of one per delivery and does not hold back the pushes of other devices.
 func (s *PushDispatcherService) deliver(ctx context.Context, now time.Time, devices map[int64]*PushDevice) {
-	claimed, err := s.repo.ClaimDueDeliveries(ctx, now, pushClaimLease, pushClaimBatch)
-	if err != nil {
-		logger.LegacyPrintf("service.push", "[Push] claim deliveries failed: %v", err)
-		return
+	round := newPushRound()
+	started := time.Now()
+	for i := 0; i < pushMaxBatches && ctx.Err() == nil; i++ {
+		claimed, err := s.repo.ClaimDueDeliveries(ctx, now, pushClaimLease, pushClaimBatch)
+		if err != nil {
+			logger.LegacyPrintf("service.push", "[Push] claim deliveries failed: %v", err)
+			return
+		}
+		s.sendBatch(ctx, now, claimed, devices, round)
+		if len(claimed) < pushClaimBatch || time.Since(started) >= pushDeliverBudget {
+			return
+		}
 	}
-	if len(claimed) == 0 {
-		return
-	}
-	var disabledMu sync.Mutex
-	disabled := map[int64]bool{}
+}
+
+// sendBatch sends claimed deliveries with bounded concurrency.
+func (s *PushDispatcherService) sendBatch(ctx context.Context, now time.Time, claimed []*PushDelivery, devices map[int64]*PushDevice, round *pushRound) {
 	sem := make(chan struct{}, pushSendConcurrency)
 	var wg sync.WaitGroup
 	for _, d := range claimed {
@@ -301,71 +314,132 @@ func (s *PushDispatcherService) deliver(ctx context.Context, now time.Time, devi
 		go func(d *PushDelivery) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			disabledMu.Lock()
-			gone := disabled[d.DeviceID]
-			disabledMu.Unlock()
-			if reason := s.deliverOne(ctx, now, d, devices[d.DeviceID], gone); reason != "" {
-				disabledMu.Lock()
-				disabled[d.DeviceID] = true
-				disabledMu.Unlock()
-			}
+			s.deliverOne(ctx, now, d, devices[d.DeviceID], round)
 		}(d)
 	}
 	wg.Wait()
 }
 
-// deliverOne sends one claimed delivery and records the outcome; it returns the disable reason when the device was
-// disabled.
-func (s *PushDispatcherService) deliverOne(ctx context.Context, now time.Time, d *PushDelivery, device *PushDevice, deviceGone bool) string {
-	finish := func(status, lastError string, retryAt, sentAt *time.Time) {
-		if err := s.repo.FinishDelivery(ctx, d.ID, status, lastError, retryAt, sentAt); err != nil {
-			logger.LegacyPrintf("service.push", "[Push] finish delivery failed: delivery=%d err=%v", d.ID, err)
-		}
+// pushSendOutcome is a sender's answer to one delivery.
+type pushSendOutcome struct {
+	result PushSendResult
+	err    error
+}
+
+// unreachable reports a network failure before any HTTP answer (timeout, refused, DNS): another delivery to the same
+// target right now would most likely wait for the same timeout.
+func (o pushSendOutcome) unreachable() bool {
+	return o.err != nil && o.result.ProviderStatus == 0 && o.result.Retryable
+}
+
+// pushRound is what one round of sending learned about devices: a disabled device gets nothing more, and an
+// unreachable one is not dialled again (its other deliveries reuse the failure and are retried with backoff).
+type pushRound struct {
+	mu          sync.Mutex
+	disabled    map[int64]bool
+	unreachable map[int64]pushSendOutcome
+}
+
+func newPushRound() *pushRound {
+	return &pushRound{disabled: map[int64]bool{}, unreachable: map[int64]pushSendOutcome{}}
+}
+
+func (r *pushRound) isDisabled(deviceID int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.disabled[deviceID]
+}
+
+func (r *pushRound) disable(deviceID int64) {
+	r.mu.Lock()
+	r.disabled[deviceID] = true
+	r.mu.Unlock()
+}
+
+func (r *pushRound) unreachableOutcome(deviceID int64) (pushSendOutcome, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out, ok := r.unreachable[deviceID]
+	return out, ok
+}
+
+func (r *pushRound) record(deviceID int64, out pushSendOutcome) {
+	if !out.unreachable() {
+		return
 	}
-	if device == nil || deviceGone {
-		finish(PushDeliverySkipped, "device disabled, deleted or its owner is no longer an active admin", nil, nil)
-		return ""
+	r.mu.Lock()
+	r.unreachable[deviceID] = out
+	r.mu.Unlock()
+}
+
+// deliverOne sends one claimed delivery (or reuses the round's failure of an unreachable target) and records the
+// outcome.
+func (s *PushDispatcherService) deliverOne(ctx context.Context, now time.Time, d *PushDelivery, device *PushDevice, round *pushRound) {
+	if device == nil || round.isDisabled(device.ID) {
+		s.finishDelivery(ctx, d.ID, PushDeliverySkipped, "device disabled, deleted or its owner is no longer an active admin", nil, nil)
+		return
 	}
 	if d.Attempts > pushMaxAttempts {
-		finish(PushDeliveryFailed, "too many attempts", nil, nil)
-		return ""
+		s.finishDelivery(ctx, d.ID, PushDeliveryFailed, "too many attempts", nil, nil)
+		return
 	}
 	creds, err := s.codec.open(device.CredentialsRaw, device.CredentialsEncrypted)
 	if err != nil {
+		round.disable(device.ID)
 		s.markDeviceError(ctx, device.ID, "stored credentials cannot be decrypted", PushDisabledSecretUndecryptable, now)
-		finish(PushDeliveryFailed, PushDisabledSecretUndecryptable, nil, nil)
-		return PushDisabledSecretUndecryptable
+		s.finishDelivery(ctx, d.ID, PushDeliveryFailed, PushDisabledSecretUndecryptable, nil, nil)
+		return
 	}
-	msg := d.Payload
-	msg.DeliveryID = fmt.Sprintf("pd_%d", d.ID)
-	sendCtx, cancel := context.WithTimeout(ctx, pushSendTimeout+2*time.Second)
-	result, sendErr := s.senders.Send(sendCtx, pushTargetOf(device, creds), &msg)
-	cancel()
-	if sendErr == nil {
+	out, reused := round.unreachableOutcome(device.ID)
+	if !reused {
+		msg := d.Payload
+		msg.DeliveryID = fmt.Sprintf("pd_%d", d.ID)
+		sendCtx, cancel := context.WithTimeout(ctx, pushSendTimeout+2*time.Second)
+		out.result, out.err = s.senders.Send(sendCtx, pushTargetOf(device, creds), &msg)
+		cancel()
+		round.record(device.ID, out)
+	}
+	s.recordOutcome(ctx, now, d, device, out, reused, round)
+}
+
+// recordOutcome finishes a delivery: sent, failed for good (disabling the device when the provider says the target is
+// gone) or pending again with backoff. A reused unreachable outcome is not written to the device a second time.
+func (s *PushDispatcherService) recordOutcome(ctx context.Context, now time.Time, d *PushDelivery, device *PushDevice, out pushSendOutcome, reused bool, round *pushRound) {
+	if out.err == nil {
 		sentAt := s.now()
-		finish(PushDeliverySent, "", nil, &sentAt)
+		s.finishDelivery(ctx, d.ID, PushDeliverySent, "", nil, &sentAt)
 		if err := s.repo.MarkDeviceSuccess(ctx, device.ID, sentAt); err != nil {
 			logger.LegacyPrintf("service.push", "[Push] record success failed: device=%d err=%v", device.ID, err)
 		}
-		return ""
+		return
 	}
-	if errors.Is(sendErr, ErrPushNotConfigured) {
-		finish(PushDeliveryFailed, "APNs is not configured", nil, nil)
-		return ""
+	if errors.Is(out.err, ErrPushNotConfigured) {
+		s.finishDelivery(ctx, d.ID, PushDeliveryFailed, "APNs is not configured", nil, nil)
+		return
 	}
-	failure := describePushFailure(result, sendErr)
-	s.markDeviceError(ctx, device.ID, failure, result.DisableReason, now)
-	if result.DisableReason != "" {
-		finish(PushDeliveryFailed, failure, nil, nil)
-		return result.DisableReason
+	failure := describePushFailure(out.result, out.err)
+	if reused {
+		failure = sanitizePushText("not sent, the target did not answer earlier in this round: "+failure, 300)
+	} else {
+		s.markDeviceError(ctx, device.ID, failure, out.result.DisableReason, now)
 	}
-	if result.Retryable && d.Attempts < pushMaxAttempts {
+	if out.result.DisableReason != "" {
+		round.disable(device.ID)
+		s.finishDelivery(ctx, d.ID, PushDeliveryFailed, failure, nil, nil)
+		return
+	}
+	if out.result.Retryable && d.Attempts < pushMaxAttempts {
 		retryAt := now.Add(pushRetryBackoff[min(d.Attempts-1, len(pushRetryBackoff)-1)])
-		finish(PushDeliveryPending, failure, &retryAt, nil)
-		return ""
+		s.finishDelivery(ctx, d.ID, PushDeliveryPending, failure, &retryAt, nil)
+		return
 	}
-	finish(PushDeliveryFailed, failure, nil, nil)
-	return ""
+	s.finishDelivery(ctx, d.ID, PushDeliveryFailed, failure, nil, nil)
+}
+
+func (s *PushDispatcherService) finishDelivery(ctx context.Context, id int64, status, lastError string, retryAt, sentAt *time.Time) {
+	if err := s.repo.FinishDelivery(ctx, id, status, lastError, retryAt, sentAt); err != nil {
+		logger.LegacyPrintf("service.push", "[Push] finish delivery failed: delivery=%d err=%v", id, err)
+	}
 }
 
 func (s *PushDispatcherService) markDeviceError(ctx context.Context, id int64, message, disableReason string, at time.Time) {

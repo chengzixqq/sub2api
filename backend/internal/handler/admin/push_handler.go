@@ -2,6 +2,7 @@ package admin
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -15,6 +16,14 @@ type PushHandler struct {
 	devices *service.PushDeviceService
 	config  *service.PushConfigService
 }
+
+// errPushReadOnlyTokenIOSOnly: a read-only sat_ token may register the App's APNs device, but not a Bark / ntfy /
+// webhook target, which would send every subscribed event to a URL chosen by whoever holds the token.
+var errPushReadOnlyTokenIOSOnly = func() error {
+	err := service.ErrAdminAccessTokenReadOnly.WithMetadata(map[string]string{"field": "platform"})
+	err.Message = "a read-only admin access token can only register iOS (APNs) devices"
+	return err
+}()
 
 func NewPushHandler(devices *service.PushDeviceService, config *service.PushConfigService) *PushHandler {
 	return &PushHandler{devices: devices, config: config}
@@ -103,6 +112,10 @@ func (h *PushHandler) RegisterDevice(c *gin.Context) {
 	var req registerPushDeviceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ErrorFrom(c, service.ErrInvalidPushTarget.WithMetadata(map[string]string{"field": "body"}))
+		return
+	}
+	if c.GetBool(middleware.ContextKeyAdminAccessTokenReadOnly) && !strings.EqualFold(strings.TrimSpace(req.Platform), service.PushPlatformIOS) {
+		response.ErrorFrom(c, errPushReadOnlyTokenIOSOnly)
 		return
 	}
 	device, created, err := h.devices.Register(c.Request.Context(), userID, service.PushDeviceInput{

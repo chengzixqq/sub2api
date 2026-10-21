@@ -89,13 +89,14 @@ func newPushHandlerForTest() *PushHandler {
 	return NewPushHandler(devices, configSvc)
 }
 
-func pushHandlerRouter(h *PushHandler, userID int64) *gin.Engine {
+func pushHandlerRouter(h *PushHandler, userID int64, extra ...gin.HandlerFunc) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: userID})
 		c.Request = c.Request.WithContext(service.WithScope(c.Request.Context(), service.AdminScope()))
 	})
+	r.Use(extra...)
 	g := r.Group("/api/v1/admin/push")
 	g.POST("/devices", h.RegisterDevice)
 	g.GET("/devices", h.ListDevices)
@@ -165,6 +166,34 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 	require.Equal(t, false, cfg["apns_enabled"])
 	require.Equal(t, false, cfg["apns_private_key_configured"])
 	require.NotContains(t, cfg, "apns_private_key")
+}
+
+// A read-only sat_ token may register the App's own APNs device, but not a Bark / ntfy / webhook target: those send
+// events to an arbitrary URL chosen by whoever holds the token.
+func TestPushHandler_ReadOnlyTokenRegistersOnlyIOS(t *testing.T) {
+	r := pushHandlerRouter(newPushHandlerForTest(), 7, func(c *gin.Context) {
+		c.Set(middleware.ContextKeyAdminAccessTokenReadOnly, true)
+	})
+	for _, body := range []string{
+		`{"platform":"webhook","endpoint":"https://hooks.example.com/x"}`,
+		`{"platform":"ntfy","endpoint":"https://ntfy.sh","token":"sub2-alerts"}`,
+		`{"platform":"bark","endpoint":"https://api.day.app","token":"BarkKey123"}`,
+		`{"platform":" Webhook ","endpoint":"https://hooks.example.com/x"}`,
+	} {
+		code, resp := doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices", body)
+		require.Equal(t, http.StatusForbidden, code, body)
+		require.Equal(t, "ACCESS_TOKEN_READ_ONLY", resp["reason"], body)
+	}
+	code, resp := doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/devices", "")
+	require.Equal(t, http.StatusOK, code)
+	require.Empty(t, resp["data"].(map[string]any)["items"], "nothing was registered")
+
+	code, _ = doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices", `{"platform":"ios","apns_token":"`+strings.Repeat("ab", 32)+`"}`)
+	require.Equal(t, http.StatusCreated, code, "the App's own APNs device is fine")
+
+	full := pushHandlerRouter(newPushHandlerForTest(), 7)
+	code, _ = doPushRequest(t, full, http.MethodPost, "/api/v1/admin/push/devices", `{"platform":"webhook","endpoint":"https://hooks.example.com/x"}`)
+	require.Equal(t, http.StatusCreated, code, "a full session or write token may register any channel")
 }
 
 func mustJSON(t *testing.T, v any) string {

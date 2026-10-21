@@ -172,6 +172,17 @@ security:
     # Allow http:// URLs when allowlist is disabled (default: true; set to false to require https)
     # 白名单禁用时是否允许 http:// URL（默认: true，设为 false 则仅允许 https）
     allow_insecure_http: true
+  push_targets:
+    # Outbound policy for admin-registered Bark / ntfy / webhook push targets. Separate from url_allowlist:
+    # by default only https URLs of public hosts are accepted, and the resolved IP is checked again when sending.
+    # 管理员登记的 Bark / ntfy / Webhook 推送目标的出站策略，与 url_allowlist 无关：
+    # 默认只接受公网主机的 https 地址，发送时还会再校验解析出的 IP。
+    # Allow localhost / LAN / link-local targets (e.g. a self-hosted ntfy on the LAN; trusted admins only)
+    # 允许本机 / 局域网 / 链路本地地址（如局域网自建 ntfy；仅在信任所有管理员时开启）
+    allow_private_hosts: false
+    # Allow http:// targets (tokens and payloads travel in plaintext)
+    # 允许 http:// 目标（令牌与推送内容明文传输）
+    allow_insecure_http: false
   response_headers:
     # Enable configurable response header filtering (default: true)
     # 启用可配置的响应头过滤（默认启用，过滤上游敏感响应头）

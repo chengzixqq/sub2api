@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"net/http"
 	"strings"
 	"testing"
@@ -63,7 +66,7 @@ func TestPushDeviceService_RegisterIsIdempotentAndLowercasesAPNsToken(t *testing
 	})
 	require.NoError(t, err)
 	require.True(t, created)
-	require.Equal(t, "production", first.Environment, "environment defaults to production")
+	require.Empty(t, first.Environment, "an omitted environment follows the site's apns_environment")
 	require.Equal(t, "8f90", first.TokenHint)
 	require.Equal(t, DefaultPushSubscription(), first.Subscription)
 	require.NotContains(t, first.DeviceName, "\x00")
@@ -105,13 +108,70 @@ func TestPushDeviceService_PlaintextWithoutFixedKeyAndLimit(t *testing.T) {
 
 func TestPushDeviceService_PrivateEndpointWhenAllowed(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Security.URLAllowlist.AllowPrivateHosts = true
-	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	cfg.Security.PushTargets.AllowPrivateHosts = true
+	cfg.Security.PushTargets.AllowInsecureHTTP = true
 	svc := NewPushDeviceService(newPushMemRepo(), pushHexEncryptor{}, cfg, pushFakeSenders(&pushFakeSender{}))
 	d, created, err := svc.Register(context.Background(), 1, PushDeviceInput{Platform: "ntfy", Endpoint: "http://192.168.1.10:8080", Token: "home"})
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, "192.168.1.10", d.EndpointHost)
+}
+
+// security.url_allowlist allows private / http hosts by default (for upstream accounts); push targets have their own
+// switches, off by default, so a default deployment still refuses loopback, LAN, metadata and plain-http targets.
+func TestPushDeviceService_URLAllowlistDoesNotOpenPushTargets(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.AllowPrivateHosts = true
+	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+	svc := NewPushDeviceService(newPushMemRepo(), pushHexEncryptor{}, cfg, pushFakeSenders(&pushFakeSender{}))
+	for _, in := range []PushDeviceInput{
+		{Platform: "webhook", Endpoint: "https://127.0.0.1/hook"},
+		{Platform: "webhook", Endpoint: "https://169.254.169.254/latest/meta-data"},
+		{Platform: "webhook", Endpoint: "https://localhost/hook"},
+		{Platform: "ntfy", Endpoint: "https://192.168.1.10", Token: "home"},
+		{Platform: "ntfy", Endpoint: "http://ntfy.example.com", Token: "home"},
+	} {
+		_, _, err := svc.Register(context.Background(), 1, in)
+		require.Equal(t, "INVALID_PUSH_TARGET", infraerrors.Reason(err), in.Endpoint)
+		require.Equal(t, "endpoint", infraerrors.FromError(err).Metadata["field"], in.Endpoint)
+	}
+}
+
+// An iOS device registered without environment is pushed to the APNs host of the site's apns_environment; an explicit
+// environment wins.
+func TestPushDeviceService_OmittedEnvironmentFollowsSiteConfig(t *testing.T) {
+	ctx := context.Background()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	srv, seen, mu := newAPNsTestServer(t)
+	runtime := &PushAPNsRuntime{TeamID: "TEAM123456", KeyID: "KEY1234567", Topic: "com.example.sub2mobile", Environment: pushEnvSandbox, PrivateKey: key, Fingerprint: "fp"}
+	apns := newAPNsSender(func(context.Context) (*PushAPNsRuntime, error) { return runtime, nil }, srv.Client())
+	apns.baseURLs = map[string]string{pushEnvProduction: srv.URL + "/production", pushEnvSandbox: srv.URL + "/sandbox"}
+	repo := newPushMemRepo()
+	svc := NewPushDeviceService(repo, pushHexEncryptor{}, &config.Config{}, &PushSenders{byPlatform: map[string]PushSender{PushPlatformIOS: apns}})
+
+	explicitToken := strings.Repeat("ab", 32)
+	explicit, _, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: explicitToken, Environment: "Production"})
+	require.NoError(t, err)
+	require.Equal(t, pushEnvProduction, explicit.Environment)
+
+	d, _, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken, Environment: pushEnvProduction})
+	require.NoError(t, err)
+	d, created, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken})
+	require.NoError(t, err)
+	require.False(t, created)
+	require.Empty(t, d.Environment, "registering again without environment follows the site again")
+
+	_, err = svc.Test(ctx, 1, d.ID)
+	require.NoError(t, err)
+	_, err = svc.Test(ctx, 1, explicit.ID)
+	require.NoError(t, err)
+	mu.Lock()
+	paths := []string{(*seen)[0].path, (*seen)[1].path}
+	mu.Unlock()
+	require.Equal(t, "/sandbox/3/device/"+strings.ToLower(pushTestAPNsToken), paths[0], "apns_environment=sandbox applies to devices without environment")
+	require.Equal(t, "/production/3/device/"+explicitToken, paths[1])
+	require.Empty(t, repo.device(d.ID).DisabledReason)
 }
 
 func TestPushDeviceService_OwnershipAndSubscription(t *testing.T) {

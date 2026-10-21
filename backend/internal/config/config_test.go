@@ -826,6 +826,13 @@ func TestLoadDefaultSecurityToggles(t *testing.T) {
 	if !cfg.Security.URLAllowlist.AllowPrivateHosts {
 		t.Fatalf("URLAllowlist.AllowPrivateHosts = false, want true")
 	}
+	// Push targets (A11) are chosen by any admin, so they do not inherit the permissive url_allowlist defaults.
+	if cfg.Security.PushTargets.AllowPrivateHosts {
+		t.Fatalf("PushTargets.AllowPrivateHosts = true, want false")
+	}
+	if cfg.Security.PushTargets.AllowInsecureHTTP {
+		t.Fatalf("PushTargets.AllowInsecureHTTP = true, want false")
+	}
 	if !cfg.Security.ResponseHeaders.Enabled {
 		t.Fatalf("ResponseHeaders.Enabled = false, want true")
 	}

@@ -734,6 +734,7 @@ type ForwardedClientIPSettings struct {
 
 type SecurityConfig struct {
 	URLAllowlist    URLAllowlistConfig   `mapstructure:"url_allowlist"`
+	PushTargets     PushTargetsConfig    `mapstructure:"push_targets"`
 	ResponseHeaders ResponseHeaderConfig `mapstructure:"response_headers"`
 	CSP             CSPConfig            `mapstructure:"csp"`
 	ProxyFallback   ProxyFallbackConfig  `mapstructure:"proxy_fallback"`
@@ -831,6 +832,15 @@ type URLAllowlistConfig struct {
 	CRSHosts          []string `mapstructure:"crs_hosts"`
 	AllowPrivateHosts bool     `mapstructure:"allow_private_hosts"`
 	// 关闭 URL 白名单校验时，是否允许 http URL（默认只允许 https）
+	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
+}
+
+// PushTargetsConfig is the outbound policy for admin-registered Bark / ntfy / webhook push targets (A11). It is kept
+// apart from url_allowlist, whose permissive defaults suit upstream accounts: push URLs are chosen per admin and
+// receive every subscribed event, so loopback / private / link-local hosts and plain http stay refused unless the
+// operator opts in (for example a LAN ntfy server).
+type PushTargetsConfig struct {
+	AllowPrivateHosts bool `mapstructure:"allow_private_hosts"`
 	AllowInsecureHTTP bool `mapstructure:"allow_insecure_http"`
 }
 
@@ -2126,6 +2136,8 @@ func setDefaults() {
 	viper.SetDefault("security.url_allowlist.crs_hosts", []string{})
 	viper.SetDefault("security.url_allowlist.allow_private_hosts", true)
 	viper.SetDefault("security.url_allowlist.allow_insecure_http", true)
+	viper.SetDefault("security.push_targets.allow_private_hosts", false)
+	viper.SetDefault("security.push_targets.allow_insecure_http", false)
 	viper.SetDefault("security.response_headers.enabled", true)
 	viper.SetDefault("security.response_headers.additional_allowed", []string{})
 	viper.SetDefault("security.response_headers.force_remove", []string{})

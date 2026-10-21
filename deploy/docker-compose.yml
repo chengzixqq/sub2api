@@ -149,6 +149,9 @@ services:
       - SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS=${SECURITY_URL_ALLOWLIST_ALLOW_PRIVATE_HOSTS:-true}
       # Upstream hosts whitelist (comma-separated, only used when enabled=true)
       - SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS=${SECURITY_URL_ALLOWLIST_UPSTREAM_HOSTS:-}
+      # Push targets (Bark / ntfy / webhook): allow LAN / localhost and http:// (default: false, public https only)
+      - SECURITY_PUSH_TARGETS_ALLOW_PRIVATE_HOSTS=${SECURITY_PUSH_TARGETS_ALLOW_PRIVATE_HOSTS:-false}
+      - SECURITY_PUSH_TARGETS_ALLOW_INSECURE_HTTP=${SECURITY_PUSH_TARGETS_ALLOW_INSECURE_HTTP:-false}
 
       # =======================================================================
       # Update Configuration (在线更新配置)

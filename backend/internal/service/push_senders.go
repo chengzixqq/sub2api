@@ -62,10 +62,10 @@ type PushSenders struct {
 }
 
 // NewPushSenders builds the APNs sender (configured through PushConfigService) and the Bark / ntfy / webhook senders.
-// The generic channels dial through safeDialContext unless security.url_allowlist.allow_private_hosts is set, so a
-// target whose DNS later points at a private address is refused when sending.
+// The generic channels dial through safeDialContext unless security.push_targets.allow_private_hosts is set (off by
+// default; url_allowlist does not apply), so a target whose DNS later points at a private address is refused.
 func NewPushSenders(cfg *config.Config, apnsConfig *PushConfigService) *PushSenders {
-	allowPrivate := cfg != nil && cfg.Security.URLAllowlist.AllowPrivateHosts
+	allowPrivate := cfg != nil && cfg.Security.PushTargets.AllowPrivateHosts
 	channelClient := newPushChannelHTTPClient(allowPrivate)
 	var resolve func(context.Context) (*PushAPNsRuntime, error)
 	if apnsConfig != nil {

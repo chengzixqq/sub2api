@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -121,4 +122,20 @@ func TestPushSeverityRank(t *testing.T) {
 	for sev, want := range map[string]int{"P0": 0, "p1": 1, " P2 ": 2, "P3": 3, "": 3, "critical": 3} {
 		require.Equal(t, want, pushSeverityRank(sev), sev)
 	}
+}
+
+// The same APNs token can be registered on several sites; the collapse ID must not let one site's notification
+// replace another site's notification for an event with the same dedup key.
+func TestPushEventMessageFor_CollapseIDIsPerSite(t *testing.T) {
+	ev := &PushEvent{Type: PushEventAccountError, DedupKey: "account.error:12:987654", OccurredAt: time.Now()}
+	siteA := ev.MessageFor("zh-Hans", "a.example.com")
+	siteB := ev.MessageFor("zh-Hans", "b.example.com")
+	require.NotEmpty(t, siteA.CollapseID)
+	require.NotEqual(t, siteA.CollapseID, siteB.CollapseID, "two sites never share a collapse ID")
+	require.Equal(t, siteA.CollapseID, ev.MessageFor("en-US", "a.example.com").CollapseID, "stable for one site and event")
+	require.NotEqual(t, siteA.CollapseID, (&PushEvent{DedupKey: "account.error:13:987654"}).MessageFor("", "a.example.com").CollapseID)
+	require.NotEmpty(t, ev.MessageFor("", "").CollapseID)
+
+	long := &PushEvent{DedupKey: PushEventAccountTestFinished + ":" + strings.Repeat("f", 120)}
+	require.LessOrEqual(t, len(long.MessageFor("", "a-very-long-site-label.example.com").CollapseID), 64, "apns-collapse-id is at most 64 bytes")
 }

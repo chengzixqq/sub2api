@@ -14,6 +14,10 @@ import (
 // ContextKeyAdminAccessTokenID 管理访问令牌（sat_）认证时写入的令牌 ID。
 const ContextKeyAdminAccessTokenID = "admin_access_token_id"
 
+// ContextKeyAdminAccessTokenReadOnly 管理访问令牌认证时写入：令牌是否只读。放行表里的推送设备路由靠它收窄
+// （只读令牌只能注册 iOS 设备，不能登记任意 URL 的 Bark / ntfy / Webhook 目标）。
+const ContextKeyAdminAccessTokenReadOnly = "admin_access_token_read_only"
+
 // adminAccessTokenSelfRevokePath 只读令牌也允许撤销自己（App 退出登录时）。
 const adminAccessTokenSelfRevokePath = "/api/v1/admin/access-tokens/:id"
 
@@ -21,7 +25,8 @@ const adminAccessTokenSelfRevokePath = "/api/v1/admin/access-tokens/:id"
 //
 // 只登记两类：没有副作用的读（批量读取把 ID 列表放在 POST 请求体里，本质仍是查询；usage/batch 不在此列，
 // force=true 会探测上游并落库快照），以及只作用于令牌主人自己推送设备的写（只看告警是只读令牌的主要用途；
-// service 层按 user_id 收窄，碰不到别人的设备）。PUT /api/v1/admin/push/config（站点 APNs 私钥）不在此列。
+// service 层按 user_id 收窄，碰不到别人的设备；注册时 handler 再按 ContextKeyAdminAccessTokenReadOnly 只允许
+// platform=ios，不能登记任意 URL 的 Bark / ntfy / Webhook）。PUT /api/v1/admin/push/config（站点 APNs 私钥）不在此列。
 var adminAccessTokenReadOnlyAllowedWrites = map[string]struct{}{
 	http.MethodPost + " /api/v1/admin/accounts/runtime/batch":       {},
 	http.MethodPost + " /api/v1/admin/accounts/today-stats/batch":   {},
@@ -75,6 +80,7 @@ func validateAdminAccessToken(c *gin.Context, plain string, tokens adminAccessTo
 	c.Set(ContextKeyAuthEmail, user.Email)
 	c.Set("auth_method", service.AuditAuthMethodAdminAccessToken)
 	c.Set(ContextKeyAdminAccessTokenID, token.ID)
+	c.Set(ContextKeyAdminAccessTokenReadOnly, token.ReadOnly())
 	return true
 }
 
