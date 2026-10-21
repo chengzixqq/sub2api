@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"testing"
 	"time"
@@ -137,6 +138,31 @@ func TestUpsertOneForUser_InsertsWhenMissing(t *testing.T) {
 	rows := quotaItemRows(t, client, userID, "gemini")
 	require.Len(t, rows, 2)
 	require.Equal(t, 1, activeQuotaItemRows(rows))
+}
+
+// 限额列是 decimal(20,10)，只能存绝对值小于 1e10 的数：handler 的 validateQuotaLimitFields
+// 按这个上限拦截（maxQuotaLimitUSD），这里钉住两侧边界，列类型变了要同步改校验。
+func TestUpsertOneForUser_LimitColumnRange(t *testing.T) {
+	ctx := context.Background()
+	client, userID := mustCreateQuotaItemUser(t)
+	repo := NewUserPlatformQuotaRepository(client)
+
+	largest := math.Nextafter(1e10, 0)
+	current, _, err := repo.UpsertOneForUser(ctx, userID, UserPlatformQuotaRecord{
+		Platform: "anthropic", DailyLimitUSD: quotaItemF(largest),
+	})
+	require.NoError(t, err, "the largest accepted limit fits the column")
+	require.NotNil(t, current)
+	require.InDelta(t, largest, *current.DailyLimitUSD, 1e-5)
+
+	_, _, err = repo.UpsertOneForUser(ctx, userID, UserPlatformQuotaRecord{
+		Platform: "anthropic", DailyLimitUSD: quotaItemF(1e10),
+	})
+	require.Error(t, err, "1e10 overflows decimal(20,10); the handler must reject it first")
+	stored, err := repo.GetByUserPlatform(ctx, userID, "anthropic")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.InDelta(t, largest, *stored.DailyLimitUSD, 1e-5, "the failed write is rolled back")
 }
 
 func TestUpsertOneForUser_AllNullSoftDeletes(t *testing.T) {

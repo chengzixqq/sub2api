@@ -200,6 +200,24 @@ func TestUpdateUserPlatformQuotas_RejectsNegativeLimit(t *testing.T) {
 	}
 }
 
+// 超出列类型 decimal(20,10) 的限额在 handler 拦截为 400，不再让数据库报 numeric field overflow（500）。
+func TestUpdateUserPlatformQuotas_RejectsLimitAboveColumnRange(t *testing.T) {
+	repo := &upsertCapturingQuotaRepo{}
+	h := buildTestHandler(repo, &billingCacheStub{})
+	body := `{"quotas":[{"platform":"anthropic","daily_limit_usd":1,"weekly_limit_usd":10000000000}]}`
+	c, w := putReq(t, body)
+	h.UpdateUserPlatformQuotas(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "weekly_limit_usd must be less than 10000000000") {
+		t.Errorf("unexpected message: %s", w.Body.String())
+	}
+	if len(repo.upsertCalls) != 0 {
+		t.Errorf("invalid input must not reach the repository: %+v", repo.upsertCalls)
+	}
+}
+
 func TestUpdateUserPlatformQuotas_RejectsTooManyEntries(t *testing.T) {
 	h := buildTestHandler(&upsertCapturingQuotaRepo{}, &billingCacheStub{})
 	body := `{"quotas":[

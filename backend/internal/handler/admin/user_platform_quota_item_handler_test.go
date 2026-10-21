@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -108,8 +109,12 @@ func decodeQuotaItemBody(t *testing.T, w *httptest.ResponseRecorder) quotaItemEn
 
 func quotaItemLimit(v float64) *float64 { return &v }
 
+// currentDailyWindowStart 返回当天日窗口的起点（与 NeedsDailyReset 同一时区口径），
+// 避免“now 减一分钟”在午夜刚过时落到昨天、用量被按过期窗口归零。
+func currentDailyWindowStart() time.Time { return timezone.StartOfDay(time.Now()) }
+
 func TestUpsertUserPlatformQuota_UpsertsOnlyThatPlatform(t *testing.T) {
-	start := time.Now().UTC().Add(-time.Minute)
+	start := currentDailyWindowStart()
 	repo := &singleQuotaRepoFake{
 		upsertOneCurrent:  &service.UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: quotaItemLimit(20), DailyUsageUSD: 1.5, DailyWindowStart: &start},
 		upsertOnePrevious: &service.UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: quotaItemLimit(10), DailyUsageUSD: 1.5, DailyWindowStart: &start},
@@ -199,6 +204,8 @@ func TestUpsertUserPlatformQuota_RejectsInvalidInput(t *testing.T) {
 		{name: "unknown field", id: "42", platform: "anthropic", body: `{"daily_limit":5}`, reason: "VALIDATION_ERROR"},
 		{name: "wrong type", id: "42", platform: "anthropic", body: `{"daily_limit_usd":"5"}`, reason: "VALIDATION_ERROR"},
 		{name: "overflow", id: "42", platform: "anthropic", body: `{"daily_limit_usd":1e999}`, reason: "VALIDATION_ERROR"},
+		{name: "above column range", id: "42", platform: "anthropic", body: `{"daily_limit_usd":10000000000}`, reason: "INVALID_QUOTA_LIMIT", message: "daily_limit_usd must be less than 10000000000"},
+		{name: "far above column range", id: "42", platform: "anthropic", body: `{"weekly_limit_usd":1,"monthly_limit_usd":1e300}`, reason: "INVALID_QUOTA_LIMIT", message: "monthly_limit_usd must be less than 10000000000"},
 		{name: "empty body", id: "42", platform: "anthropic", body: ``, reason: "VALIDATION_ERROR"},
 		{name: "null body", id: "42", platform: "anthropic", body: `null`, reason: "VALIDATION_ERROR"},
 		{name: "array body", id: "42", platform: "anthropic", body: `[]`, reason: "VALIDATION_ERROR"},
@@ -233,6 +240,10 @@ func TestValidateQuotaLimitFields(t *testing.T) {
 	require.Equal(t, "daily_limit_usd must be a finite number", validateQuotaLimitFields(&inf, nil, nil))
 	nan := math.NaN()
 	require.Equal(t, "monthly_limit_usd must be a finite number", validateQuotaLimitFields(nil, nil, &nan))
+
+	// 列类型 decimal(20,10) 只能存绝对值小于 1e10 的数，超出时数据库报 numeric field overflow（500）。
+	require.Empty(t, validateQuotaLimitFields(nil, quotaItemLimit(math.Nextafter(1e10, 0)), nil), "largest float64 below 1e10 fits the column")
+	require.Equal(t, "weekly_limit_usd must be less than 10000000000", validateQuotaLimitFields(nil, quotaItemLimit(1e10), nil))
 }
 
 func TestUpsertUserPlatformQuota_UserNotFoundAndNoRepo(t *testing.T) {
@@ -344,7 +355,7 @@ func TestDeleteAndRestoreUserPlatformQuota_RejectInvalidPath(t *testing.T) {
 }
 
 func TestRestoreUserPlatformQuota_Responses(t *testing.T) {
-	start := time.Now().UTC().Add(-time.Minute)
+	start := currentDailyWindowStart()
 	repo := &singleQuotaRepoFake{
 		restoreRecord: &service.UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: quotaItemLimit(10), DailyUsageUSD: 7.5, DailyWindowStart: &start},
 	}

@@ -36,11 +36,15 @@ type UpsertUserPlatformQuotaRequest struct {
 	MonthlyLimitUSD *float64 `json:"monthly_limit_usd"`
 }
 
+// maxQuotaLimitUSD 限额上限（不含）：user_platform_quotas 的限额列是 decimal(20,10)，
+// 只能存绝对值小于 1e10 的数，超出时数据库报 numeric field overflow，接口会变成 500。
+const maxQuotaLimitUSD = 1e10
+
 // validateQuotaLimitFields 校验三档限额，返回空串表示合法，否则返回 400 文案（整表 PUT 与单平台 PUT 共用）。
 //
 //	nil / not set → 无限额（完全放行）
 //	0            → 完全禁用（任何请求都会被拒绝，因为 usage >= 0 恒成立）
-//	> 0          → USD 限额上限
+//	> 0          → USD 限额上限（必须小于 maxQuotaLimitUSD）
 //
 // 拦截 NaN / ±Inf：+Inf 进入 DB 后 cache check 中 usage >= limit 永不成立，limit 等同失效。
 func validateQuotaLimitFields(daily, weekly, monthly *float64) string {
@@ -61,6 +65,9 @@ func validateQuotaLimitFields(daily, weekly, monthly *float64) string {
 		}
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			return f.name + " must be a finite number"
+		}
+		if v >= maxQuotaLimitUSD {
+			return fmt.Sprintf("%s must be less than %.0f", f.name, maxQuotaLimitUSD)
 		}
 	}
 	return ""
