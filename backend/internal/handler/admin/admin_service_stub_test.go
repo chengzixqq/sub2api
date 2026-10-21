@@ -56,6 +56,8 @@ type stubAdminService struct {
 	updateAccountExtraCalls             int
 	createUserCalls                     int
 	updateUserCalls                     int
+	lastUpdateUserInput                 *service.UpdateUserInput
+	lastUpdateUserMetadata              service.AdminAdjustmentMetadata
 	setSchedulableCalls                 int
 	bulkUpdateCalls                     int
 	getAccountsByIDsCalls               int
@@ -210,6 +212,8 @@ func (s *stubAdminService) CreateUser(ctx context.Context, input *service.Create
 
 func (s *stubAdminService) UpdateUser(ctx context.Context, id int64, input *service.UpdateUserInput) (*service.User, error) {
 	s.updateUserCalls++
+	s.lastUpdateUserInput = input
+	s.lastUpdateUserMetadata = service.AdminAdjustmentMetadataFromContext(ctx)
 	user := service.User{ID: id, Email: "updated@example.com", Status: service.StatusActive}
 	return &user, nil
 }

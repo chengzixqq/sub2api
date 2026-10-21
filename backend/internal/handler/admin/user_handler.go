@@ -336,6 +336,23 @@ func createUserIdempotencyPayload(req CreateUserRequest) CreateUserRequest {
 	return req
 }
 
+// userUpdateIdempotencyPayload is the request fingerprinted for PUT /admin/users/:id (and hashed into the adjustment
+// action id). Since G06 every keyed update goes through the coordinator, so like createUserIdempotencyPayload it leaves
+// out the new password and only records whether one is set: the stored fingerprint cannot help an offline password
+// guess. Without a password it marshals exactly like the pre-G06 {user_id, body} payload, so records stored by the
+// Web's keyed concurrency edits still replay. A retry with the same key and another password replays the first update.
+type userUpdateIdempotencyPayload struct {
+	UserID      int64             `json:"user_id"`
+	Body        UpdateUserRequest `json:"body"`
+	PasswordSet bool              `json:"password_set,omitempty"`
+}
+
+func newUserUpdateIdempotencyPayload(userID int64, req UpdateUserRequest) userUpdateIdempotencyPayload {
+	passwordSet := req.Password != ""
+	req.Password = ""
+	return userUpdateIdempotencyPayload{UserID: userID, Body: req, PasswordSet: passwordSet}
+}
+
 // Update handles updating a user
 // PUT /api/v1/admin/users/:id
 func (h *UserHandler) Update(c *gin.Context) {
@@ -377,10 +394,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		}
 	}
 
-	payload := struct {
-		UserID int64             `json:"user_id"`
-		Body   UpdateUserRequest `json:"body"`
-	}{UserID: userID, Body: req}
+	payload := newUserUpdateIdempotencyPayload(userID, req)
 	execute := func(ctx context.Context) (any, error) {
 		ctx = withAdminAdjustmentMetadata(c, ctx, req.AdjustmentNotes, "admin.users.update", payload)
 		user, execErr := h.adminService.UpdateUser(ctx, userID, &service.UpdateUserInput{
@@ -405,7 +419,8 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return dto.UserFromServiceAdmin(user), nil
 	}
 
-	// Scope and payload predate G06 (they were used when concurrency changed), so stored records stay compatible.
+	// The scope predates G06 (it was used when concurrency changed); the payload keeps the old shape for requests
+	// without a password, so stored records stay compatible.
 	executeAdminOptionalWriteJSON(c, "admin.users.update", payload, adminWriteExecutionTimeout, execute)
 }
 

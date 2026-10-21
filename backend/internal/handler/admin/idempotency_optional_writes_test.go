@@ -181,6 +181,89 @@ func TestUserUpdate_IdempotencyKeyReplaysWithoutConcurrency(t *testing.T) {
 	require.Equal(t, 2, adminSvc.updateUserCalls)
 }
 
+// The new password is not part of the PUT /admin/users/:id fingerprint either (G06 sends every keyed update through
+// the coordinator): only whether a password is set counts, so the stored hash cannot help an offline password guess.
+func TestUserUpdate_IdempotencyFingerprintOmitsPassword(t *testing.T) {
+	router, adminSvc := setupAdminRouter()
+	repo := newMemoryIdempotencyRepoStub()
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, service.DefaultIdempotencyConfig()))
+	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(nil) })
+	body := func(password string) string {
+		return `{"email":"u@example.com","password":"` + password + `","role":"user","concurrency":3}`
+	}
+
+	first := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/users/5", body("Abc12345"), "user-update-password-a")
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Equal(t, "Abc12345", adminSvc.lastUpdateUserInput.Password, "the service still receives the new password")
+	second := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/users/5", body("Xyz98765"), "user-update-password-b")
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	require.Equal(t, "Xyz98765", adminSvc.lastUpdateUserInput.Password)
+
+	fingerprints := map[string]string{}
+	for _, record := range repo.data {
+		fingerprints[record.IdempotencyKeyHash] = record.RequestFingerprint
+	}
+	require.Len(t, fingerprints, 2)
+	fingerprintA := fingerprints[service.HashIdempotencyKey("user-update-password-a")]
+	require.NotEmpty(t, fingerprintA)
+	require.Equal(t, fingerprintA, fingerprints[service.HashIdempotencyKey("user-update-password-b")],
+		"the stored fingerprint must not depend on the password value")
+	plaintext, err := service.BuildIdempotencyFingerprint(http.MethodPut, "/api/v1/admin/users/:id", "admin:0", struct {
+		UserID int64             `json:"user_id"`
+		Body   UpdateUserRequest `json:"body"`
+	}{UserID: 5, Body: UpdateUserRequest{Email: "u@example.com", Password: "Abc12345", Role: "user", Concurrency: intPtr(3)}})
+	require.NoError(t, err)
+	require.NotEqual(t, plaintext, fingerprintA)
+
+	// Same key, another password: a replay of the first update (as for POST /admin/users).
+	replay := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/users/5", body("Other-111"), "user-update-password-a")
+	require.Equal(t, http.StatusOK, replay.Code, replay.Body.String())
+	require.Equal(t, "true", replay.Header().Get("X-Idempotency-Replayed"))
+	require.Equal(t, 2, adminSvc.updateUserCalls)
+
+	// Same key without the password is a different request.
+	conflict := optionalWriteRequest(router, http.MethodPut, "/api/v1/admin/users/5", `{"email":"u@example.com","role":"user","concurrency":3}`, "user-update-password-a")
+	require.Equal(t, http.StatusConflict, conflict.Code, conflict.Body.String())
+	require.Equal(t, "IDEMPOTENCY_KEY_CONFLICT", responseReason(t, conflict))
+}
+
+// Without a password the payload marshals exactly like the pre-G06 {user_id, body} struct, so records stored by the
+// Web's keyed concurrency edits keep replaying across the upgrade; the adjustment action id does not see the password.
+func TestUserUpdateIdempotencyPayloadCompatibleAndRedacted(t *testing.T) {
+	concurrency := 4
+	req := UpdateUserRequest{Email: "u@example.com", Role: "user", Concurrency: &concurrency, AdjustmentNotes: "n"}
+	legacy, err := json.Marshal(struct {
+		UserID int64             `json:"user_id"`
+		Body   UpdateUserRequest `json:"body"`
+	}{UserID: 9, Body: req})
+	require.NoError(t, err)
+	current, err := json.Marshal(newUserUpdateIdempotencyPayload(9, req))
+	require.NoError(t, err)
+	require.JSONEq(t, string(legacy), string(current))
+	require.Equal(t, string(legacy), string(current))
+
+	withPassword := req
+	withPassword.Password = "Abc12345"
+	raw, err := json.Marshal(newUserUpdateIdempotencyPayload(9, withPassword))
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "Abc12345")
+	require.Contains(t, string(raw), `"password_set":true`)
+	require.Equal(t, "Abc12345", withPassword.Password, "building the payload must not change the request")
+
+	gin.SetMode(gin.TestMode)
+	actionID := func(password string) string {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/v1/admin/users/9", nil)
+		c.Request.Header.Set("Idempotency-Key", "same-key")
+		r := req
+		r.Password = password
+		id, derived := adminAdjustmentActionID(c, "admin.users.update", newUserUpdateIdempotencyPayload(9, r))
+		require.True(t, derived)
+		return id.String()
+	}
+	require.Equal(t, actionID("Abc12345"), actionID("Xyz98765"))
+}
+
 // The step-up gate stays in front of the idempotency wrapper: a keyed promotion without step-up never runs.
 func TestUserUpdate_KeyedPromotionStillRequiresStepUp(t *testing.T) {
 	router, adminSvc := setupRoleStepUpRouter(t)
@@ -296,6 +379,7 @@ func TestOptionalIdempotentRequestPayloadsHaveNoOpaqueFields(t *testing.T) {
 	payloads := []any{
 		CreateUserRequest{},
 		UpdateUserRequest{},
+		userUpdateIdempotencyPayload{},
 		CreateGroupRequest{},
 		UpdateGroupRequest{},
 		UpdateAccountRequest{},
