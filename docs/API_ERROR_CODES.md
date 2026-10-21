@@ -54,6 +54,12 @@
 | 400 | INVALID_ACCOUNT_STATUS_FILTER | 参数校验类：`GET /api/v1/admin/accounts`（以及账号导出、`/admin/accounts/upstream-billing-rates` 等共用账号列表筛选的接口）的 `status` 按逗号拆分、去空白、去重后超过 16 个值（`metadata.max`=16）。减少筛选值后重试，不要原样重试；单个值不会触发 |
 | 409 | ACCOUNT_TEST_RUNNING | `POST /api/v1/admin/accounts/:id/test-runs`：该账号已有一个运行中的异步测试，`metadata.run_id` 是它的 run_id，改为轮询 `GET /api/v1/admin/account-test-runs/:run_id`，不要重复提交 |
 | 409 | MIXED_CHANNEL_WARNING | 新建 / 编辑账号绑定的分组里同时有 Antigravity 与 Anthropic 账号（`POST /api/v1/admin/accounts`、`PUT` / `PATCH /api/v1/admin/accounts/:id`、`POST /api/v1/admin/accounts/bulk-update`；信封见上文“响应格式”）。用 `metadata` 或 `details` 的分组名与两个平台弹确认框，确认后在请求体加 `confirm_mixed_channel_risk=true` 重发。新建接口的 `Idempotency-Key` 可选（不带照常执行）；带了 key 的话，确认后请求体变了，必须换一个新的 key 重发，沿用旧 key 会收到 409 `IDEMPOTENCY_KEY_CONFLICT`。`current_platform` / `other_platform` 是展示用的首字母大写名称（Antigravity、Anthropic），不是平台枚举。`/admin/me` 的 capabilities 含 `accounts.mixed_channel_details` 时才有 reason / metadata / details，否则先调 check-mixed-channel 预检。分组批量成员接口（`groups.member_batch`）的逐项结果用的是另一个码 `MIXED_CHANNEL_RISK`。vendor 绑定未授权的分组时先返回 404 `RESOURCE_NOT_FOUND`，不会走到这个码 |
+| 400 | IDEMPOTENCY_KEY_INVALID | `Idempotency-Key` 去掉首尾空白后超过 128 字节，或含空白 / 非可见 ASCII 字符。换一个合法的 key（如 UUID）重发 |
+| 400 | IDEMPOTENCY_KEY_REQUIRED | 只有强制带 key 的接口（余额调整、订阅批量操作等）在服务端关闭 `idempotency.observe_only` 后才会返回；带上 key 重发。下文“幂等键”一节列出的可选接口不会返回这个码 |
+| 409 | IDEMPOTENCY_KEY_CONFLICT | 同一个 key 已用于请求体不同的请求（指纹含方法、路由、操作者与请求体）。换一个新的 key 再发；不要原样重试 |
+| 409 | IDEMPOTENCY_IN_PROGRESS | 同一个 key 的首次请求还在执行。按 `Retry-After` 秒后用同一个 key 原样重试；连续多次仍是这个码（执行进程可能已退出，记录要到 24 小时后才过期）时，改为读回服务器状态核对，不要换 key 重发 |
+| 409 | IDEMPOTENCY_RETRY_BACKOFF | 同一个 key 的上次执行失败，仍在 5 秒退避期内。按 `Retry-After` 秒后用同一个 key 原样重试；要改请求体（如确认混合渠道风险后带 `confirm_mixed_channel_risk=true`）必须换新 key |
+| 503 | IDEMPOTENCY_STORE_UNAVAILABLE | 幂等存储暂时不可用，带 key 的写请求没有执行（fail-close）。不要换 key 重发，先读回服务器状态核对，稍后再用同一个 key 重试。重放快照超过 64KB 被截断时也会返回这个码，这时只能读回核对 |
 | 404 | ACCOUNT_TEST_RUN_NOT_FOUND | `GET /api/v1/admin/accounts/:id/test-runs/latest` 与 `GET /api/v1/admin/account-test-runs/:run_id`：没有测试记录、run_id 不存在或不属于本工作区的账号；latest 返回它时显示“还没有测试记录” |
 | 429 | ACCOUNT_TEST_BUSY | `POST /api/v1/admin/accounts/:id/test-runs`：本实例同时运行的异步测试已达上限（10 个），稍后重试；该账号已有运行中的测试时优先返回 409 ACCOUNT_TEST_RUNNING |
 | 429 | RATE_LIMITED、TOTP_TOO_MANY_ATTEMPTS | 稍后再试（RATE_LIMITED 按 `retry_after` 秒） |
@@ -64,6 +70,34 @@
 | 503 | ACCOUNT_STATS_UNAVAILABLE | `POST /api/v1/admin/accounts/today-stats/batch`：请求的账号（按工作区收窄、去重后）今日统计全部查询失败，结果不缓存。列表里这些账号的今日统计显示“—”，稍后重试；只有部分账号失败时仍返回 200，`data.failed_account_ids` 列出失败的账号（按账号 ID 升序去重，与请求里的顺序无关，请当集合按 ID 匹配；`stats` 里它们补 0，不要当成“今天没有请求”），`data.degraded=true` 表示批量 SQL 失败、走了逐个查询。`/admin/me` 的 capabilities 含 `accounts.today_stats_failures` 时才有这两个字段与此码。请求体带 `group_id`（capabilities 含 `accounts.today_stats_group`）时只统计该分组的用量、不做逐个回退：分组查询失败即整体返回此码，不会退回不分组的数字，成功时 `failed_account_ids` 为空、`degraded=false` |
 
 `TOKEN_REVOKED` 表示会话已被撤销（退出登录、在其他设备上撤销、撤销全部会话、刷新令牌重放、改密），不要再用同一 refresh token 续期。
+
+## 幂等键（Idempotency-Key）
+
+写接口可带请求头 `Idempotency-Key`（1–128 个可见 ASCII 字符，建议 UUID）。同一个 key、同一请求体在 24 小时内重发，服务端不再执行，返回首次成功的响应快照。快照里的运行时字段（如 current_concurrency）可能已过时，`password`、`access_token`、`refresh_token`、`code` 等键会被替换为 `***`，收到重放后需要最新状态请再 GET 一次。不同 key 之间、不同操作者之间互不重放。
+
+响应头：
+
+- `X-Idempotency-Replayed: true`：本次是重放，没有再次执行。
+- `X-Idempotency-Expires-At`（RFC3339，UTC）：这个 key 的记录保留到何时；过期后同一个 key 会被当作新请求重新执行，只能靠读回或账本核对。
+- `X-Idempotency-Degraded: result-committed`：写入已执行成功，但结果没能记进幂等存储；本次响应可信，之后同一个 key 重发可能返回 `IDEMPOTENCY_IN_PROGRESS`，按读回核对处理。
+- `Retry-After`：只出现在 `IDEMPOTENCY_IN_PROGRESS` 与 `IDEMPOTENCY_RETRY_BACKOFF` 上。
+
+`/admin/me` 的 capabilities 含 `admin.idempotent_writes` 时，下面这些接口接受可选的 key（不带 key 时与以前完全一样，Web 不带）：
+
+| 接口 | scope | 带 key 时的执行上限 |
+|---|---|---|
+| `POST /api/v1/admin/users` | admin.users.create | 30 秒 |
+| `PUT /api/v1/admin/users/:id` | admin.users.update | 30 秒 |
+| `POST /api/v1/admin/groups` | admin.groups.create | 30 秒 |
+| `PUT /api/v1/admin/groups/:id` | admin.groups.update | 30 秒 |
+| `DELETE /api/v1/admin/groups/:id` | admin.groups.delete | 30 秒 |
+| `PUT /api/v1/admin/accounts/:id` | admin.accounts.update | 30 秒 |
+| `POST /api/v1/admin/accounts/:id/schedulable` | admin.accounts.schedulable | 30 秒 |
+| `POST /api/v1/admin/accounts/bulk-update` | admin.accounts.bulk_update | 60 秒 |
+| `POST /api/v1/admin/accounts/:id/refresh` | admin.accounts.refresh | 60 秒 |
+| `POST /api/v1/admin/accounts/batch-refresh` | admin.accounts.batch_refresh | 120 秒 |
+
+带 key 的请求一经受理，客户端断开也会执行完并保存结果（受上表时限约束，到时未完成的部分按失败处理），之后用同一个 key 重发即可拿回结果；不带 key 的请求仍跟随客户端连接，没有额外时限。`POST /api/v1/admin/users` 的指纹不含 `password`：同一个 key 只改密码重发，得到的是首次创建的重放。业务错误（如混合渠道 409、`GROUP_EXISTS`）不会被重放，原样返回，5 秒退避后可用同一个 key 重试。老服务端会忽略这个头，没有 `admin.idempotent_writes` 时超时后不要自动重发，改为读回核对。
 
 ## 首页聚合各段的 error
 

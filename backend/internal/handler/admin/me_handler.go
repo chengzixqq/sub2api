@@ -25,6 +25,7 @@ var adminMeCapabilities = []string{
 	"accounts.recover_schedulable",
 	"accounts.runtime_batch",
 	"admin.access_tokens",
+	"admin.idempotent_writes",
 	"accounts.status_summary",
 	"accounts.structured_error",
 	"accounts.test_result",

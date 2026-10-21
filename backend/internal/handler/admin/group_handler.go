@@ -92,6 +92,13 @@ func (f optionalLimitField) ToServiceInput() *float64 {
 	return &unlimited
 }
 
+// MarshalJSON encodes the value the request means (null: unchanged, -1: unlimited, otherwise the limit). The fields are
+// unexported, so without it every limit would encode as {} and drop out of the idempotency fingerprint: a retry with
+// the same key that only changes a limit would replay the old result instead of conflicting.
+func (f optionalLimitField) MarshalJSON() ([]byte, error) {
+	return json.Marshal(f.ToServiceInput())
+}
+
 // NewGroupHandler creates a new admin group handler
 func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
 	return NewGroupHandlerWithConfig(adminService, dashboardService, groupCapacityService, nil)
@@ -670,7 +677,7 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		return
 	}
 
-	group, err := h.adminService.CreateGroup(c.Request.Context(), &service.CreateGroupInput{
+	input := &service.CreateGroupInput{
 		Name:                            req.Name,
 		Description:                     req.Description,
 		I18n:                            req.I18n,
@@ -732,17 +739,14 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		MaxReasoningEffortOverLimit:     req.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:         req.ReasoningEffortMappings,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
+	}
+	executeAdminOptionalWriteJSON(c, "admin.groups.create", req, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		group, err := h.adminService.CreateGroup(ctx, input)
+		if err != nil {
+			return nil, err
+		}
+		return h.groupWriteResponse(group), nil
 	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	if h.isSimpleMode() {
-		response.Success(c, groupForSimpleMode(group))
-		return
-	}
-	response.Success(c, dto.GroupFromServiceAdmin(group))
 }
 
 // Duplicate handles creating an inactive group copy with the source account bindings.
@@ -816,7 +820,7 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		sanitizeUpdateGroupRequestForSimpleMode(&req)
 	}
 
-	group, err := h.adminService.UpdateGroup(c.Request.Context(), groupID, &service.UpdateGroupInput{
+	input := &service.UpdateGroupInput{
 		Name:                            req.Name,
 		Description:                     req.Description,
 		I18n:                            req.I18n,
@@ -879,17 +883,26 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		MaxReasoningEffortOverLimit:     req.MaxReasoningEffortOverLimit,
 		ReasoningEffortMappings:         req.ReasoningEffortMappings,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
+	}
+	payload := struct {
+		GroupID int64              `json:"group_id"`
+		Body    UpdateGroupRequest `json:"body"`
+	}{GroupID: groupID, Body: req}
+	executeAdminOptionalWriteJSON(c, "admin.groups.update", payload, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		group, err := h.adminService.UpdateGroup(ctx, groupID, input)
+		if err != nil {
+			return nil, err
+		}
+		return h.groupWriteResponse(group), nil
 	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
+}
 
+// groupWriteResponse is the create / update response body: the reduced shape in simple mode, the admin DTO otherwise.
+func (h *GroupHandler) groupWriteResponse(group *service.Group) any {
 	if h.isSimpleMode() {
-		response.Success(c, groupForSimpleMode(group))
-		return
+		return groupForSimpleMode(group)
 	}
-	response.Success(c, dto.GroupFromServiceAdmin(group))
+	return dto.GroupFromServiceAdmin(group)
 }
 
 // Delete handles deleting a group
@@ -904,17 +917,21 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	if h.isSimpleMode() {
-		err = h.adminService.DeleteGroupIfEmpty(c.Request.Context(), groupID)
-	} else {
-		err = h.adminService.DeleteGroup(c.Request.Context(), groupID)
-	}
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	response.Success(c, gin.H{"message": "Group deleted successfully"})
+	payload := struct {
+		GroupID int64 `json:"group_id"`
+	}{GroupID: groupID}
+	executeAdminOptionalWriteJSON(c, "admin.groups.delete", payload, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		var err error
+		if h.isSimpleMode() {
+			err = h.adminService.DeleteGroupIfEmpty(ctx, groupID)
+		} else {
+			err = h.adminService.DeleteGroup(ctx, groupID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"message": "Group deleted successfully"}, nil
+	})
 }
 
 // GetStats handles getting group statistics

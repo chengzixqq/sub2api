@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -172,6 +173,52 @@ func executeAdminOptionalMoneyWriteJSON(c *gin.Context, scope string, payload an
 // so the handler can post-process a replay (reload values the stored response redacted); use writeAdminIdempotentResult.
 func executeAdminOptionalBatchMoneyWrite(c *gin.Context, scope string, payload any, execute func(context.Context) (any, error)) (*service.IdempotencyExecuteResult, error) {
 	return executeAdminIdempotentWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), adminMoneyWriteExecutionTimeout, false, true, execute)
+}
+
+// Execution caps for optional-key admin writes (users, groups, account edits). They apply only to requests that send
+// an Idempotency-Key: such a request keeps running and stores its result even if the client disconnects, so a retry
+// with the same key replays it. Keep them below the reverse proxy timeout.
+const (
+	adminWriteExecutionTimeout        = 30 * time.Second  // user / group writes, single account edit and schedulable toggle
+	adminBulkWriteExecutionTimeout    = 60 * time.Second  // bulk account update and single credential refresh (upstream OAuth)
+	adminBatchRefreshExecutionTimeout = 120 * time.Second // batch credential refresh (upstream OAuth per account)
+)
+
+// keyedExecutionTimeout returns timeout only when the request carries a non-empty Idempotency-Key. Keyless requests
+// (the Web) keep running on the request context with no extra deadline, exactly as before.
+func keyedExecutionTimeout(c *gin.Context, timeout time.Duration) time.Duration {
+	if strings.TrimSpace(c.GetHeader("Idempotency-Key")) == "" {
+		return 0
+	}
+	return timeout
+}
+
+// executeAdminOptionalWrite runs a write that accepts an optional Idempotency-Key. Without a key it runs directly on
+// the request context, unchanged. With a key a retry replays the stored response, and execution is detached from the
+// client and bounded by timeout. Stale processing records are not reclaimed: these writes have no business-level
+// dedupe, so re-running one could repeat it (or refresh an upstream token twice). It returns the coordinator outcome
+// without writing the response, so the handler can map its own errors first; use writeAdminIdempotentResult.
+func executeAdminOptionalWrite(
+	c *gin.Context,
+	scope string,
+	payload any,
+	timeout time.Duration,
+	execute func(context.Context) (any, error),
+) (*service.IdempotencyExecuteResult, error) {
+	return executeAdminIdempotentWithOptions(c, scope, payload, service.DefaultWriteIdempotencyTTL(), keyedExecutionTimeout(c, timeout), false, false, execute)
+}
+
+// executeAdminOptionalWriteJSON is executeAdminOptionalWrite plus the shared response path (fail-close when the
+// idempotency store is unavailable for a keyed request).
+func executeAdminOptionalWriteJSON(
+	c *gin.Context,
+	scope string,
+	payload any,
+	timeout time.Duration,
+	execute func(context.Context) (any, error),
+) {
+	result, err := executeAdminOptionalWrite(c, scope, payload, timeout, execute)
+	writeAdminIdempotentResult(c, scope, result, err, idempotencyStoreUnavailableFailClose, execute)
 }
 
 func executeAdminOptionalIdempotentJSONWithOptions(

@@ -72,6 +72,12 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrReauthPersistFailed, http.StatusInternalServerError, "REAUTH_PERSIST_FAILED"},
 		{ErrInvalidAccountStatusFilter, http.StatusBadRequest, "INVALID_ACCOUNT_STATUS_FILTER"},
 		{(&MixedChannelError{GroupID: 7, GroupName: "g", CurrentPlatform: "Antigravity", OtherPlatform: "Anthropic"}).ConflictError(), http.StatusConflict, "MIXED_CHANNEL_WARNING"},
+		{ErrIdempotencyKeyRequired, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED"},
+		{ErrIdempotencyKeyInvalid, http.StatusBadRequest, "IDEMPOTENCY_KEY_INVALID"},
+		{ErrIdempotencyKeyConflict, http.StatusConflict, "IDEMPOTENCY_KEY_CONFLICT"},
+		{ErrIdempotencyInProgress, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS"},
+		{ErrIdempotencyRetryBackoff, http.StatusConflict, "IDEMPOTENCY_RETRY_BACKOFF"},
+		{ErrIdempotencyStoreUnavail, http.StatusServiceUnavailable, "IDEMPOTENCY_STORE_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

@@ -1149,41 +1149,49 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	// 确定是否跳过混合渠道检查
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
-	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Name:                  req.Name,
-		Notes:                 req.Notes,
-		Type:                  req.Type,
-		Credentials:           req.Credentials,
-		Extra:                 req.Extra,
-		ProxyID:               req.ProxyID,
-		Concurrency:           req.Concurrency, // 指针类型，nil 表示未提供
-		Priority:              req.Priority,    // 指针类型，nil 表示未提供
-		RateMultiplier:        req.RateMultiplier,
-		LoadFactor:            req.LoadFactor,
-		Status:                req.Status,
-		GroupIDs:              req.GroupIDs,
-		ExpiresAt:             req.ExpiresAt,
-		AutoPauseOnExpired:    req.AutoPauseOnExpired,
-		ProbeEnabled:          req.ProbeEnabled,
-		RateSyncEnabled:       req.RateSyncEnabled,
-		SkipMixedChannelCheck: skipCheck,
-	})
-	if err != nil {
-		if respondMixedChannelConflict(c, err) {
-			return
+	// 捕获闭包内更新的账号，用于更新成功后触发异步探测；幂等重放时闭包不执行，不重复调度。
+	var updatedAccount *service.Account
+	payload := struct {
+		AccountID int64                `json:"account_id"`
+		Body      UpdateAccountRequest `json:"body"`
+	}{AccountID: accountID, Body: req}
+	result, err := executeAdminOptionalWrite(c, "admin.accounts.update", payload, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		account, execErr := h.adminService.UpdateAccount(ctx, accountID, &service.UpdateAccountInput{
+			Name:                  req.Name,
+			Notes:                 req.Notes,
+			Type:                  req.Type,
+			Credentials:           req.Credentials,
+			Extra:                 req.Extra,
+			ProxyID:               req.ProxyID,
+			Concurrency:           req.Concurrency, // 指针类型，nil 表示未提供
+			Priority:              req.Priority,    // 指针类型，nil 表示未提供
+			RateMultiplier:        req.RateMultiplier,
+			LoadFactor:            req.LoadFactor,
+			Status:                req.Status,
+			GroupIDs:              req.GroupIDs,
+			ExpiresAt:             req.ExpiresAt,
+			AutoPauseOnExpired:    req.AutoPauseOnExpired,
+			ProbeEnabled:          req.ProbeEnabled,
+			RateSyncEnabled:       req.RateSyncEnabled,
+			SkipMixedChannelCheck: skipCheck,
+		})
+		if execErr != nil {
+			return nil, execErr
 		}
-
-		response.ErrorFrom(c, err)
+		updatedAccount = account
+		return h.buildAccountResponseWithRuntime(ctx, account), nil
+	})
+	if respondMixedChannelConflict(c, err) {
 		return
 	}
 
 	// OpenAI APIKey: credentials 修改后重新探测上游能力（base_url/api_key 可能变更）。
 	// 异步执行，探测失败不影响账号更新响应。
-	if len(req.Credentials) > 0 {
-		h.scheduleOpenAIResponsesProbe(account)
+	if updatedAccount != nil && len(req.Credentials) > 0 {
+		h.scheduleOpenAIResponsesProbe(updatedAccount)
 	}
 
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	writeAdminIdempotentResult(c, "admin.accounts.update", result, err, idempotencyStoreUnavailableFailClose, nil)
 }
 
 // Patch applies a sparse account edit with key-level credentials / extra merge
@@ -1629,29 +1637,30 @@ func (h *AccountHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	// Get account
+	// Get account (outside the idempotency wrapper so a missing account keeps its plain 404)
 	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.NotFound(c, "Account not found")
 		return
 	}
 
-	updatedAccount, warning, err := h.refreshSingleAccount(c.Request.Context(), account)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	if warning == "missing_project_id_temporary" {
-		response.Success(c, gin.H{
-			"account": h.buildAccountResponseWithRuntime(c.Request.Context(), updatedAccount),
-			"message": "Token refreshed successfully, but project_id could not be retrieved (will retry automatically)",
-			"warning": "missing_project_id_temporary",
-		})
-		return
-	}
-
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), updatedAccount))
+	payload := struct {
+		AccountID int64 `json:"account_id"`
+	}{AccountID: accountID}
+	executeAdminOptionalWriteJSON(c, "admin.accounts.refresh", payload, adminBulkWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		updatedAccount, warning, err := h.refreshSingleAccount(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		if warning == "missing_project_id_temporary" {
+			return gin.H{
+				"account": h.buildAccountResponseWithRuntime(ctx, updatedAccount),
+				"message": "Token refreshed successfully, but project_id could not be retrieved (will retry automatically)",
+				"warning": "missing_project_id_temporary",
+			}, nil
+		}
+		return h.buildAccountResponseWithRuntime(ctx, updatedAccount), nil
+	})
 }
 
 // ApplyOAuthCredentialsRequest is the payload for persisting re-authorized OAuth credentials.
@@ -2040,12 +2049,17 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	executeAdminOptionalWriteJSON(c, "admin.accounts.batch_refresh", req, adminBatchRefreshExecutionTimeout, func(ctx context.Context) (any, error) {
+		return h.batchRefreshAccounts(ctx, req.AccountIDs)
+	})
+}
 
-	accounts, err := h.adminService.GetAccountsByIDs(ctx, req.AccountIDs)
+// batchRefreshAccounts refreshes the given accounts' credentials (at most 10 at a time) and summarizes the outcome;
+// a failed account is reported in errors rather than failing the batch.
+func (h *AccountHandler) batchRefreshAccounts(ctx context.Context, accountIDs []int64) (gin.H, error) {
+	accounts, err := h.adminService.GetAccountsByIDs(ctx, accountIDs)
 	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+		return nil, err
 	}
 
 	// 建立已获取账号的 ID 集合，检测缺失的 ID
@@ -2066,7 +2080,7 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	var warnings []gin.H
 
 	// 将不存在的账号 ID 标记为失败
-	for _, id := range req.AccountIDs {
+	for _, id := range accountIDs {
 		if !foundIDs[id] {
 			failedCount++
 			errors = append(errors, gin.H{
@@ -2106,17 +2120,16 @@ func (h *AccountHandler) BatchRefresh(c *gin.Context) {
 	}
 
 	if err := g.Wait(); err != nil {
-		response.ErrorFrom(c, err)
-		return
+		return nil, err
 	}
 
-	response.Success(c, gin.H{
-		"total":    len(req.AccountIDs),
+	return gin.H{
+		"total":    len(accountIDs),
 		"success":  successCount,
 		"failed":   failedCount,
 		"errors":   errors,
 		"warnings": warnings,
-	})
+	}, nil
 }
 
 // BatchCreate handles batch creating accounts
@@ -2396,32 +2409,29 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
-	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
-		AccountIDs:            req.AccountIDs,
-		Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
-		Name:                  req.Name,
-		ProxyID:               req.ProxyID,
-		Concurrency:           req.Concurrency,
-		Priority:              req.Priority,
-		RateMultiplier:        req.RateMultiplier,
-		LoadFactor:            req.LoadFactor,
-		Status:                req.Status,
-		Schedulable:           req.Schedulable,
-		GroupIDs:              req.GroupIDs,
-		Credentials:           req.Credentials,
-		Extra:                 req.Extra,
-		ProbeEnabled:          req.ProbeEnabled,
-		SkipMixedChannelCheck: skipCheck,
+	result, err := executeAdminOptionalWrite(c, "admin.accounts.bulk_update", req, adminBulkWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		return h.adminService.BulkUpdateAccounts(ctx, &service.BulkUpdateAccountsInput{
+			AccountIDs:            req.AccountIDs,
+			Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
+			Name:                  req.Name,
+			ProxyID:               req.ProxyID,
+			Concurrency:           req.Concurrency,
+			Priority:              req.Priority,
+			RateMultiplier:        req.RateMultiplier,
+			LoadFactor:            req.LoadFactor,
+			Status:                req.Status,
+			Schedulable:           req.Schedulable,
+			GroupIDs:              req.GroupIDs,
+			Credentials:           req.Credentials,
+			Extra:                 req.Extra,
+			ProbeEnabled:          req.ProbeEnabled,
+			SkipMixedChannelCheck: skipCheck,
+		})
 	})
-	if err != nil {
-		if respondMixedChannelConflict(c, err) {
-			return
-		}
-		response.ErrorFrom(c, err)
+	if respondMixedChannelConflict(c, err) {
 		return
 	}
-
-	response.Success(c, result)
+	writeAdminIdempotentResult(c, "admin.accounts.bulk_update", result, err, idempotencyStoreUnavailableFailClose, nil)
 }
 
 func toServiceBulkUpdateAccountFilters(filters *BulkUpdateAccountFilters) *service.BulkUpdateAccountFilters {
@@ -2913,13 +2923,17 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 		return
 	}
 
-	account, err := h.adminService.SetAccountSchedulable(c.Request.Context(), accountID, req.Schedulable)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
+	payload := struct {
+		AccountID int64                 `json:"account_id"`
+		Body      SetSchedulableRequest `json:"body"`
+	}{AccountID: accountID, Body: req}
+	executeAdminOptionalWriteJSON(c, "admin.accounts.schedulable", payload, adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		account, err := h.adminService.SetAccountSchedulable(ctx, accountID, req.Schedulable)
+		if err != nil {
+			return nil, err
+		}
+		return h.buildAccountResponseWithRuntime(ctx, account), nil
+	})
 }
 
 // GetAvailableModels handles getting available models for an account

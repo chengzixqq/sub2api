@@ -119,6 +119,7 @@ func TestAdminMe_JWTAdmin(t *testing.T) {
 	require.Contains(t, server["capabilities"], "accounts.today_stats_failures")
 	require.Contains(t, server["capabilities"], "accounts.today_stats_group")
 	require.Contains(t, server["capabilities"], "accounts.mixed_channel_details")
+	require.Contains(t, server["capabilities"], "admin.idempotent_writes")
 	require.Contains(t, server["capabilities"], "scheduled_tests.upstream_status")
 	require.Contains(t, server["capabilities"], "dashboard.home")
 	require.Contains(t, server["capabilities"], "dashboard.rates")

@@ -307,25 +307,33 @@ func (h *UserHandler) Create(c *gin.Context) {
 		}
 	}
 
-	user, err := h.adminService.CreateUser(c.Request.Context(), &service.CreateUserInput{
-		Email:                req.Email,
-		Password:             req.Password,
-		Username:             req.Username,
-		Notes:                req.Notes,
-		Role:                 req.Role,
-		Balance:              req.Balance,
-		Concurrency:          req.Concurrency,
-		RPMLimit:             req.RPMLimit,
-		AllowedGroups:        req.AllowedGroups,
-		RestrictPublicGroups: req.RestrictPublicGroups,
-		ActorAdminID:         getAdminIDFromContext(c),
+	executeAdminOptionalWriteJSON(c, "admin.users.create", createUserIdempotencyPayload(req), adminWriteExecutionTimeout, func(ctx context.Context) (any, error) {
+		user, err := h.adminService.CreateUser(ctx, &service.CreateUserInput{
+			Email:                req.Email,
+			Password:             req.Password,
+			Username:             req.Username,
+			Notes:                req.Notes,
+			Role:                 req.Role,
+			Balance:              req.Balance,
+			Concurrency:          req.Concurrency,
+			RPMLimit:             req.RPMLimit,
+			AllowedGroups:        req.AllowedGroups,
+			RestrictPublicGroups: req.RestrictPublicGroups,
+			ActorAdminID:         getAdminIDFromContext(c),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return dto.UserFromServiceAdmin(user), nil
 	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
+}
 
-	response.Success(c, dto.UserFromServiceAdmin(user))
+// createUserIdempotencyPayload is the request fingerprinted for POST /admin/users: the request without the password,
+// so the stored fingerprint cannot help an offline password guess. A retry with the same key and another password
+// therefore replays the first creation.
+func createUserIdempotencyPayload(req CreateUserRequest) CreateUserRequest {
+	req.Password = ""
+	return req
 }
 
 // Update handles updating a user
@@ -397,16 +405,8 @@ func (h *UserHandler) Update(c *gin.Context) {
 		return dto.UserFromServiceAdmin(user), nil
 	}
 
-	if req.Concurrency != nil {
-		executeAdminOptionalIdempotentJSON(c, "admin.users.update", payload, service.DefaultWriteIdempotencyTTL(), execute)
-		return
-	}
-	data, err := execute(c.Request.Context())
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-	response.Success(c, data)
+	// Scope and payload predate G06 (they were used when concurrency changed), so stored records stay compatible.
+	executeAdminOptionalWriteJSON(c, "admin.users.update", payload, adminWriteExecutionTimeout, execute)
 }
 
 // Delete handles deleting a user
