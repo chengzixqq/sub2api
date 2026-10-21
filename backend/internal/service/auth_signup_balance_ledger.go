@@ -80,24 +80,17 @@ func (s *AuthService) recordSignupBalance(ctx context.Context, user *User) error
 }
 
 // grantFirstBindBalance adds the provider grant of a first third-party bind to an existing user inside the
-// transaction of client and records it (operation add, source default_balance, no operator). Without the ledger
-// dependencies, or for a non-positive amount, it adds the balance as before.
+// transaction of client and records it (operation add, source default_balance, no operator). The grant is credited
+// even when the balance is overdrawn and stays negative. Without the ledger dependencies, or for a non-positive
+// amount, it adds the balance as before.
 func (s *AuthService) grantFirstBindBalance(ctx context.Context, client *dbent.Client, userID int64, amount float64) error {
 	delta := decimal.NewFromFloat(amount).Round(8)
-	exactRepo, exact := s.userRepo.(ExactBalanceAdjustmentRepository)
-	if !delta.IsPositive() || !exact || !s.canRecordGrantedBalance() || dbent.TxFromContext(ctx) == nil {
+	if !delta.IsPositive() || !s.canRecordGrantedBalance() || dbent.TxFromContext(ctx) == nil {
 		return client.User.UpdateOneID(userID).AddBalance(amount).Exec(ctx)
 	}
-	change, err := exactRepo.AdjustBalanceExact(ctx, userID, delta.StringFixed(8))
+	before, after, err := creditBalanceExact(ctx, client, userID, delta)
 	if err != nil {
 		return err
-	}
-	before, after, applied, err := exactBalanceChange(change)
-	if err != nil {
-		return err
-	}
-	if !applied.IsPositive() {
-		return nil
 	}
 	email, name, err := adminAdjustmentUserSnapshot(ctx, client, userID)
 	if err != nil {
@@ -105,15 +98,14 @@ func (s *AuthService) grantFirstBindBalance(ctx context.Context, client *dbent.C
 	}
 	metadata := signupGrantMetadata(ctx)
 	metadata.Notes = adjustmentFirstBindGrantNotes
-	requested := delta.StringFixed(8)
+	deltaValue := delta.StringFixed(8)
 	beforeValue := before.StringFixed(8)
 	afterValue := after.StringFixed(8)
-	deltaValue := applied.StringFixed(8)
 	if err := writeAdjustmentRecords(ctx, client, s.redeemRepo, s.adjustmentRepo, []AdminUserAdjustmentWrite{{
 		ActionID:       metadata.ActionID,
 		Kind:           AdjustmentKindBalance,
 		Operation:      AdjustmentOperationAdd,
-		RequestedValue: &requested,
+		RequestedValue: &deltaValue,
 		Delta:          deltaValue,
 		BeforeValue:    &beforeValue,
 		AfterValue:     &afterValue,
@@ -125,4 +117,37 @@ func (s *AuthService) grantFirstBindBalance(ctx context.Context, client *dbent.C
 		return err
 	}
 	return accrueTotalRecharged(ctx, client, userID, deltaValue)
+}
+
+// creditBalanceExact adds a positive delta to the balance of userID in the transaction of client and returns the
+// balance before and after. Unlike AdjustBalanceExact (admin adjustments) it has no "result must not be negative"
+// guard: usage billing may overdraw a balance, and a grant to an overdrawn user is still credited, as AddBalance did.
+func creditBalanceExact(ctx context.Context, client *dbent.Client, userID int64, delta decimal.Decimal) (before, after decimal.Decimal, err error) {
+	rows, err := client.QueryContext(ctx,
+		`UPDATE users SET balance = balance + $1::numeric, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL RETURNING balance::text`,
+		delta.StringFixed(8), userID)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("credit balance: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return decimal.Zero, decimal.Zero, err
+		}
+		return decimal.Zero, decimal.Zero, ErrUserNotFound
+	}
+	var raw string
+	if err := rows.Scan(&raw); err != nil {
+		return decimal.Zero, decimal.Zero, err
+	}
+	after, err = decimal.NewFromString(raw)
+	if err != nil {
+		return decimal.Zero, decimal.Zero, fmt.Errorf("parse credited balance: %w", err)
+	}
+	// balance is DECIMAL(20,8) and delta has 8 decimals, so the addition is exact and before is recovered exactly.
+	return after.Sub(delta), after, rows.Err()
 }

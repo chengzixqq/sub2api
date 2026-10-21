@@ -536,6 +536,37 @@ func TestFirstBindDefaultBalanceWritesLedger(t *testing.T) {
 	require.Nil(t, rows[0].OperatorUserID)
 }
 
+// Usage billing may overdraw a balance. A first-bind grant to an overdrawn user is still credited (as AddBalance did
+// before E10) and recorded, even though the balance stays negative.
+func TestFirstBindGrantToOverdrawnUserStillApplies(t *testing.T) {
+	client := testEntClient(t)
+	adjustmentRepo := NewAdminUserAdjustmentRepository(client)
+	auth := newLedgerAuthService(client, NewRedeemCodeRepository(client), adjustmentRepo, ledgerSettingService(map[string]string{
+		service.SettingKeyAuthSourceDefaultLinuxDoBalance:          "2",
+		service.SettingKeyAuthSourceDefaultLinuxDoGrantOnFirstBind: "true",
+	}))
+	user := mustCreateUser(t, client, &service.User{Email: "e10-bind-overdrawn-" + uuid.NewString() + "@example.com", Balance: -5})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), `DELETE FROM user_provider_default_grants WHERE user_id = $1`, user.ID)
+	})
+
+	require.NoError(t, auth.ApplyProviderDefaultSettingsOnFirstBind(context.Background(), user.ID, "linuxdo"))
+
+	require.InDelta(t, -3, currentUserBalance(t, user.ID), 1e-9)
+	require.InDelta(t, 2, userTotalRecharged(t, user.ID), 1e-9)
+	rows := userAdjustments(t, adjustmentRepo, user.ID)
+	require.Len(t, rows, 1)
+	require.Equal(t, service.AdjustmentOperationAdd, rows[0].Operation)
+	require.Equal(t, "-5.00000000", adjustmentValueOrEmpty(rows[0].BeforeValue))
+	require.Equal(t, "-3.00000000", adjustmentValueOrEmpty(rows[0].AfterValue))
+	require.Equal(t, "2.00000000", rows[0].Delta)
+	require.Equal(t, "首次绑定赠送余额", adjustmentValueOrEmpty(rows[0].Notes))
+	var grants int
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM user_provider_default_grants WHERE user_id = $1 AND provider_type = 'linuxdo'`, user.ID).Scan(&grants))
+	require.Equal(t, 1, grants, "the grant is recorded once the credit commits")
+}
+
 func insertRawRedeemCode(t *testing.T, userID int64, codeType, value string, usedAt time.Time) int64 {
 	t.Helper()
 	var id int64
