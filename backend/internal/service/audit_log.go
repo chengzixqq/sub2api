@@ -162,11 +162,14 @@ var auditBodySensitiveExactKeys = func() map[string]struct{} {
 
 // auditBodySensitiveSubstrings 请求体脱敏的包含匹配子串（对归一化后的键名比对）。
 // 命中任一子串即整体擦除该键的值（例如 new_password / secret_access_key / temp_token）。
+// 验证码证明（aliyun_captcha_param、tencent_captcha_ticket / randstr）有效期内可重放，
+// 与 turnstile_token 一样擦除；只匹配证明字段，captcha_provider 与验证码配置项保留。
 var auditBodySensitiveSubstrings = []string{
 	"password", "passwd", "secret", "token",
 	"apikey", "accesskey", "privatekey",
 	"otp", "credentialvalue",
 	"sessionkey", "serviceaccount",
+	"captchaparam", "captchaticket", "captcharandstr",
 }
 
 func isAuditSensitiveBodyKey(key string) bool {

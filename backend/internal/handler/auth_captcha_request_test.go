@@ -225,3 +225,70 @@ func TestAuthSendVerifyCodeVerifiesAliyunCaptchaParam(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "REGISTRATION_DISABLED")
 }
+
+// Register and ForgotPassword must hand the native declaration and
+// aliyun_captcha_param to the verifier, the same as Login and SendVerifyCode.
+func TestAuthRegisterAndForgotPasswordHonorNativeCaptchaDeclaration(t *testing.T) {
+	entries := []struct {
+		name string
+		path string
+		body string
+		call func(*AuthHandler, *gin.Context)
+		// passedStatus / passedReason: what the test site answers once the
+		// captcha has passed (registration closed, frontend_url not configured).
+		passedStatus int
+		passedReason string
+	}{
+		{
+			name:         "注册",
+			path:         "/api/v1/auth/register",
+			body:         `"email":"user@example.com","password":"secret-123"`,
+			call:         (*AuthHandler).Register,
+			passedStatus: http.StatusForbidden,
+			passedReason: "REGISTRATION_DISABLED",
+		},
+		{
+			name:         "忘记密码",
+			path:         "/api/v1/auth/forgot-password",
+			body:         `"email":"user@example.com"`,
+			call:         (*AuthHandler).ForgotPassword,
+			passedStatus: http.StatusInternalServerError,
+			passedReason: "",
+		},
+	}
+
+	for _, entry := range entries {
+		t.Run(entry.name+"/只带aliyun_captcha_param", func(t *testing.T) {
+			handler, spy := newAliyunProtectedAuthHandler(t)
+			c, recorder := newAuthJSONContext(entry.path,
+				`{`+entry.body+`,"captcha_provider":"aliyun","aliyun_captcha_param":"param-value"}`)
+
+			entry.call(handler, c)
+
+			require.Equal(t, 1, spy.calls)
+			require.Equal(t, "param-value", spy.lastParam)
+			require.Equal(t, entry.passedStatus, recorder.Code, recorder.Body.String())
+			if entry.passedReason != "" {
+				require.Contains(t, recorder.Body.String(), entry.passedReason)
+			}
+		})
+
+		t.Run(entry.name+"/声明不一致", func(t *testing.T) {
+			handler, spy := newAliyunProtectedAuthHandler(t)
+			c, recorder := newAuthJSONContext(entry.path,
+				`{`+entry.body+`,"captcha_provider":"turnstile","aliyun_captcha_param":"param-value"}`)
+
+			entry.call(handler, c)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			var resp struct {
+				Reason   string            `json:"reason"`
+				Metadata map[string]string `json:"metadata"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+			require.Equal(t, "CAPTCHA_PROVIDER_MISMATCH", resp.Reason)
+			require.Equal(t, "aliyun", resp.Metadata["captcha_provider"])
+			require.Zero(t, spy.calls)
+		})
+	}
+}

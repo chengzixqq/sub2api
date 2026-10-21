@@ -119,6 +119,60 @@ func TestRedactAuditBody_AuthoritativeTablesSynced(t *testing.T) {
 	}
 }
 
+// 登录、注册等 auth 接口的请求体整体入审计：验证码证明（阿里云 aliyun_captcha_param、
+// 腾讯 ticket / randstr）在有效期内可被重放，必须和 turnstile_token 一样擦除；
+// captcha_provider 只是提供方名称，保留以便追责。
+func TestRedactAuditBody_CaptchaProofsRedacted(t *testing.T) {
+	raw := []byte(`{
+		"email": "user@example.com",
+		"captcha_provider": "aliyun",
+		"aliyun_captcha_param": "aliyun-param-aaa",
+		"turnstile_token": "turnstile-bbb",
+		"tencent_captcha_ticket": "tencent-ticket-ccc",
+		"tencent_captcha_randstr": "tencent-randstr-ddd",
+		"aliyunCaptchaParam": "aliyun-camel-eee"
+	}`)
+	out := RedactAuditBody(raw, "application/json")
+
+	for _, secret := range []string{
+		"aliyun-param-aaa", "turnstile-bbb", "tencent-ticket-ccc", "tencent-randstr-ddd", "aliyun-camel-eee",
+	} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("redacted body still contains captcha proof %q: %s", secret, out)
+		}
+	}
+	if !strings.Contains(out, `"captcha_provider":"aliyun"`) {
+		t.Fatalf("captcha_provider should be preserved for accountability: %s", out)
+	}
+	if !strings.Contains(out, "user@example.com") {
+		t.Fatalf("email should be preserved: %s", out)
+	}
+}
+
+// 验证码配置项（开关、场景、区域、AppID）不是凭证，管理端改设置时保留以便追责；
+// 其中的 AccessKey / Secret 仍由既有规则擦除。
+func TestRedactAuditBody_CaptchaSettingsKeepNonSecretFields(t *testing.T) {
+	raw := []byte(`{
+		"aliyun_captcha_enabled": true,
+		"aliyun_captcha_scene_id": "scene-visible",
+		"aliyun_captcha_access_key_secret": "ak-secret-fff",
+		"tencent_captcha_app_id": "app-visible",
+		"tencent_captcha_app_secret_key": "tc-secret-ggg"
+	}`)
+	out := RedactAuditBody(raw, "application/json")
+
+	for _, secret := range []string{"ak-secret-fff", "tc-secret-ggg"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("redacted body still contains secret %q: %s", secret, out)
+		}
+	}
+	for _, visible := range []string{"scene-visible", "app-visible", `"aliyun_captcha_enabled":true`} {
+		if !strings.Contains(out, visible) {
+			t.Fatalf("non-secret captcha setting %q should be preserved: %s", visible, out)
+		}
+	}
+}
+
 // SensitiveCredentialKeys 中的每个键都必须被审计脱敏判定命中（防两表漂移的守卫）。
 func TestAuditSensitiveKeys_CoverCredentialTable(t *testing.T) {
 	for _, k := range SensitiveCredentialKeys {
