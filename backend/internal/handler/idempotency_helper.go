@@ -14,6 +14,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// executeUserIdempotentJSON runs a user write with an optional Idempotency-Key: a request without a key runs directly
+// even when idempotency.observe_only is off (the Web creates API keys without one), a keyed request replays, conflicts
+// and fails closed on store outages exactly like the admin optional helpers.
 func executeUserIdempotentJSON(
 	c *gin.Context,
 	scope string,
@@ -44,7 +47,7 @@ func executeUserIdempotentJSON(
 		Route:          c.FullPath(),
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
 		Payload:        payload,
-		RequireKey:     true,
+		RequireKey:     false,
 		TTL:            ttl,
 	}, execute)
 	if err != nil {

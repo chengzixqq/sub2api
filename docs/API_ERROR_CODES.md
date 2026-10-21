@@ -99,6 +99,8 @@
 
 带 key 的请求一经受理，客户端断开也会执行完并保存结果（受上表时限约束，到时未完成的部分按失败处理），之后用同一个 key 重发即可拿回结果；不带 key 的请求仍跟随客户端连接，没有额外时限。`POST /api/v1/admin/users` 的指纹不含 `password`：同一个 key 只改密码重发，得到的是首次创建的重放。业务错误（如混合渠道 409、`GROUP_EXISTS`）不会被重放，原样返回，5 秒退避后可用同一个 key 重试。老服务端会忽略这个头，没有 `admin.idempotent_writes` 时超时后不要自动重发，改为读回核对。
 
+用户端 `POST /api/v1/keys`（新建 API Key，scope `user.api_keys.create`）同样接受可选的 key：不带 key 时照常执行（Web 不带），关闭 `idempotency.observe_only` 后也不会返回 `IDEMPOTENCY_KEY_REQUIRED`；带 key 时重放、冲突与存储不可用的处理同上，没有执行上限。
+
 ## 首页聚合各段的 error
 
 `GET /api/v1/admin/dashboard/home` 只要鉴权与参数通过就返回 HTTP 200，每段各自带 `status`（ok / disabled / error / timeout）；不是 ok 时 `error` 为下列值之一，该段没有 `data`：

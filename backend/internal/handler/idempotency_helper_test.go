@@ -283,3 +283,52 @@ func TestExecuteUserIdempotentJSONConcurrentRetrySingleSideEffectAndReplay(t *te
 	require.Equal(t, "true", headers3.Get("X-Idempotency-Replayed"))
 	require.Equal(t, int32(1), executed.Load())
 }
+
+// The Web creates API keys (POST /api/v1/keys) without an Idempotency-Key, so the user helper must keep keyless
+// requests running once an operator switches idempotency.observe_only off, while keyed callers still replay.
+func TestExecuteUserIdempotentJSON_RunsWithoutKeyWhenKeysAreEnforced(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := service.DefaultIdempotencyConfig()
+	cfg.ObserveOnly = false
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(newUserMemoryIdempotencyRepoStub(), cfg))
+	t.Cleanup(func() {
+		service.SetDefaultIdempotencyCoordinator(nil)
+	})
+
+	var executed atomic.Int32
+	router := gin.New()
+	router.Use(withUserSubject(4))
+	router.POST("/idempotent", func(c *gin.Context) {
+		executeUserIdempotentJSON(c, "user.test.scope", map[string]any{"a": 1}, time.Minute, func(ctx context.Context) (any, error) {
+			executed.Add(1)
+			return gin.H{"ok": true}, nil
+		})
+	})
+
+	call := func(key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/idempotent", bytes.NewBufferString(`{"a":1}`))
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set("Idempotency-Key", key)
+		}
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for i := 0; i < 2; i++ {
+		rec := call("")
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.NotContains(t, rec.Body.String(), "IDEMPOTENCY_KEY_REQUIRED")
+		require.Empty(t, rec.Header().Get("X-Idempotency-Replayed"))
+	}
+	require.Equal(t, int32(2), executed.Load(), "keyless callers run every time")
+
+	first := call("user-enforced-key")
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+	require.Empty(t, first.Header().Get("X-Idempotency-Replayed"))
+	second := call("user-enforced-key")
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	require.Equal(t, "true", second.Header().Get("X-Idempotency-Replayed"))
+	require.Equal(t, int32(3), executed.Load(), "a keyed retry replays instead of running again")
+}
