@@ -174,6 +174,8 @@ type AdminService interface {
 	ListRedeemCodeBatch(ctx context.Context, batchID uuid.UUID) ([]RedeemCode, error)
 	DeleteRedeemCode(ctx context.Context, id int64) error
 	BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (*RedeemCodeBatchDeleteResult, error)
+	// GetRedeemCodeStats counts the codes ListRedeemCodes would return for filter, by status and type (status ignored).
+	GetRedeemCodeStats(ctx context.Context, filter RedeemCodeListFilter) (*RedeemCodeStats, error)
 	ExpireRedeemCode(ctx context.Context, id int64) (*RedeemCode, error)
 	ResetAccountQuota(ctx context.Context, id int64) error
 }

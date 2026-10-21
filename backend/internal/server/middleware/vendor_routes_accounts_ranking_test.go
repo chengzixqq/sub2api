@@ -94,6 +94,15 @@ func TestVendorRoutesDenyGroupStats(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyRedeemCodeStats: redeem codes are the station owner's
+// money records; their counts stay owner-only like the rest of redeem-codes.
+func TestVendorRoutesDenyRedeemCodeStats(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	if vendorRouteAllowed(newFullPathContext("GET", "/api/v1/admin/redeem-codes/stats"), scope) {
+		t.Fatal("vendor must not read redeem code stats")
+	}
+}
+
 // TestVendorRoutesDenyUserPlatformQuotaItem: per-platform quotas are end-user
 // limits and usage (Q19); like the whole-table routes they stay owner-only.
 func TestVendorRoutesDenyUserPlatformQuotaItem(t *testing.T) {

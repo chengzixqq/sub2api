@@ -86,7 +86,7 @@ func resolveRedeemCodeExpiresAt(expiresAt *time.Time, expiresInDays *int) (*time
 	return &expires, nil
 }
 
-// parseRedeemCodeListFilter reads type / types / exclude_types / status / search, shared by the list and export.
+// parseRedeemCodeListFilter reads type / types / exclude_types / status / search, shared by the list, export and stats.
 // type and types are mutually exclusive; types and exclude_types accept comma-separated known types only.
 func parseRedeemCodeListFilter(c *gin.Context) (service.RedeemCodeListFilter, error) {
 	filter := service.RedeemCodeListFilter{Type: c.Query("type"), Status: c.Query("status")}
@@ -471,22 +471,24 @@ func (h *RedeemHandler) Expire(c *gin.Context) {
 	response.Success(c, dto.RedeemCodeFromServiceAdmin(code))
 }
 
-// GetStats handles getting redeem code statistics
+// GetStats counts redeem codes by status and type
 // GET /api/v1/admin/redeem-codes/stats
+// It takes the list's filters with the same parsing and 400 reasons, except status, which is ignored: the counts are
+// the status breakdown, so filtering by one status would zero the others.
 func (h *RedeemHandler) GetStats(c *gin.Context) {
-	// Return mock data for now
-	response.Success(c, gin.H{
-		"total_codes":             0,
-		"active_codes":            0,
-		"used_codes":              0,
-		"expired_codes":           0,
-		"total_value_distributed": 0.0,
-		"by_type": gin.H{
-			"balance":     0,
-			"concurrency": 0,
-			"trial":       0,
-		},
-	})
+	filter, err := parseRedeemCodeListFilter(c)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	filter.Status = ""
+
+	stats, err := h.adminService.GetRedeemCodeStats(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.RedeemCodeStatsFromServiceAdmin(stats))
 }
 
 // Export handles exporting redeem codes to CSV

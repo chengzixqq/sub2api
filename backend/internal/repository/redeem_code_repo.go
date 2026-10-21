@@ -235,65 +235,72 @@ func (r *redeemCodeRepository) List(ctx context.Context, params pagination.Pagin
 	return r.ListWithFilters(ctx, params, service.RedeemCodeListFilter{})
 }
 
-func (r *redeemCodeRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filter service.RedeemCodeListFilter) ([]service.RedeemCode, *pagination.PaginationResult, error) {
-	q := r.client.RedeemCode.Query()
-
+// redeemCodeFilterPredicates turns every list filter except status (see redeemCodeStatusPredicate) into conditions, so
+// the list, export and stats select the same codes.
+func redeemCodeFilterPredicates(filter service.RedeemCodeListFilter) []predicate.RedeemCode {
+	var preds []predicate.RedeemCode
 	if filter.Type != "" {
-		q = q.Where(redeemcode.TypeEQ(filter.Type))
+		preds = append(preds, redeemcode.TypeEQ(filter.Type))
 	}
 	if len(filter.Types) > 0 {
-		q = q.Where(redeemcode.TypeIn(filter.Types...))
+		preds = append(preds, redeemcode.TypeIn(filter.Types...))
 	}
 	if len(filter.ExcludeTypes) > 0 {
-		q = q.Where(redeemcode.TypeNotIn(filter.ExcludeTypes...))
+		preds = append(preds, redeemcode.TypeNotIn(filter.ExcludeTypes...))
 	}
 	if filter.BatchID != nil {
-		q = q.Where(redeemcode.BatchIDEQ(*filter.BatchID))
+		preds = append(preds, redeemcode.BatchIDEQ(*filter.BatchID))
 	}
 	if filter.CreatedBy != nil {
-		q = q.Where(redeemcode.CreatedByEQ(*filter.CreatedBy))
+		preds = append(preds, redeemcode.CreatedByEQ(*filter.CreatedBy))
 	}
 	if filter.CreatedFrom != nil {
-		q = q.Where(redeemcode.CreatedAtGTE(*filter.CreatedFrom))
+		preds = append(preds, redeemcode.CreatedAtGTE(*filter.CreatedFrom))
 	}
 	if filter.CreatedTo != nil {
-		q = q.Where(redeemcode.CreatedAtLT(*filter.CreatedTo))
+		preds = append(preds, redeemcode.CreatedAtLT(*filter.CreatedTo))
 	}
 	if filter.Notes != "" {
-		q = q.Where(redeemcode.NotesContainsFold(filter.Notes))
+		preds = append(preds, redeemcode.NotesContainsFold(filter.Notes))
 	}
-	status, search := filter.Status, filter.Search
-	if status != "" {
-		now := time.Now()
-		switch status {
-		case service.StatusExpired:
-			q = q.Where(redeemcode.Or(
-				redeemcode.StatusEQ(service.StatusExpired),
-				redeemcode.And(
-					redeemcode.StatusEQ(service.StatusUnused),
-					redeemcode.ExpiresAtNotNil(),
-					redeemcode.ExpiresAtLTE(now),
-				),
-			))
-		case service.StatusUnused:
-			q = q.Where(
-				redeemcode.StatusEQ(service.StatusUnused),
-				redeemcode.Or(
-					redeemcode.ExpiresAtIsNil(),
-					redeemcode.ExpiresAtGT(now),
-				),
-			)
-		default:
-			q = q.Where(redeemcode.StatusEQ(status))
-		}
+	if filter.Search != "" {
+		preds = append(preds, redeemcode.Or(
+			redeemcode.CodeContainsFold(filter.Search),
+			redeemcode.HasUserWith(user.EmailContainsFold(filter.Search)),
+		))
 	}
-	if search != "" {
-		q = q.Where(
-			redeemcode.Or(
-				redeemcode.CodeContainsFold(search),
-				redeemcode.HasUserWith(user.EmailContainsFold(search)),
-			),
+	return preds
+}
+
+// redeemCodeLapsed matches unused codes whose expires_at has passed: the list shows them as expired, not unused.
+func redeemCodeLapsed(now time.Time) predicate.RedeemCode {
+	return redeemcode.And(
+		redeemcode.StatusEQ(service.StatusUnused),
+		redeemcode.ExpiresAtNotNil(),
+		redeemcode.ExpiresAtLTE(now),
+	)
+}
+
+// redeemCodeStatusPredicate matches a status as the list shows it: expired includes lapsed unused codes, unused
+// excludes them, any other status matches the column.
+func redeemCodeStatusPredicate(status string, now time.Time) predicate.RedeemCode {
+	switch status {
+	case service.StatusExpired:
+		return redeemcode.Or(redeemcode.StatusEQ(service.StatusExpired), redeemCodeLapsed(now))
+	case service.StatusUnused:
+		return redeemcode.And(
+			redeemcode.StatusEQ(service.StatusUnused),
+			redeemcode.Or(redeemcode.ExpiresAtIsNil(), redeemcode.ExpiresAtGT(now)),
 		)
+	default:
+		return redeemcode.StatusEQ(status)
+	}
+}
+
+func (r *redeemCodeRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filter service.RedeemCodeListFilter) ([]service.RedeemCode, *pagination.PaginationResult, error) {
+	q := r.client.RedeemCode.Query().Where(redeemCodeFilterPredicates(filter)...)
+	if filter.Status != "" {
+		q = q.Where(redeemCodeStatusPredicate(filter.Status, time.Now()))
 	}
 
 	total, err := q.Count(ctx)

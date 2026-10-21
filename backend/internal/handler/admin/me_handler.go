@@ -63,6 +63,7 @@ var adminMeCapabilities = []string{
 	"ops.token_stats_custom_range",
 	"proxies.fallback_accounts",
 	"redeem_codes.delete_guard",
+	"redeem_codes.stats",
 	"scheduled_tests.upstream_status",
 	"usage.model_source",
 	"users.platform_quota_item",

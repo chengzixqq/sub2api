@@ -113,7 +113,12 @@ type stubAdminService struct {
 	redeemDeleteErr         error
 	redeemBatchDeleteResult *service.RedeemCodeBatchDeleteResult
 	redeemBatchDeleteErr    error
-	mu                      sync.Mutex
+	// redeem stats: nil redeemStats returns zero counts.
+	redeemStats           *service.RedeemCodeStats
+	redeemStatsErr        error
+	lastRedeemStatsFilter service.RedeemCodeListFilter
+	redeemStatsCalls      int
+	mu                    sync.Mutex
 }
 
 func newStubAdminService() *stubAdminService {
@@ -835,6 +840,18 @@ func (s *stubAdminService) BatchDeleteRedeemCodes(ctx context.Context, ids []int
 		return s.redeemBatchDeleteResult, nil
 	}
 	return &service.RedeemCodeBatchDeleteResult{Deleted: int64(len(ids)), SkippedIDs: []int64{}}, nil
+}
+
+func (s *stubAdminService) GetRedeemCodeStats(ctx context.Context, filter service.RedeemCodeListFilter) (*service.RedeemCodeStats, error) {
+	s.lastRedeemStatsFilter = filter
+	s.redeemStatsCalls++
+	if s.redeemStatsErr != nil {
+		return nil, s.redeemStatsErr
+	}
+	if s.redeemStats != nil {
+		return s.redeemStats, nil
+	}
+	return &service.RedeemCodeStats{}, nil
 }
 
 func (s *stubAdminService) ExpireRedeemCode(ctx context.Context, id int64) (*service.RedeemCode, error) {
