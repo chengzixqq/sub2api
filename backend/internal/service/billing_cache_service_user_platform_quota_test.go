@@ -93,6 +93,18 @@ func (f *fakeQuotaRepo) BatchSnapshotUsage(_ context.Context, _ []UserPlatformQu
 	return nil
 }
 
+func (f *fakeQuotaRepo) UpsertOneForUser(_ context.Context, _ int64, _ UserPlatformQuotaRecord) (*UserPlatformQuotaRecord, *UserPlatformQuotaRecord, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeQuotaRepo) SoftDeleteOne(_ context.Context, _ int64, _ string) (*UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeQuotaRepo) RestoreLatestDeleted(_ context.Context, _ int64, _ string) (*UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
 // fakeFullCache 同时支持 Get + Set + Incr + Delete + Pop/Readd/BatchGet（脏集读写）。
 // mu 保护 entry 和 deleteCalls，防止异步 goroutine 与主 goroutine 之间的 data race。
 type fakeFullCache struct {

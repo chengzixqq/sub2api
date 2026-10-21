@@ -119,6 +119,18 @@ func (s *userPlatformQuotaRepoStub) BatchSnapshotUsage(_ context.Context, _ []Us
 	return nil
 }
 
+func (s *userPlatformQuotaRepoStub) UpsertOneForUser(context.Context, int64, UserPlatformQuotaRecord) (*UserPlatformQuotaRecord, *UserPlatformQuotaRecord, error) {
+	panic("unexpected UpsertOneForUser call")
+}
+
+func (s *userPlatformQuotaRepoStub) SoftDeleteOne(context.Context, int64, string) (*UserPlatformQuotaRecord, error) {
+	panic("unexpected SoftDeleteOne call")
+}
+
+func (s *userPlatformQuotaRepoStub) RestoreLatestDeleted(context.Context, int64, string) (*UserPlatformQuotaRecord, error) {
+	panic("unexpected RestoreLatestDeleted call")
+}
+
 func (s *defaultSubscriptionAssignerStub) AssignOrExtendSubscription(_ context.Context, input *AssignSubscriptionInput) (*UserSubscription, bool, error) {
 	if input != nil {
 		s.calls = append(s.calls, *input)

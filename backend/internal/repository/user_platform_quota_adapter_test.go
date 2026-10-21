@@ -5,8 +5,13 @@ package repository
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeRepoForAdapter struct {
@@ -15,6 +20,34 @@ type fakeRepoForAdapter struct {
 	upsertErr          error
 	resetCalledWith    [4]any // userID, platform, window, newStart
 	resetErr           error
+
+	// 单平台方法
+	oneUserID     int64
+	oneRecord     UserPlatformQuotaRecord
+	onePlatform   string
+	oneCurrent    *UserPlatformQuotaRecord
+	onePrevious   *UserPlatformQuotaRecord
+	oneErr        error
+	deletePrev    *UserPlatformQuotaRecord
+	deleteErr     error
+	restoreRecord *UserPlatformQuotaRecord
+	restoreErr    error
+}
+
+func (f *fakeRepoForAdapter) UpsertOneForUser(_ context.Context, userID int64, rec UserPlatformQuotaRecord) (*UserPlatformQuotaRecord, *UserPlatformQuotaRecord, error) {
+	f.oneUserID = userID
+	f.oneRecord = rec
+	return f.oneCurrent, f.onePrevious, f.oneErr
+}
+func (f *fakeRepoForAdapter) SoftDeleteOne(_ context.Context, userID int64, platform string) (*UserPlatformQuotaRecord, error) {
+	f.oneUserID = userID
+	f.onePlatform = platform
+	return f.deletePrev, f.deleteErr
+}
+func (f *fakeRepoForAdapter) RestoreLatestDeleted(_ context.Context, userID int64, platform string) (*UserPlatformQuotaRecord, error) {
+	f.oneUserID = userID
+	f.onePlatform = platform
+	return f.restoreRecord, f.restoreErr
 }
 
 func (f *fakeRepoForAdapter) BulkInsertInitial(_ context.Context, _ []UserPlatformQuotaRecord) error {
@@ -80,6 +113,67 @@ func TestGenericAdapter_ResetExpiredWindow_ForwardsAllParams(t *testing.T) {
 		!fake.resetCalledWith[3].(time.Time).Equal(now) {
 		t.Errorf("forwarded params mismatch: %+v", fake.resetCalledWith)
 	}
+}
+
+func TestGenericAdapter_SingleQuotaMethodsWrapSentinels(t *testing.T) {
+	ctx := context.Background()
+	daily := 20.0
+	oldDaily := 10.0
+	start := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	fake := &fakeRepoForAdapter{
+		oneCurrent:  &UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: &daily, DailyUsageUSD: 1.5, DailyWindowStart: &start},
+		onePrevious: &UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: &oldDaily, DailyUsageUSD: 1.5},
+	}
+	adapter := NewUserPlatformQuotaServiceAdapter(fake)
+
+	current, previous, err := adapter.UpsertOneForUser(ctx, 42, service.UserPlatformQuotaRecord{Platform: "anthropic", DailyLimitUSD: &daily})
+	require.NoError(t, err)
+	require.Equal(t, int64(42), fake.oneUserID)
+	require.Equal(t, int64(42), fake.oneRecord.UserID, "the adapter stamps the user id on the record")
+	require.Equal(t, "anthropic", fake.oneRecord.Platform)
+	require.Same(t, &daily, fake.oneRecord.DailyLimitUSD)
+	require.Nil(t, fake.oneRecord.WeeklyLimitUSD)
+	require.Equal(t, service.UserPlatformQuotaRecord{UserID: 42, Platform: "anthropic", DailyLimitUSD: &daily, DailyUsageUSD: 1.5, DailyWindowStart: &start}, *current)
+	require.Equal(t, 10.0, *previous.DailyLimitUSD)
+
+	fake.oneCurrent, fake.onePrevious = nil, nil
+	current, previous, err = adapter.UpsertOneForUser(ctx, 42, service.UserPlatformQuotaRecord{Platform: "anthropic"})
+	require.NoError(t, err)
+	require.Nil(t, current, "nil records stay nil")
+	require.Nil(t, previous)
+
+	fake.deleteErr = ErrUserPlatformQuotaNotFound
+	_, err = adapter.SoftDeleteOne(ctx, 7, "zhipu")
+	require.ErrorIs(t, err, service.ErrUserPlatformQuotaNotFound)
+	require.ErrorIs(t, err, ErrUserPlatformQuotaNotFound)
+	require.Equal(t, "USER_PLATFORM_QUOTA_NOT_FOUND", infraerrors.Reason(err))
+	require.Equal(t, http.StatusNotFound, infraerrors.Code(err))
+	require.Equal(t, "zhipu", fake.onePlatform)
+
+	fake.restoreErr = ErrUserPlatformQuotaActiveExists
+	_, err = adapter.RestoreLatestDeleted(ctx, 7, "zhipu")
+	require.ErrorIs(t, err, service.ErrUserPlatformQuotaActiveExists)
+	require.Equal(t, "USER_PLATFORM_QUOTA_ACTIVE_EXISTS", infraerrors.Reason(err))
+	require.Equal(t, http.StatusConflict, infraerrors.Code(err))
+
+	fake.restoreErr = ErrUserPlatformQuotaNotFound
+	_, err = adapter.RestoreLatestDeleted(ctx, 7, "zhipu")
+	require.ErrorIs(t, err, service.ErrUserPlatformQuotaNotFound)
+
+	other := errors.New("db down")
+	fake.oneErr = other
+	_, _, err = adapter.UpsertOneForUser(ctx, 7, service.UserPlatformQuotaRecord{Platform: "zhipu", DailyLimitUSD: &daily})
+	require.ErrorIs(t, err, other)
+	require.NotErrorIs(t, err, service.ErrUserPlatformQuotaNotFound)
+
+	fake.deleteErr, fake.deletePrev = nil, &UserPlatformQuotaRecord{UserID: 7, Platform: "zhipu", DailyLimitUSD: &oldDaily}
+	prev, err := adapter.SoftDeleteOne(ctx, 7, "zhipu")
+	require.NoError(t, err)
+	require.Equal(t, 10.0, *prev.DailyLimitUSD)
+	fake.restoreErr, fake.restoreRecord = nil, &UserPlatformQuotaRecord{UserID: 7, Platform: "zhipu", DailyUsageUSD: 3}
+	restored, err := adapter.RestoreLatestDeleted(ctx, 7, "zhipu")
+	require.NoError(t, err)
+	require.Equal(t, 3.0, restored.DailyUsageUSD)
 }
 
 func TestGenericAdapter_ResetExpiredWindow_PropagatesError(t *testing.T) {

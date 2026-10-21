@@ -94,6 +94,25 @@ func TestVendorRoutesDenyGroupStats(t *testing.T) {
 	}
 }
 
+// TestVendorRoutesDenyUserPlatformQuotaItem: per-platform quotas are end-user
+// limits and usage (Q19); like the whole-table routes they stay owner-only.
+func TestVendorRoutesDenyUserPlatformQuotaItem(t *testing.T) {
+	scope := VendorScope{WorkspaceID: 7, Perms: allPermsOn()}
+	denied := []struct{ method, path string }{
+		{"PUT", "/api/v1/admin/users/:id/platform-quotas/:platform"},
+		{"DELETE", "/api/v1/admin/users/:id/platform-quotas/:platform"},
+		{"POST", "/api/v1/admin/users/:id/platform-quotas/:platform/restore"},
+		{"GET", "/api/v1/admin/users/:id/platform-quotas"},
+		{"PUT", "/api/v1/admin/users/:id/platform-quotas"},
+		{"POST", "/api/v1/admin/users/:id/platform-quotas/reset"},
+	}
+	for _, route := range denied {
+		if vendorRouteAllowed(newFullPathContext(route.method, route.path), scope) {
+			t.Errorf("vendor must not reach %s %s", route.method, route.path)
+		}
+	}
+}
+
 // TestVendorRoutesProxyFallbackRevertNeedsAccountManage: restoring rewrites
 // account proxy_id, so ProxyManage alone is not enough.
 func TestVendorRoutesProxyFallbackRevertNeedsAccountManage(t *testing.T) {

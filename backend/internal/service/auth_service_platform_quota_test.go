@@ -53,6 +53,18 @@ func (f *fakeInsertRecorder) BatchSnapshotUsage(_ context.Context, _ []UserPlatf
 	return nil
 }
 
+func (f *fakeInsertRecorder) UpsertOneForUser(_ context.Context, _ int64, _ UserPlatformQuotaRecord) (*UserPlatformQuotaRecord, *UserPlatformQuotaRecord, error) {
+	return nil, nil, nil
+}
+
+func (f *fakeInsertRecorder) SoftDeleteOne(_ context.Context, _ int64, _ string) (*UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeInsertRecorder) RestoreLatestDeleted(_ context.Context, _ int64, _ string) (*UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
 // TestSnapshotPlatformQuotaDefaults_PassesToRepoBulkInsert 锁定不变式：只有至少配置了一档限额的
 // 平台才建行；三档全空（含 nil 条目）的平台不进入 BulkInsertInitial。
 func TestSnapshotPlatformQuotaDefaults_PassesToRepoBulkInsert(t *testing.T) {

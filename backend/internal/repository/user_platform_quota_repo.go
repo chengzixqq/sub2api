@@ -38,6 +38,9 @@ func (r UserPlatformQuotaRecord) HasAnyLimit() bool {
 // ErrUserPlatformQuotaNotFound 用于 ResetExpiredWindow 等需要"必须命中已有记录"的方法。
 var ErrUserPlatformQuotaNotFound = fmt.Errorf("user platform quota record not found")
 
+// ErrUserPlatformQuotaActiveExists 表示该平台已有活跃行，RestoreLatestDeleted 不能再恢复软删的行。
+var ErrUserPlatformQuotaActiveExists = errors.New("user platform quota already active")
+
 // ErrUserPlatformQuotaFKViolation 表示批量快照写入命中了 user_id 不在 users 表的记录。
 var ErrUserPlatformQuotaFKViolation = errors.New("user platform quota snapshot FK violation")
 
@@ -68,6 +71,13 @@ type UserPlatformQuotaRepository interface {
 	ResetExpiredWindow(ctx context.Context, userID int64, platform string, window string, newStart time.Time) error
 	// UpsertForUser 全量替换该用户所有平台限额配置；三档全空的记录视为未配置（详见实现注释）。
 	UpsertForUser(ctx context.Context, userID int64, records []UserPlatformQuotaRecord) error
+	// UpsertOneForUser 只替换 rec.Platform 一个平台的三档限额（三档全空 = 软删该平台），返回写入后与写入前的活跃行。
+	UpsertOneForUser(ctx context.Context, userID int64, rec UserPlatformQuotaRecord) (current, previous *UserPlatformQuotaRecord, err error)
+	// SoftDeleteOne 软删一个平台的活跃行，返回删除前的记录；没有活跃行返回 ErrUserPlatformQuotaNotFound。
+	SoftDeleteOne(ctx context.Context, userID int64, platform string) (previous *UserPlatformQuotaRecord, err error)
+	// RestoreLatestDeleted 恢复该平台最近一次软删的行；已有活跃行返回 ErrUserPlatformQuotaActiveExists，
+	// 没有可恢复的行返回 ErrUserPlatformQuotaNotFound。
+	RestoreLatestDeleted(ctx context.Context, userID int64, platform string) (*UserPlatformQuotaRecord, error)
 	// BatchSnapshotUsage 把整批 usage 以绝对值覆盖写入既有活跃行(非累加)；行不存在或已软删的 (user,platform) 跳过。
 	// usage/window_start 直接取 Redis 当前窗口快照。整批共用 now 作 updated_at。要求 snapshots 内 (user,platform) 不重复。
 	BatchSnapshotUsage(ctx context.Context, snapshots []UserPlatformQuotaSnapshot, now time.Time) error

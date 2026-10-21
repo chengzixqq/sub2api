@@ -64,6 +64,7 @@ var adminMeCapabilities = []string{
 	"proxies.fallback_accounts",
 	"scheduled_tests.upstream_status",
 	"usage.model_source",
+	"users.platform_quota_item",
 	"users.quick_topup",
 }
 

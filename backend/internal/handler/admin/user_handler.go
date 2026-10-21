@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -901,32 +900,9 @@ func (h *UserHandler) UpdateUserPlatformQuotas(c *gin.Context) {
 			return
 		}
 		seen[q.Platform] = struct{}{}
-		// daily_limit_usd / weekly_limit_usd / monthly_limit_usd 的语义：
-		//   nil / not set → 无限额（完全放行）
-		//   0            → 完全禁用（任何请求都会被拒绝，因为 usage >= 0 恒成立）
-		//   > 0          → USD 限额上限
-		// 拦截 NaN / ±Inf：客户端可发送超大数（如 1e308 × 2）使 JSON 反序列化得到 +Inf，
-		// 进入 DB 后 cache check 中 usage >= limit 永不成立，limit 等同失效。
-		for _, f := range []struct {
-			name string
-			val  *float64
-		}{
-			{"daily_limit_usd", q.DailyLimitUSD},
-			{"weekly_limit_usd", q.WeeklyLimitUSD},
-			{"monthly_limit_usd", q.MonthlyLimitUSD},
-		} {
-			if f.val == nil {
-				continue
-			}
-			v := *f.val
-			if v < 0 {
-				response.BadRequest(c, f.name+" must be >= 0")
-				return
-			}
-			if math.IsNaN(v) || math.IsInf(v, 0) {
-				response.BadRequest(c, f.name+" must be a finite number")
-				return
-			}
+		if msg := validateQuotaLimitFields(q.DailyLimitUSD, q.WeeklyLimitUSD, q.MonthlyLimitUSD); msg != "" {
+			response.BadRequest(c, msg)
+			return
 		}
 	}
 
@@ -1086,10 +1062,7 @@ func (h *UserHandler) ResetUserPlatformQuotaWindow(c *gin.Context) {
 	}
 	now := time.Now().UTC()
 	if err := h.userPlatformQuotaRepo.ResetExpiredWindow(ctx, userID, req.Platform, req.Window, now); err != nil {
-		if errors.Is(err, service.ErrUserPlatformQuotaNotFound) {
-			response.NotFound(c, "user platform quota not found")
-			return
-		}
+		// ErrUserPlatformQuotaNotFound 是带 reason 的 404（message 不变），统一走 ErrorFrom。
 		response.ErrorFrom(c, err)
 		return
 	}

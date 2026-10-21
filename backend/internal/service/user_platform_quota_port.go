@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
-// ErrUserPlatformQuotaNotFound service 层 sentinel：quota 记录不存在。
+// ErrUserPlatformQuotaNotFound service 层 sentinel：quota 记录不存在（404，稳定 reason）。
 // adapter 将 repository.ErrUserPlatformQuotaNotFound 包装为此错误，
 // handler 只需引用 service 包，无需直接依赖 repository 包。
-var ErrUserPlatformQuotaNotFound = errors.New("user platform quota not found")
+var ErrUserPlatformQuotaNotFound = infraerrors.NotFound("USER_PLATFORM_QUOTA_NOT_FOUND", "user platform quota not found")
+
+// ErrUserPlatformQuotaActiveExists service 层 sentinel：该平台已有活跃限额，不能再恢复软删的行（409，稳定 reason）。
+// adapter 将 repository.ErrUserPlatformQuotaActiveExists 包装为此错误。
+var ErrUserPlatformQuotaActiveExists = infraerrors.Conflict("USER_PLATFORM_QUOTA_ACTIVE_EXISTS", "platform quota already active")
 
 // ErrUserPlatformQuotaFKViolation service 层 sentinel：批量快照写入命中了 user_id 不在 users 表的记录。
 // adapter 负责将 repository 层同名 sentinel 包装为此错误。
@@ -68,6 +74,16 @@ type UserPlatformQuotaRepository interface {
 	// 清空某平台的限额即软删该行并放弃其累计用量；之后再次配置限额会新建行、从新窗口起算。
 	// records 为空时仅执行步骤 1。
 	UpsertForUser(ctx context.Context, userID int64, records []UserPlatformQuotaRecord) error
+	// UpsertOneForUser 只替换一个平台（rec.Platform）的三档限额，其他平台不动（事务内）：
+	//   - rec 至少配置一档：UPDATE 活跃行（保留 usage / window_start），没有活跃行时 INSERT 新行（用量从 0 起算）；
+	//   - rec 三档全空：软删该平台活跃行（没有则什么也不做），current 为 nil。
+	// 返回写入后的 current 与写入前的活跃行 previous（没有则为 nil，带当时的用量）。
+	UpsertOneForUser(ctx context.Context, userID int64, rec UserPlatformQuotaRecord) (current, previous *UserPlatformQuotaRecord, err error)
+	// SoftDeleteOne 软删一个平台的活跃行并返回删除前的记录；没有活跃行时返回 ErrUserPlatformQuotaNotFound。
+	SoftDeleteOne(ctx context.Context, userID int64, platform string) (previous *UserPlatformQuotaRecord, err error)
+	// RestoreLatestDeleted 把该平台最近一次软删的行恢复为活跃（限额、用量、窗口起点原样保留）并返回它。
+	// 已有活跃行返回 ErrUserPlatformQuotaActiveExists；没有可恢复的行返回 ErrUserPlatformQuotaNotFound。
+	RestoreLatestDeleted(ctx context.Context, userID int64, platform string) (*UserPlatformQuotaRecord, error)
 	// ResetExpiredWindow 重置指定窗口（"daily"|"weekly"|"monthly"）的用量与起始时间。
 	// 未命中活跃记录时返回（service-side wrapper of repository.ErrUserPlatformQuotaNotFound）。
 	ResetExpiredWindow(ctx context.Context, userID int64, platform string, window string, newStart time.Time) error
