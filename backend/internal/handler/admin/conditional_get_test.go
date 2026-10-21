@@ -82,7 +82,7 @@ func TestAdminGroupList_ETag304(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			svc := newStubAdminService()
 			r := gin.New()
-			r.GET("/groups", NewGroupHandlerWithConfig(svc, nil, nil, cfg).List)
+			r.GET("/groups", NewGroupHandlerWithConfig(svc, nil, nil, nil, cfg).List)
 
 			first := conditionalGet(r, "/groups", "")
 			require.Equal(t, http.StatusOK, first.Code, first.Body.String())

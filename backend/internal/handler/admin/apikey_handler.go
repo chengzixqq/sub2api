@@ -21,8 +21,9 @@ type adminAPIKeyCreator interface {
 
 // AdminAPIKeyHandler handles admin API key management
 type AdminAPIKeyHandler struct {
-	adminService service.AdminService
-	creator      adminAPIKeyCreator
+	adminService       service.AdminService
+	creator            adminAPIKeyCreator
+	concurrencyService *service.ConcurrencyService // GET :id 回填 current_concurrency
 }
 
 // NewAdminAPIKeyHandler creates a new admin API key handler
@@ -31,6 +32,14 @@ func NewAdminAPIKeyHandler(adminService service.AdminService, apiKeyService *ser
 	if apiKeyService != nil {
 		h.creator = apiKeyService
 	}
+	return h
+}
+
+// ProvideAdminAPIKeyHandler is the wire provider: NewAdminAPIKeyHandler plus the
+// concurrency service GET /admin/api-keys/:id reads current_concurrency from.
+func ProvideAdminAPIKeyHandler(adminService service.AdminService, apiKeyService *service.APIKeyService, concurrencyService *service.ConcurrencyService) *AdminAPIKeyHandler {
+	h := NewAdminAPIKeyHandler(adminService, apiKeyService)
+	h.concurrencyService = concurrencyService
 	return h
 }
 
@@ -187,6 +196,9 @@ func (h *AdminAPIKeyHandler) Get(c *gin.Context) {
 		return
 	}
 	out := dto.APIKeyFromService(key)
+	if out != nil {
+		out.CurrentConcurrency = apiKeyConcurrencyCounts(c.Request.Context(), h.concurrencyService, []service.APIKey{*key})[key.ID]
+	}
 	if masked {
 		out.HideFullKey()
 	}

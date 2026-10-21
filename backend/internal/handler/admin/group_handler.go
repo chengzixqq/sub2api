@@ -27,6 +27,7 @@ type GroupHandler struct {
 	adminService         service.AdminService
 	dashboardService     *service.DashboardService
 	groupCapacityService *service.GroupCapacityService
+	concurrencyService   *service.ConcurrencyService // GET :id/api-keys 回填 current_concurrency
 	cfg                  *config.Config
 }
 
@@ -101,14 +102,15 @@ func (f optionalLimitField) MarshalJSON() ([]byte, error) {
 
 // NewGroupHandler creates a new admin group handler
 func NewGroupHandler(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService) *GroupHandler {
-	return NewGroupHandlerWithConfig(adminService, dashboardService, groupCapacityService, nil)
+	return NewGroupHandlerWithConfig(adminService, dashboardService, groupCapacityService, nil, nil)
 }
 
-func NewGroupHandlerWithConfig(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService, cfg *config.Config) *GroupHandler {
+func NewGroupHandlerWithConfig(adminService service.AdminService, dashboardService *service.DashboardService, groupCapacityService *service.GroupCapacityService, concurrencyService *service.ConcurrencyService, cfg *config.Config) *GroupHandler {
 	return &GroupHandler{
 		adminService:         adminService,
 		dashboardService:     dashboardService,
 		groupCapacityService: groupCapacityService,
+		concurrencyService:   concurrencyService,
 		cfg:                  cfg,
 	}
 }
@@ -1082,9 +1084,11 @@ func (h *GroupHandler) GetGroupAPIKeys(c *gin.Context) {
 		return
 	}
 
+	counts := apiKeyConcurrencyCounts(c.Request.Context(), h.concurrencyService, keys)
 	outKeys := make([]dto.APIKey, 0, len(keys))
 	for i := range keys {
 		item := dto.APIKeyFromService(&keys[i])
+		item.CurrentConcurrency = counts[keys[i].ID]
 		if masked {
 			item.HideFullKey()
 		}

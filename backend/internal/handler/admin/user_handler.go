@@ -509,9 +509,11 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 		return
 	}
 
+	counts := apiKeyConcurrencyCounts(c.Request.Context(), h.concurrencyService, keys)
 	out := make([]dto.APIKey, 0, len(keys))
 	for i := range keys {
 		item := dto.APIKeyFromService(&keys[i])
+		item.CurrentConcurrency = counts[keys[i].ID]
 		if masked {
 			item.HideFullKey()
 		}

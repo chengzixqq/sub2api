@@ -14,7 +14,7 @@ import (
 )
 
 func newSimpleModeGroupRouter(svc *stubAdminService) *gin.Engine {
-	h := NewGroupHandlerWithConfig(svc, nil, nil, &config.Config{RunMode: config.RunModeSimple})
+	h := NewGroupHandlerWithConfig(svc, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple})
 	r := gin.New()
 	r.GET("/groups", h.List)
 	r.GET("/groups/all", h.GetAll)
