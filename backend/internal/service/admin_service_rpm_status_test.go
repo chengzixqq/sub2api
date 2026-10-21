@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -34,18 +35,26 @@ func (s *rpmStatusAPIKeyRepoStub) ListByUserID(_ context.Context, _ int64, _ pag
 type rpmStatusGroupRepoStub struct {
 	GroupRepository
 	groups map[int64]*Group
+	errs   map[int64]error
 }
 
 func (s *rpmStatusGroupRepoStub) GetByIDLite(_ context.Context, id int64) (*Group, error) {
+	if err := s.errs[id]; err != nil {
+		return nil, err
+	}
 	return s.groups[id], nil
 }
 
 type rpmStatusRateRepoStub struct {
 	UserGroupRateRepository
 	overrides map[int64]*int
+	errs      map[int64]error
 }
 
 func (s *rpmStatusRateRepoStub) GetRPMOverrideByUserAndGroup(_ context.Context, _, groupID int64) (*int, error) {
+	if err := s.errs[groupID]; err != nil {
+		return nil, err
+	}
 	return s.overrides[groupID], nil
 }
 
@@ -203,6 +212,34 @@ func TestAdminService_GetUserRPMStatus_TrackedMatchesCheckRPMCounting(t *testing
 			}
 		}
 	}
+}
+
+// TestAdminService_GetUserRPMStatus_MetadataReadFailureDegrades 锁定读库失败时的降级口径
+// （注释里写给 App 的约定）：接口照常返回、used 照常给出；分组读取失败且没有 override 时
+// source 为空、limit=0、tracked=false；分组读取失败但 override 读到时仍以 override 为准；
+// override 读取失败时回退到分组 rpm_limit（与 checkRPM 读库失败时的回退一致）。
+func TestAdminService_GetUserRPMStatus_MetadataReadFailureDegrades(t *testing.T) {
+	dbDown := errors.New("db down")
+	groups := map[int64]*Group{
+		1: {ID: 1, Name: "a", RPMLimit: 10},
+		2: {ID: 2, Name: "b", RPMLimit: 10},
+		3: {ID: 3, Name: "c", RPMLimit: 10},
+	}
+	svc := newRPMStatusServiceForTest(&User{ID: 42, RPMLimit: 0}, groups, nil, &config.Config{})
+	svc.groupRepo = &rpmStatusGroupRepoStub{groups: groups, errs: map[int64]error{1: dbDown, 2: dbDown}}
+	svc.userGroupRateRepo = &rpmStatusRateRepoStub{
+		overrides: map[int64]*int{2: intPtr(5), 3: intPtr(0)},
+		errs:      map[int64]error{3: dbDown},
+	}
+	svc.userRPMCache = &rpmStatusCacheStub{groupUsed: map[int64]int{1: 4, 2: 2, 3: 1}}
+
+	status, err := svc.GetUserRPMStatus(context.Background(), 42)
+	require.NoError(t, err)
+	require.Equal(t, []UserGroupRPMStatus{
+		{GroupID: 1, Used: 4, Limit: 0, Source: "", Tracked: false},
+		{GroupID: 2, Used: 2, Limit: 5, Source: "override", Tracked: true},
+		{GroupID: 3, GroupName: "c", Used: 1, Limit: 10, Source: "group", Tracked: true},
+	}, status.PerGroup)
 }
 
 func TestUserRPMStatus_JSONIncludesTrackedFalse(t *testing.T) {

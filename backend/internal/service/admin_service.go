@@ -573,10 +573,16 @@ type UserGroupRPMStatus struct {
 	GroupName string `json:"group_name"`
 	Used      int    `json:"used"`
 	Limit     int    `json:"limit"`
-	Source    string `json:"source"` // "group" | "override"
+	// Source "group" | "override"；为空表示分组读取失败（或分组已删除）且没有读到 override，
+	// 此时 limit=0、tracked=false 都只是降级值，不代表分组真的不限额、不计数。
+	Source string `json:"source"`
 	// Tracked 表示网关是否累加该 (用户, 分组) 的分钟计数，与 checkRPM 同口径：
 	// rpm_override>0，或没有 override 且分组 rpm_limit>0，并且不是简易模式。
 	// override=0（免检）不计数。false 时 used 不反映本分钟实际请求数（通常为 0）。
+	// tracked 与 limit / source 来自同一次读库：读分组或 override 失败时接口仍正常返回
+	// （只记日志），三者都是尽力而为。分组读取失败见 Source；override 读取失败时回退到
+	// 分组 rpm_limit（同 checkRPM 读库失败时的回退），但网关若已从 auth cache 快照拿到
+	// override 会以快照为准，此时 tracked 可能与实际计数相反。
 	Tracked bool `json:"tracked"`
 }
 
