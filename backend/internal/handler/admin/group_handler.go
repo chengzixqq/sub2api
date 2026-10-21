@@ -1007,14 +1007,32 @@ func (h *GroupHandler) GetUsageSummary(c *gin.Context) {
 
 // GetCapacitySummary returns aggregated capacity (concurrency/sessions/RPM) for all active groups.
 // GET /api/v1/admin/groups/capacity-summary
+//
+// 可选 group_id（可重复）/ group_ids（逗号分隔，可重复）只返回这些分组的行（并集），
+// 顺序与全量一致；停用分组略去，非法值 400，不存在 404 GROUP_NOT_FOUND，
+// vendor 未授权 404 RESOURCE_NOT_FOUND。不带参数时与原来完全一致。
 func (h *GroupHandler) GetCapacitySummary(c *gin.Context) {
 	if h.rejectUnsupportedSimpleModeOperation(c, "advanced") {
 		return
 	}
-	results, err := h.groupCapacityService.GetAllGroupCapacity(c.Request.Context())
+	groupIDs, err := parseCapacityGroupIDs(c)
 	if err != nil {
-		response.Error(c, 500, "Failed to get group capacity summary")
+		response.ErrorFrom(c, err)
 		return
+	}
+	var results []service.GroupCapacitySummary
+	if groupIDs == nil {
+		results, err = h.groupCapacityService.GetAllGroupCapacity(c.Request.Context())
+		if err != nil {
+			response.Error(c, 500, "Failed to get group capacity summary")
+			return
+		}
+	} else {
+		results, err = h.capacityForRequestedGroups(c.Request.Context(), groupIDs)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 
 	// 同 usage-summary：容量含并发/会话/RPM，是别家供应商的运营数据。

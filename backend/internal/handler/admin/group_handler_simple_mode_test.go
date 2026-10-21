@@ -294,6 +294,7 @@ func TestGroupHandlerSimpleModeBlocksAdvancedOperations(t *testing.T) {
 		{http.MethodGet, "/groups/live-capability", ""},
 		{http.MethodGet, "/groups/usage-summary", ""},
 		{http.MethodGet, "/groups/capacity-summary", ""},
+		{http.MethodGet, "/groups/capacity-summary?group_id=abc", ""},
 		{http.MethodPut, "/groups/sort-order", `{"updates":[{"id":1,"sort_order":1}]}`},
 	}
 

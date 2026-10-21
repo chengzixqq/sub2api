@@ -72,7 +72,12 @@ func (s *GroupCapacityService) GetAllGroupCapacity(ctx context.Context) ([]Group
 	if err != nil {
 		return nil, err
 	}
+	return s.capacitiesForGroups(ctx, groupIDs)
+}
 
+// capacitiesForGroups 计算给定（均已启用）分组的容量，行顺序与 groupIDs 一致。
+// 全量与按 ID 过滤共用这一段，保证两条路径的口径、vendor 收窄与降级行为完全相同。
+func (s *GroupCapacityService) capacitiesForGroups(ctx context.Context, groupIDs []int64) ([]GroupCapacitySummary, error) {
 	if lister, ok := s.accountRepo.(groupCapacityAccountLister); ok {
 		return s.getGroupCapacitiesBatch(ctx, groupIDs, lister)
 	}

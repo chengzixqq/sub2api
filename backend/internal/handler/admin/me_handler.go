@@ -46,6 +46,7 @@ var adminMeCapabilities = []string{
 	"dashboard.users_ranking_sort",
 	"dashboard.users_trend_filtered_metric",
 	"groups.account_buckets",
+	"groups.capacity_filter",
 	"groups.member_batch",
 	"lists.etag",
 	"logs.since_id",

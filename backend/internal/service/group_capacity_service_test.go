@@ -10,13 +10,32 @@ import (
 
 type groupCapacityAccountRepoStub struct {
 	AccountRepository
-	rows      []GroupAccountCapacityRow
-	requested []int64
+	rows              []GroupAccountCapacityRow
+	requested         []int64
+	unscopedCalls     int
+	scopedCalls       int
+	scopedWorkspaceID int64
 }
 
 func (s *groupCapacityAccountRepoStub) ListSchedulableCapacityByGroupIDs(_ context.Context, groupIDs []int64) ([]GroupAccountCapacityRow, error) {
+	s.unscopedCalls++
+	return s.listRows(groupIDs), nil
+}
+
+// listRows 记录请求的分组并只返回这些分组的行，与真实 SQL 的 group_id = ANY 一致。
+func (s *groupCapacityAccountRepoStub) listRows(groupIDs []int64) []GroupAccountCapacityRow {
 	s.requested = append([]int64(nil), groupIDs...)
-	return append([]GroupAccountCapacityRow(nil), s.rows...), nil
+	wanted := make(map[int64]struct{}, len(groupIDs))
+	for _, id := range groupIDs {
+		wanted[id] = struct{}{}
+	}
+	out := make([]GroupAccountCapacityRow, 0, len(s.rows))
+	for _, row := range s.rows {
+		if _, ok := wanted[row.GroupID]; ok {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 // ListSchedulableCapacityByGroupIDsScoped 是按工作区收窄的容量取数。
@@ -29,23 +48,44 @@ func (s *groupCapacityAccountRepoStub) ListSchedulableCapacityByGroupIDs(_ conte
 // 这里必须同步跟上 —— 崩溃栈会指向 ListSchedulableByGroupID，
 // 与真正的缺失方法相隔甚远，很难顺着栈找回这里。
 func (s *groupCapacityAccountRepoStub) ListSchedulableCapacityByGroupIDsScoped(
-	ctx context.Context,
+	_ context.Context,
 	groupIDs []int64,
-	_ int64,
+	workspaceID int64,
 ) ([]GroupAccountCapacityRow, error) {
-	// 本测试断言的是聚合逻辑，不涉及工作区收窄，委托给不收窄的版本。
-	return s.ListSchedulableCapacityByGroupIDs(ctx, groupIDs)
+	// 聚合用例不涉及工作区收窄，返回与不收窄版本相同的行；
+	// 只记录调用次数与工作区，供 vendor 用例断言走的是收窄路径。
+	s.scopedCalls++
+	s.scopedWorkspaceID = workspaceID
+	return s.listRows(groupIDs), nil
+}
+
+// groupCapacityPlainAccountRepoStub 不实现 groupCapacityAccountLister，用来走降级的逐组路径。
+type groupCapacityPlainAccountRepoStub struct {
+	AccountRepository
 }
 
 type groupCapacityGroupRepoStub struct {
 	GroupRepository
-	groupIDs  []int64
-	listCalls int
+	groupIDs    []int64
+	listCalls   int
+	existing    map[int64]bool
+	existsCalls int
 }
 
 func (s *groupCapacityGroupRepoStub) ListActiveIDs(context.Context) ([]int64, error) {
 	s.listCalls++
 	return append([]int64(nil), s.groupIDs...), nil
+}
+
+// ExistsByIDs 必须实现：GroupCapacityService 靠 groupExistenceBatchReader 的类型断言选中它，
+// 否则会落到嵌入的 nil GroupRepository.GetByIDLite 上空指针崩溃。
+func (s *groupCapacityGroupRepoStub) ExistsByIDs(_ context.Context, ids []int64) (map[int64]bool, error) {
+	s.existsCalls++
+	out := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		out[id] = s.existing[id]
+	}
+	return out, nil
 }
 
 type groupCapacityConcurrencyCacheStub struct {
