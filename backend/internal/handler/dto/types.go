@@ -60,7 +60,7 @@ type APIKey struct {
 	KeyMasked   string     `json:"key_masked"` // 前 3 位 + "…" + 后 4 位；已删除的墓碑 Key 为空
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
-	Status      string     `json:"status"`
+	Status      string     `json:"status"` // active | inactive | quota_exhausted | expired; old rows may hold the legacy disabled (= inactive)
 	IPWhitelist []string   `json:"ip_whitelist"`
 	IPBlacklist []string   `json:"ip_blacklist"`
 	LastUsedAt  *time.Time `json:"last_used_at"`
@@ -70,6 +70,10 @@ type APIKey struct {
 	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	// EffectiveStatus is derived when the response is built, in the gateway auth order: one of active / inactive /
+	// quota_exhausted / expired. A key past its expiry or out of quota can still have status active; this field says
+	// expired / quota_exhausted. It reflects the key alone (not the user, group, IP rules or balance).
+	EffectiveStatus string `json:"effective_status"`
 	// CurrentConcurrency is the real-time active request count for this API key.
 	CurrentConcurrency int `json:"current_concurrency"`
 

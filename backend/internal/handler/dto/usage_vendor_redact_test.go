@@ -92,3 +92,22 @@ func TestRedactAdminUsageLogForVendor_NilSafe(t *testing.T) {
 
 func ptrInt64(v int64) *int64       { return &v }
 func ptrFloat64(v float64) *float64 { return &v }
+
+// effective_status reveals whether a key's quota is used up, so vendors do not get it (Q19), just like status.
+func TestRedactAdminUsageLogForVendor_DropsKeyEffectiveStatus(t *testing.T) {
+	t.Parallel()
+
+	log := UsageLogFromServiceAdmin(&service.UsageLog{
+		ID:     6,
+		APIKey: &service.APIKey{ID: 9, UserID: 7, Key: "sk-secret-plaintext", Name: "脚本", Status: service.StatusActive, Quota: 10, QuotaUsed: 10},
+	})
+	require.Equal(t, service.StatusAPIKeyQuotaExhausted, log.APIKey.EffectiveStatus)
+
+	RedactAdminUsageLogForVendor(log)
+
+	require.Empty(t, log.APIKey.EffectiveStatus)
+	require.Empty(t, log.APIKey.Status)
+	raw, err := json.Marshal(log)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), service.StatusAPIKeyQuotaExhausted)
+}

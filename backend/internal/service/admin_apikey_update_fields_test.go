@@ -101,3 +101,22 @@ func TestAdminUpdateAPIKeyFields_VendorScopeIsRefused(t *testing.T) {
 	_, err := svc.AdminUpdateAPIKeyFields(vendor, 1, AdminUpdateAPIKeyInput{Status: aksStr(StatusAPIKeyInactive)})
 	require.ErrorIs(t, err, domain.ErrWorkspaceScopeViolation)
 }
+
+// The legacy "disabled" value is accepted and stored as "inactive"; the caller's string is left alone.
+func TestAdminUpdateAPIKeyFields_DisabledIsWrittenAsInactive(t *testing.T) {
+	repo := &apiKeyRepoStub{apiKey: &APIKey{ID: 4087, UserID: 1, Key: "sk-live", Name: "脚本", Status: StatusActive}}
+	cache := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{apiKeyRepo: repo, authCacheInvalidator: cache}
+	sent := StatusAPIKeyDisabled
+	in := AdminUpdateAPIKeyInput{Status: &sent}
+
+	res, err := svc.AdminUpdateAPIKeyFields(adminCtx(), 4087, in)
+	require.NoError(t, err)
+	require.Equal(t, StatusAPIKeyInactive, res.APIKey.Status)
+	require.Len(t, repo.updatedKeys, 1)
+	require.Equal(t, StatusAPIKeyInactive, repo.updatedKeys[0].Status, "disabled is never written")
+	require.Equal(t, map[string]any{"status": StatusActive}, res.Previous)
+	require.Equal(t, []string{"sk-live"}, cache.keys)
+	require.Equal(t, StatusAPIKeyDisabled, sent, "the caller's value is not mutated")
+	require.Equal(t, StatusAPIKeyDisabled, *in.Status)
+}

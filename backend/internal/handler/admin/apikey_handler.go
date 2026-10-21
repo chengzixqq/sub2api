@@ -133,7 +133,7 @@ type AdminUpdateAPIKeyGroupRequest struct {
 	RevokeGroupAccessID *int64 `json:"revoke_group_access_id"`
 
 	Name        *string   `json:"name"`
-	Status      *string   `json:"status"` // active | inactive
+	Status      *string   `json:"status"` // active | inactive; the legacy disabled is stored as inactive
 	Quota       *float64  `json:"quota"`  // USD, 0 = unlimited
 	ResetQuota  *bool     `json:"reset_quota"`
 	ExpiresAt   *string   `json:"expires_at"` // RFC3339; "" clears the expiry

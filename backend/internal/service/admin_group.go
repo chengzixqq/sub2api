@@ -1669,7 +1669,7 @@ func (s *adminServiceImpl) AdminResetAPIKeyRateLimitUsage(ctx context.Context, k
 // AdminUpdateAPIKeyInput holds the key fields an admin can change besides the group (nil = unchanged).
 type AdminUpdateAPIKeyInput struct {
 	Name   *string
-	Status *string // active | inactive
+	Status *string // active | inactive (the legacy disabled is stored as inactive)
 	Quota  *float64
 	// ResetQuota zeroes quota_used.
 	ResetQuota      bool
@@ -1698,8 +1698,13 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyFields(ctx context.Context, keyID in
 	if in.Name != nil && strings.TrimSpace(*in.Name) == "" {
 		return nil, infraerrors.BadRequest("API_KEY_NAME_REQUIRED", "API key name must not be empty")
 	}
+	if in.Status != nil && *in.Status == StatusAPIKeyDisabled {
+		// in is a copy: point at a fresh value so the caller's string stays as sent.
+		inactive := StatusAPIKeyInactive
+		in.Status = &inactive
+	}
 	if in.Status != nil && *in.Status != StatusAPIKeyActive && *in.Status != StatusAPIKeyInactive {
-		return nil, infraerrors.BadRequest("INVALID_API_KEY_STATUS", "status must be active or inactive")
+		return nil, infraerrors.BadRequest("INVALID_API_KEY_STATUS", "status must be active or inactive (disabled is treated as inactive)")
 	}
 	for _, limit := range []*float64{in.Quota, in.RateLimit5h, in.RateLimit1d, in.RateLimit7d} {
 		if limit != nil {

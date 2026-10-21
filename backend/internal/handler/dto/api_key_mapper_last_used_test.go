@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -59,4 +60,24 @@ func TestMaskAPIKey(t *testing.T) {
 	out.HideFullKey()
 	require.Empty(t, out.Key)
 	require.Equal(t, "sk-…3f9a", out.KeyMasked)
+}
+
+func TestAPIKeyFromService_EffectiveStatus(t *testing.T) {
+	past := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+
+	out := APIKeyFromService(&service.APIKey{ID: 1, Status: service.StatusAPIKeyInactive})
+	require.Equal(t, service.StatusAPIKeyInactive, out.EffectiveStatus)
+
+	out = APIKeyFromService(&service.APIKey{ID: 2, Status: service.StatusAPIKeyDisabled})
+	require.Equal(t, service.StatusAPIKeyDisabled, out.Status, "the stored value is passed through unchanged")
+	require.Equal(t, service.StatusAPIKeyInactive, out.EffectiveStatus)
+
+	out = APIKeyFromService(&service.APIKey{ID: 3, Status: service.StatusActive, ExpiresAt: &past})
+	require.Equal(t, service.StatusActive, out.Status)
+	require.Equal(t, service.StatusAPIKeyExpired, out.EffectiveStatus)
+
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"status":"active"`)
+	require.Contains(t, string(raw), `"effective_status":"expired"`)
 }

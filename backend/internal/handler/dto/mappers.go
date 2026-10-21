@@ -89,6 +89,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Name:               k.Name,
 		GroupID:            k.GroupID,
 		Status:             k.Status,
+		EffectiveStatus:    k.EffectiveStatus(),
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
 		LastUsedAt:         k.LastUsedAt,

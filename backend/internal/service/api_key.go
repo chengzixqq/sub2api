@@ -6,12 +6,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 )
 
-// API Key status constants
+// API Key status constants. The status enum is fixed to active / inactive / quota_exhausted / expired.
 const (
 	StatusAPIKeyActive = "active"
 	// StatusAPIKeyInactive is what the user and admin edit paths write to disable a key (the gateway rejects any
 	// status other than active, expired and quota_exhausted).
-	StatusAPIKeyInactive       = "inactive"
+	StatusAPIKeyInactive = "inactive"
+	// StatusAPIKeyDisabled is a legacy value: production code never writes it, and it reads the same as inactive
+	// (the gateway rejects it, EffectiveStatus reports inactive, the admin edit path stores inactive when sent it).
 	StatusAPIKeyDisabled       = "disabled"
 	StatusAPIKeyQuotaExhausted = "quota_exhausted"
 	StatusAPIKeyExpired        = "expired"
@@ -82,6 +84,34 @@ func (k *APIKey) IsExpired() bool {
 		return false
 	}
 	return time.Now().After(*k.ExpiresAt)
+}
+
+// EffectiveStatus is the key's own state as the gateway sees it right now; see EffectiveStatusAt.
+func (k *APIKey) EffectiveStatus() string {
+	return k.EffectiveStatusAt(time.Now())
+}
+
+// EffectiveStatusAt derives one of active / inactive / quota_exhausted / expired in the gateway auth order
+// (middleware/api_key_auth.go): any stored status other than active, quota_exhausted and expired (inactive, the
+// legacy disabled, unknown values) is inactive; then the stored quota_exhausted / expired; then a passed expiry;
+// then a used-up quota. So a key that is both past its expiry and out of quota reads expired, as auth rejects it.
+//
+// Only the key itself counts: a disabled user or group, IP rules and the user's balance are not reflected.
+func (k *APIKey) EffectiveStatusAt(now time.Time) string {
+	switch k.Status {
+	case StatusAPIKeyActive:
+	case StatusAPIKeyQuotaExhausted, StatusAPIKeyExpired:
+		return k.Status
+	default:
+		return StatusAPIKeyInactive
+	}
+	if k.ExpiresAt != nil && now.After(*k.ExpiresAt) {
+		return StatusAPIKeyExpired
+	}
+	if k.IsQuotaExhausted() {
+		return StatusAPIKeyQuotaExhausted
+	}
+	return StatusAPIKeyActive
 }
 
 // IsQuotaExhausted checks if the API key quota is exhausted

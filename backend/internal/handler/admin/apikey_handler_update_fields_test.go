@@ -73,3 +73,15 @@ func TestAdminAPIKeyHandler_Update_GroupOnlyKeepsLegacyResponse(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), `"previous"`)
 	require.Contains(t, rec.Body.String(), `"group_id":3`)
 }
+
+// The PUT response carries the derived status next to the stored one.
+func TestAdminAPIKeyHandler_Update_ResponseHasEffectiveStatus(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+	stub := newStubAdminService()
+	stub.apiKeys = []service.APIKey{{ID: 4087, Name: "脚本", Status: "active", ExpiresAt: &past}}
+
+	rec := putAPIKey(t, stub, `{"name":"x"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"status":"active"`)
+	require.Contains(t, rec.Body.String(), `"effective_status":"expired"`)
+}
