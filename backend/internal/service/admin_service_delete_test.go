@@ -5,9 +5,11 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
@@ -443,6 +445,12 @@ type redeemRepoStub struct {
 	deleteErrByID map[int64]error
 	deletedIDs    []int64
 
+	// guarded deletes: DeleteUnlessUsed reuses deleteErrByID; BatchDeleteUnlessUsed skips protectedIDs.
+	guardedDeletedIDs []int64
+	protectedIDs      map[int64]bool
+	batchDeleteIDs    []int64
+	batchDeleteErr    error
+
 	batchUpdateIDs    []int64
 	batchUpdateFields RedeemCodeBatchUpdateFields
 	batchUpdateResult int64
@@ -491,6 +499,32 @@ func (s *redeemRepoStub) Delete(ctx context.Context, id int64) error {
 		}
 	}
 	return nil
+}
+
+func (s *redeemRepoStub) DeleteUnlessUsed(ctx context.Context, id int64) error {
+	s.guardedDeletedIDs = append(s.guardedDeletedIDs, id)
+	if err, ok := s.deleteErrByID[id]; ok {
+		return err
+	}
+	return nil
+}
+
+// BatchDeleteUnlessUsed returns a nil skipped slice when nothing is protected, like a careless repository might.
+func (s *redeemRepoStub) BatchDeleteUnlessUsed(ctx context.Context, ids []int64) (int64, []int64, error) {
+	s.batchDeleteIDs = append([]int64(nil), ids...)
+	if s.batchDeleteErr != nil {
+		return 0, nil, s.batchDeleteErr
+	}
+	var deleted int64
+	var skipped []int64
+	for _, id := range ids {
+		if s.protectedIDs[id] {
+			skipped = append(skipped, id)
+			continue
+		}
+		deleted++
+	}
+	return deleted, skipped, nil
 }
 
 func (s *redeemRepoStub) Use(ctx context.Context, id, userID int64) error {
@@ -790,22 +824,33 @@ func TestAdminService_DeleteProxy_Error(t *testing.T) {
 	require.ErrorIs(t, err, deleteErr)
 }
 
-func TestAdminService_DeleteRedeemCode_Success(t *testing.T) {
+func TestAdminService_DeleteRedeemCode_UsesGuardedDelete(t *testing.T) {
 	repo := &redeemRepoStub{}
 	svc := &adminServiceImpl{redeemCodeRepo: repo}
 
 	err := svc.DeleteRedeemCode(context.Background(), 10)
 	require.NoError(t, err)
-	require.Equal(t, []int64{10}, repo.deletedIDs)
+	require.Equal(t, []int64{10}, repo.guardedDeletedIDs)
+	require.Empty(t, repo.deletedIDs, "the unguarded Delete must not be used")
 }
 
-func TestAdminService_DeleteRedeemCode_Idempotent(t *testing.T) {
-	repo := &redeemRepoStub{}
+func TestAdminService_DeleteRedeemCode_UsedReturnsConflict(t *testing.T) {
+	repo := &redeemRepoStub{deleteErrByID: map[int64]error{7: ErrRedeemCodeDeleteUsed}}
+	svc := &adminServiceImpl{redeemCodeRepo: repo}
+
+	err := svc.DeleteRedeemCode(context.Background(), 7)
+	require.ErrorIs(t, err, ErrRedeemCodeUsed)
+	require.Equal(t, http.StatusConflict, infraerrors.Code(err))
+	require.Equal(t, "used redeem codes cannot be deleted", infraerrors.Message(err))
+}
+
+func TestAdminService_DeleteRedeemCode_NotFound(t *testing.T) {
+	repo := &redeemRepoStub{deleteErrByID: map[int64]error{999: ErrRedeemCodeNotFound}}
 	svc := &adminServiceImpl{redeemCodeRepo: repo}
 
 	err := svc.DeleteRedeemCode(context.Background(), 999)
-	require.NoError(t, err)
-	require.Equal(t, []int64{999}, repo.deletedIDs)
+	require.ErrorIs(t, err, ErrRedeemCodeNotFound)
+	require.Equal(t, http.StatusNotFound, infraerrors.Code(err))
 }
 
 func TestAdminService_DeleteRedeemCode_Error(t *testing.T) {
@@ -815,29 +860,38 @@ func TestAdminService_DeleteRedeemCode_Error(t *testing.T) {
 
 	err := svc.DeleteRedeemCode(context.Background(), 1)
 	require.ErrorIs(t, err, deleteErr)
-	require.Equal(t, []int64{1}, repo.deletedIDs)
+	require.Equal(t, []int64{1}, repo.guardedDeletedIDs)
 }
 
-func TestAdminService_BatchDeleteRedeemCodes_Success(t *testing.T) {
+func TestAdminService_BatchDeleteRedeemCodes_SkipsProtected(t *testing.T) {
+	repo := &redeemRepoStub{protectedIDs: map[int64]bool{2: true}}
+	svc := &adminServiceImpl{redeemCodeRepo: repo}
+
+	result, err := svc.BatchDeleteRedeemCodes(context.Background(), []int64{1, 2, 3})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), result.Deleted)
+	require.Equal(t, []int64{2}, result.SkippedIDs)
+	require.Equal(t, []int64{1, 2, 3}, repo.batchDeleteIDs)
+	require.Empty(t, repo.deletedIDs, "the unguarded Delete must not be used")
+}
+
+func TestAdminService_BatchDeleteRedeemCodes_NoSkippedIsEmptySlice(t *testing.T) {
 	repo := &redeemRepoStub{}
 	svc := &adminServiceImpl{redeemCodeRepo: repo}
 
-	deleted, err := svc.BatchDeleteRedeemCodes(context.Background(), []int64{1, 2, 3})
+	result, err := svc.BatchDeleteRedeemCodes(context.Background(), []int64{1, 2, 3})
 	require.NoError(t, err)
-	require.Equal(t, int64(3), deleted)
-	require.Equal(t, []int64{1, 2, 3}, repo.deletedIDs)
+	require.Equal(t, int64(3), result.Deleted)
+	require.NotNil(t, result.SkippedIDs, "serialised as [] rather than null")
+	require.Empty(t, result.SkippedIDs)
 }
 
-func TestAdminService_BatchDeleteRedeemCodes_PartialFailures(t *testing.T) {
-	repo := &redeemRepoStub{
-		deleteErrByID: map[int64]error{
-			2: errors.New("db error"),
-		},
-	}
+func TestAdminService_BatchDeleteRedeemCodes_ErrorPropagates(t *testing.T) {
+	dbErr := errors.New("db error")
+	repo := &redeemRepoStub{batchDeleteErr: dbErr}
 	svc := &adminServiceImpl{redeemCodeRepo: repo}
 
-	deleted, err := svc.BatchDeleteRedeemCodes(context.Background(), []int64{1, 2, 3})
-	require.NoError(t, err)
-	require.Equal(t, int64(2), deleted)
-	require.Equal(t, []int64{1, 2, 3}, repo.deletedIDs)
+	result, err := svc.BatchDeleteRedeemCodes(context.Background(), []int64{1, 2, 3})
+	require.ErrorIs(t, err, dbErr, "a failed batch is reported instead of under-counting")
+	require.Nil(t, result)
 }

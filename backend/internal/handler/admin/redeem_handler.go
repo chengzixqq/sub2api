@@ -363,6 +363,8 @@ func (h *RedeemHandler) resolveCreateAndRedeemExisting(ctx context.Context, exis
 
 // Delete handles deleting a redeem code
 // DELETE /api/v1/admin/redeem-codes/:id
+// A code that is part of a user's history (redeemed, or an admin_* adjustment record) is refused with 409
+// REDEEM_CODE_USED; a missing code is 404 REDEEM_CODE_NOT_FOUND.
 func (h *RedeemHandler) Delete(c *gin.Context) {
 	codeID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -381,6 +383,8 @@ func (h *RedeemHandler) Delete(c *gin.Context) {
 
 // BatchDelete handles batch deleting redeem codes
 // POST /api/v1/admin/redeem-codes/batch-delete
+// Protected codes (see Delete) are skipped and listed in skipped_ids; deleted counts the rows actually deleted, so
+// missing and duplicate ids count as neither.
 func (h *RedeemHandler) BatchDelete(c *gin.Context) {
 	var req struct {
 		IDs []int64 `json:"ids" binding:"required,min=1"`
@@ -390,15 +394,17 @@ func (h *RedeemHandler) BatchDelete(c *gin.Context) {
 		return
 	}
 
-	deleted, err := h.adminService.BatchDeleteRedeemCodes(c.Request.Context(), req.IDs)
+	result, err := h.adminService.BatchDeleteRedeemCodes(c.Request.Context(), req.IDs)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
 	response.Success(c, gin.H{
-		"deleted": deleted,
-		"message": "Redeem codes deleted successfully",
+		"deleted":      result.Deleted,
+		"skipped_used": len(result.SkippedIDs),
+		"skipped_ids":  result.SkippedIDs,
+		"message":      "Redeem codes deleted successfully",
 	})
 }
 

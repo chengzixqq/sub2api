@@ -2,10 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	"github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -142,6 +145,90 @@ func (r *redeemCodeRepository) GetByCode(ctx context.Context, code string) (*ser
 func (r *redeemCodeRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.client.RedeemCode.Delete().Where(redeemcode.IDEQ(id)).Exec(ctx)
 	return err
+}
+
+// redeemCodeDeleteChunkSize bounds the ids per statement (each id is one bind parameter).
+const redeemCodeDeleteChunkSize = 1000
+
+// redeemCodeDeletable matches the codes an admin may delete: those that never reached a user's balance history.
+// used_by is checked besides status because a redeemed code keeps used_by when its status is changed afterwards.
+func redeemCodeDeletable(extra ...predicate.RedeemCode) []predicate.RedeemCode {
+	return append([]predicate.RedeemCode{
+		redeemcode.StatusNEQ(service.StatusUsed),
+		redeemcode.UsedByIsNil(),
+		redeemcode.TypeNotIn(service.AdjustmentTypeAdminBalance, service.AdjustmentTypeAdminConcurrency),
+	}, extra...)
+}
+
+// DeleteUnlessUsed checks the condition inside the DELETE (no read-then-delete race); only when nothing was deleted
+// does it look the code up to tell a protected code (409) from a missing one (404).
+func (r *redeemCodeRepository) DeleteUnlessUsed(ctx context.Context, id int64) error {
+	client := clientFromContext(ctx, r.client)
+	affected, err := client.RedeemCode.Delete().Where(redeemCodeDeletable(redeemcode.IDEQ(id))...).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if affected > 0 {
+		return nil
+	}
+	exists, err := client.RedeemCode.Query().Where(redeemcode.IDEQ(id)).Exist(ctx)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return service.ErrRedeemCodeDeleteUsed
+	}
+	return service.ErrRedeemCodeNotFound
+}
+
+func (r *redeemCodeRepository) BatchDeleteUnlessUsed(ctx context.Context, ids []int64) (int64, []int64, error) {
+	uniqueIDs := uniquePositiveInt64s(ids)
+	if len(uniqueIDs) == 0 {
+		return 0, []int64{}, nil
+	}
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return batchDeleteRedeemCodesUnlessUsed(ctx, tx.Client(), uniqueIDs)
+	}
+
+	tx, err := r.client.Tx(ctx)
+	if errors.Is(err, dbent.ErrTxStarted) {
+		return batchDeleteRedeemCodesUnlessUsed(ctx, r.client, uniqueIDs)
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	deleted, skipped, err := batchDeleteRedeemCodesUnlessUsed(dbent.NewTxContext(ctx, tx), tx.Client(), uniqueIDs)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, nil, err
+	}
+	return deleted, skipped, nil
+}
+
+// batchDeleteRedeemCodesUnlessUsed deletes chunk by chunk inside the caller's transaction. Whatever of a chunk is still
+// there after its DELETE was protected: ids are never reused, so a missing id cannot reappear.
+func batchDeleteRedeemCodesUnlessUsed(ctx context.Context, client *dbent.Client, ids []int64) (int64, []int64, error) {
+	var deleted int64
+	skipped := []int64{}
+	for start := 0; start < len(ids); start += redeemCodeDeleteChunkSize {
+		chunk := ids[start:min(start+redeemCodeDeleteChunkSize, len(ids))]
+		affected, err := client.RedeemCode.Delete().Where(redeemCodeDeletable(redeemcode.IDIn(chunk...))...).Exec(ctx)
+		if err != nil {
+			return 0, nil, err
+		}
+		deleted += int64(affected)
+		remaining, err := client.RedeemCode.Query().Where(redeemcode.IDIn(chunk...)).IDs(ctx)
+		if err != nil {
+			return 0, nil, err
+		}
+		skipped = append(skipped, remaining...)
+	}
+	slices.Sort(skipped)
+	return deleted, skipped, nil
 }
 
 func (r *redeemCodeRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.RedeemCode, *pagination.PaginationResult, error) {

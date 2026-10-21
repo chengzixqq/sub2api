@@ -24,6 +24,10 @@ var (
 	ErrRedeemRateLimited   = infraerrors.TooManyRequests("REDEEM_RATE_LIMITED", "too many failed attempts, please try again later")
 	ErrRedeemCodeLocked    = infraerrors.Conflict("REDEEM_CODE_LOCKED", "redeem code is being processed, please try again")
 	ErrRedeemBatchConflict = infraerrors.Conflict("REDEEM_BATCH_CONFLICT", "batch_id already used with different parameters")
+
+	// ErrRedeemCodeDeleteUsed refuses deleting a code that is part of a user's history. It shares ErrRedeemCodeUsed's
+	// code and reason (errors.Is matches either); only the message differs.
+	ErrRedeemCodeDeleteUsed = infraerrors.Conflict("REDEEM_CODE_USED", "used redeem codes cannot be deleted")
 )
 
 const (
@@ -63,7 +67,16 @@ type RedeemCodeRepository interface {
 	GetByCode(ctx context.Context, code string) (*RedeemCode, error)
 	Update(ctx context.Context, code *RedeemCode) error
 	BatchUpdate(ctx context.Context, ids []int64, fields RedeemCodeBatchUpdateFields) (int64, error)
+	// Delete removes a code unconditionally. Admin deletes must go through DeleteUnlessUsed / BatchDeleteUnlessUsed.
 	Delete(ctx context.Context, id int64) error
+	// DeleteUnlessUsed deletes a code only while it is not part of any user's history: status is not used, used_by is
+	// NULL and the type is not admin_balance / admin_concurrency (the adjustment records). The condition is checked in
+	// the DELETE itself. Returns ErrRedeemCodeDeleteUsed for a protected code and ErrRedeemCodeNotFound for a missing one.
+	DeleteUnlessUsed(ctx context.Context, id int64) error
+	// BatchDeleteUnlessUsed deletes the deletable codes among ids in one transaction, with the same condition as
+	// DeleteUnlessUsed. It returns the number of rows deleted and the protected ids it left in place (ascending, never
+	// nil); missing, duplicate and non-positive ids count as neither.
+	BatchDeleteUnlessUsed(ctx context.Context, ids []int64) (deleted int64, skippedIDs []int64, err error)
 	Use(ctx context.Context, id, userID int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]RedeemCode, *pagination.PaginationResult, error)
@@ -185,6 +198,13 @@ type RedeemCodeBatchUpdateInput struct {
 
 type RedeemCodeBatchUpdateResult struct {
 	Updated int64 `json:"updated"`
+}
+
+// RedeemCodeBatchDeleteResult is the outcome of an admin batch delete: rows actually deleted, and the codes left in
+// place because they are part of a user's history (ascending; empty, never nil, when nothing was skipped).
+type RedeemCodeBatchDeleteResult struct {
+	Deleted    int64
+	SkippedIDs []int64
 }
 
 // RedeemService 兑换码服务

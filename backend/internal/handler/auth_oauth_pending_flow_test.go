@@ -2982,6 +2982,14 @@ func (r *oauthPendingFlowRedeemCodeRepo) Delete(context.Context, int64) error {
 	panic("unexpected Delete call")
 }
 
+func (r *oauthPendingFlowRedeemCodeRepo) DeleteUnlessUsed(context.Context, int64) error {
+	panic("unexpected DeleteUnlessUsed call")
+}
+
+func (r *oauthPendingFlowRedeemCodeRepo) BatchDeleteUnlessUsed(context.Context, []int64) (int64, []int64, error) {
+	panic("unexpected BatchDeleteUnlessUsed call")
+}
+
 func (r *oauthPendingFlowRedeemCodeRepo) Use(ctx context.Context, id, userID int64) error {
 	affected, err := r.client.RedeemCode.Update().
 		Where(redeemcode.IDEQ(id), redeemcode.StatusEQ(service.StatusUnused)).

@@ -123,6 +123,14 @@ func (r *paymentOrderLifecycleRedeemRepo) Delete(context.Context, int64) error {
 	panic("unexpected call")
 }
 
+func (r *paymentOrderLifecycleRedeemRepo) DeleteUnlessUsed(context.Context, int64) error {
+	panic("unexpected call")
+}
+
+func (r *paymentOrderLifecycleRedeemRepo) BatchDeleteUnlessUsed(context.Context, []int64) (int64, []int64, error) {
+	panic("unexpected call")
+}
+
 func (r *paymentOrderLifecycleRedeemRepo) Use(_ context.Context, id, userID int64) error {
 	for code, redeemCode := range r.codesByCode {
 		if redeemCode.ID != id {

@@ -50,6 +50,14 @@ func (r *redeemRejectRepo) Delete(ctx context.Context, id int64) error {
 	panic("unexpected Delete call")
 }
 
+func (r *redeemRejectRepo) DeleteUnlessUsed(ctx context.Context, id int64) error {
+	panic("unexpected DeleteUnlessUsed call")
+}
+
+func (r *redeemRejectRepo) BatchDeleteUnlessUsed(ctx context.Context, ids []int64) (int64, []int64, error) {
+	panic("unexpected BatchDeleteUnlessUsed call")
+}
+
 func (r *redeemRejectRepo) Use(ctx context.Context, id, userID int64) error {
 	r.useCalled = true
 	r.code.Status = StatusUsed

@@ -2291,6 +2291,14 @@ func (stubRedeemCodeRepo) Delete(ctx context.Context, id int64) error {
 	return errors.New("not implemented")
 }
 
+func (stubRedeemCodeRepo) DeleteUnlessUsed(ctx context.Context, id int64) error {
+	return errors.New("not implemented")
+}
+
+func (stubRedeemCodeRepo) BatchDeleteUnlessUsed(ctx context.Context, ids []int64) (int64, []int64, error) {
+	return 0, nil, errors.New("not implemented")
+}
+
 func (stubRedeemCodeRepo) Use(ctx context.Context, id, userID int64) error {
 	return errors.New("not implemented")
 }

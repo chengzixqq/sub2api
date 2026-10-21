@@ -173,7 +173,7 @@ type AdminService interface {
 	// ListRedeemCodeBatch returns the codes of one generated batch (real code values), ordered by id.
 	ListRedeemCodeBatch(ctx context.Context, batchID uuid.UUID) ([]RedeemCode, error)
 	DeleteRedeemCode(ctx context.Context, id int64) error
-	BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (int64, error)
+	BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (*RedeemCodeBatchDeleteResult, error)
 	ExpireRedeemCode(ctx context.Context, id int64) (*RedeemCode, error)
 	ResetAccountQuota(ctx context.Context, id int64) error
 }

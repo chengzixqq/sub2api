@@ -1841,18 +1841,23 @@ func (s *adminServiceImpl) createRedeemCodes(ctx context.Context, input *Generat
 	return codes, nil
 }
 
+// DeleteRedeemCode refuses codes that are part of a user's history (ErrRedeemCodeDeleteUsed): deleting one would
+// remove it from the user's balance history and lower total_recharged.
 func (s *adminServiceImpl) DeleteRedeemCode(ctx context.Context, id int64) error {
-	return s.redeemCodeRepo.Delete(ctx, id)
+	return s.redeemCodeRepo.DeleteUnlessUsed(ctx, id)
 }
 
-func (s *adminServiceImpl) BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (int64, error) {
-	var deleted int64
-	for _, id := range ids {
-		if err := s.redeemCodeRepo.Delete(ctx, id); err == nil {
-			deleted++
-		}
+// BatchDeleteRedeemCodes deletes the deletable codes and reports the protected ones it skipped. A database error
+// fails the whole batch instead of being counted as a skipped delete.
+func (s *adminServiceImpl) BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (*RedeemCodeBatchDeleteResult, error) {
+	deleted, skipped, err := s.redeemCodeRepo.BatchDeleteUnlessUsed(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
-	return deleted, nil
+	if skipped == nil {
+		skipped = []int64{}
+	}
+	return &RedeemCodeBatchDeleteResult{Deleted: deleted, SkippedIDs: skipped}, nil
 }
 
 func (s *adminServiceImpl) ExpireRedeemCode(ctx context.Context, id int64) (*RedeemCode, error) {

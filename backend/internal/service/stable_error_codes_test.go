@@ -84,6 +84,9 @@ func TestStableErrorReasons(t *testing.T) {
 		{ErrIdempotencyStoreUnavail, http.StatusServiceUnavailable, "IDEMPOTENCY_STORE_UNAVAILABLE"},
 		{ErrUserPlatformQuotaNotFound, http.StatusNotFound, "USER_PLATFORM_QUOTA_NOT_FOUND"},
 		{ErrUserPlatformQuotaActiveExists, http.StatusConflict, "USER_PLATFORM_QUOTA_ACTIVE_EXISTS"},
+		{ErrRedeemCodeUsed, http.StatusConflict, "REDEEM_CODE_USED"},
+		{ErrRedeemCodeDeleteUsed, http.StatusConflict, "REDEEM_CODE_USED"},
+		{ErrRedeemCodeNotFound, http.StatusNotFound, "REDEEM_CODE_NOT_FOUND"},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.reason, infraerrors.Reason(tc.err))

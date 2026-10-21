@@ -109,7 +109,11 @@ type stubAdminService struct {
 		sortOrder string
 		calls     int
 	}
-	mu sync.Mutex
+	// redeem deletes: nil result means every id was deleted and none skipped.
+	redeemDeleteErr         error
+	redeemBatchDeleteResult *service.RedeemCodeBatchDeleteResult
+	redeemBatchDeleteErr    error
+	mu                      sync.Mutex
 }
 
 func newStubAdminService() *stubAdminService {
@@ -820,11 +824,17 @@ func (s *stubAdminService) ListRedeemCodeBatch(ctx context.Context, batchID uuid
 }
 
 func (s *stubAdminService) DeleteRedeemCode(ctx context.Context, id int64) error {
-	return nil
+	return s.redeemDeleteErr
 }
 
-func (s *stubAdminService) BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (int64, error) {
-	return int64(len(ids)), nil
+func (s *stubAdminService) BatchDeleteRedeemCodes(ctx context.Context, ids []int64) (*service.RedeemCodeBatchDeleteResult, error) {
+	if s.redeemBatchDeleteErr != nil {
+		return nil, s.redeemBatchDeleteErr
+	}
+	if s.redeemBatchDeleteResult != nil {
+		return s.redeemBatchDeleteResult, nil
+	}
+	return &service.RedeemCodeBatchDeleteResult{Deleted: int64(len(ids)), SkippedIDs: []int64{}}, nil
 }
 
 func (s *stubAdminService) ExpireRedeemCode(ctx context.Context, id int64) (*service.RedeemCode, error) {

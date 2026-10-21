@@ -67,6 +67,14 @@ func (s *redeemCodeRepoStub) Delete(context.Context, int64) error {
 	panic("unexpected Delete call")
 }
 
+func (s *redeemCodeRepoStub) DeleteUnlessUsed(context.Context, int64) error {
+	panic("unexpected DeleteUnlessUsed call")
+}
+
+func (s *redeemCodeRepoStub) BatchDeleteUnlessUsed(context.Context, []int64) (int64, []int64, error) {
+	panic("unexpected BatchDeleteUnlessUsed call")
+}
+
 func (s *redeemCodeRepoStub) Use(_ context.Context, id, userID int64) error {
 	for code, redeemCode := range s.codesByCode {
 		if redeemCode.ID != id {
