@@ -74,6 +74,6 @@ func TestVerifyPaidUpstreamOrderRejectsWrongMerchant(t *testing.T) {
 	_, _, err := fx.service.verifyPaidUpstreamOrder(fx.ctx, fx.order, &payment.QueryOrderResponse{
 		TradeNo: "real-trade", Status: payment.ProviderStatusPaid, Amount: 88,
 		Metadata: map[string]string{"app_id": "different-app"},
-	}, payment.TypeAlipay, "")
+	}, payment.TypeAlipay, "", nil)
 	require.ErrorContains(t, err, "app_id mismatch")
 }

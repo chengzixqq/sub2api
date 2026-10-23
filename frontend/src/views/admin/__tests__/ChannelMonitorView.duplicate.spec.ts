@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue'
+import { createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -107,6 +108,7 @@ const monitor = makeMonitor()
 async function mountView() {
   const wrapper = mount(ChannelMonitorView, {
     global: {
+      plugins: [createPinia()],
       stubs: {
         AppLayout: AppLayoutStub,
         TablePageLayout: TablePageLayoutStub,

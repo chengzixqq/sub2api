@@ -205,6 +205,7 @@ func TestApplyUsageBillingPropagatesOneQuantizedAmountAcrossLocalChain(t *testin
 		},
 		AccountRateMultiplier: accountRate,
 		APIKeyService:         quotaUpdater,
+		ProviderCostRecorded:  true,
 	}
 	accountStatsCost := rawAccountBase
 	usageLog := &UsageLog{

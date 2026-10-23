@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,8 @@ import (
 func TestSchedulerCache_RollingUpgradeReadsLegacyMetadata(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)
+	clock := &memoTestClock{now: time.Now()}
+	cache.now = clock.Now
 	bucket := service.SchedulerBucket{GroupID: 8, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeSingle}
 	account := service.Account{
 		ID: 31, Platform: service.PlatformAnthropic, Status: service.StatusActive, Schedulable: true,
@@ -37,9 +40,11 @@ func TestSchedulerCache_RollingUpgradeReadsLegacyMetadata(t *testing.T) {
 	require.Equal(t, .75, got[0].Extra["passive_usage_7d_utilization"])
 	require.NotContains(t, got[0].Credentials, "access_token")
 	require.NotContains(t, got[0].Extra, "unrelated_payload")
-	// Missing full data must trigger the existing database fallback, not admission
-	// with an incomplete threshold projection.
+	// Unversioned legacy writes may reuse the last complete memo for at most
+	// ten seconds. On reload, missing full data must trigger database fallback,
+	// not admission with an incomplete threshold projection.
 	require.NoError(t, cache.rdb.Del(ctx, schedulerAccountKey("31")).Err())
+	clock.Advance(schedulerSnapshotCacheMaxAge)
 	_, hit, err = cache.GetSnapshot(ctx, bucket)
 	require.NoError(t, err)
 	require.False(t, hit)

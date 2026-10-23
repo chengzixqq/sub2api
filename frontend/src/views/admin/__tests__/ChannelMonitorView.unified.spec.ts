@@ -1,4 +1,5 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { describe, expect, it, vi } from 'vitest'
 import ChannelMonitorView from '../ChannelMonitorView.vue'
 
@@ -10,7 +11,7 @@ vi.mock('vue-i18n', async importOriginal => ({ ...await importOriginal<typeof im
 
 describe('unified monitor management entry', () => {
   it('opens the monitor dashboard and keeps settings and legacy loading on demand', async () => {
-    const wrapper = shallowMount(ChannelMonitorView, { global: { stubs: { AppLayout: { template: '<main><slot /></main>' } } } })
+    const wrapper = shallowMount(ChannelMonitorView, { global: { plugins: [createPinia()], stubs: { AppLayout: { template: '<main><slot /></main>' } } } })
     await flushPromises()
     expect(wrapper.get('[role="tab"]').attributes('aria-selected')).toBe('true')
     expect(wrapper.find('admin-monitor-dashboard-stub').exists()).toBe(true)

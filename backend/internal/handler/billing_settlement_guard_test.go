@@ -668,3 +668,30 @@ func TestBillingSettlementGuardSearchAcrossAttempts(t *testing.T) {
 		assert.Equal(t, maxInt, saturated.CumulativeSearchCount)
 	})
 }
+
+func TestBillingSettlementGuard_ClaudeFailurePreservesObservedImages(t *testing.T) {
+	var got service.FailureBillingDecision
+	g := newBillingSettlementGuard(guardDeps{sink: func(d service.FailureBillingDecision, _ *service.Account) { got = d }})
+	g.ObserveAttempt(&service.Account{ID: 7})
+	result := &service.ForwardResult{
+		Usage:      service.ClaudeUsage{InputTokens: 10, OutputTokens: 5},
+		ImageCount: 1, ImageSize: "2K", ImageInputSize: "1024x1024", ImageOutputSize: "2048x2048",
+		ImageOutputSizes: []string{"2048x2048"}, ImageSizeSource: "upstream", ImageSizeBreakdown: map[string]int{"2K": 1},
+	}
+	g.ObserveForwardResult(result)
+	result.ImageOutputSizes[0] = "mutated"
+	result.ImageSizeBreakdown["2K"] = 9
+	g.ObserveForwardOutcome(context.Canceled, true)
+	g.Flush()
+	require.True(t, got.Billable)
+	require.Equal(t, service.BillingProvenanceFailedUpstream, got.Provenance)
+	require.Equal(t, 10, got.Usage.InputTokens)
+	require.Equal(t, 5, got.Usage.OutputTokens)
+	require.Equal(t, 1, got.ImageCount)
+	require.Equal(t, "2K", got.ImageSize)
+	require.Equal(t, "1024x1024", got.ImageInputSize)
+	require.Equal(t, "2048x2048", got.ImageOutputSize)
+	require.Equal(t, []string{"2048x2048"}, got.ImageOutputSizes)
+	require.Equal(t, "upstream", got.ImageSizeSource)
+	require.Equal(t, map[string]int{"2K": 1}, got.ImageSizeBreakdown)
+}

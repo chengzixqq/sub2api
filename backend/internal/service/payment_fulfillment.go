@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 )
 
 // ErrOrderNotFound is returned by HandlePaymentNotification when the webhook
@@ -37,15 +38,25 @@ type paymentFulfillmentLease struct {
 // --- Payment Notification & Fulfillment ---
 
 func (s *PaymentService) HandlePaymentNotification(ctx context.Context, n *payment.PaymentNotification, pk string) error {
-	return s.handlePaymentNotification(ctx, n, pk, nil)
+	return s.handlePaymentNotification(ctx, n, pk, nil, nil)
+}
+
+// HandleVerifiedPaymentNotification uses the exact instance that verified the
+// webhook. Order lookup and terminal-state checks precede its single upstream
+// query, so duplicate and unknown callbacks do not depend on provider uptime.
+func (s *PaymentService) HandleVerifiedPaymentNotification(ctx context.Context, n *payment.PaymentNotification, prov payment.Provider) error {
+	if prov == nil {
+		return errors.New("verified payment provider is missing")
+	}
+	return s.handlePaymentNotification(ctx, n, prov.ProviderKey(), nil, prov)
 }
 
 // handlePaymentNotification optionally accepts an upstream query result that
 // was already obtained for this exact order. Reconciliation uses that result
 // so fulfillment does not issue a second identical provider query; webhook
 // callers pass nil and retain the independent upstream verification.
-func (s *PaymentService) handlePaymentNotification(ctx context.Context, n *payment.PaymentNotification, pk string, verified *payment.QueryOrderResponse) error {
-	if n.Status != payment.NotificationStatusSuccess {
+func (s *PaymentService) handlePaymentNotification(ctx context.Context, n *payment.PaymentNotification, pk string, verified *payment.QueryOrderResponse, verifiedProvider payment.Provider) error {
+	if n == nil || n.Status != payment.NotificationStatusSuccess {
 		return nil
 	}
 	// Look up order by out_trade_no (the external order ID we sent to the provider)
@@ -54,14 +65,41 @@ func (s *PaymentService) handlePaymentNotification(ctx context.Context, n *payme
 		// Fallback only for true legacy "sub2_N" DB-ID payloads when the
 		// current out_trade_no lookup genuinely did not find an order.
 		if oid, ok := parseLegacyPaymentOrderID(n.OrderID, err); ok {
-			return s.confirmPaymentWithUpstream(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata, verified)
+			return s.confirmPaymentWithUpstream(ctx, oid, n.TradeNo, n.Amount, pk, n.Metadata, verified, verifiedProvider)
 		}
 		if dbent.IsNotFound(err) {
 			return fmt.Errorf("%w: out_trade_no=%s", ErrOrderNotFound, n.OrderID)
 		}
 		return fmt.Errorf("lookup order failed for out_trade_no %s: %w", n.OrderID, err)
 	}
-	return s.confirmPaymentWithUpstream(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata, verified)
+	return s.confirmPaymentWithUpstream(ctx, order.ID, n.TradeNo, n.Amount, pk, n.Metadata, verified, verifiedProvider)
+}
+
+// ConfirmNotificationUpstream asks providers that implement
+// payment.NotificationConfirmer to confirm a verified success notification
+// against the upstream order, using the same instance that verified it.
+// Failures are recorded on the order's audit trail and returned so the webhook
+// answers non-success and the gateway retries.
+func (s *PaymentService) ConfirmNotificationUpstream(ctx context.Context, prov payment.Provider, n *payment.PaymentNotification) error {
+	confirmer, ok := prov.(payment.NotificationConfirmer)
+	if !ok || n == nil || n.Status != payment.NotificationStatusSuccess {
+		return nil
+	}
+	notifiedTradeNo := n.TradeNo
+	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
+	err := confirmer.ConfirmNotification(ctx, n)
+	finishProviderCall()
+	if err == nil {
+		return nil
+	}
+	if order, lookupErr := s.entClient.PaymentOrder.Query().Where(paymentorder.OutTradeNo(n.OrderID)).Only(ctx); lookupErr == nil {
+		s.writeAuditLog(ctx, order.ID, "PAYMENT_UPSTREAM_UNCONFIRMED", prov.ProviderKey(), map[string]any{
+			"detail":  err.Error(),
+			"tradeNo": notifiedTradeNo,
+			"amount":  n.Amount,
+		})
+	}
+	return err
 }
 
 func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
@@ -83,7 +121,7 @@ func parseLegacyPaymentOrderID(orderID string, lookupErr error) (int64, bool) {
 	return oid, true
 }
 
-func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string, verified *payment.QueryOrderResponse) error {
+func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int64, tradeNo string, paid float64, pk string, metadata map[string]string, verified *payment.QueryOrderResponse, verifiedProvider payment.Provider) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		slog.Error("order not found", "orderID", oid)
@@ -127,9 +165,13 @@ func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int
 	// state and amount. This prevents a forged callback from creating balance
 	// without a real upstream transaction.
 	if paymentOrderRequiresUpstreamVerification(o.Status) {
-		upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, verified, pk, tradeNo)
+		upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, verified, pk, tradeNo, verifiedProvider)
 		if err != nil {
 			return err
+		}
+		if verifiedProvider != nil && strings.TrimSpace(tradeNo) != "" && strings.TrimSpace(tradeNo) != strings.TrimSpace(upstream.TradeNo) {
+			s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_TRADE_MISMATCH", providerKey, map[string]any{"notifiedTradeNo": tradeNo, "upstreamTradeNo": upstream.TradeNo})
+			return fmt.Errorf("upstream transaction id mismatch with notification")
 		}
 		tradeNo = strings.TrimSpace(upstream.TradeNo)
 		paid = upstream.Amount
@@ -138,10 +180,16 @@ func (s *PaymentService) confirmPaymentWithUpstream(ctx context.Context, oid int
 	return s.toPaid(ctx, o, tradeNo, paid, pk)
 }
 
-func (s *PaymentService) verifyPaidUpstreamOrder(ctx context.Context, o *dbent.PaymentOrder, upstream *payment.QueryOrderResponse, providerKey, tradeNo string) (*payment.QueryOrderResponse, string, error) {
+func (s *PaymentService) verifyPaidUpstreamOrder(ctx context.Context, o *dbent.PaymentOrder, upstream *payment.QueryOrderResponse, providerKey, tradeNo string, verifiedProvider payment.Provider) (*payment.QueryOrderResponse, string, error) {
 	providerKey = strings.TrimSpace(providerKey)
 	if upstream == nil {
-		prov, providerErr := s.getOrderProvider(ctx, o)
+		prov := verifiedProvider
+		var providerErr error
+		if prov == nil {
+			prov, providerErr = s.getOrderProvider(ctx, o)
+		} else if err := validateProviderSnapshotMetadata(o, prov.ProviderKey(), providerMerchantIdentityMetadata(prov)); err != nil {
+			return nil, "", err
+		}
 		if providerErr != nil || prov == nil {
 			if providerErr == nil {
 				providerErr = errors.New("provider unavailable")
@@ -155,7 +203,9 @@ func (s *PaymentService) verifyPaidUpstreamOrder(ctx context.Context, o *dbent.P
 			return nil, "", fmt.Errorf("payment upstream query reference is missing")
 		}
 		var queryErr error
+		finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 		upstream, queryErr = prov.QueryOrder(ctx, queryRef)
+		finishProviderCall()
 		if queryErr != nil {
 			s.writeAuditLog(ctx, o.ID, "PAYMENT_UPSTREAM_QUERY_FAILED", providerKey, map[string]any{"detail": queryErr.Error(), "queryRef": queryRef, "tradeNo": tradeNo})
 			return nil, "", fmt.Errorf("payment upstream query failed: %w", queryErr)
@@ -312,16 +362,47 @@ func (s *PaymentService) executeFulfillment(ctx context.Context, oid int64) erro
 	if err != nil {
 		return fmt.Errorf("get order: %w", err)
 	}
-	if o.OrderType == payment.OrderTypeSubscription {
+	switch o.OrderType {
+	case payment.OrderTypeSubscription:
 		return s.ExecuteSubscriptionFulfillment(ctx, oid)
+	case payment.OrderTypeBalance:
+		return s.ExecuteBalanceFulfillment(ctx, oid)
+	default:
+		// 不支持的订单类型不履约：标记 FAILED 后正常返回，避免支付回调持续 500 重试。
+		s.rejectUnsupportedOrderType(ctx, o)
+		return nil
 	}
-	return s.ExecuteBalanceFulfillment(ctx, oid)
+}
+
+func isSupportedPaymentOrderType(orderType string) bool {
+	return orderType == payment.OrderTypeBalance || orderType == payment.OrderTypeSubscription
+}
+
+func (s *PaymentService) rejectUnsupportedOrderType(ctx context.Context, o *dbent.PaymentOrder) {
+	reason := "unsupported order type: " + o.OrderType
+	c, err := s.entClient.PaymentOrder.Update().
+		Where(
+			paymentorder.IDEQ(o.ID),
+			paymentorder.StatusIn(OrderStatusPaid, OrderStatusRecharging),
+		).
+		SetStatus(OrderStatusFailed).SetFailedAt(time.Now()).SetFailedReason(reason).Save(ctx)
+	if err != nil {
+		slog.Error("mark unsupported order type FAILED", "orderID", o.ID, "error", err)
+		return
+	}
+	if c > 0 {
+		slog.Warn("payment order with unsupported order type not fulfilled", "orderID", o.ID, "orderType", o.OrderType)
+		s.writeAuditLog(ctx, o.ID, "FULFILLMENT_FAILED", "system", map[string]any{"reason": reason})
+	}
 }
 
 func (s *PaymentService) ExecuteBalanceFulfillment(ctx context.Context, oid int64) error {
 	o, err := s.entClient.PaymentOrder.Get(ctx, oid)
 	if err != nil {
 		return infraerrors.NotFound("NOT_FOUND", "order not found")
+	}
+	if o.OrderType != payment.OrderTypeBalance {
+		return infraerrors.BadRequest("INVALID_ORDER_TYPE", "order is not a balance order")
 	}
 	if o.Status == OrderStatusCompleted {
 		return nil
@@ -979,10 +1060,13 @@ func (s *PaymentService) RetryFulfillment(ctx context.Context, oid int64) error 
 	if o.Status != OrderStatusFailed && o.Status != OrderStatusPaid && o.Status != OrderStatusRecharging {
 		return infraerrors.BadRequest("INVALID_STATUS", "only paid, failed, and recoverable recharging orders can retry")
 	}
+	if !isSupportedPaymentOrderType(o.OrderType) {
+		return infraerrors.BadRequest("INVALID_ORDER_TYPE", "unsupported order type")
+	}
 	if o.Status == OrderStatusRecharging && o.UpdatedAt.After(time.Now().Add(-paymentFulfillmentLeaseDuration)) {
 		return infraerrors.Conflict("CONFLICT", "order is being processed")
 	}
-	upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, nil, "", o.PaymentTradeNo)
+	upstream, providerKey, err := s.verifyPaidUpstreamOrder(ctx, o, nil, "", o.PaymentTradeNo, nil)
 	if err != nil {
 		return err
 	}

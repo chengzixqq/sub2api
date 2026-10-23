@@ -202,7 +202,7 @@ func TestAdminServiceSimpleModeRejectsAdvancedGroupOperationsDirectly(t *testing
 
 func TestAdminServiceSimpleModeRejectsCompositeCreateAndConversionDirectly(t *testing.T) {
 	svc := &adminServiceImpl{cfg: &config.Config{RunMode: config.RunModeSimple}}
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{Platform: PlatformComposite, RateMultiplier: 1})
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{Platform: PlatformComposite, RateMultiplier: 1})
 	require.Error(t, err)
 
 	repo := &groupRepoStubForAdmin{getByID: &Group{ID: 1, Platform: PlatformAnthropic}}
@@ -349,7 +349,7 @@ func TestAdminService_CreateGroup_RejectsTimePricing(t *testing.T) {
 	repo := &groupRepoStubForAdmin{createID: 51}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:           "time-pricing-group",
 		Platform:       PlatformOpenAI,
 		RateMultiplier: 1,
@@ -603,41 +603,47 @@ func TestAdminService_CreateGroup_DefaultsGrokMediaGenerationEnabled(t *testing.
 	require.True(t, group.AllowImageGeneration)
 }
 
-func TestAdminService_CreateGroup_PreservesNonGrokImageGenerationDisabled(t *testing.T) {
-	repo := &groupRepoStubForAdmin{}
-	svc := &adminServiceImpl{groupRepo: repo}
+func TestAdminService_CreateGroup_DefaultsGeminiFamilyImageGenerationEnabled(t *testing.T) {
+	for _, platform := range []string{PlatformGemini, PlatformAntigravity} {
+		t.Run(platform, func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{}
+			svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
-		Name:           "anthropic-text",
-		Description:    "Anthropic text group",
-		Platform:       PlatformAnthropic,
-		RateMultiplier: 1.0,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, group)
-	require.NotNil(t, repo.created)
-	require.False(t, repo.created.AllowImageGeneration)
-	require.False(t, group.AllowImageGeneration)
+			group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
+				Name:           platform + "-images",
+				Description:    "Gemini family group",
+				Platform:       platform,
+				RateMultiplier: 1.0,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, group)
+			require.NotNil(t, repo.created)
+			require.True(t, repo.created.AllowImageGeneration)
+			require.True(t, group.AllowImageGeneration)
+			require.False(t, repo.created.AllowBatchImageGeneration)
+		})
+	}
 }
 
-func TestAdminService_CreateGroup_DisablesBatchImageWhenImageGenerationDisabled(t *testing.T) {
-	repo := &groupRepoStubForAdmin{}
-	svc := &adminServiceImpl{groupRepo: repo}
+func TestAdminService_CreateGroup_PreservesImageGenerationDisabledWithoutPlatformDefault(t *testing.T) {
+	for _, platform := range []string{PlatformAnthropic, PlatformComposite} {
+		t.Run(platform, func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{}
+			svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
-		Name:                      "gemini-no-image",
-		Description:               "Gemini group without image generation",
-		Platform:                  PlatformGemini,
-		RateMultiplier:            1.0,
-		AllowImageGeneration:      false,
-		AllowBatchImageGeneration: true,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, group)
-	require.NotNil(t, repo.created)
-	require.False(t, repo.created.AllowImageGeneration)
-	require.False(t, repo.created.AllowBatchImageGeneration)
-	require.False(t, group.AllowBatchImageGeneration)
+			group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
+				Name:           platform + "-text",
+				Description:    "Group without image default",
+				Platform:       platform,
+				RateMultiplier: 1.0,
+			})
+			require.NoError(t, err)
+			require.NotNil(t, group)
+			require.NotNil(t, repo.created)
+			require.False(t, repo.created.AllowImageGeneration)
+			require.False(t, group.AllowImageGeneration)
+		})
+	}
 }
 
 func TestAdminService_CreateGroup_DisablesBatchImageForNonGeminiPlatform(t *testing.T) {
@@ -1159,7 +1165,7 @@ func TestAdminService_CreateGroup_InvalidPeakRateReturnsBadRequest(t *testing.T)
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:             "subscription-group",
 		RateMultiplier:   1,
 		Platform:         PlatformOpenAI,
@@ -1333,7 +1339,7 @@ func TestAdminService_CreateCompositeGroupPreservesLive(t *testing.T) {
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name:           "composite-group",
 		Platform:       PlatformComposite,
 		RateMultiplier: 1.0,
@@ -1360,7 +1366,7 @@ func TestAdminService_CreateGroup_NormalizesForceOpenAIFastByPlatform(t *testing
 			repo := &groupRepoStubForAdmin{}
 			svc := &adminServiceImpl{groupRepo: repo}
 
-			group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+			group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 				Name: "fast-" + tt.name, Platform: tt.platform, RateMultiplier: 1, ForceOpenAIFast: true, FreeOpenAIFast: true,
 			})
 
@@ -2335,7 +2341,7 @@ func TestAdminService_CreateGroup_CodexModelsManifestConfigEnabledRejected(t *te
 	repo := &groupRepoStubForAdmin{createID: 61}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name: "codex-pinned", Platform: PlatformOpenAI, RateMultiplier: 1,
 		CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
 			Enabled:    true,
@@ -2353,7 +2359,7 @@ func TestAdminService_CreateGroup_CodexModelsManifestConfigDisabledAccepted(t *t
 	repo := &groupRepoStubForAdmin{createID: 62}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+	group, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
 		Name: "codex-pinned-off", Platform: PlatformOpenAI, RateMultiplier: 1,
 		CodexModelsManifestConfig: GroupCodexModelsManifestConfig{
 			Enabled:    false,

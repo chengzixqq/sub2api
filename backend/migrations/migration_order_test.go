@@ -23,3 +23,17 @@ func TestDuplicate238MigrationsHaveStableDictionaryOrder(t *testing.T) {
 		return files
 	}())
 }
+
+// TestDuplicate246MigrationsHaveStableDictionaryOrder locks the order of the
+// custom dashboard invalidation and upstream Gemini image generation migrations.
+func TestDuplicate246MigrationsHaveStableDictionaryOrder(t *testing.T) {
+	files, err := fs.Glob(FS, "246_*.sql")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"246_dashboard_hourly_invalidation.sql",
+		"246_enable_gemini_image_generation_groups.sql",
+	}, func() []string {
+		sort.Strings(files)
+		return files
+	}())
+}

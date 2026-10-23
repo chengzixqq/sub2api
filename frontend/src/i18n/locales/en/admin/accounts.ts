@@ -80,8 +80,6 @@ export default {
       deepLinkInvalidId: 'Invalid account ID in link: {id}',
       deleteAccount: 'Delete Account',
       searchAccounts: 'Search accounts...',
-      moreFilters: 'More filters',
-      moreFiltersActive: 'More filters ({count} active)',
       notes: 'Notes',
       notesPlaceholder: 'Enter notes',
       notesHint: 'Notes are optional',

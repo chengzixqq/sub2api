@@ -180,6 +180,13 @@ func (g *billingSettlementGuard) ObservePartialUsage(usage service.ClaudeUsage) 
 func (g *billingSettlementGuard) ObserveForwardResult(result *service.ForwardResult) {
 	if g != nil && result != nil {
 		g.ObservePartialUsage(result.Usage)
+		g.imageCount = max(result.ImageCount, 0)
+		g.imageSize = result.ImageSize
+		g.imageInputSize = result.ImageInputSize
+		g.imageOutputSize = result.ImageOutputSize
+		g.imageOutputSizes = append([]string(nil), result.ImageOutputSizes...)
+		g.imageSizeSource = result.ImageSizeSource
+		g.imageSizeBreakdown = cloneBillingImageSizeBreakdown(result.ImageSizeBreakdown)
 		g.clientDisconnect = g.clientDisconnect || result.ClientDisconnect
 		g.requestID = result.RequestID
 		g.upstreamModel = result.UpstreamModel
@@ -399,9 +406,8 @@ func failureBillingStringPointer(value string) *string {
 // claudeFailureSink 把失败计费决策落成 Claude 家族的 RecordUsageInput，
 // 复用与成功路径完全相同的 RecordUsage 计费管线，不新增第二套费用计算。
 //
-// 已知偏差：Gemini 成功路径走 RecordUsageWithLongContext（200000 阈值、2.0 倍率），
-// 失败路径经本 sink 走普通 RecordUsage，因此 300K token 的失败 Gemini 请求按 1× 计。
-// 方向是少算，与「宁可少算，不可多算」同侧，暂按已知偏差接受，不在此处补倍率。
+// 成功路径可能携带切号时的 ForceCacheBilling 快照；本失败管线沿用既有策略，
+// 不补该标志。相同原始 usage 在缓存计费策略生效时可能与成功路径费用不同。
 func (h *GatewayHandler) claudeFailureSink(
 	c *gin.Context, apiKey *service.APIKey, subscription *service.UserSubscription,
 	reqModel string, channelMapping service.ChannelMappingResult, body []byte,
@@ -427,6 +433,13 @@ func (h *GatewayHandler) claudeFailureSink(
 		result := &service.ForwardResult{
 			RequestID:                     requestID,
 			Usage:                         d.Usage,
+			ImageCount:                    d.ImageCount,
+			ImageSize:                     d.ImageSize,
+			ImageInputSize:                d.ImageInputSize,
+			ImageOutputSize:               d.ImageOutputSize,
+			ImageOutputSizes:              append([]string(nil), d.ImageOutputSizes...),
+			ImageSizeSource:               d.ImageSizeSource,
+			ImageSizeBreakdown:            cloneBillingImageSizeBreakdown(d.ImageSizeBreakdown),
 			Model:                         reqModel,
 			UpstreamModel:                 d.UpstreamModel,
 			ReasoningEffort:               failureBillingStringPointer(d.ReasoningEffort),

@@ -22,6 +22,7 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		wantTradeNo string
 		wantAmount  float64
 		wantErr     bool
+		pid         string
 	}{
 		{
 			name:        "top level trade success is paid",
@@ -66,12 +67,77 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			wantAmount:  3.21,
 		},
 		{
+			name:    "query failure code is an error",
+			body:    `{"code":0,"msg":"订单不存在"}`,
+			wantErr: true,
+		},
+		{
+			name:    "explicit failure code wins over paid status fields",
+			body:    `{"code":-1,"msg":"签名错误","status":1,"trade_status":"TRADE_SUCCESS","money":"12.34"}`,
+			wantErr: true,
+		},
+		{
+			name:    "string failure code is an error",
+			body:    `{"code":"-1","msg":"error","status":1}`,
+			wantErr: true,
+		},
+		{
+			name:    "foreign order echo is rejected",
+			body:    `{"code":1,"pid":"pid-1","out_trade_no":"order-999","trade_status":"TRADE_SUCCESS","money":"12.34"}`,
+			wantErr: true,
+		},
+		{
+			name:    "foreign order echo in nested data is rejected",
+			body:    `{"code":1,"data":{"out_trade_no":"order-999","trade_status":"TRADE_SUCCESS","money":"12.34"}}`,
+			wantErr: true,
+		},
+		{
+			name:        "string numeric status from PHP deployments is paid",
+			pid:         "1001",
+			body:        `{"code":"1","msg":"查询订单号成功！","trade_no":"2026101600001","out_trade_no":"order-123","pid":"1001","money":"12.34","status":"1"}`,
+			wantStatus:  payment.ProviderStatusPaid,
+			wantTradeNo: "2026101600001",
+			wantAmount:  12.34,
+		},
+		{
+			name:        "string numeric unpaid status is pending",
+			body:        `{"code":1,"trade_no":"2026101600001","money":"12.34","status":"0"}`,
+			wantStatus:  payment.ProviderStatusPending,
+			wantTradeNo: "2026101600001",
+			wantAmount:  12.34,
+		},
+		{
+			name:        "documented caihong response with integer pid and status is paid",
+			pid:         "1001",
+			body:        `{"code":1,"msg":"查询订单号成功！","trade_no":"2016080622555342651","out_trade_no":"order-123","api_trade_no":"4200001","type":"alipay","pid":1001,"addtime":"2016-08-06 22:55:52","endtime":"2016-08-06 22:55:52","name":"VIP会员","money":"1.00","status":1,"param":"","buyer":""}`,
+			wantStatus:  payment.ProviderStatusPaid,
+			wantTradeNo: "2016080622555342651",
+			wantAmount:  1,
+		},
+		{
+			name:        "null top-level fields fall back to nested data",
+			body:        `{"code":1,"pid":null,"out_trade_no":null,"status":null,"money":null,"trade_no":null,"data":{"pid":"pid-1","out_trade_no":"order-123","status":1,"money":"5.00","trade_no":"data-789"}}`,
+			wantStatus:  payment.ProviderStatusPaid,
+			wantTradeNo: "data-789",
+			wantAmount:  5,
+		},
+		{
+			name:        "matching identity echo with numeric fields is paid",
+			body:        `{"code":"1","pid":"pid-1","out_trade_no":"order-123","trade_status":"TRADE_SUCCESS","money":12.34,"trade_no":2026101600001}`,
+			wantStatus:  payment.ProviderStatusPaid,
+			wantTradeNo: "2026101600001",
+			wantAmount:  12.34,
+		},
+		{
 			name:        "missing fields are pending",
 			body:        `{"code":1}`,
 			wantStatus:  payment.ProviderStatusPending,
 			wantTradeNo: "",
 		},
 		{name: "query rejection cannot report paid", body: `{"code":0,"status":1,"trade_no":"gateway-1","pid":"pid-1","out_trade_no":"order-123"}`, wantErr: true},
+		{name: "missing query code cannot report paid", body: `{"status":1,"trade_no":"gateway-1","pid":"pid-1","out_trade_no":"order-123","money":"3.21"}`, wantErr: true},
+		{name: "fractional query code cannot report paid", body: `{"code":1.5,"status":1,"trade_no":"gateway-1","pid":"pid-1","out_trade_no":"order-123","money":"3.21"}`, wantErr: true},
+		{name: "fractional query code rounding to one cannot report paid", body: `{"code":1.0000000000000001,"status":1,"trade_no":"gateway-1","pid":"pid-1","out_trade_no":"order-123","money":"3.21"}`, wantErr: true},
 		{name: "paid query requires real trade number", body: `{"code":1,"status":1,"pid":"pid-1","out_trade_no":"order-123","money":"3.21"}`, wantErr: true},
 		{name: "paid query requires order ID", body: `{"code":1,"status":1,"pid":"pid-1","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
 		{name: "paid query requires merchant ID", body: `{"code":1,"status":1,"out_trade_no":"order-123","trade_no":"gateway-1","money":"3.21"}`, wantErr: true},
@@ -95,9 +161,16 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 				if err := r.ParseForm(); err != nil {
 					t.Errorf("ParseForm: %v", err)
 				}
-				gotForm = make(url.Values, len(r.PostForm))
+				// Parameters must be in the URL query (彩虹易支付 reads $_GET)
+				// and mirrored in the body for forks that read $_POST.
+				gotForm = r.URL.Query()
 				for key, values := range r.PostForm {
-					gotForm[key] = append([]string(nil), values...)
+					if got := gotForm.Get(key); got != values[0] {
+						t.Errorf("body[%s] = %q, query has %q", key, values[0], got)
+					}
+				}
+				if len(r.PostForm) != len(gotForm) {
+					t.Errorf("body params %v do not mirror query params %v", r.PostForm, gotForm)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(tt.body))
@@ -105,6 +178,9 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			defer server.Close()
 
 			provider := newTestEasyPay(t, server.URL)
+			if tt.pid != "" {
+				provider.config["pid"] = tt.pid
+			}
 			resp, err := provider.QueryOrder(context.Background(), orderID)
 			if tt.wantErr {
 				if err == nil {
@@ -124,12 +200,12 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 			if resp.Amount != tt.wantAmount {
 				t.Fatalf("amount = %v, want %v", resp.Amount, tt.wantAmount)
 			}
-			if resp.Status == payment.ProviderStatusPaid && (resp.Metadata["pid"] != "pid-1" || resp.Metadata["out_trade_no"] != orderID) {
+			if resp.Status == payment.ProviderStatusPaid && (resp.Metadata["pid"] != provider.config["pid"] || resp.Metadata["out_trade_no"] != orderID) {
 				t.Fatalf("paid metadata = %v, want upstream pid/order", resp.Metadata)
 			}
 			for key, want := range map[string]string{
 				"act":          "order",
-				"pid":          "pid-1",
+				"pid":          provider.config["pid"],
 				"key":          "pkey-1",
 				"out_trade_no": orderID,
 			} {
