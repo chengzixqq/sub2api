@@ -165,12 +165,13 @@ func writeHumanReport(w io.Writer, report repository.MigrationPreflightReport, r
 	}
 	fmt.Fprintf(
 		w,
-		"status=%s require_no_pending=%t embedded=%d applied=%d pending=%d missing=%d extra=%d checksum_mismatches=%d\n",
+		"status=%s require_no_pending=%t embedded=%d applied=%d pending=%d out_of_order_pending=%d missing=%d extra=%d checksum_mismatches=%d\n",
 		status,
 		requireNoPending,
 		report.EmbeddedCount,
 		report.AppliedCount,
 		len(report.Pending),
+		len(report.OutOfOrderPending),
 		len(report.Missing),
 		len(report.Extra),
 		len(report.ChecksumMismatches),
@@ -191,7 +192,15 @@ func writeHumanReport(w io.Writer, report repository.MigrationPreflightReport, r
 	for _, item := range report.Extra {
 		fmt.Fprintf(w, "extra filename=%s database=%s\n", item.Filename, item.Checksum)
 	}
+	outOfOrder := make(map[string]struct{}, len(report.OutOfOrderPending))
+	for _, name := range report.OutOfOrderPending {
+		outOfOrder[name] = struct{}{}
+	}
 	for _, name := range report.Pending {
+		if _, ok := outOfOrder[name]; ok {
+			fmt.Fprintf(w, "pending filename=%s out_of_order=true\n", name)
+			continue
+		}
 		fmt.Fprintf(w, "pending filename=%s\n", name)
 	}
 }

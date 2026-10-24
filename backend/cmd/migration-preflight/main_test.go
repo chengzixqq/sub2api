@@ -149,3 +149,44 @@ func TestRun_ExplicitConfigRestoresProcessEnvironment(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "sentinel-config-path", got)
 }
+
+func TestWriteHumanReport_MarksOutOfOrderPendingMigrations(t *testing.T) {
+	report := repository.MigrationPreflightReport{
+		EmbeddedCount:      3,
+		AppliedCount:       2,
+		Pending:            []string{"246_upstream.sql"},
+		OutOfOrderPending:  []string{"246_upstream.sql"},
+		Missing:            []string{},
+		Extra:              []repository.AppliedMigration{},
+		Checksums:          []repository.MigrationChecksumResult{},
+		ChecksumMismatches: []repository.MigrationChecksumResult{},
+	}
+	var output bytes.Buffer
+
+	writeHumanReport(&output, report, false)
+
+	require.Contains(t, output.String(), "status=PASS require_no_pending=false embedded=3 applied=2 pending=1 out_of_order_pending=1 missing=0 extra=0 checksum_mismatches=0\n")
+	require.Contains(t, output.String(), "pending filename=246_upstream.sql out_of_order=true\n")
+
+	output.Reset()
+	writeHumanReport(&output, report, true)
+	require.Contains(t, output.String(), "status=FAIL require_no_pending=true")
+}
+
+func TestWriteJSONReport_IncludesOutOfOrderPending(t *testing.T) {
+	report := repository.MigrationPreflightReport{
+		Pending:            []string{"246_upstream.sql"},
+		OutOfOrderPending:  []string{"246_upstream.sql"},
+		Missing:            []string{},
+		Extra:              []repository.AppliedMigration{},
+		Checksums:          []repository.MigrationChecksumResult{},
+		ChecksumMismatches: []repository.MigrationChecksumResult{},
+	}
+	var output bytes.Buffer
+
+	require.NoError(t, writeJSONReport(&output, report, false))
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(output.Bytes(), &decoded))
+	require.Equal(t, true, decoded["valid"])
+	require.Equal(t, []any{"246_upstream.sql"}, decoded["out_of_order_pending"])
+}

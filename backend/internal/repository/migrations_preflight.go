@@ -42,16 +42,35 @@ type MigrationChecksumResult struct {
 // MigrationPreflightReport is the complete read-only comparison between the
 // embedded migration set and schema_migrations.
 //
-// Pending is safe only because it is a contiguous suffix of the sorted
-// embedded migrations. Missing contains gaps before the latest applied file.
+// Pending is safe because it is a contiguous suffix of the sorted embedded
+// migrations, plus registered same-number files that were inserted before an
+// applied migration (also listed in OutOfOrderPending). Missing contains every
+// other gap before the latest applied file.
 type MigrationPreflightReport struct {
 	EmbeddedCount      int                       `json:"embedded_count"`
 	AppliedCount       int                       `json:"applied_count"`
 	Pending            []string                  `json:"pending"`
+	OutOfOrderPending  []string                  `json:"out_of_order_pending"`
 	Missing            []string                  `json:"missing"`
 	Extra              []AppliedMigration        `json:"extra"`
 	Checksums          []MigrationChecksumResult `json:"checksums"`
 	ChecksumMismatches []MigrationChecksumResult `json:"checksum_mismatches"`
+}
+
+// outOfOrderMigrationAllowlist 登记合并上游时插进已有编号中间的迁移文件。
+//
+// 迁移执行器按文件名逐个判断是否执行过，这类文件在已经执行过后续编号的库上
+// 启动时会被补跑；只读预检据此把它们判为 pending（并在 OutOfOrderPending 中标注
+// 乱序补跑），而不是 missing。只有同时满足下面两点才放行，其余中间缺口仍判 missing：
+//   - 文件名在本表中登记；
+//   - 同编号前缀下至少有一个文件已经执行（说明它是与已执行迁移并存的同编号插队文件，
+//     而不是整段迁移历史缺失）。
+//
+// 登记的文件必须只依赖它之前的迁移、可以在任意后续迁移之后安全执行。
+var outOfOrderMigrationAllowlist = map[string]struct{}{
+	// 官方 v0.2.18：把 gemini/antigravity 分组的生图开关置为开启。只更新 groups
+	// 的既有列，247-257 均不触及 groups，晚于它们执行结果相同。
+	"246_enable_gemini_image_generation_groups.sql": {},
 }
 
 // Valid reports whether applying the pending suffix is safe from migration
@@ -81,6 +100,7 @@ type embeddedMigration struct {
 func checkMigrationPreflightFS(ctx context.Context, queryer MigrationPreflightQueryer, fsys fs.FS) (MigrationPreflightReport, error) {
 	report := MigrationPreflightReport{
 		Pending:            make([]string, 0),
+		OutOfOrderPending:  make([]string, 0),
 		Missing:            make([]string, 0),
 		Extra:              make([]AppliedMigration, 0),
 		Checksums:          make([]MigrationChecksumResult, 0),
@@ -121,11 +141,13 @@ func checkMigrationPreflightFS(ctx context.Context, queryer MigrationPreflightQu
 	report.AppliedCount = len(applied)
 
 	embeddedIndex := make(map[string]int, len(embedded))
+	appliedPrefixes := make(map[string]struct{}, len(embedded))
 	lastAppliedIndex := -1
 	for i, item := range embedded {
 		embeddedIndex[item.filename] = i
 		if _, ok := appliedByName[item.filename]; ok {
 			lastAppliedIndex = i
+			appliedPrefixes[migrationNumberPrefix(item.filename)] = struct{}{}
 		}
 	}
 
@@ -161,14 +183,41 @@ func checkMigrationPreflightFS(ctx context.Context, queryer MigrationPreflightQu
 		if _, ok := appliedByName[item.filename]; ok {
 			continue
 		}
-		if i <= lastAppliedIndex {
-			report.Missing = append(report.Missing, item.filename)
-		} else {
+		switch {
+		case i > lastAppliedIndex:
 			report.Pending = append(report.Pending, item.filename)
+		case isAllowedOutOfOrderMigration(item.filename, appliedPrefixes):
+			report.Pending = append(report.Pending, item.filename)
+			report.OutOfOrderPending = append(report.OutOfOrderPending, item.filename)
+		default:
+			report.Missing = append(report.Missing, item.filename)
 		}
 	}
 
 	return report, nil
+}
+
+// isAllowedOutOfOrderMigration 判断一个排在最后已执行迁移之前、自身尚未执行的文件
+// 能否作为乱序补跑的 pending，规则见 outOfOrderMigrationAllowlist。
+func isAllowedOutOfOrderMigration(filename string, appliedPrefixes map[string]struct{}) bool {
+	if _, ok := outOfOrderMigrationAllowlist[filename]; !ok {
+		return false
+	}
+	prefix := migrationNumberPrefix(filename)
+	if prefix == "" {
+		return false
+	}
+	_, ok := appliedPrefixes[prefix]
+	return ok
+}
+
+// migrationNumberPrefix 返回迁移文件名开头的数字编号（如 "246"）；没有数字前缀时返回空串。
+func migrationNumberPrefix(filename string) string {
+	end := 0
+	for end < len(filename) && filename[end] >= '0' && filename[end] <= '9' {
+		end++
+	}
+	return filename[:end]
 }
 
 func loadEmbeddedMigrationChecksums(fsys fs.FS) ([]embeddedMigration, error) {
