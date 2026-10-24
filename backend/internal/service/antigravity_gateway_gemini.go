@@ -43,6 +43,7 @@ func WithForwardGeminiSession(groupID int64, sessionHash string) ForwardGeminiOp
 
 func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte, isStickySession bool, options ...ForwardGeminiOption) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	beginGeminiImageOutputObservation(c)
 	startTime := time.Now()
 	forwardOpts := forwardGeminiOptions{}
 	for _, apply := range options {
@@ -425,6 +426,7 @@ handleSuccess:
 	var firstTokenMs *int
 	var clientDisconnect bool
 	var responseErr error
+	streamFinished := false
 
 	if stream {
 		// 客户端要求流式，直接透传
@@ -433,6 +435,7 @@ handleSuccess:
 			usage = streamRes.usage
 			firstTokenMs = streamRes.firstTokenMs
 			clientDisconnect = streamRes.clientDisconnect
+			streamFinished = streamRes.finished
 		}
 		if err != nil {
 			logger.LegacyPrintf("service.antigravity_gateway", "%s status=stream_error error=%v", prefix, err)
@@ -466,6 +469,12 @@ handleSuccess:
 	if isImageGenerationModel(mappedModel) {
 		// Gemini 图片生成 API 每次请求只生成一张图片（API 限制）
 		imageCount = 1
+	}
+	// 收到结束分片前中断（上游读错误、数据间隔超时、非流式收集出错、客户端断开）时，
+	// 只计真实回吐给客户端的图片，与 ForwardNative 口径一致：按模型名猜出的一张图会被
+	// 失败结算守卫当成真实上游用量按张扣费。非流式出错时客户端什么都没收到，计 0。
+	if (responseErr != nil || clientDisconnect) && !streamFinished {
+		imageCount = min(imageCount, observedGeminiImageOutputs(c))
 	}
 
 	return &ForwardResult{

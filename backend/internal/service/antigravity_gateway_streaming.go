@@ -14,12 +14,14 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 type antigravityStreamResult struct {
 	usage            *ClaudeUsage
 	firstTokenMs     *int
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
+	finished         bool // 是否已收到上游带 finishReason 的结束分片（目前只有 Gemini 透传流填写）
 }
 
 func (s *AntigravityGatewayService) observeAntigravityGeminiSSELine(c *gin.Context, line string) {
@@ -144,6 +146,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 	usage := &ClaudeUsage{}
 	var firstTokenMs *int
+	finished := false
 
 	type scanEvent struct {
 		line string
@@ -230,19 +233,19 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected(), finished: finished}, nil
 			}
 			if ev.err != nil {
 				if disconnect, handled := handleStreamReadError(ev.err, cw.Disconnected(), "antigravity gemini"); handled {
-					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: disconnect}, nil
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: disconnect, finished: finished}, nil
 				}
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity): max_size=%d error=%v", maxLineSize, ev.err)
 					sendErrorEvent("response_too_large")
-					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
+					return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, finished: finished}, ev.err
 				}
 				sendErrorEvent("stream_read_error")
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, finished: finished}, ev.err
 			}
 
 			lastDataAt = time.Now()
@@ -266,6 +269,11 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				// 解析 usage
 				if u := extractGeminiUsage(inner); u != nil {
 					usage = u
+				}
+				// 图片计费只认真实回吐给客户端的内联图片和结束分片，见 ForwardGemini。
+				observeGeminiImageOutputs(c, inner)
+				if gjson.GetBytes(inner, "candidates.0.finishReason").String() != "" {
+					finished = true
 				}
 				var parsed map[string]any
 				if json.Unmarshal(inner, &parsed) == nil {
@@ -311,11 +319,11 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 			}
 			if cw.Disconnected() {
 				logger.LegacyPrintf("service.antigravity_gateway", "Upstream timeout after client disconnect (antigravity gemini), returning collected usage")
-				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
+				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true, finished: finished}, nil
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
 			sendErrorEvent("stream_timeout")
-			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
+			return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, finished: finished}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:
 			if cw.Disconnected() {
