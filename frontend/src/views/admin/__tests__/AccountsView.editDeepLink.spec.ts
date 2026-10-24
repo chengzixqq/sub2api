@@ -231,6 +231,35 @@ describe('admin AccountsView edit deep link', () => {
     expect(router.currentRoute.value.query).toEqual({})
   })
 
+  it('ignores persisted platform and status filters for a deep link so the linked row stays visible', async () => {
+    localStorage.setItem('account-filter-values', JSON.stringify({ platform: 'openai', status: 'error' }))
+    const listParamsAtCall: Array<{ platform?: string; status?: string; search?: string }> = []
+    listAccounts.mockImplementation(async (_page: number, _size: number, params: { platform?: string; status?: string; search?: string }) => {
+      listParamsAtCall.push({ platform: params.platform, status: params.status, search: params.search })
+      return page([account])
+    })
+    const router = await createTestRouter('/admin/accounts?edit=12&search=acc-x')
+    mountView(router)
+    await flushPromises()
+
+    expect(listParamsAtCall[0]).toEqual({ platform: '', status: '', search: 'acc-x' })
+    expect(JSON.parse(localStorage.getItem('account-filter-values') ?? '{}')).toEqual({ platform: 'openai', status: 'error' })
+  })
+
+  it('keeps persisted platform and status filters without deep link parameters', async () => {
+    localStorage.setItem('account-filter-values', JSON.stringify({ platform: 'openai', status: 'error' }))
+    const listParamsAtCall: Array<{ platform?: string; status?: string }> = []
+    listAccounts.mockImplementation(async (_page: number, _size: number, params: { platform?: string; status?: string }) => {
+      listParamsAtCall.push({ platform: params.platform, status: params.status })
+      return page([account])
+    })
+    const router = await createTestRouter('/admin/accounts')
+    mountView(router)
+    await flushPromises()
+
+    expect(listParamsAtCall[0]).toEqual({ platform: 'openai', status: 'error' })
+  })
+
   it('shows a hint for an invalid id without requesting account details', async () => {
     const router = await createTestRouter('/admin/accounts?edit=abc')
     const wrapper = mountView(router)

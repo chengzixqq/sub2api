@@ -1920,11 +1920,15 @@ const handleEdit = async (a: Pick<AccountListItem, 'id'>) => {
 /**
  * 读取 `?edit=<id>[&search=<名称>]` 深链：search 预填到列表筛选，
  * 随后无论成败都从地址栏去掉这两个参数，避免刷新时重复弹窗或重复报错。
+ * 深链要让目标账号出现在列表里，因此本次不套用本地记住的平台/状态筛选
+ * （只清空当前页面的筛选，不改写已保存的值）。
  */
 const consumeAccountDeepLink = (): AccountDeepLink | null => {
   if (!route) return null
   const link = parseAccountDeepLink(route.query)
   if (!link.present) return null
+  params.platform = ''
+  params.status = ''
   if (link.search !== null) params.search = link.search
   router?.replace({ query: link.rest }).catch((error: unknown) => {
     console.warn('Failed to clear account deep link query:', error)
