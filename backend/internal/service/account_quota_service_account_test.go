@@ -206,3 +206,66 @@ func TestNotifyAccountQuotaSkipsWhenQuotaIncrementSkipped(t *testing.T) {
 	}, &UsageBillingApplyResult{Applied: true})
 	require.Zero(t, settings.calls)
 }
+
+// 合并后的 probe follower（ProbeCoalesced=true、ProviderCostRecorded=false）照常向请求用户扣费，
+// 但供应商成本已由 leader 记过：设了上限的账号不能再累加 quota_used，也不能再触发配额通知。
+// 账号必须设 quota_limit，否则 shouldUpdateAccountQuota 本身就是 false，门控判断形同虚设。
+func TestCoalescedFollowerSkipsLimitedServiceAccountQuota(t *testing.T) {
+	limited := func() *Account {
+		return &Account{ID: 9, Platform: PlatformGemini, Type: AccountTypeServiceAccount, Extra: map[string]any{
+			"quota_limit": 100.0, "quota_daily_limit": 10.0,
+		}}
+	}
+	follower := func() *postUsageBillingParams {
+		return &postUsageBillingParams{
+			Cost:                  &CostBreakdown{TotalCost: 2, ActualCost: 3},
+			User:                  &User{ID: 7},
+			APIKey:                &APIKey{ID: 13},
+			Account:               limited(),
+			AccountRateMultiplier: 1.5,
+			ProbeCoalesced:        true,
+			ProviderCostRecorded:  false,
+		}
+	}
+
+	t.Run("billing command", func(t *testing.T) {
+		repo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+		applied, err := applyUsageBilling(context.Background(), "req-follower-sa", nil, follower(), &billingDeps{}, repo)
+		require.NoError(t, err)
+		require.True(t, applied)
+		require.NotNil(t, repo.lastCmd)
+		require.Greater(t, repo.lastCmd.BalanceCost, 0.0, "follower 仍向请求用户扣费")
+		require.Zero(t, repo.lastCmd.AccountQuotaCost)
+		require.False(t, repo.lastCmd.AccountQuotaHasDailyLimit)
+
+		leader := follower()
+		leader.ProbeCoalesced = false
+		repo = &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+		_, err = applyUsageBilling(context.Background(), "req-leader-sa", nil, leader, &billingDeps{deferredService: &DeferredService{}}, repo)
+		require.NoError(t, err)
+		require.InDelta(t, 3.0, repo.lastCmd.AccountQuotaCost, 1e-9, "对照：leader 照常累加账号配额")
+	})
+
+	t.Run("legacy post billing", func(t *testing.T) {
+		// 只看账号配额累加：ActualCost 置 0，避开与本用例无关的用户余额扣减依赖。
+		p := follower()
+		p.Cost.ActualCost = 0
+		repo := &accountQuotaIncrementRepoStub{}
+		postUsageBilling(context.Background(), p, &billingDeps{accountRepo: repo})
+		require.Empty(t, repo.calls)
+
+		leader := follower()
+		leader.Cost.ActualCost = 0
+		leader.ProviderCostRecorded = true
+		postUsageBilling(context.Background(), leader, &billingDeps{accountRepo: repo})
+		require.Len(t, repo.calls, 1, "对照：leader 照常累加账号配额")
+	})
+
+	t.Run("quota notification", func(t *testing.T) {
+		settings := &settingGetValueCounter{}
+		notifyAccountQuota(follower(), &billingDeps{
+			balanceNotifyService: NewBalanceNotifyService(NewEmailService(settings, nil), settings, nil),
+		}, nil)
+		require.Zero(t, settings.calls)
+	})
+}

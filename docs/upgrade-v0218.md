@@ -15,8 +15,8 @@
 
 | 文件 | 处理 |
 |---|---|
-| `Dockerfile` | 采用官方 Node 24、Go 1.27.3，保留定制入口 `chmod 0755`。 |
-| `backend/cmd/server/VERSION` | 保留官方标签中的原值 `0.2.17`；v0.2.18 标签内该值未递增。 |
+| `Dockerfile` | 采用官方 Go 1.27.3，保留定制入口 `chmod 0755`；Node 镜像按 v0.2.15 的决定固定为 `node:24.19.0-alpine`（审查修正，见文末）。 |
+| `backend/cmd/server/VERSION` | 合并时取了官方标签内滞后的 `0.2.17`；审查修正为 `0.2.18`，与前两次升级的惯例一致（见文末）。 |
 | `backend/internal/payment/types.go` | 双方 import、V1/V2 类型、`RequestedAt`、`NotificationConfirmer` 全保留。 |
 | `backend/internal/service/payment_fulfillment.go / RetryFulfillment` | 合入官方订单类型白名单，保留本地 lease、验真、交易号校验与 CAS。 |
 | `backend/internal/service/gateway_count_tokens.go` | 本地 URL 脱敏与官方凭据/协议 404 保护同时保留。 |
@@ -239,7 +239,7 @@ FAIL
 ## 未解决或后续跟进
 
 - 集成测试仍存在上列本机基线失败，不能宣称集成全部通过；按指定脚本的顶层测试名称比较没有新增失败，不能据此证明各失败测试的所有子场景均与历史相同。环境和既有断言的具体原因见完整 integration 日志。
-- 官方 v0.2.18 标签内 VERSION 为 0.2.17；本次遵守“版本文件官方优先”保留。
+- 官方 v0.2.18 标签内 VERSION 为 0.2.17；审查修正已改为 0.2.18（见文末）。
 - B4 缓存计费成功/失败差异沿用既有策略；如需统一优惠，另行决定计费政策。
 - 旧支付宝退款缺少可查询编号时仍可能返回 `REFUND_QUERY_UNSUPPORTED`，需人工核对，不能猜状态或重发。
 - 升级分支完成后仍需用户自行评估发布；本任务不部署。
@@ -254,3 +254,22 @@ FAIL
 - `ROLLBACK.sh`：只接受匹配的独立源码副本，利用同目录 pristine baseline 和 manifest 恢复；拒绝含 .git 的真实 checkout。
 
 同输入迁移顺序检查：BASELINE 仅 238、MODIFIED 238+246、ROLLBACK 再次仅 238；实际回退执行后逐文件 SHA256 等于 pristine。最终实测输出以 VERIFICATION.txt 为准。回退未作用于真实仓库或数据库。
+
+## 审查修正（合并后）
+
+| 问题 | 修正 |
+|---|---|
+| Antigravity 原生 Gemini（`/v1beta`、`/antigravity/v1beta` 的 `ForwardGemini`）出错时仍按模型名返回 `ImageCount=1`；合并后结算守卫会带上图片字段，失败结算会按张扣一张从未生成也未送达的图 | `ForwardGemini` 开始时重置图片观察计数；Gemini 透传流记录真实回吐的内联图片与结束分片。收到结束分片前出错或客户端断开时，图片数取 min(模型名口径, 已回吐图片数)；非流式收集出错计 0。与 `ForwardNative` 口径一致，正常完成的请求不变。 |
+| `deploy/Dockerfile`、`backend/Dockerfile` 仍用 `golang:1.27.2-alpine`，而 `go.mod` 要求 1.27.3，镜像构建会在 `go mod download` 失败 | 两处改为 `golang:1.27.3-alpine`；新增 `cmd/server/build_toolchain_test.go` 锁定三个 Dockerfile 的 Go 镜像与 `go.mod` 一致。 |
+| 根 Dockerfile 的 `NODE_IMAGE` 被冲突块带回浮动的 `node:24-alpine` | 恢复 `node:24.19.0-alpine`（与 CI 一致），同一测试文件锁定。 |
+| 官方 `246_enable_gemini_image_generation_groups.sql` 插在已执行的定制 246 与 247–257 之间，只读预检把它判为 missing，`status=FAIL`、退出码 2 | 预检新增登记表 `outOfOrderMigrationAllowlist`：已登记、且同编号下已有迁移执行过的文件判为 pending，并列入新字段 `out_of_order_pending`（人读报告标 `out_of_order=true`）。未登记文件、编号无已执行同伴的文件仍判 missing；已执行的登记文件照常比对校验和。 |
+| VERSION 取了官方滞后的 0.2.17 | 改为 0.2.18。 |
+| 账号页深链 `?edit=&search=` 会叠加 localStorage 里恢复的平台/状态筛选，目标账号可能不在列表里 | 深链进入时本次清空平台/状态筛选，不改写已保存的值。 |
+| probe follower 的账号配额门控测试用的是没有上限的账号，门控没有真正被验证 | 新增设了上限的 service_account follower 用例，覆盖计费命令、legacy 扣费、配额通知三处门控。 |
+
+迁移预检的预期输出（不带 `--require-no-pending`）：
+
+- 已从原 main 执行到 257 的库：`status=PASS ... pending=1 out_of_order_pending=1 missing=0 extra=0 checksum_mismatches=0`，`pending filename=246_enable_gemini_image_generation_groups.sql out_of_order=true`，退出码 0。
+- 生产 e5ab7e4f4（执行到定制 246）的库：`status=PASS ... pending=12 out_of_order_pending=0 missing=0 extra=0 checksum_mismatches=0`，pending 为官方 246 与 247–257，退出码 0。
+
+`deploy/upgrade-compose.sh` 固定带 `--require-no-pending`，上面两种库 pending 都不为 0，会照常拒绝（退出码 2），这次升级不能用该脚本，需按测试环境指令先启动新版本完成迁移。
