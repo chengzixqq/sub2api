@@ -4,6 +4,7 @@ package ent
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"time"
@@ -278,6 +279,12 @@ func (_c *UsageLogCreate) SetNillableCacheCreation1hTokens(v *int) *UsageLogCrea
 	if v != nil {
 		_c.SetCacheCreation1hTokens(*v)
 	}
+	return _c
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (_c *UsageLogCreate) SetBillingDetails(v jsontext.Value) *UsageLogCreate {
+	_c.mutation.SetBillingDetails(v)
 	return _c
 }
 
@@ -1092,6 +1099,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 		_spec.SetField(usagelog.FieldCacheCreation1hTokens, field.TypeInt, value)
 		_node.CacheCreation1hTokens = value
 	}
+	if value, ok := _c.mutation.BillingDetails(); ok {
+		_spec.SetField(usagelog.FieldBillingDetails, field.TypeJSON, value)
+		_node.BillingDetails = value
+	}
 	if value, ok := _c.mutation.InputCost(); ok {
 		_spec.SetField(usagelog.FieldInputCost, field.TypeFloat64, value)
 		_node.InputCost = value
@@ -1696,6 +1707,24 @@ func (u *UsageLogUpsert) UpdateCacheCreation1hTokens() *UsageLogUpsert {
 // AddCacheCreation1hTokens adds v to the "cache_creation_1h_tokens" field.
 func (u *UsageLogUpsert) AddCacheCreation1hTokens(v int) *UsageLogUpsert {
 	u.Add(usagelog.FieldCacheCreation1hTokens, v)
+	return u
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (u *UsageLogUpsert) SetBillingDetails(v jsontext.Value) *UsageLogUpsert {
+	u.Set(usagelog.FieldBillingDetails, v)
+	return u
+}
+
+// UpdateBillingDetails sets the "billing_details" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateBillingDetails() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldBillingDetails)
+	return u
+}
+
+// ClearBillingDetails clears the value of the "billing_details" field.
+func (u *UsageLogUpsert) ClearBillingDetails() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldBillingDetails)
 	return u
 }
 
@@ -2652,6 +2681,27 @@ func (u *UsageLogUpsertOne) AddCacheCreation1hTokens(v int) *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) UpdateCacheCreation1hTokens() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheCreation1hTokens()
+	})
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (u *UsageLogUpsertOne) SetBillingDetails(v jsontext.Value) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetBillingDetails(v)
+	})
+}
+
+// UpdateBillingDetails sets the "billing_details" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateBillingDetails() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateBillingDetails()
+	})
+}
+
+// ClearBillingDetails clears the value of the "billing_details" field.
+func (u *UsageLogUpsertOne) ClearBillingDetails() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearBillingDetails()
 	})
 }
 
@@ -3857,6 +3907,27 @@ func (u *UsageLogUpsertBulk) AddCacheCreation1hTokens(v int) *UsageLogUpsertBulk
 func (u *UsageLogUpsertBulk) UpdateCacheCreation1hTokens() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.UpdateCacheCreation1hTokens()
+	})
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (u *UsageLogUpsertBulk) SetBillingDetails(v jsontext.Value) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetBillingDetails(v)
+	})
+}
+
+// UpdateBillingDetails sets the "billing_details" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateBillingDetails() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateBillingDetails()
+	})
+}
+
+// ClearBillingDetails clears the value of the "billing_details" field.
+func (u *UsageLogUpsertBulk) ClearBillingDetails() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearBillingDetails()
 	})
 }
 

@@ -256,6 +256,7 @@ import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { getBillingModeLabel, getDisplayBillingMode as resolveDisplayBillingMode } from '@/utils/billingMode'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { USAGE_EXPORT_PAGE_SIZE, queryUsageExportPage, serializeUsageBillingDetails } from '@/utils/usageExport'
 import type {
   ApiKey,
   EndpointStat,
@@ -693,9 +694,13 @@ const exportToCSV = async () => {
   appStore.showInfo(t('usage.preparingExport'))
   try {
     const allLogs: UsageLog[] = []
-    const pageSize = 100
+    const pageSize = USAGE_EXPORT_PAGE_SIZE
     for (let page = 1; ; page++) {
-      const response = await usageAPI.query({ ...exportQuery, page, page_size: pageSize, count_mode: 'exact' }, { signal: controller.signal })
+      const response = await queryUsageExportPage(
+        () => usageAPI.query({ ...exportQuery, page, page_size: pageSize, count_mode: 'exact' }, { signal: controller.signal }),
+        controller.signal,
+        seconds => appStore.showInfo(t('usage.exportRateLimited', { seconds })),
+      )
       if (controller.signal.aborted) return
       allLogs.push(...response.items)
       const hasMore = response.has_more ?? (response.pages != null ? page < response.pages : response.items.length >= pageSize)
@@ -723,6 +728,8 @@ const exportToCSV = async () => {
       'Original Cost',
       'First Token (ms)',
       'Duration (ms)',
+      'Billing Details Status',
+      'Billing Details',
     ]
     const rows = allLogs.map((log) => [
       log.created_at,
@@ -742,6 +749,8 @@ const exportToCSV = async () => {
       log.total_cost.toFixed(8),
       log.first_token_ms ?? '',
       log.duration_ms ?? '',
+      log.billing_details?.status ?? '',
+      serializeUsageBillingDetails(log.billing_details),
     ].map(escapeCSVValue))
     const csvContent = [
       headers.map(escapeCSVValue).join(','),

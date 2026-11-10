@@ -209,6 +209,7 @@ import { useAppStore } from '@/stores/app'; import { adminAPI } from '@/api/admi
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import { formatReasoningEffort } from '@/utils/format'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
+import { USAGE_EXPORT_PAGE_SIZE, queryUsageExportPage, BILLING_DETAIL_EXPORT_HEADERS, usageBillingDetailExportRows } from '@/utils/usageExport'
 import UsageRegionState from '@/components/common/UsageRegionState.vue'
 import { createUsageRequests, last24Hours, localMinute, reconcileUsageTotal, snapshotUsageQuery, usageGranularity } from '@/utils/usageQuery'
 import AppLayout from '@/components/layout/AppLayout.vue'; import Pagination from '@/components/common/Pagination.vue'; import Select from '@/components/common/Select.vue'; import DateRangePicker from '@/components/common/DateRangePicker.vue'
@@ -615,7 +616,7 @@ const exportToExcel = async () => {
   exportProgress.total = 0
   exportProgress.progress = 0
   const c = new AbortController(); exportAbortController = c
-  const exportQuery = Object.freeze(buildUsageListParams(1, 100, true))
+  const exportQuery = Object.freeze(buildUsageListParams(1, USAGE_EXPORT_PAGE_SIZE, true))
   const rangeName = `${startDate.value}_to_${endDate.value}`
   try {
     let p = 1; let total = pagination.total ?? 0; let exportedCount = 0
@@ -631,38 +632,54 @@ const exportToExcel = async () => {
       t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
       t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.firstToken'), t('usage.duration'),
-      t('admin.usage.requestId'), t('admin.usage.upstreamRequestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
+      t('admin.usage.requestId'), t('admin.usage.upstreamRequestId'), t('usage.userAgent'), t('admin.usage.ipAddress'),
+      t('usage.billingDetailsStatus'), t('usage.billingComponentCount'), t('usage.billingUsageId')
     ]
     const ws = XLSX.utils.aoa_to_sheet([headers])
+    const detailsWs = XLSX.utils.aoa_to_sheet([[...BILLING_DETAIL_EXPORT_HEADERS]])
+    let detailCount = 0
     while (true) {
-      const res = await adminUsageAPI.list(
-        { ...exportQuery, page: p, count_mode: 'exact' },
-        { signal: c.signal }
+      const res = await queryUsageExportPage(
+        () => adminUsageAPI.list({ ...exportQuery, page: p, count_mode: 'exact' }, { signal: c.signal }),
+        c.signal,
+        seconds => appStore.showInfo(t('usage.exportRateLimited', { seconds })),
       )
-      if (c.signal.aborted) break; if (p === 1) { total = res.total; exportProgress.total = total }
+      if (c.signal.aborted) break
+      if (res.total != null) { total = res.total; exportProgress.total = total }
       const rows = (res.items || []).map((log: AdminUsageLog) => [
         log.created_at, log.user?.email || '', log.api_key?.name || '', log.account?.name || '', log.model,
         log.upstream_model || log.model, log.upstream_response_model || '', log.upstream_model_mismatch == null ? '' : t(log.upstream_model_mismatch ? 'common.yes' : 'common.no'), formatReasoningEffort(log.reasoning_effort), formatReasoningEffort(log.upstream_reasoning_effort || log.reasoning_effort), log.group?.name || '',
         log.inbound_endpoint || '', log.upstream_endpoint || '', getRequestTypeLabel(log),
         log.input_tokens, log.output_tokens, log.cache_read_tokens, log.cache_creation_tokens,
-        log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000',
-        log.cache_read_cost?.toFixed(6) || '0.000000', log.cache_creation_cost?.toFixed(6) || '0.000000',
+        log.input_cost?.toFixed(8) || '0.00000000', log.output_cost?.toFixed(8) || '0.00000000',
+        log.cache_read_cost?.toFixed(8) || '0.00000000', log.cache_creation_cost?.toFixed(8) || '0.00000000',
         log.rate_multiplier?.toPrecision(4) || '1.00', (log.account_rate_multiplier ?? 1).toPrecision(4),
-        log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
-        ((log.account_stats_cost ?? log.total_cost) * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_token_ms ?? '', log.duration_ms,
-        log.request_id || '', log.upstream_request_id || '', log.user_agent || '', log.ip_address || ''
+        log.total_cost?.toFixed(8) || '0.00000000', log.actual_cost?.toFixed(8) || '0.00000000',
+        ((log.account_stats_cost ?? log.total_cost) * (log.account_rate_multiplier ?? 1)).toFixed(8), log.first_token_ms ?? '', log.duration_ms,
+        log.request_id || '', log.upstream_request_id || '', log.user_agent || '', log.ip_address || '',
+        log.billing_details?.status ?? '', log.billing_details?.components.length ?? '', log.id
       ])
       if (rows.length) {
         XLSX.utils.sheet_add_aoa(ws, rows, { origin: -1 })
       }
+      for (const log of res.items || []) {
+        const detailRows = usageBillingDetailExportRows(log, t('usage.billingNotPriced'))
+        if (detailRows.length) {
+          XLSX.utils.sheet_add_aoa(detailsWs, detailRows, { origin: -1 })
+          detailCount += detailRows.length
+        }
+      }
       exportedCount += rows.length
       exportProgress.current = exportedCount
       exportProgress.progress = total > 0 ? Math.min(100, Math.round(exportedCount / total * 100)) : 0
-      if (exportedCount >= total || res.items.length < 100) break; p++
+      const hasMore = res.pages != null ? p < res.pages : res.items.length >= USAGE_EXPORT_PAGE_SIZE
+      if (!hasMore || (res.total != null && exportedCount >= res.total)) break
+      p++
     }
     if(!c.signal.aborted) {
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, 'Usage')
+      if (detailCount) XLSX.utils.book_append_sheet(wb, detailsWs, 'Billing Details')
       saveAs(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `usage_${rangeName}.xlsx`)
       appStore.showSuccess(t('usage.exportSuccess'))
     }

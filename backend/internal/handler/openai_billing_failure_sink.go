@@ -56,6 +56,9 @@ func openAIFailureUsageFromDecision(d service.FailureBillingDecision) service.Op
 		OutputTokens:             d.Usage.OutputTokens,
 		CacheReadInputTokens:     d.Usage.CacheReadInputTokens,
 		CacheCreationInputTokens: d.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens:    d.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens:    d.Usage.CacheCreation1hTokens,
+		IterationUsage:           d.Usage.Clone().IterationUsage,
 		ImageOutputTokens:        d.Usage.ImageOutputTokens,
 	}
 }

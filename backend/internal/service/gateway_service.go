@@ -597,13 +597,16 @@ func (r *AccountSelectionResult) ProfitGateActive() bool {
 
 // ClaudeUsage 表示Claude API返回的usage信息
 type ClaudeUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreation5mTokens    int // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
-	CacheCreation1hTokens    int // 1小时缓存创建token（来自嵌套 cache_creation 对象）
-	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
+	// IterationUsage retains cumulative server-side sub-inference snapshots.
+	// It is never serialized into client responses by the billing path.
+	IterationUsage           *ClaudeIterationUsage `json:"-"`
+	InputTokens              int                   `json:"input_tokens"`
+	OutputTokens             int                   `json:"output_tokens"`
+	CacheCreationInputTokens int                   `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                   `json:"cache_read_input_tokens"`
+	CacheCreation5mTokens    int                   // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation1hTokens    int                   // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	ImageInputTokens         int                   `json:"image_input_tokens,omitempty"`
 	// ImageCacheReadTokens is an OpenAI-compatible image subset of
 	// CacheReadInputTokens.  It is carried through the shared failure-billing
 	// decision type so an OpenAI failure cannot lose the cheaper image-cache
@@ -619,7 +622,8 @@ type AudioUsage struct {
 }
 
 type ForwardResult struct {
-	RequestID string
+	BillingDetails *BillingDetails
+	RequestID      string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
 	UpstreamHeaders http.Header
 	Usage           ClaudeUsage
@@ -648,7 +652,11 @@ type ForwardResult struct {
 	ServiceTier *string
 
 	// 图片生成计费字段（图片生成模型使用）
-	ImageCount         int    // 生成的图片数量
+	ImageCount int // 生成的图片数量
+	// ImageEndpoint 标记请求来自专用图片端点（/v1/images/*、图片模型端点）。
+	// 分组 image_count_billing 开关只对这类请求生效，混合的 Responses/Chat/WS
+	// 请求带图片工具时仍按 token 计费。
+	ImageEndpoint      bool
 	ImageSize          string // 最终计费尺寸 "1K", "2K", "4K"
 	ImageInputSize     string // 请求中的原始图片尺寸
 	ImageOutputSize    string // 上游响应中的图片尺寸

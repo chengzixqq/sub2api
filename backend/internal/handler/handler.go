@@ -76,6 +76,7 @@ type Handlers struct {
 	ModelPlaza          *ModelPlazaHandler
 	AsyncImage          *AsyncImageHandler
 	BatchImage          *BatchImageHandler
+	MCPOAuth            *MCPOAuthHandler
 }
 
 // BuildInfo contains build-time information

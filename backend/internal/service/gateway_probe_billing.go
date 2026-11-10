@@ -135,10 +135,11 @@ func (s *GatewayService) CanBillSyntheticProbe(ctx context.Context, apiKey *APIK
 // acquires an account slot or performs upstream I/O; followers may reuse the
 // leader's snapshot solely for billing dimensions and audit attribution.
 type SyntheticProbeUsageInput struct {
-	APIKey       *APIKey
-	User         *User
-	Account      *Account
-	Subscription *UserSubscription
+	UsageSnapshot *ClaudeUsage
+	APIKey        *APIKey
+	User          *User
+	Account       *Account
+	Subscription  *UserSubscription
 
 	RequestID           string
 	Model               string
@@ -225,6 +226,9 @@ func (s *GatewayService) RecordSyntheticProbeUsage(ctx context.Context, in *Synt
 			CacheCreationInputTokens: max(in.CacheCreationTokens, 0),
 			CacheReadInputTokens:     max(in.CacheReadTokens, 0),
 		},
+	}
+	if in.UsageSnapshot != nil {
+		result.Usage = in.UsageSnapshot.Clone()
 	}
 
 	return s.recordUsageCore(ctx, &recordUsageCoreInput{

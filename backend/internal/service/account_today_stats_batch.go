@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"fmt"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"log/slog"
 	"sync"
 	"time"
@@ -43,6 +46,10 @@ type accountWindowStatsGroupBatchReader interface {
 //
 // 批量 SQL 成功时，结果里没有的账号表示今天没有请求，补 0 但不算失败。
 func (s *AccountUsageService) GetTodayStatsBatchDetailed(ctx context.Context, accountIDs []int64) (map[int64]*WindowStats, []int64, bool, error) {
+	if err := s.checkTodayStatsAccountAccess(ctx, accountIDs); err != nil {
+		return nil, []int64{}, false, err
+	}
+
 	uniqueIDs := uniquePositiveAccountIDs(accountIDs)
 	result := make(map[int64]*WindowStats, len(uniqueIDs))
 	failed := []int64{}
@@ -97,6 +104,10 @@ func (s *AccountUsageService) GetTodayStatsBatchDetailed(ctx context.Context, ac
 //   - 分组 SQL 失败或仓储不支持分组读取：stats 为 nil，failed 为全部账号，
 //     err 为 ErrAccountStatsUnavailable。宁可失败也不返回未按分组过滤或补 0 的数字。
 func (s *AccountUsageService) GetTodayStatsBatchByGroup(ctx context.Context, accountIDs []int64, groupID int64) (map[int64]*WindowStats, []int64, bool, error) {
+	if err := s.checkTodayStatsAccountAccess(ctx, accountIDs); err != nil {
+		return nil, []int64{}, false, err
+	}
+
 	if groupID <= 0 {
 		return nil, []int64{}, false, ErrInvalidGroupFilter
 	}
@@ -175,4 +186,21 @@ func uniquePositiveAccountIDs(accountIDs []int64) []int64 {
 		uniqueIDs = append(uniqueIDs, accountID)
 	}
 	return uniqueIDs
+}
+
+// checkTodayStatsAccountAccess also guards the custom detailed/grouped paths,
+// so restricted keys cannot bypass the official account resource boundary.
+func (s *AccountUsageService) checkTodayStatsAccountAccess(ctx context.Context, accountIDs []int64) error {
+	if adminaccess.RestrictedFromContext(ctx) == nil {
+		return nil
+	}
+	if len(accountIDs) > 100 {
+		return fmt.Errorf("账户数量超过限制")
+	}
+	for _, id := range accountIDs {
+		if err := scopedAccountIDAccess(ctx, s.accountRepo, id, "accounts.stats.read", false); err != nil {
+			return err
+		}
+	}
+	return nil
 }

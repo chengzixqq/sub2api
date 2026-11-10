@@ -56,6 +56,8 @@ func newAccessTokenTestEnv(t *testing.T, users map[int64]*service.User, tokens m
 	group.PUT("/push/devices/:id/subscription", record)
 	group.POST("/push/devices/:id/test", record)
 	group.PUT("/push/config", record)
+	group.GET("/settings/admin-api-key", record)
+	group.POST("/settings/admin-api-keys", record)
 	return env
 }
 
@@ -82,6 +84,21 @@ func TestAdminAccessToken_ActsAsItsOwner(t *testing.T) {
 	require.Equal(t, service.AuditAuthMethodAdminAccessToken, env.seen.GetString("auth_method"))
 	require.Equal(t, "second-admin@example.com", env.seen.GetString(ContextKeyAuthEmail))
 	require.Equal(t, int64(7), env.seen.GetInt64(ContextKeyAdminAccessTokenID))
+}
+
+func TestAdminAccessToken_CannotManageAdminKeys(t *testing.T) {
+	owner := &service.User{ID: 42, Role: service.RoleAdmin, Status: service.StatusActive}
+	env := newAccessTokenTestEnv(t, map[int64]*service.User{42: owner}, map[string]*service.AdminAccessToken{
+		"sat_write": {ID: 7, UserID: 42, Scope: service.AdminAccessTokenScopeWrite, ExpiresAt: time.Now().Add(time.Hour)},
+	})
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/settings/admin-api-key"},
+		{http.MethodPost, "/api/v1/admin/settings/admin-api-keys"},
+	} {
+		w := env.do(request.method, request.path, "sat_write")
+		require.Equal(t, http.StatusForbidden, w.Code)
+		require.Nil(t, env.seen)
+	}
 }
 
 func TestAdminAccessToken_ReadOnlyBlocksWrites(t *testing.T) {

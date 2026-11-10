@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/xml"
 	"fmt"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -40,11 +44,80 @@ func detectOpenAIImageResultSize(encoded string) string {
 		}
 		cfg, _, err := image.DecodeConfig(buffered)
 		if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+			svgReader := io.LimitReader(base64.NewDecoder(encoding, strings.NewReader(payload)), maxOpenAIImageDimensionProbeBytes)
+			if width, height, ok := detectOpenAISVGDimensions(svgReader); ok {
+				return fmt.Sprintf("%dx%d", width, height)
+			}
 			continue
 		}
 		return fmt.Sprintf("%dx%d", cfg.Width, cfg.Height)
 	}
 	return ""
+}
+
+// SVG is a native output of GPT Image 2.6. Read only its bounded XML header;
+// image.DecodeConfig supports raster formats, so it cannot identify SVG.
+func detectOpenAISVGDimensions(reader io.Reader) (int, int, bool) {
+	decoder := xml.NewDecoder(reader)
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return 0, 0, false
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) != "" {
+				return 0, 0, false
+			}
+		case xml.Directive:
+			return 0, 0, false
+		case xml.StartElement:
+			if value.Name.Local != "svg" || (value.Name.Space != "" && value.Name.Space != "http://www.w3.org/2000/svg") {
+				return 0, 0, false
+			}
+			var width, height, viewWidth, viewHeight float64
+			for _, attr := range value.Attr {
+				if attr.Name.Space != "" {
+					continue
+				}
+				switch attr.Name.Local {
+				case "width":
+					width = openAISVGLength(attr.Value)
+				case "height":
+					height = openAISVGLength(attr.Value)
+				case "viewBox":
+					parts := strings.Fields(strings.ReplaceAll(attr.Value, ",", " "))
+					if len(parts) == 4 {
+						viewWidth, viewHeight = openAISVGLength(parts[2]), openAISVGLength(parts[3])
+					}
+				}
+			}
+			if viewWidth > 0 && viewHeight > 0 {
+				if width <= 0 && height <= 0 {
+					width, height = viewWidth, viewHeight
+				} else if width <= 0 {
+					width = height * viewWidth / viewHeight
+				} else if height <= 0 {
+					height = width * viewHeight / viewWidth
+				}
+			}
+			// Bound conversion before turning floating-point SVG lengths into ints.
+			limit := float64(int(^uint(0)>>1) / 2)
+			if width <= 0 || height <= 0 || math.IsNaN(width) || math.IsNaN(height) || width > limit || height > limit {
+				return 0, 0, false
+			}
+			return int(math.Ceil(width)), int(math.Ceil(height)), true
+		}
+	}
+}
+
+func openAISVGLength(value string) float64 {
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "px"))
+	n, err := strconv.ParseFloat(value, 64)
+	if err != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0
+	}
+	return n
 }
 
 func detectOpenAIWebPDimensions(header []byte) (int, int, bool) {

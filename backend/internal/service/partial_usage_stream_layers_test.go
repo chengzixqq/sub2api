@@ -152,7 +152,7 @@ func TestCollectGeminiSSEReadErrorPreservesPartialUsage(t *testing.T) {
 		err:     io.ErrUnexpectedEOF,
 	}
 
-	collected, usage, err := collectGeminiSSE(body, false)
+	collected, usage, err := collectGeminiSSE(nil, body, false)
 
 	require.Error(t, err)
 	require.NotEmpty(t, collected)

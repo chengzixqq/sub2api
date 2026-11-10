@@ -43,6 +43,7 @@ func (h *GatewayHandler) billSyntheticProbe(c *gin.Context, apiKey *service.APIK
 	}
 	requestID := requestIDForProbe(c)
 	return h.gatewayService.RecordSyntheticProbeUsage(ctx, &service.SyntheticProbeUsageInput{
+		UsageSnapshot:        candidate.UsageSnapshot,
 		APIKey:               apiKey,
 		User:                 apiKey.User,
 		Account:              probeAccountSnapshot(account),
@@ -84,6 +85,7 @@ func (h *OpenAIGatewayHandler) billSyntheticProbe(c *gin.Context, apiKey *servic
 		return service.ErrSyntheticProbeBillingUnavailable
 	}
 	return h.gatewayService.RecordSyntheticProbeUsage(ctx, &service.SyntheticProbeUsageInput{
+		UsageSnapshot:        candidate.UsageSnapshot,
 		APIKey:               apiKey,
 		User:                 apiKey.User,
 		Account:              probeAccountSnapshot(account),

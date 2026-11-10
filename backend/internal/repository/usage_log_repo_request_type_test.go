@@ -108,6 +108,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			false,            // probe_coalesced
 			sqlmock.AnyArg(), // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
@@ -207,6 +208,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			false,            // probe_coalesced
 			sqlmock.AnyArg(), // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
@@ -285,7 +287,7 @@ func TestPrepareUsageLogInsert_ProviderCostAttribution(t *testing.T) {
 	// Historical/non-probe callers have a zero-value bool, but must remain
 	// provider-cost records after the attribution columns are added.
 	prepared := prepareUsageLogInsert(&base)
-	require.Equal(t, true, prepared.args[len(prepared.args)-1])
+	require.Equal(t, true, prepared.args[len(prepared.args)-2])
 
 	// A coalesced follower is the one explicit exception: it is billed to the
 	// user, but must not duplicate account/provider cost.
@@ -294,14 +296,14 @@ func TestPrepareUsageLogInsert_ProviderCostAttribution(t *testing.T) {
 	follower.ProbeCoalesced = true
 	follower.ProviderCostRecorded = false
 	prepared = prepareUsageLogInsert(&follower)
-	require.Equal(t, false, prepared.args[len(prepared.args)-1])
+	require.Equal(t, false, prepared.args[len(prepared.args)-2])
 
 	leader := base
 	leader.RequestID = "req-provider-cost-leader"
 	leader.ProbeCoalesced = true
 	leader.ProviderCostRecorded = true
 	prepared = prepareUsageLogInsert(&leader)
-	require.Equal(t, true, prepared.args[len(prepared.args)-1])
+	require.Equal(t, true, prepared.args[len(prepared.args)-2])
 }
 
 func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestType(t *testing.T) {
@@ -320,8 +322,8 @@ func TestPrepareUsageLogInsert_PersistsNativeCompactionV2WithoutChangingRequestT
 	prepared := prepareUsageLogInsert(log)
 
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-5])
-	require.Equal(t, true, prepared.args[len(prepared.args)-5])
+	require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-6])
+	require.Equal(t, true, prepared.args[len(prepared.args)-6])
 	require.Equal(t, int16(service.RequestTypeStream), prepared.args[30])
 	require.Equal(t, service.RequestTypeStream, log.RequestType)
 	require.True(t, log.Stream)
@@ -1055,6 +1057,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,            // probe_coalesced
 			sql.NullString{}, // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		}})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
@@ -1139,6 +1142,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,            // probe_coalesced
 			sql.NullString{}, // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1206,6 +1210,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,            // probe_coalesced
 			sql.NullString{}, // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
@@ -1274,6 +1279,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,            // probe_coalesced
 			sql.NullString{}, // probe_leader_request_id
 			true,             // provider_cost_recorded
+			sql.NullString{}, // billing_details
 		}})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)

@@ -277,7 +277,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.NoError(t, err)
 		require.True(t, report.Valid())
 		require.Empty(t, report.Missing)
-		require.Equal(t, []string{upstream246, "258_group_usage_rollup_optimistic.sql"}, report.Pending)
+		require.Equal(t, []string{upstream246, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql"}, report.Pending)
 		require.Equal(t, []string{upstream246}, report.OutOfOrderPending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -297,8 +297,11 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.Equal(t, []string{
 			upstream246,
 			"247_restore_ops_alert_silences.sql",
+			"247_scoped_admin_api_keys.sql",
+			"248_group_image_count_billing.sql",
 			"248_redeem_code_batches.sql",
 			"249_admin_user_adjustments_request_id_index.sql",
+			"249_mcp_oauth.sql",
 			"250_add_account_error_at.sql",
 			"251_add_account_config_version.sql",
 			"252_admin_access_tokens.sql",
@@ -308,6 +311,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"256_admin_user_adjustments_redeem_code_id.sql",
 			"257_push_notifications.sql",
 			"258_group_usage_rollup_optimistic.sql",
+			"259_usage_log_billing_details.sql",
 		}, report.Pending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -322,4 +326,31 @@ func withOutOfOrderMigrations(t *testing.T, names ...string) {
 	}
 	outOfOrderMigrationAllowlist = allowlist
 	t.Cleanup(func() { outOfOrderMigrationAllowlist = previous })
+}
+
+func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
+	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
+	require.NoError(t, err)
+	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_mcp_oauth.sql", "259_usage_log_billing_details.sql"}
+	missing := map[string]bool{}
+	for _, name := range pending {
+		missing[name] = true
+	}
+	rows := sqlmock.NewRows([]string{"filename", "checksum"})
+	for _, item := range embedded {
+		if !missing[item.filename] {
+			rows.AddRow(item.filename, item.checksum)
+		}
+	}
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectQuery(`SELECT filename, checksum FROM schema_migrations ORDER BY filename`).WillReturnRows(rows)
+	report, err := CheckMigrationPreflight(context.Background(), db)
+	require.NoError(t, err)
+	require.True(t, report.Valid())
+	require.Empty(t, report.Missing)
+	require.Equal(t, pending, report.Pending)
+	require.Equal(t, pending[:3], report.OutOfOrderPending)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

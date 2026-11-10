@@ -101,6 +101,9 @@ func (s *OpenAIGatewayService) RecordSyntheticProbeUsage(ctx context.Context, in
 			CacheReadInputTokens:     max(in.CacheReadTokens, 0),
 		},
 	}
+	if in.UsageSnapshot != nil {
+		result.Usage = claudeUsageToOpenAIUsage(in.UsageSnapshot)
+	}
 	return s.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result:                     result,
 		APIKey:                     in.APIKey,

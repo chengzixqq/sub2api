@@ -31,6 +31,7 @@ func RedactAdminUsageLogForVendor(l *AdminUsageLog) {
 	if l == nil {
 		return
 	}
+	l.BillingDetails = PublicUsageBillingDetails(l.BillingDetails, l.Model)
 	l.IPAddress = nil
 	l.UsageLog.IPAddress = nil
 	l.UserAgent = nil

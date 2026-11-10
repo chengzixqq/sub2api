@@ -71,6 +71,9 @@ var outOfOrderMigrationAllowlist = map[string]struct{}{
 	// 官方 v0.2.18：把 gemini/antigravity 分组的生图开关置为开启。只更新 groups
 	// 的既有列，247-257 均不触及 groups，晚于它们执行结果相同。
 	"246_enable_gemini_image_generation_groups.sql": {},
+	"247_scoped_admin_api_keys.sql":                 {},
+	"248_group_image_count_billing.sql":             {},
+	"249_mcp_oauth.sql":                             {},
 }
 
 // Valid reports whether applying the pending suffix is safe from migration

@@ -366,6 +366,28 @@ describe('admin UsageTable tooltip', () => {
     wrapper.unmount()
   })
 
+  it('keeps aggregate charges and executor tokens separate for advisor requests', async () => {
+    const row = {
+      ...baseImageRow, image_count: 0, billing_mode: 'token', input_tokens: 100,
+      input_cost: 0.5, total_cost: 1.5, actual_cost: 3,
+      billing_details: { version: 1, status: 'partial_usage' as const, components: [] },
+    }
+    const wrapper = mount(UsageTable, {
+      props: { data: [row], columns: [], showAccountBilling: false },
+      global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
+    })
+    expect(wrapper.text()).toContain('$3.000000')
+    expect(wrapper.get('[data-testid="billing-incomplete-marker"]').attributes('title')).toBe('usage.billingStatus.partial_usage')
+    const triggers = wrapper.findAll('.group.relative')
+    await triggers[triggers.length - 1].trigger('mouseenter')
+    expect(wrapper.get('.fixed').text()).toContain('usage.billingDetailsNote')
+    expect(wrapper.get('.fixed').text()).toContain('$1.50000000')
+    expect(wrapper.get('.fixed').text()).not.toContain('Input price')
+    await wrapper.get('[data-testid="billing-details-button"]').trigger('click')
+    expect(wrapper.get('[data-testid="usage-billing-details"]').text()).toContain('usage.billingStatus.partial_usage')
+    wrapper.unmount()
+  })
+
   it('uses eight decimal places for missing cost values', async () => {
     const wrapper = mount(UsageTable, {
       props: {

@@ -857,4 +857,49 @@ describe('admin UsageView model audit export', () => {
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
+  it('exports advisor components including permitted admin cost fields', async () => {
+    const component = {
+      role: 'advisor', model: 'claude-opus-advisor', billing_mode: 'token', iteration_index: 0,
+      input_tokens: 12, output_tokens: 8, cache_creation_tokens: 0, cache_read_tokens: 0,
+      cache_creation_5m_tokens: 0, cache_creation_1h_tokens: 0,
+      input_cost: 0.1, output_cost: 0.2, cache_creation_cost: 0, cache_read_cost: 0,
+      total_cost: 0.3, actual_cost: 0.6, account_stats_cost: 0.4, pricing_source: 'catalog',
+    }
+    exportList.mockResolvedValue({ items: [{
+      id: 42, request_id: 'req-advisor-export', created_at: '2026-11-10T00:00:00Z', model: 'claude-sonnet-executor',
+      total_cost: 0.00000022, actual_cost: 0.00000044,
+      billing_details: { version: 1, status: 'complete', components: [component] },
+    }], total: 1, pages: 1 })
+    const wrapper = mountRouteFilteredUsageView()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    await (wrapper.vm as any).exportToExcel()
+    const row = sheetAddAoa.mock.calls[0][1][0]
+    expect(row.slice(-3)).toEqual(['complete', 1, 42])
+    expect(row[24]).toBe('0.00000022')
+    expect(row[25]).toBe('0.00000044')
+    const detailRow = sheetAddAoa.mock.calls[1][1][0]
+    expect(detailRow.slice(0, 9)).toEqual([42, 'req-advisor-export', '2026-11-10T00:00:00Z', 'complete', 1, 'advisor', 0, 'claude-opus-advisor', 'token'])
+    expect(detailRow.slice(-2)).toEqual(['0.40000000', 'catalog'])
+    expect(exportList).toHaveBeenCalledWith(expect.objectContaining({ page_size: 1000 }), expect.anything())
+    wrapper.unmount()
+  })
+
+  it('cancels backoff without another page request or partial workbook', async () => {
+    exportList.mockRejectedValue({ status: 429, retry_after_seconds: 20 })
+    const wrapper = mountRouteFilteredUsageView()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    const exporting = (wrapper.vm as any).exportToExcel()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(exportList).toHaveBeenCalledTimes(1)
+    ;(wrapper.vm as any).cancelExport()
+    await exporting
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(exportList).toHaveBeenCalledTimes(1)
+    expect(saveAs).not.toHaveBeenCalled()
+    expect((wrapper.vm as any).exporting).toBe(false)
+    wrapper.unmount()
+  })
+
 })

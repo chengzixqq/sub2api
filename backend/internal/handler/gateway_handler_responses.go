@@ -47,11 +47,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	// Read request body
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.responsesErrorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+		if handleRequestBodyReadError(c, reqLog, err) {
 			return
 		}
-		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(reqLog, c.Request, err)
+		h.responsesErrorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 
@@ -426,6 +426,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				ChannelUsageFields: channelUsageFields,
 			})
 		}
+		probeLease.ObserveUsage(result.Usage)
 		if probeLease != nil && probeLease.IsLeader() {
 			if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 				reqLog.Error("gateway.responses.record_usage_failed",

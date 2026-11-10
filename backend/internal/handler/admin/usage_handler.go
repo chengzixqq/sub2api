@@ -223,19 +223,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		return
 	}
 
-	// Vendors share this endpoint (narrowed to their accounts) but must not see end users' key plaintext or profiles.
-	vendor := service.ScopeFromContextOrDeny(c.Request.Context()).IsVendor()
-	out := make([]dto.AdminUsageLog, 0, len(records))
-	for i := range records {
-		row := dto.UsageLogFromServiceAdmin(&records[i])
-		if vendor {
-			dto.RedactAdminUsageLogForVendor(row)
-		}
-		if maskedKeys {
-			row.APIKey.HideFullKey()
-		}
-		out = append(out, *row)
-	}
+	out := adminUsageLogResponses(c, records, maskedKeys)
 	if sinceID != nil {
 		ids := make([]int64, len(records))
 		for i := range records {

@@ -217,6 +217,19 @@
                 :title="t('admin.usage.longContextPricingTooltip')"
                 class="inline-flex items-center rounded px-1 py-px text-[10px] font-semibold leading-tight bg-amber-100 text-amber-700 ring-1 ring-inset ring-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:ring-amber-500/30"
               >{{ t('admin.usage.longContext') }}</span>
+              <button
+                v-if="row.billing_details"
+                type="button"
+                data-testid="billing-details-button"
+                class="rounded px-1 py-0.5 text-xs text-primary-600 hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                @click="billingDetailsRow = row"
+              >{{ t('usage.billingDetails') }}</button>
+              <span
+                v-if="row.billing_details && row.billing_details.status !== 'complete'"
+                data-testid="billing-incomplete-marker"
+                :title="t(`usage.billingStatus.${row.billing_details.status}`)"
+                class="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+              >{{ t('usage.billingIncomplete') }}</span>
               <!-- Cost Detail Tooltip -->
               <div
                 class="group relative"
@@ -410,8 +423,9 @@
     >
       <div class="whitespace-nowrap rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-xs text-white shadow-xl dark:border-gray-600 dark:bg-gray-800">
         <div class="space-y-1.5">
-          <!-- Cost Breakdown -->
-          <div class="mb-2 border-b border-gray-700 pb-1.5">
+          <p v-if="tooltipData?.billing_details" class="mb-2 max-w-xs whitespace-normal text-gray-300">{{ t('usage.billingDetailsNote') }}</p>
+          <!-- Legacy rates only apply when aggregate cost and token columns share one model. -->
+          <div v-else class="mb-2 border-b border-gray-700 pb-1.5">
             <div class="text-xs font-semibold text-gray-300 mb-1">{{ t('usage.costDetails') }}</div>
             <div v-if="tooltipData && tooltipData.input_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.inputCost') }}</span>
@@ -534,6 +548,13 @@
       </div>
     </div>
   </Teleport>
+  <BaseDialog :show="billingDetailsRow != null" :title="t('usage.billingDetails')" width="wide" @close="billingDetailsRow = null">
+    <UsageBillingDetails
+      v-if="billingDetailsRow?.billing_details"
+      :details="billingDetailsRow.billing_details"
+      :show-account-billing="showAccountBilling"
+    />
+  </BaseDialog>
 </template>
 
 <script setup lang="ts">
@@ -584,6 +605,8 @@ function accountBilled(row: { total_cost?: number | null; account_stats_cost?: n
 }
 
 
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import UsageBillingDetails from './UsageBillingDetails.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import IpGeoCell from '@/components/common/IpGeoCell.vue'
@@ -697,6 +720,7 @@ const copyUpstreamRequestId = (upstreamRequestId: string) =>
   copyIdentifier(upstreamRequestId, t('admin.usage.upstreamRequestIdCopied'))
 
 // Tooltip state - cost
+const billingDetailsRow = ref<AdminUsageLog | null>(null)
 const tooltipVisible = ref(false)
 const tooltipPosition = ref({ x: 0, y: 0 })
 const tooltipData = ref<AdminUsageLog | null>(null)

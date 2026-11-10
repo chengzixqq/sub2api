@@ -173,7 +173,7 @@ func (g *billingSettlementGuard) ObserveForwardOutcome(err error, outputStarted 
 // can reach failure settlement.
 func (g *billingSettlementGuard) ObservePartialUsage(usage service.ClaudeUsage) {
 	if g != nil {
-		g.usage = usage
+		g.usage = usage.Clone()
 	}
 }
 
@@ -210,6 +210,9 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 		OutputTokens:             result.Usage.OutputTokens,
 		CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
 		CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens:    result.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens:    result.Usage.CacheCreation1hTokens,
+		IterationUsage:           result.Usage.IterationUsage,
 		ImageInputTokens:         result.Usage.ImageInputTokens,
 		ImageCacheReadTokens:     result.Usage.ImageCacheReadTokens,
 		ImageOutputTokens:        result.Usage.ImageOutputTokens,
@@ -383,7 +386,7 @@ func cloneBillingImageSizeBreakdown(in map[string]int) map[string]int {
 }
 
 func hasFailureBillingUsage(usage service.ClaudeUsage) bool {
-	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+	return usage.HasAdvisorUsage() || usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
 		usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0 ||
 		usage.ImageInputTokens > 0 || usage.ImageCacheReadTokens > 0 || usage.ImageOutputTokens > 0

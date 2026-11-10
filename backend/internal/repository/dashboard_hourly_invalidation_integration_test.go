@@ -52,7 +52,7 @@ func hourlyInvalidationDB(t *testing.T, partitioned bool) *sql.DB {
 		_, err = db.ExecContext(ctx, `CREATE TABLE usage_logs_default PARTITION OF usage_logs DEFAULT`)
 		require.NoError(t, err)
 	}
-	for _, name := range []string{"034_usage_dashboard_aggregation_tables.sql", "107_add_account_cost_to_dashboard_tables.sql", "222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql", "246_dashboard_hourly_invalidation.sql"} {
+	for _, name := range []string{"034_usage_dashboard_aggregation_tables.sql", "107_add_account_cost_to_dashboard_tables.sql", "222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql", "246_dashboard_hourly_invalidation.sql", "258_group_usage_rollup_optimistic.sql"} {
 		raw, err := migrations.FS.ReadFile(name)
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, string(raw))

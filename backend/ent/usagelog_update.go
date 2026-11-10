@@ -4,11 +4,13 @@ package ent
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 
 	"entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqlgraph"
+	"entgo.io/ent/dialect/sql/sqljson"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/account"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
@@ -432,6 +434,24 @@ func (_u *UsageLogUpdate) SetNillableCacheCreation1hTokens(v *int) *UsageLogUpda
 // AddCacheCreation1hTokens adds value to the "cache_creation_1h_tokens" field.
 func (_u *UsageLogUpdate) AddCacheCreation1hTokens(v int) *UsageLogUpdate {
 	_u.mutation.AddCacheCreation1hTokens(v)
+	return _u
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (_u *UsageLogUpdate) SetBillingDetails(v jsontext.Value) *UsageLogUpdate {
+	_u.mutation.SetBillingDetails(v)
+	return _u
+}
+
+// AppendBillingDetails appends value to the "billing_details" field.
+func (_u *UsageLogUpdate) AppendBillingDetails(v jsontext.Value) *UsageLogUpdate {
+	_u.mutation.AppendBillingDetails(v)
+	return _u
+}
+
+// ClearBillingDetails clears the value of the "billing_details" field.
+func (_u *UsageLogUpdate) ClearBillingDetails() *UsageLogUpdate {
+	_u.mutation.ClearBillingDetails()
 	return _u
 }
 
@@ -1281,6 +1301,17 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.AddedCacheCreation1hTokens(); ok {
 		_spec.AddField(usagelog.FieldCacheCreation1hTokens, field.TypeInt, value)
 	}
+	if value, ok := _u.mutation.BillingDetails(); ok {
+		_spec.SetField(usagelog.FieldBillingDetails, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedBillingDetails(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, usagelog.FieldBillingDetails, value)
+		})
+	}
+	if _u.mutation.BillingDetailsCleared() {
+		_spec.ClearField(usagelog.FieldBillingDetails, field.TypeJSON)
+	}
 	if value, ok := _u.mutation.InputCost(); ok {
 		_spec.SetField(usagelog.FieldInputCost, field.TypeFloat64, value)
 	}
@@ -2011,6 +2042,24 @@ func (_u *UsageLogUpdateOne) SetNillableCacheCreation1hTokens(v *int) *UsageLogU
 // AddCacheCreation1hTokens adds value to the "cache_creation_1h_tokens" field.
 func (_u *UsageLogUpdateOne) AddCacheCreation1hTokens(v int) *UsageLogUpdateOne {
 	_u.mutation.AddCacheCreation1hTokens(v)
+	return _u
+}
+
+// SetBillingDetails sets the "billing_details" field.
+func (_u *UsageLogUpdateOne) SetBillingDetails(v jsontext.Value) *UsageLogUpdateOne {
+	_u.mutation.SetBillingDetails(v)
+	return _u
+}
+
+// AppendBillingDetails appends value to the "billing_details" field.
+func (_u *UsageLogUpdateOne) AppendBillingDetails(v jsontext.Value) *UsageLogUpdateOne {
+	_u.mutation.AppendBillingDetails(v)
+	return _u
+}
+
+// ClearBillingDetails clears the value of the "billing_details" field.
+func (_u *UsageLogUpdateOne) ClearBillingDetails() *UsageLogUpdateOne {
+	_u.mutation.ClearBillingDetails()
 	return _u
 }
 
@@ -2889,6 +2938,17 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.AddedCacheCreation1hTokens(); ok {
 		_spec.AddField(usagelog.FieldCacheCreation1hTokens, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.BillingDetails(); ok {
+		_spec.SetField(usagelog.FieldBillingDetails, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedBillingDetails(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, usagelog.FieldBillingDetails, value)
+		})
+	}
+	if _u.mutation.BillingDetailsCleared() {
+		_spec.ClearField(usagelog.FieldBillingDetails, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.InputCost(); ok {
 		_spec.SetField(usagelog.FieldInputCost, field.TypeFloat64, value)

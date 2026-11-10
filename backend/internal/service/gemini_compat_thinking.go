@@ -336,7 +336,7 @@ func nextGeminiSignatureRetryRequest(originalClaudeBody, currentGeminiReq []byte
 			name = "thinking+tools"
 			stripped = FilterSignatureSensitiveBlocksForRetry(source, originalModel)
 		}
-		next, err := convertClaudeMessagesToGeminiGenerateContent(stripped)
+		next, err := convertClaudeMessagesToGeminiGenerateContent(stripped, mappedModel)
 		if err != nil {
 			return nil, stage, name, err
 		}

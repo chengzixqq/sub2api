@@ -151,11 +151,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 读取请求体
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+		if handleRequestBodyReadError(c, reqLog, err) {
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(reqLog, c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 
@@ -239,6 +239,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body); decision != nil && !decision.AllowNextStage {
 		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
+
+	// Refuse unpriced advisor work before admission or any upstream call.
+	if err := h.gatewayService.ValidateAdvisorPricing(c.Request.Context(), apiKey, body); err != nil {
+		h.errorResponse(c, http.StatusServiceUnavailable, "advisor_pricing_unavailable", "Advisor model has no configured token price; contact the administrator")
 		return
 	}
 
@@ -651,6 +657,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					ChannelUsageFields: channelUsageFields,
 				})
 			}
+			probeLease.ObserveUsage(result.Usage)
 			if probeLease != nil && probeLease.IsLeader() {
 				if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, true); err != nil {
 					logger.L().With(
@@ -948,7 +955,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 			}
 			// Bedrock CC 兼容：清理 body 专有字段 + 过滤 anthropic-beta header，适用于所有转发路径
-			if err := attemptParsedReq.ReplaceBody(h.gatewayService.ApplyBedrockCCCompat(c, attemptParsedReq.Body.Bytes(), attemptParsedReq.Model, account, apiKey.GroupID)); err != nil {
+			if err := attemptParsedReq.ReplaceBody(h.gatewayService.ApplyBedrockCCCompat(c, attemptParsedReq.Body.Bytes(), attemptParsedReq.Model, account, currentAPIKey.GroupID)); err != nil {
 				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 				return
 			}
@@ -986,8 +993,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			stampForwardBillingReasoningEffort(result, c, attemptParsedReq)
 
-			// 提交 usage 记录。成功路径与"流中断但 Forward 已观测到 usage 的部分结果"
-			// 错误路径共用：后者若不入账，上游已计量的请求会完全漏记漏计费（#5148）。
+			// 成功结算保留 probe 落账屏障；失败和 partial usage 统一由 guard 结算。
 			submitForwardUsage := func(result *service.ForwardResult) {
 				// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 				userAgent := c.GetHeader("User-Agent")
@@ -1024,8 +1030,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						ChannelUsageFields: channelUsageFields,
 					})
 				}
+				probeLease.ObserveUsage(result.Usage)
 				if probeLease != nil && probeLease.IsLeader() {
-					if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, false); err != nil {
+					// The lease belongs to the original group/channel. A fallback
+					// bill is durable, but cannot authorize that pool's followers.
+					if err := runProbeLeaderUsageTask(c.Request.Context(), probeLease, recordUsage, !fallbackUsed); err != nil {
 						logger.L().With(
 							zap.String("component", "handler.gateway.messages"),
 							zap.Int64("user_id", subject.UserID),
@@ -1101,6 +1110,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						c.Request = c.Request.WithContext(ctx)
 						currentAPIKey = fallbackAPIKey
 						currentSubscription = nil
+						channelMapping = h.applyMessagesFallbackBillingContext(c, guard, parsedReq, fallbackAPIKey, reqModel, body)
 						fallbackUsed = true
 						retryWithFallback = true
 						// 原分组账号已确定性失败（prompt too long），先释放其会话注册再走兜底分组
@@ -1163,7 +1173,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// 避免上游已产生消耗的请求完全漏记（#5148）。failover 错误恒定 result=nil，
 				// 不会走到这里重复计费。
 				if result != nil {
-					submitForwardUsage(result)
 					// 上游已接受并计量本次会话（流中断），会话槽保持既有语义
 					upstreamServedSession = true
 				}
@@ -1621,6 +1630,17 @@ func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
 		"object": "list",
 		"data":   models,
 	})
+}
+
+// applyMessagesFallbackBillingContext keeps upstream features, pricing
+// preflight, and both settlement paths on the same fallback group snapshot.
+func (h *GatewayHandler) applyMessagesFallbackBillingContext(c *gin.Context, guard *billingSettlementGuard, parsedReq *service.ParsedRequest, apiKey *service.APIKey, reqModel string, body []byte) service.ChannelMappingResult {
+	c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, apiKey.Group))
+	parsedReq.GroupID = apiKey.GroupID
+	mapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	guard.deps.sink = h.claudeFailureSink(c, apiKey, nil, reqModel, mapping, body)
+	return mapping
 }
 
 func cloneAPIKeyWithGroup(apiKey *service.APIKey, group *service.Group) *service.APIKey {
@@ -2216,11 +2236,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 读取请求体
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
-		if maxErr, ok := extractMaxBytesError(err); ok {
-			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
+		if handleRequestBodyReadError(c, reqLog, err) {
 			return
 		}
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		status, message := requestBodyReadFailure(reqLog, c.Request, err)
+		h.errorResponse(c, status, "invalid_request_error", message)
 		return
 	}
 

@@ -88,8 +88,10 @@ func (s *adminServiceImpl) clearAccountRecoverableRuntimeState(ctx context.Conte
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, id); err != nil {
 		return err
 	}
-	if s.runtimeBlocker != nil {
-		s.runtimeBlocker.ClearAccountSchedulingBlock(id)
-	}
+	AfterAccountCommit(ctx, func(context.Context) {
+		if s.runtimeBlocker != nil {
+			s.runtimeBlocker.ClearAccountSchedulingBlock(id)
+		}
+	})
 	return nil
 }

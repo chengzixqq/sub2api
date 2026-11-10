@@ -134,13 +134,14 @@ func ProbeParseRejectSnapshot() map[ProbeParseRejectReason]uint64 {
 // state.  Those values are supplied by the handler only after a real leader
 // has been selected.
 type ProbeCandidate struct {
-	Protocol     probeProtocol
-	Model        string
-	Prompt       string
-	Expected     string
-	InputTokens  int
-	OutputTokens int
-	Key          string
+	UsageSnapshot *service.ClaudeUsage
+	Protocol      probeProtocol
+	Model         string
+	Prompt        string
+	Expected      string
+	InputTokens   int
+	OutputTokens  int
+	Key           string
 }
 
 func (p ProbeCandidate) valid() bool {
@@ -150,21 +151,23 @@ func (p ProbeCandidate) valid() bool {
 }
 
 type probeEntry struct {
-	key          string
-	bucket       int64
-	active       bool
-	attempts     int
-	deadline     time.Time
-	done         chan struct{}
-	cancel       context.CancelFunc
-	expiry       *time.Timer
-	billingReady bool
-	billingErr   error
-	result       probeResult
-	healthyTo    time.Time
+	usageSnapshot *service.ClaudeUsage
+	key           string
+	bucket        int64
+	active        bool
+	attempts      int
+	deadline      time.Time
+	done          chan struct{}
+	cancel        context.CancelFunc
+	expiry        *time.Timer
+	billingReady  bool
+	billingErr    error
+	result        probeResult
+	healthyTo     time.Time
 }
 
 type probeResult struct {
+	usageSnapshot   *service.ClaudeUsage
 	success         bool
 	leaderRequestID string
 	leaderAccount   *service.Account
@@ -408,6 +411,21 @@ func (l *ProbeLease) Candidate() ProbeCandidate {
 	return l.candidate
 }
 
+// ObserveUsage retains an immutable model-iteration snapshot for the exceptional
+// case where a real probe's upstream emits advisor usage. Ordinary probes keep
+// their existing synthetic token estimate.
+func (l *ProbeLease) ObserveUsage(usage service.ClaudeUsage) {
+	if l == nil || l.coalescer == nil || l.entry == nil || !l.IsLeader() || usage.IterationUsage == nil || !usage.IterationUsage.AdvisorSeen {
+		return
+	}
+	snapshot := usage.Clone()
+	l.coalescer.mu.Lock()
+	if l.entry.active {
+		l.entry.usageSnapshot = &snapshot
+	}
+	l.coalescer.mu.Unlock()
+}
+
 // LeaderContext is the cancellable context bound to the real upstream probe.
 // It is canceled when the lease finishes or when a follower takes over after
 // the leader deadline, preventing an expired leader from overlapping the next
@@ -506,8 +524,14 @@ func (l *ProbeLease) Resolve(ctx context.Context) (ProbeResolution, error) {
 			continue
 		}
 		if result.success && entry.healthyTo.After(now) {
+			candidate := l.candidate
+			if result.usageSnapshot != nil {
+				snapshot := result.usageSnapshot.Clone()
+				candidate.UsageSnapshot = &snapshot
+				candidate.InputTokens, candidate.OutputTokens = snapshot.InputTokens, snapshot.OutputTokens
+			}
 			l.coalescer.mu.Unlock()
-			return ProbeResolution{Candidate: l.candidate, Synthetic: true, LeaderRequestID: result.leaderRequestID, LeaderAccount: result.leaderAccount}, nil
+			return ProbeResolution{Candidate: candidate, Synthetic: true, LeaderRequestID: result.leaderRequestID, LeaderAccount: result.leaderAccount}, nil
 		}
 		// Failed leader: atomically claim the next attempt.
 		if entry.attempts >= cfg.AttemptBudget {
@@ -590,7 +614,7 @@ func (l *ProbeLease) Finish(success bool, requestID string, account *service.Acc
 	}
 	account = probeAccountSnapshot(account)
 	entry.active = false
-	entry.result = probeResult{success: success, leaderRequestID: requestID, leaderAccount: account}
+	entry.result = probeResult{success: success, leaderRequestID: requestID, leaderAccount: account, usageSnapshot: entry.usageSnapshot}
 	if success {
 		entry.healthyTo = l.coalescer.now().Add(l.coalescer.Config().Window)
 	}

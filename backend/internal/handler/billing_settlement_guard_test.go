@@ -695,3 +695,32 @@ func TestBillingSettlementGuard_ClaudeFailurePreservesObservedImages(t *testing.
 	require.Equal(t, "upstream", got.ImageSizeSource)
 	require.Equal(t, map[string]int{"2K": 1}, got.ImageSizeBreakdown)
 }
+
+func TestBillingSettlementGuard_AdvisorOnlySnapshotSettlesOnce(t *testing.T) {
+	for _, openAI := range []bool{false, true} {
+		t.Run(map[bool]string{false: "claude", true: "openai_native_claude"}[openAI], func(t *testing.T) {
+			calls := 0
+			var got service.FailureBillingDecision
+			g := newBillingSettlementGuard(guardDeps{upstreamUsageOnly: true, sink: func(d service.FailureBillingDecision, _ *service.Account) { calls++; got = d }})
+			g.ObserveAttempt(&service.Account{ID: 7})
+			usage := service.ClaudeUsage{IterationUsage: &service.ClaudeIterationUsage{Present: true, AdvisorSeen: true, Iterations: []service.ClaudeUsageIteration{{Type: "advisor_message", Model: "advisor-model", Usage: service.UsageTokens{InputTokens: 13, OutputTokens: 7, CacheCreationTokens: 5, CacheCreation1hTokens: 5}}}}}
+			if openAI {
+				g.ObserveOpenAIForwardResult(&service.OpenAIForwardResult{Usage: service.OpenAIUsage{IterationUsage: usage.IterationUsage}})
+			} else {
+				g.ObservePartialUsage(usage)
+			}
+			usage.IterationUsage.Iterations[0].Usage.InputTokens = 999
+			g.ObserveForwardOutcome(context.Canceled, false)
+			g.Flush()
+			g.Flush()
+			require.Equal(t, 1, calls)
+			require.True(t, got.Billable)
+			require.Zero(t, got.Usage.InputTokens)
+			require.Equal(t, 13, got.Usage.IterationUsage.Iterations[0].Usage.InputTokens)
+			require.Equal(t, 5, got.Usage.IterationUsage.Iterations[0].Usage.CacheCreation1hTokens)
+			converted := openAIFailureUsageFromDecision(got)
+			got.Usage.IterationUsage.Iterations[0].Usage.OutputTokens = 999
+			require.Equal(t, 7, converted.IterationUsage.Iterations[0].Usage.OutputTokens)
+		})
+	}
+}

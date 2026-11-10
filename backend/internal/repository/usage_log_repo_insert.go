@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,6 +91,7 @@ var usageLogInsertArgTypes = [...]string{
 	"boolean",     // probe_coalesced
 	"text",        // probe_leader_request_id
 	"boolean",     // provider_cost_recorded
+	"jsonb",       // billing_details
 }
 
 const (
@@ -294,14 +296,15 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -758,12 +761,13 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		) AS (VALUES `)
 
 	// Each batch row prepends the synthetic input_index before the 65
 	// usage-log column values.
-	args := make([]any, 0, len(keys)*66)
+	args := make([]any, 0, len(keys)*(len(usageLogInsertArgTypes)+1))
 	argPos := 1
 	for idx, key := range keys {
 		if idx > 0 {
@@ -857,7 +861,8 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				created_at,
 				probe_coalesced,
 				probe_leader_request_id,
-				provider_cost_recorded
+				provider_cost_recorded,
+				billing_details
 			)
 			SELECT
 				user_id,
@@ -925,7 +930,8 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				created_at,
 				probe_coalesced,
 				probe_leader_request_id,
-				provider_cost_recorded
+				provider_cost_recorded,
+				billing_details
 			FROM input
 			ON CONFLICT (request_id, api_key_id) DO NOTHING
 			RETURNING request_id, api_key_id, id, created_at
@@ -1033,7 +1039,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		) AS (VALUES `)
 
 	args := make([]any, 0, len(preparedList)*65)
@@ -1127,7 +1134,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		)
 		SELECT
 			user_id,
@@ -1195,7 +1203,8 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		FROM input
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`)
@@ -1271,14 +1280,15 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			created_at,
 			probe_coalesced,
 			probe_leader_request_id,
-			provider_cost_recorded
+			provider_cost_recorded,
+			billing_details
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9,
 			$10, $11,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22, $23, $24, $25,
-			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66
+			$26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
@@ -1415,6 +1425,7 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			log.ProbeCoalesced,
 			nullString(log.ProbeLeaderRequestID),
 			providerCostRecorded,
+			billingDetailsJSONValue{details: log.BillingDetails},
 		},
 	}
 }
@@ -1439,4 +1450,19 @@ func (r *usageLogRepository) bestEffortRecentKey(requestID string, apiKeyID int6
 		return "", false
 	}
 	return usageLogBatchKey(requestID, apiKeyID), true
+}
+
+// Encode at the SQL boundary so invalid monetary values fail the insert instead
+// of silently dropping the billing evidence.
+type billingDetailsJSONValue struct{ details *service.BillingDetails }
+
+func (v billingDetailsJSONValue) Value() (driver.Value, error) {
+	if v.details == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(v.details)
+	if err != nil {
+		return nil, fmt.Errorf("encode usage billing details: %w", err)
+	}
+	return string(raw), nil
 }
