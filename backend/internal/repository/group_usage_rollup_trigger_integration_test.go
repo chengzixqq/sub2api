@@ -340,12 +340,18 @@ func TestGroupUsageRollupSyncRebuildsAfterTimezoneChange(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	repo := newDashboardAggregationRepositoryWithSQL(tx)
+	require.NoError(t, tx.Commit())
+	conn, err := integrationDB.Conn(ctx)
+	require.NoError(t, err)
+	defer func() { _, _ = conn.ExecContext(context.Background(), "RESET search_path"); _ = conn.Close() }()
+	_, err = conn.ExecContext(ctx, "SET search_path TO "+pq.QuoteIdentifier(schema))
+	require.NoError(t, err)
+	repo := newDashboardAggregationRepositoryWithSQL(conn)
 	require.NoError(t, repo.SyncGroupUsageRollups(ctx, todayStart))
 
 	var stateTimezone string
 	var closedBefore string
-	require.NoError(t, tx.QueryRowContext(ctx, `
+	require.NoError(t, conn.QueryRowContext(ctx, `
 		SELECT timezone_name, closed_before::text
 		FROM usage_group_rollup_state
 		WHERE id = 1
@@ -354,14 +360,14 @@ func TestGroupUsageRollupSyncRebuildsAfterTimezoneChange(t *testing.T) {
 	require.Equal(t, "2026-03-09", closedBefore)
 
 	var rollupCost float64
-	require.NoError(t, tx.QueryRowContext(ctx, `
+	require.NoError(t, conn.QueryRowContext(ctx, `
 		SELECT actual_cost
 		FROM usage_group_daily_rollups
 		WHERE bucket_date = DATE '2026-03-08' AND group_id = 10
 	`).Scan(&rollupCost))
 	require.InDelta(t, 3, rollupCost, 0.0000001)
 
-	usageRepo := newUsageLogRepositoryWithSQL(nil, tx)
+	usageRepo := newUsageLogRepositoryWithSQL(nil, conn)
 	result, err := usageRepo.GetAllGroupUsageSummary(ctx, todayStart)
 	require.NoError(t, err)
 	require.Len(t, result, 1)
@@ -451,6 +457,7 @@ func createGroupUsageRollupTriggerTestSchema(t *testing.T, ctx context.Context, 
 	for _, migrationName := range []string{
 		"222_group_usage_daily_rollups.sql",
 		"223_group_usage_rollup_timezone.sql",
+		"258_group_usage_rollup_optimistic.sql",
 	} {
 		migrationSQL, readErr := migrations.FS.ReadFile(migrationName)
 		require.NoError(t, readErr)

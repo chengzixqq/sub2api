@@ -324,10 +324,11 @@ func (r *usageCleanupRepository) DeleteUsageLogsBatch(ctx context.Context, filte
 }
 
 func (r *usageCleanupRepository) deleteUsageLogsBatchWithRollupInvalidation(ctx context.Context, db *sql.DB, whereClause string, args []any) (int64, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, ctx, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 	if err != nil {
 		return 0, err
 	}
+	defer cancel()
 	rollback := func(err error) (int64, error) {
 		_ = tx.Rollback()
 		return 0, err

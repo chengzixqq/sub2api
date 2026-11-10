@@ -419,13 +419,15 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatch(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery("DELETE FROM usage_logs").
 		WithArgs(start, end, userID, "gpt-4", 2).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(start.Add(time.Hour)).AddRow(start.Add(2 * time.Hour)))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
-		WithArgs(start.Add(time.Hour), "Asia/Shanghai").
+		WithArgs(start.Add(time.Hour)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -447,6 +449,8 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchAtomicallyInvalidatesGroupRol
 	filters := service.UsageCleanupFilters{StartTime: start, EndTime: end}
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery(`(?s)DELETE FROM usage_logs.*RETURNING created_at`).
@@ -455,7 +459,7 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchAtomicallyInvalidatesGroupRol
 			AddRow(firstDeletedAt).
 			AddRow(secondDeletedAt))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
-		WithArgs(firstDeletedAt, "Asia/Shanghai").
+		WithArgs(firstDeletedAt).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -476,13 +480,15 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchRollsBackWhenInvalidationFail
 	filters := service.UsageCleanupFilters{StartTime: start, EndTime: end}
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery(`(?s)DELETE FROM usage_logs.*RETURNING created_at`).
 		WithArgs(start, end, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(deletedAt))
 	mock.ExpectExec(`UPDATE usage_group_rollup_state`).
-		WithArgs(deletedAt, "Asia/Shanghai").
+		WithArgs(deletedAt).
 		WillReturnError(sql.ErrConnDone)
 	mock.ExpectRollback()
 
@@ -500,6 +506,8 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchQueryError(t *testing.T) {
 	filters := service.UsageCleanupFilters{StartTime: start, EndTime: end}
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery("DELETE FROM usage_logs").
@@ -509,6 +517,30 @@ func TestUsageCleanupRepositoryDeleteUsageLogsBatchQueryError(t *testing.T) {
 
 	_, err := repo.DeleteUsageLogsBatch(context.Background(), filters, 5)
 	require.Error(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageCleanupRepository_DeleteBudgetFailureRollsBackWithoutInvalidation(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageCleanupRepository{sql: db}
+	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	filters := service.UsageCleanupFilters{StartTime: start, EndTime: end}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '1s'`).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery(`(?s)DELETE FROM usage_logs.*RETURNING created_at`).
+		WithArgs(start, end, 5).
+		WillReturnError(context.DeadlineExceeded)
+	// A timed-out delete cannot advance the invalidation watermark or report
+	// committed progress. Any such statement would violate these expectations.
+	mock.ExpectRollback()
+	deleted, err := repo.DeleteUsageLogsBatch(context.Background(), filters, 5)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, deleted)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -343,21 +343,24 @@ func (r *dashboardAggregationRepository) RecomputeRange(ctx context.Context, sta
 				return err
 			}
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, limited, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 		if err != nil {
 			return err
 		}
+		defer cancel()
 		defer func() { _ = tx.Rollback() }()
-		if err := lockGroupUsageRollupState(ctx, tx); err != nil {
+		if err := lockGroupUsageRollupState(limited, tx); err != nil {
 			return err
 		}
-		if err := invalidateGroupUsageRollupsAt(ctx, tx, start); err != nil {
+		if err := invalidateGroupUsageRollupsAt(limited, tx, start); err != nil {
 			return err
 		}
-		if err := newDashboardAggregationRepositoryWithSQL(tx).syncGroupUsageRollupsInTx(ctx, service.GroupUsageTodayStart(r.now())); err != nil {
+		// Publish the invalidation before scanning. Holding this transaction's
+		// group lock across a historical scan blocks all gateway usage inserts.
+		if err := tx.Commit(); err != nil {
 			return err
 		}
-		return tx.Commit()
+		return r.SyncGroupUsageRollups(ctx, service.GroupUsageTodayStart(r.now()))
 	}
 	return r.recomputeRangeInTx(ctx, hourStart, hourEnd, dayStart, dayEnd)
 }
@@ -510,10 +513,11 @@ func cleanupUsageLogsBatchWithRollupInvalidation(ctx context.Context, db *sql.DB
 }
 
 func cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx context.Context, db *sql.DB, cutoff time.Time) (int64, bool, error) {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, ctx, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 	if err != nil {
 		return 0, false, err
 	}
+	defer cancel()
 	rollback := func(err error) (int64, bool, error) {
 		_ = tx.Rollback()
 		return 0, false, err
@@ -1062,10 +1066,11 @@ func (r *dashboardAggregationRepository) dropUsageLogsPartitions(ctx context.Con
 }
 
 func dropUsageLogsPartitionWithRollupInvalidation(ctx context.Context, db *sql.DB, name string, monthStart time.Time) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, ctx, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 	if err != nil {
 		return err
 	}
+	defer cancel()
 	rollback := func(err error) error {
 		_ = tx.Rollback()
 		return err

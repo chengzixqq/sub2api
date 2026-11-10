@@ -245,8 +245,8 @@ func TestCheckMigrationPreflightFS_OutOfOrderMigrationStillChecksChecksum(t *tes
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// 真实迁移集：已从原 main 执行到 257（含定制 246）的库只剩官方 246 待补跑；
-// 生产 e5ab7e4f4 停在定制 246，官方 246 与 247-257 都是正常的后缀 pending。
+// 真实迁移集：已从原 main 执行到 257（含定制 246）的库还需官方 246 和新 258；
+// 生产 e5ab7e4f4 停在定制 246，官方 246 与 247-258 都是正常的后缀 pending。
 func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
@@ -277,7 +277,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.NoError(t, err)
 		require.True(t, report.Valid())
 		require.Empty(t, report.Missing)
-		require.Equal(t, []string{upstream246}, report.Pending)
+		require.Equal(t, []string{upstream246, "258_group_usage_rollup_optimistic.sql"}, report.Pending)
 		require.Equal(t, []string{upstream246}, report.OutOfOrderPending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -307,6 +307,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"255_account_test_runs.sql",
 			"256_admin_user_adjustments_redeem_code_id.sql",
 			"257_push_notifications.sql",
+			"258_group_usage_rollup_optimistic.sql",
 		}, report.Pending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
