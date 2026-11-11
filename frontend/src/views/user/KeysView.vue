@@ -237,9 +237,11 @@
                 <Icon name="refresh" size="xs" />
                 {{ t('keys.usageUnavailable') }}
               </button>
-              <span v-else-if="usageStatsStatus === 'loading'" class="text-xs text-gray-400" role="status">
-                {{ t('common.loading') }}
-              </span>
+              <div v-else-if="usageStatsStatus === 'loading'" class="space-y-1" role="status" data-test="usage-pending">
+                <span class="sr-only">{{ t('common.loading') }}</span>
+                <div class="h-4 w-24 animate-pulse rounded bg-gray-200 dark:bg-dark-600" aria-hidden="true" />
+                <div class="h-4 w-28 animate-pulse rounded bg-gray-200 dark:bg-dark-600" aria-hidden="true" />
+              </div>
               <!-- Quota progress (if quota is set) -->
               <div v-if="row.quota > 0" class="mt-1.5">
                 <div class="flex items-center gap-1.5">

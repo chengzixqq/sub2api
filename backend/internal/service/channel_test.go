@@ -781,9 +781,11 @@ func TestSupportedModels_ExactMappingTargetMissingFromPricing(t *testing.T) {
 func TestChannelModelPricingCloneIsolatesIntervalMultipliersAndCachePrices(t *testing.T) {
 	value := 1.5
 	original := ChannelModelPricing{
-		CacheWrite1hPrice: &value,
+		CacheWrite1hPrice:  &value,
+		CacheWrite12hPrice: &value,
 		Intervals: []PricingInterval{{
 			CacheWrite1hPrice:    &value,
+			CacheWrite12hPrice:   &value,
 			InputMultiplier:      &value,
 			OutputMultiplier:     &value,
 			CacheWriteMultiplier: &value,
@@ -797,10 +799,14 @@ func TestChannelModelPricingCloneIsolatesIntervalMultipliersAndCachePrices(t *te
 	*cloned.Intervals[0].OutputMultiplier = 6
 	*cloned.Intervals[0].CacheWriteMultiplier = 7
 	*cloned.Intervals[0].CacheReadMultiplier = 8
+	*cloned.CacheWrite12hPrice = 9
+	*cloned.Intervals[0].CacheWrite12hPrice = 10
 	require.Equal(t, 1.5, *original.CacheWrite1hPrice)
 	require.Equal(t, 1.5, *original.Intervals[0].CacheWrite1hPrice)
 	require.Equal(t, 1.5, *original.Intervals[0].InputMultiplier)
 	require.Equal(t, 1.5, *original.Intervals[0].OutputMultiplier)
 	require.Equal(t, 1.5, *original.Intervals[0].CacheWriteMultiplier)
 	require.Equal(t, 1.5, *original.Intervals[0].CacheReadMultiplier)
+	require.Equal(t, 1.5, *original.CacheWrite12hPrice)
+	require.Equal(t, 1.5, *original.Intervals[0].CacheWrite12hPrice)
 }

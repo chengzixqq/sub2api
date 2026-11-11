@@ -90,6 +90,9 @@ func advisorPricingCoversUsage(r *ModelPricingResolver, resolved *ResolvedPricin
 			return false
 		}
 	}
+	if price := pricing.CacheCreation12hPricePerToken; price != nil && (math.IsNaN(*price) || math.IsInf(*price, 0) || *price < 0) {
+		return false
+	}
 	return true
 }
 

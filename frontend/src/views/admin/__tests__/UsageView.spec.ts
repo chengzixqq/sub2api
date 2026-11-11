@@ -862,12 +862,14 @@ describe('admin UsageView model audit export', () => {
       role: 'advisor', model: 'claude-opus-advisor', billing_mode: 'token', iteration_index: 0,
       input_tokens: 12, output_tokens: 8, cache_creation_tokens: 0, cache_read_tokens: 0,
       cache_creation_5m_tokens: 0, cache_creation_1h_tokens: 0,
+      cache_creation_30m_tokens: 11, cache_creation_12h_tokens: 19,
       input_cost: 0.1, output_cost: 0.2, cache_creation_cost: 0, cache_read_cost: 0,
       total_cost: 0.3, actual_cost: 0.6, account_stats_cost: 0.4, pricing_source: 'catalog',
     }
     exportList.mockResolvedValue({ items: [{
       id: 42, request_id: 'req-advisor-export', created_at: '2026-11-10T00:00:00Z', model: 'claude-sonnet-executor',
       total_cost: 0.00000022, actual_cost: 0.00000044,
+      cache_creation_30m_tokens: 100, cache_creation_12h_tokens: 200,
       billing_details: { version: 1, status: 'complete', components: [component] },
     }], total: 1, pages: 1 })
     const wrapper = mountRouteFilteredUsageView()
@@ -876,11 +878,17 @@ describe('admin UsageView model audit export', () => {
     await (wrapper.vm as any).exportToExcel()
     const row = sheetAddAoa.mock.calls[0][1][0]
     expect(row.slice(-3)).toEqual(['complete', 1, 42])
-    expect(row[24]).toBe('0.00000022')
-    expect(row[25]).toBe('0.00000044')
+    expect(row[26]).toBe('0.00000022')
+    expect(row[27]).toBe('0.00000044')
+    const headers = aoaToSheet.mock.calls[0][0][0]
+    expect(row[headers.indexOf('usage.billingCache30m')]).toBe(100)
+    expect(row[headers.indexOf('usage.billingCache12h')]).toBe(200)
     const detailRow = sheetAddAoa.mock.calls[1][1][0]
     expect(detailRow.slice(0, 9)).toEqual([42, 'req-advisor-export', '2026-11-10T00:00:00Z', 'complete', 1, 'advisor', 0, 'claude-opus-advisor', 'token'])
     expect(detailRow.slice(-2)).toEqual(['0.40000000', 'catalog'])
+    const detailHeaders = aoaToSheet.mock.calls[1][0][0]
+    expect(detailRow[detailHeaders.indexOf('cache_creation_30m_tokens')]).toBe(11)
+    expect(detailRow[detailHeaders.indexOf('cache_creation_12h_tokens')]).toBe(19)
     expect(exportList).toHaveBeenCalledWith(expect.objectContaining({ page_size: 1000 }), expect.anything())
     wrapper.unmount()
   })

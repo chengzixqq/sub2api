@@ -52,22 +52,20 @@ type easyPayCustomMethod struct {
 }
 
 // NewEasyPay creates a new EasyPay provider.
-// config keys: pid, pkey, apiBase, notifyUrl, returnUrl, cid, cidAlipay, cidWxpay
+// config keys: pid, pkey, apiBase, notifyUrl, returnUrl, cid, cidAlipay, cidWxpay,
+// v1RefundSuccessCode (alias refundSuccessCode; 0 or 1; defaults to 1).
 func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	if version, err := payment.NormalizeEasyPayAPIVersion(config["apiVersion"]); err != nil || version != payment.EasyPayAPIVersionV1 {
 		return nil, errors.New("easypay V1 requires apiVersion v1")
 	}
-	if code := strings.TrimSpace(config["v1RefundSuccessCode"]); code != "" && code != "0" && code != "1" {
-		return nil, errors.New("easypay v1RefundSuccessCode must be 0 or 1")
+	cfg, err := payment.NormalizeEasyPayRefundConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	for _, k := range []string{"pid", "pkey", "apiBase", "notifyUrl", "returnUrl"} {
 		if strings.TrimSpace(config[k]) == "" {
 			return nil, fmt.Errorf("easypay config missing required key: %s", k)
 		}
-	}
-	cfg := make(map[string]string, len(config))
-	for k, v := range config {
-		cfg[k] = v
 	}
 	apiBase, err := validateEasyPayAPIBase(cfg["apiBase"])
 	if err != nil {

@@ -33,6 +33,14 @@ describe('usage export billing projection', () => {
     expect(JSON.parse(serializeUsageBillingDetails(details, true)).components[0]).toMatchObject({ account_stats_cost: 0.12345, pricing_source: 'unknown' })
     expect(serializeUsageBillingDetails(null)).toBe('')
   })
+
+  it('preserves OpenAI cache buckets in public JSON and defaults historical components to zero', () => {
+    const ttlDetails = { ...details, components: [{ ...details.components[0]!, cache_creation_tokens: 37, cache_creation_30m_tokens: 11, cache_creation_12h_tokens: 19 }] }
+    const component = JSON.parse(serializeUsageBillingDetails(ttlDetails)).components[0]
+    expect(component).toMatchObject({ cache_creation_tokens: 37, cache_creation_30m_tokens: 11, cache_creation_12h_tokens: 19 })
+    expect(component).not.toHaveProperty('account_stats_cost')
+    expect(JSON.parse(serializeUsageBillingDetails(details)).components[0]).toMatchObject({ cache_creation_30m_tokens: 0, cache_creation_12h_tokens: 0 })
+  })
 })
 
 describe('billing detail worksheet serialization', () => {
@@ -42,6 +50,7 @@ describe('billing detail worksheet serialization', () => {
       components: Array.from({ length: 100 }, (_, index) => ({
         ...details.components[0]!, iteration_index: index === 1 ? null : index,
         input_cost: 0, output_cost: 0.00000022, secret_rule: 'must-never-export',
+        cache_creation_30m_tokens: 11, cache_creation_12h_tokens: 19,
       })),
     }
     expect(JSON.stringify(largeDetails).length).toBeGreaterThan(32767)
@@ -59,7 +68,10 @@ describe('billing detail worksheet serialization', () => {
     expect(restoredRows[1]!.slice(0, 7)).toEqual([42, 'req-many-advisors', '2026-11-10T00:00:00Z', 'partial_unpriced', 1, 'advisor', 0])
     expect(restoredRows[2]![6]).toBe('')
     expect(restoredRows[100]![6]).toBe(99)
-    expect(restoredRows[1]!.slice(15, 18)).toEqual(['0.00000000', '0.00000022', 'Not priced'])
+    expect(restoredRows[1]![BILLING_DETAIL_EXPORT_HEADERS.indexOf('cache_creation_30m_tokens')]).toBe(11)
+    expect(restoredRows[1]![BILLING_DETAIL_EXPORT_HEADERS.indexOf('cache_creation_12h_tokens')]).toBe(19)
+    const inputCostIndex = BILLING_DETAIL_EXPORT_HEADERS.indexOf('input_cost')
+    expect(restoredRows[1]!.slice(inputCostIndex, inputCostIndex + 3)).toEqual(['0.00000000', '0.00000022', 'Not priced'])
     expect(restoredRows[1]!.slice(-2)).toEqual(['0.12345000', 'unknown'])
     expect(JSON.stringify(restoredRows)).not.toContain('must-never-export')
     const publicDetails = JSON.parse(serializeUsageBillingDetails(largeDetails))

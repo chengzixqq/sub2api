@@ -1279,6 +1279,7 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 		if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
 			return
 		}
+		inheritOpenAICacheCreationTTL(&parsedUsage, *usage)
 		*usage = parsedUsage
 		return
 	}
@@ -1306,13 +1307,32 @@ func mergeOpenAIUsageNonZero(dst *OpenAIUsage, src OpenAIUsage) {
 		dst.OutputTokens = src.OutputTokens
 	}
 	if src.CacheCreationInputTokens > 0 {
+		inheritOpenAICacheCreationTTL(&src, *dst)
 		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+		dst.CacheCreation30mInputTokens = src.CacheCreation30mInputTokens
+		dst.CacheCreation12hInputTokens = src.CacheCreation12hInputTokens
+		dst.cacheCreationTTLDetailsPresent = src.cacheCreationTTLDetailsPresent
 	}
 	if src.CacheReadInputTokens > 0 {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
 	}
 	if src.ImageOutputTokens > 0 {
 		dst.ImageOutputTokens = src.ImageOutputTokens
+	}
+}
+
+// A cumulative snapshot may omit a previously reported TTL breakdown. Reuse
+// it only for the same aggregate; a changed aggregate or explicitly invalid
+// breakdown must use the aggregate price rather than an unproven TTL mix.
+func inheritOpenAICacheCreationTTL(current *OpenAIUsage, previous OpenAIUsage) {
+	if current.cacheCreationTTLDetailsPresent || current.CacheCreation30mInputTokens != 0 || current.CacheCreation12hInputTokens != 0 ||
+		current.CacheCreationInputTokens != previous.CacheCreationInputTokens {
+		return
+	}
+	short, long, total := previous.CacheCreation30mInputTokens, previous.CacheCreation12hInputTokens, previous.CacheCreationInputTokens
+	if total > 0 && short >= 0 && long >= 0 && short <= total && long == total-short {
+		current.CacheCreation30mInputTokens = short
+		current.CacheCreation12hInputTokens = long
 	}
 }
 
@@ -1580,6 +1600,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	}
 	cacheReadTokens := openAICacheReadTokensFromUsage(value)
 	cacheCreationTokens := openAICacheCreationTokensFromUsage(value)
+	cache30m, cache12h, cacheTTLPresent := openAICacheCreationTTLTokensFromUsage(value, cacheCreationTokens)
 	imageOutputTokens := value.Get("output_tokens_details.image_tokens").Int()
 	if imageOutputTokens == 0 {
 		imageOutputTokens = value.Get("completion_tokens_details.image_tokens").Int()
@@ -1592,12 +1613,15 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		value.Get("prompt_tokens_details.image_tokens"),
 	)
 	return OpenAIUsage{
-		InputTokens:              int(inputTokens),
-		ImageInputTokens:         imageInputTokens,
-		OutputTokens:             int(outputTokens),
-		CacheCreationInputTokens: cacheCreationTokens,
-		CacheReadInputTokens:     cacheReadTokens,
-		ImageOutputTokens:        int(imageOutputTokens),
+		InputTokens:                    int(inputTokens),
+		ImageInputTokens:               imageInputTokens,
+		OutputTokens:                   int(outputTokens),
+		CacheCreationInputTokens:       cacheCreationTokens,
+		CacheCreation30mInputTokens:    cache30m,
+		CacheCreation12hInputTokens:    cache12h,
+		cacheCreationTTLDetailsPresent: cacheTTLPresent,
+		CacheReadInputTokens:           cacheReadTokens,
+		ImageOutputTokens:              int(imageOutputTokens),
 	}, true
 }
 
@@ -1637,6 +1661,28 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 		value.Get("cache_write_input_tokens"),
 		value.Get("cache_creation_tokens"),
 	)
+}
+
+// Only reported usage determines the lifetime. Missing, partial or inconsistent
+// details keep the aggregate's legacy price; request TTLs cannot prove writes.
+func openAICacheCreationTTLTokensFromUsage(value gjson.Result, aggregate int) (int, int, bool) {
+	for _, path := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		details := value.Get(path + ".cache_write_tokens_details")
+		if !details.Exists() {
+			continue
+		}
+		short, long := details.Get("ttl_30m_tokens"), details.Get("ttl_12h_tokens")
+		if short.Type != gjson.Number || long.Type != gjson.Number {
+			return 0, 0, true
+		}
+		a, b := short.Int(), long.Int()
+		if a < 0 || b < 0 || float64(a) != short.Float() || float64(b) != long.Float() ||
+			a > int64(aggregate) || b != int64(aggregate)-a {
+			return 0, 0, true
+		}
+		return int(a), int(b), true
+	}
+	return 0, 0, false
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {

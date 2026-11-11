@@ -191,6 +191,78 @@ func TestOpenAIAdvisorUsage_ClonePreservesTTLAndIsolation(t *testing.T) {
 	require.Equal(t, 10, roundTrip.CacheCreation1hTokens)
 }
 
+func TestOpenAIAdvisorUsage_OpenAITTLRoundTripAndCompleteness(t *testing.T) {
+	u := nativeAdvisorTestUsage()
+	u.CacheCreationInputTokens, u.CacheCreation30mTokens, u.CacheCreation12hTokens = 20, 5, 15
+	executor := &u.IterationUsage.Iterations[0].Usage
+	executor.CacheCreationTokens, executor.CacheCreation30mTokens, executor.CacheCreation12hTokens = 20, 5, 15
+	converted := claudeUsageToOpenAIUsage(&u)
+	snapshot := converted.ToClaudeUsage()
+	require.Equal(t, 120, converted.InputTokens)
+	require.Equal(t, 5, converted.CacheCreation30mInputTokens)
+	require.Equal(t, 15, converted.CacheCreation12hInputTokens)
+	require.Equal(t, u, snapshot)
+	require.True(t, claudeExecutorIterationsComplete(snapshot))
+	fromTokens := claudeUsageFromTokens(claudeUsageTokens(snapshot))
+	fromTokens.IterationUsage = snapshot.IterationUsage
+	require.Equal(t, snapshot, fromTokens)
+	u.IterationUsage.Iterations[0].Usage.CacheCreation12hTokens = 0
+	require.Equal(t, 15, snapshot.IterationUsage.Iterations[0].Usage.CacheCreation12hTokens)
+	partial := snapshot.Clone()
+	partial.IterationUsage.Iterations[0].Usage.CacheCreation30mTokens = 0
+	partial.IterationUsage.Iterations[0].Usage.CacheCreation12hTokens = 0
+	require.False(t, claudeExecutorIterationsComplete(partial), "aggregate-only iterations cannot replace priced top-level TTL detail")
+}
+
+func TestOpenAIAdvisorRecordUsage_OpenAITTLAndProbeAttribution(t *testing.T) {
+	for _, complete := range []bool{true, false} {
+		for _, providerRecorded := range []bool{true, false} {
+			t.Run(fmt.Sprintf("complete=%t/provider=%t", complete, providerRecorded), func(t *testing.T) {
+				usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+				userRepo := &openAIRecordUsageUserRepoStub{}
+				svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+				svc.billingService = newTestBillingServiceForResolver()
+				svc.billingService.fallbackPrices["claude-sonnet-4"] = &ModelPricing{InputPricePerToken: 1e-6, OutputPricePerToken: 2e-6, CacheCreationPricePerToken: 3e-6, CacheCreation12hPricePerToken: billingAmount(6e-6)}
+				svc.billingService.fallbackPrices["advisor-model"] = &ModelPricing{InputPricePerToken: 3e-6, OutputPricePerToken: 15e-6}
+				key := openAIRecordUsageAPIKeyWithGroup(svc, 1, true)
+				key.GroupID = i64p(1)
+				key.Group.RateMultiplier = 2
+				usage := nativeAdvisorTestUsage()
+				usage.CacheCreationInputTokens, usage.CacheCreation30mTokens, usage.CacheCreation12hTokens = 20, 5, 15
+				executor := &usage.IterationUsage.Iterations[0].Usage
+				executor.CacheCreationTokens, executor.CacheCreation30mTokens, executor.CacheCreation12hTokens = 20, 5, 15
+				usage.IterationUsage.Terminal = complete
+				err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+					Result: &OpenAIForwardResult{RequestID: "advisor-ttl", Model: "claude-sonnet-4", Usage: claudeUsageToOpenAIUsage(&usage)},
+					APIKey: key, User: &User{ID: 2}, Account: &Account{ID: 3, Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+					ProbeCoalesced: !providerRecorded, ProbeLeaderRequestID: "ttl-leader", ProviderCostRecorded: providerRecorded,
+				})
+				require.NoError(t, err)
+				log := usageRepo.lastLog
+				require.Equal(t, 100, log.InputTokens)
+				require.Equal(t, 20, log.CacheCreationTokens)
+				require.Equal(t, 5, log.CacheCreation30mTokens)
+				require.Equal(t, 15, log.CacheCreation12hTokens)
+				require.InDelta(t, .00056, log.TotalCost, 1e-10)
+				require.InDelta(t, .00112, log.ActualCost, 1e-10)
+				require.Equal(t, 1, userRepo.deductCalls)
+				require.InDelta(t, .00112, userRepo.lastAmount, 1e-10)
+				component := log.BillingDetails.Components[0]
+				require.Equal(t, 5, component.CacheCreation30mTokens)
+				require.Equal(t, 15, component.CacheCreation12hTokens)
+				if providerRecorded {
+					require.InDelta(t, .00056, *log.AccountStatsCost, 1e-10)
+				} else {
+					require.Zero(t, *log.AccountStatsCost)
+					for _, component := range log.BillingDetails.Components {
+						require.Zero(t, *component.AccountStatsCost)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestOpenAIAdvisorNativePreflight_RejectsBeforeUpstream(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	body := []byte(`{"model":"executor-model","tools":[{"type":"advisor_20260301","name":"advisor","model":"unknown-advisor"}]}`)

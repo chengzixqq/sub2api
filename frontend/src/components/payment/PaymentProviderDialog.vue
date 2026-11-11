@@ -852,6 +852,14 @@ function loadProvider(provider: ProviderInstance) {
       returnBaseUrl.value = extractBaseUrl(provider.config['returnUrl'], paths.returnUrl)
     }
   }
+  if (provider.provider_key === 'easypay') {
+    // Normalize the official alias before defaults; alias-only code 0 must not
+    // become a canonical default 1 when the administrator opens the dialog.
+    if (!config.v1RefundSuccessCode?.trim() && config.refundSuccessCode?.trim()) {
+      config.v1RefundSuccessCode = config.refundSuccessCode.trim()
+    }
+    delete config.refundSuccessCode
+  }
   applyDefaults()
   // Parse existing limits
   if (provider.limits) {

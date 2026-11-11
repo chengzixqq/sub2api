@@ -788,6 +788,21 @@ describe("admin SettingsView payment visible method controls", () => {
     );
   });
 
+  it("preserves six-decimal recharge multipliers through the sticky save dock", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get("#settings-tab-payment").trigger("click");
+    const input = wrapper.get('[data-testid="balance-recharge-multiplier"]');
+    expect(input.attributes("step")).toBe("0.000001");
+    expect(input.attributes("min")).toBe("0.000001");
+    await input.setValue("0.123456");
+    expect(wrapper.find('.settings-save-dock button[type="submit"]').exists()).toBe(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({ payment_balance_recharge_multiplier: 0.123456 }));
+    wrapper.unmount();
+  });
+
   it("submits probe coalescing mode and numeric controls", async () => {
     const wrapper = mountView();
     await flushPromises();

@@ -606,6 +606,8 @@ type ClaudeUsage struct {
 	CacheReadInputTokens     int                   `json:"cache_read_input_tokens"`
 	CacheCreation5mTokens    int                   // 5分钟缓存创建token（来自嵌套 cache_creation 对象）
 	CacheCreation1hTokens    int                   // 1小时缓存创建token（来自嵌套 cache_creation 对象）
+	CacheCreation30mTokens   int                   // OpenAI 30m writes retained by shared usage snapshots.
+	CacheCreation12hTokens   int                   // OpenAI 12h writes retained by shared usage snapshots.
 	ImageInputTokens         int                   `json:"image_input_tokens,omitempty"`
 	// ImageCacheReadTokens is an OpenAI-compatible image subset of
 	// CacheReadInputTokens.  It is carried through the shared failure-billing

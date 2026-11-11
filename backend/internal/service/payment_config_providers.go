@@ -201,6 +201,11 @@ func (s *PaymentConfigService) CreateProviderInstance(ctx context.Context, req C
 		return nil, err
 	}
 	if req.ProviderKey == payment.TypeEasyPay {
+		config, err := payment.NormalizeEasyPayRefundConfig(req.Config)
+		if err != nil {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
+		}
+		req.Config = config
 		if _, err := payment.NormalizeEasyPayAPIVersion(req.Config["apiVersion"]); err != nil {
 			return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
 		}
@@ -569,6 +574,17 @@ func (s *PaymentConfigService) mergeConfig(ctx context.Context, id int64, newCon
 	if existing == nil {
 		existing = map[string]string{}
 	}
+	if inst.ProviderKey == payment.TypeEasyPay {
+		// Resolve only explicitly submitted values first, before an old stored
+		// alias or a default can create a false conflict with the edited value.
+		newConfig, err = payment.NormalizeEasyPayRefundConfig(newConfig)
+		if err != nil {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
+		}
+		if _, supplied := newConfig["v1RefundSuccessCode"]; supplied {
+			delete(existing, "refundSuccessCode")
+		}
+	}
 	for k, v := range newConfig {
 		// Preserve existing secrets when the client submits an empty value
 		// (admin UI omits the value to indicate "leave unchanged").
@@ -576,6 +592,12 @@ func (s *PaymentConfigService) mergeConfig(ctx context.Context, id int64, newCon
 			continue
 		}
 		existing[k] = v
+	}
+	if inst.ProviderKey == payment.TypeEasyPay {
+		existing, err = payment.NormalizeEasyPayRefundConfig(existing)
+		if err != nil {
+			return nil, infraerrors.BadRequest("VALIDATION_ERROR", err.Error())
+		}
 	}
 	return existing, nil
 }

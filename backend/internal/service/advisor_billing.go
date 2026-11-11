@@ -9,6 +9,7 @@ func billingComponent(role, model string, index *int, tokens UsageTokens, cost *
 	c := BillingComponent{Role: role, Model: model, IterationIndex: index, BillingMode: string(BillingModeToken),
 		InputTokens: tokens.InputTokens, OutputTokens: tokens.OutputTokens, CacheCreationTokens: tokens.CacheCreationTokens,
 		CacheReadTokens: tokens.CacheReadTokens, CacheCreation5mTokens: tokens.CacheCreation5mTokens, CacheCreation1hTokens: tokens.CacheCreation1hTokens,
+		CacheCreation30mTokens: tokens.CacheCreation30mTokens, CacheCreation12hTokens: tokens.CacheCreation12hTokens,
 		PricingSource: source}
 	if cost != nil {
 		if cost.BillingMode != "" {
@@ -109,7 +110,8 @@ func (s *GatewayService) calculateTokenCost(ctx context.Context, result *Forward
 
 func componentUsage(c BillingComponent) UsageTokens {
 	return UsageTokens{InputTokens: c.InputTokens, OutputTokens: c.OutputTokens, CacheCreationTokens: c.CacheCreationTokens,
-		CacheReadTokens: c.CacheReadTokens, CacheCreation5mTokens: c.CacheCreation5mTokens, CacheCreation1hTokens: c.CacheCreation1hTokens}
+		CacheReadTokens: c.CacheReadTokens, CacheCreation5mTokens: c.CacheCreation5mTokens, CacheCreation1hTokens: c.CacheCreation1hTokens,
+		CacheCreation30mTokens: c.CacheCreation30mTokens, CacheCreation12hTokens: c.CacheCreation12hTokens}
 }
 
 // Existing request surcharges belong to the executor side of the bill.

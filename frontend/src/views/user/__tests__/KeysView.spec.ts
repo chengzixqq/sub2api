@@ -796,4 +796,39 @@ describe('user KeysView column settings', () => {
       expect(optionIds(wrapper)).toHaveLength(12)
     })
   })
+
+  describe('usage stats loading', () => {
+    it('renders the key list without waiting for slow usage stats', async () => {
+      let resolveUsage!: (value: { stats: Record<string, unknown> }) => void
+      getDashboardApiKeysUsage.mockReturnValue(new Promise((resolve) => { resolveUsage = resolve }))
+      const wrapper = await mountView()
+
+      const table = wrapper.findComponent({ name: 'DataTable' })
+      expect(table.props('loading')).toBe(false)
+      expect(table.props('data')).toHaveLength(1)
+      expect(wrapper.find('[data-test="usage-pending"]').exists()).toBe(true)
+
+      resolveUsage({
+        stats: { 1: { api_key_id: 1, today_actual_cost: 0.5, total_actual_cost: 12.25 } },
+      })
+      await flushPromises()
+      expect(wrapper.find('[data-test="usage-pending"]').exists()).toBe(false)
+      expect(wrapper.get('[data-test="usage"]').text()).toContain('$12.2500')
+    })
+
+    it('replaces failed usage placeholders with a retry that can recover', async () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      getDashboardApiKeysUsage.mockRejectedValue(new Error('timeout'))
+      const wrapper = await mountView()
+
+      expect(wrapper.find('[data-test="usage-pending"]').exists()).toBe(false)
+      expect(wrapper.get('[data-test="usage"]').text()).not.toContain('$0.0000')
+      getDashboardApiKeysUsage.mockResolvedValueOnce({ stats: { 1: { api_key_id: 1, today_actual_cost: 0.5, total_actual_cost: 12.25 } } })
+      await wrapper.get('[data-test="usage-unavailable"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[data-test="usage"]').text()).toContain('$12.2500')
+      expect(wrapper.find('[data-test="usage-unavailable"]').exists()).toBe(false)
+      consoleError.mockRestore()
+    })
+  })
 })

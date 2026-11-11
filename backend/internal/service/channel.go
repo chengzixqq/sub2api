@@ -97,6 +97,7 @@ type ChannelModelPricing struct {
 	OutputPrice                *float64            `json:"output_price"`
 	CacheWritePrice            *float64            `json:"cache_write_price"`
 	CacheWrite1hPrice          *float64            `json:"cache_write_1h_price"`
+	CacheWrite12hPrice         *float64            `json:"cache_write_12h_price"`
 	CacheReadPrice             *float64            `json:"cache_read_price"`
 	FastMultiplier             *float64            `json:"fast_multiplier"`
 	FlexMultiplier             *float64            `json:"flex_multiplier"`
@@ -135,6 +136,7 @@ type PricingInterval struct {
 	OutputPrice          *float64  `json:"output_price"`
 	CacheWritePrice      *float64  `json:"cache_write_price"`
 	CacheWrite1hPrice    *float64  `json:"cache_write_1h_price"`
+	CacheWrite12hPrice   *float64  `json:"cache_write_12h_price"`
 	CacheReadPrice       *float64  `json:"cache_read_price"`
 	InputMultiplier      *float64  `json:"input_multiplier"`
 	OutputMultiplier     *float64  `json:"output_multiplier"`
@@ -224,6 +226,7 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 	cp.OutputPrice = clonePricingPtr(p.OutputPrice)
 	cp.CacheWritePrice = clonePricingPtr(p.CacheWritePrice)
 	cp.CacheWrite1hPrice = clonePricingPtr(p.CacheWrite1hPrice)
+	cp.CacheWrite12hPrice = clonePricingPtr(p.CacheWrite12hPrice)
 	cp.CacheReadPrice = clonePricingPtr(p.CacheReadPrice)
 	cp.FastMultiplier = clonePricingPtr(p.FastMultiplier)
 	cp.FlexMultiplier = clonePricingPtr(p.FlexMultiplier)
@@ -244,6 +247,7 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 			cp.Intervals[i].OutputPrice = clonePricingPtr(p.Intervals[i].OutputPrice)
 			cp.Intervals[i].CacheWritePrice = clonePricingPtr(p.Intervals[i].CacheWritePrice)
 			cp.Intervals[i].CacheWrite1hPrice = clonePricingPtr(p.Intervals[i].CacheWrite1hPrice)
+			cp.Intervals[i].CacheWrite12hPrice = clonePricingPtr(p.Intervals[i].CacheWrite12hPrice)
 			cp.Intervals[i].CacheReadPrice = clonePricingPtr(p.Intervals[i].CacheReadPrice)
 			cp.Intervals[i].InputMultiplier = clonePricingPtr(p.Intervals[i].InputMultiplier)
 			cp.Intervals[i].OutputMultiplier = clonePricingPtr(p.Intervals[i].OutputMultiplier)
@@ -414,6 +418,7 @@ func validateIntervalPrices(iv *PricingInterval, idx int) error {
 		{"output_price", iv.OutputPrice},
 		{"cache_write_price", iv.CacheWritePrice},
 		{"cache_write_1h_price", iv.CacheWrite1hPrice},
+		{"cache_write_12h_price", iv.CacheWrite12hPrice},
 		{"cache_read_price", iv.CacheReadPrice},
 		{"per_request_price", iv.PerRequestPrice},
 	}

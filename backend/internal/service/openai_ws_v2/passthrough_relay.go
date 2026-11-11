@@ -27,12 +27,15 @@ type FrameConn interface {
 var ErrAmbiguousTerminalIdentity = errors.New("websocket terminal identity is ambiguous after a completed turn")
 
 type Usage struct {
-	InputTokens              int
-	ImageInputTokens         int
-	OutputTokens             int
-	CacheCreationInputTokens int
-	CacheReadInputTokens     int
-	ImageOutputTokens        int
+	InputTokens                    int
+	ImageInputTokens               int
+	OutputTokens                   int
+	CacheCreationInputTokens       int
+	CacheCreation30mInputTokens    int
+	CacheCreation12hInputTokens    int
+	CacheReadInputTokens           int
+	ImageOutputTokens              int
+	cacheCreationTTLDetailsPresent bool
 }
 
 type RelayResult struct {
@@ -91,7 +94,10 @@ type RelayOptions struct {
 	BeforeRelayCancel               func(exit RelayExit)
 	ReadClientFrame                 func(ctx context.Context, clientConn FrameConn) (coderws.MessageType, []byte, error)
 	OnTrace                         func(event RelayTraceEvent)
-	Now                             func() time.Time
+	// IsFirstTokenEvent decides which upstream event marks the first token.
+	// Nil keeps the built-in delta-based rule.
+	IsFirstTokenEvent func(eventType string, message []byte) bool
+	Now               func() time.Time
 }
 
 type RelayTraceEvent struct {
@@ -127,6 +133,7 @@ type relayState struct {
 	turnTimingByID          map[string]*relayTurnTiming
 	activeTurn              *relayTurnTiming
 	pendingBareError        *observedUpstreamEvent
+	isFirstTokenEvent       func(eventType string, message []byte) bool
 }
 
 type relayExitSignal struct {
@@ -200,7 +207,7 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel}
+	state := &relayState{requestModel: result.RequestModel, isFirstTokenEvent: options.IsFirstTokenEvent}
 	firstIsResponseCreate := isClientResponseCreateFrame(firstMessageType, firstClientMessage)
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
@@ -804,7 +811,7 @@ func observeUpstreamMessage(
 	}
 	now := nowFn()
 
-	if state.firstTokenMs == nil && isTokenEvent(eventType) {
+	if state.firstTokenMs == nil && state.startsFirstToken(eventType, message) {
 		ms := int(now.Sub(startAt).Milliseconds())
 		if ms >= 0 {
 			state.firstTokenMs = &ms
@@ -824,7 +831,7 @@ func observeUpstreamMessage(
 		turnTiming = state.activeTurn
 	}
 	// 每个 turn 独立记录首 token；连接级 firstTokenMs 只反映整条连接的第一个 token。
-	if turnTiming != nil && turnTiming.firstTokenMs == nil && isTokenEvent(eventType) {
+	if turnTiming != nil && turnTiming.firstTokenMs == nil && state.startsFirstToken(eventType, message) {
 		ms := int(now.Sub(turnTiming.startAt).Milliseconds())
 		if ms >= 0 {
 			turnTiming.firstTokenMs = &ms
@@ -1205,17 +1212,23 @@ func parseUsageAndAccumulate(
 			int64(inputTokens), int64(outputTokens), usageResult.Get("total_tokens").Int(), reasoningTokens,
 		))
 	}
+	cacheCreationTokens := openAICacheCreationTokensFromUsage(usageResult)
+	cache30m, cache12h, cacheTTLPresent := openAICacheCreationTTLTokensFromUsage(usageResult, cacheCreationTokens)
 	parsedUsage := Usage{
-		InputTokens:              inputTokens,
-		ImageInputTokens:         int(imageInputTokens),
-		OutputTokens:             outputTokens,
-		CacheCreationInputTokens: openAICacheCreationTokensFromUsage(usageResult),
-		CacheReadInputTokens:     cachedTokens,
-		ImageOutputTokens:        int(imageTokens),
+		InputTokens:                    inputTokens,
+		ImageInputTokens:               int(imageInputTokens),
+		OutputTokens:                   outputTokens,
+		CacheCreationInputTokens:       cacheCreationTokens,
+		CacheCreation30mInputTokens:    cache30m,
+		CacheCreation12hInputTokens:    cache12h,
+		cacheCreationTTLDetailsPresent: cacheTTLPresent,
+		CacheReadInputTokens:           cachedTokens,
+		ImageOutputTokens:              int(imageTokens),
 	}
 
 	if isTerminalEvent(strings.TrimSpace(eventType)) {
 		if relayUsageHasTokens(parsedUsage) || !relayUsageHasTokens(state.turnUsage) {
+			inheritRelayCacheCreationTTL(&parsedUsage, state.turnUsage)
 			state.turnUsage = parsedUsage
 		}
 	} else {
@@ -1242,7 +1255,11 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 		dst.OutputTokens = src.OutputTokens
 	}
 	if src.CacheCreationInputTokens > 0 {
+		inheritRelayCacheCreationTTL(&src, *dst)
 		dst.CacheCreationInputTokens = src.CacheCreationInputTokens
+		dst.CacheCreation30mInputTokens = src.CacheCreation30mInputTokens
+		dst.CacheCreation12hInputTokens = src.CacheCreation12hInputTokens
+		dst.cacheCreationTTLDetailsPresent = src.cacheCreationTTLDetailsPresent
 	}
 	if src.CacheReadInputTokens > 0 {
 		dst.CacheReadInputTokens = src.CacheReadInputTokens
@@ -1255,6 +1272,18 @@ func mergeRelayUsageNonZero(dst *Usage, src Usage) {
 	}
 }
 
+func inheritRelayCacheCreationTTL(current *Usage, previous Usage) {
+	if current.cacheCreationTTLDetailsPresent || current.CacheCreation30mInputTokens != 0 || current.CacheCreation12hInputTokens != 0 ||
+		current.CacheCreationInputTokens != previous.CacheCreationInputTokens {
+		return
+	}
+	short, long, total := previous.CacheCreation30mInputTokens, previous.CacheCreation12hInputTokens, previous.CacheCreationInputTokens
+	if total > 0 && short >= 0 && long >= 0 && short <= total && long == total-short {
+		current.CacheCreation30mInputTokens = short
+		current.CacheCreation12hInputTokens = long
+	}
+}
+
 func finalizeRelayTurnUsage(state *relayState) Usage {
 	if state == nil {
 		return Usage{}
@@ -1264,6 +1293,8 @@ func finalizeRelayTurnUsage(state *relayState) Usage {
 	state.usage.ImageInputTokens += turnUsage.ImageInputTokens
 	state.usage.OutputTokens += turnUsage.OutputTokens
 	state.usage.CacheCreationInputTokens += turnUsage.CacheCreationInputTokens
+	state.usage.CacheCreation30mInputTokens += turnUsage.CacheCreation30mInputTokens
+	state.usage.CacheCreation12hInputTokens += turnUsage.CacheCreation12hInputTokens
 	state.usage.CacheReadInputTokens += turnUsage.CacheReadInputTokens
 	state.usage.ImageOutputTokens += turnUsage.ImageOutputTokens
 	state.turnUsage = Usage{}
@@ -1303,6 +1334,27 @@ func openAICacheCreationTokensFromUsage(value gjson.Result) int {
 		}
 	}
 	return 0
+}
+
+// Only a complete, consistent reported split proves the cache write lifetime.
+func openAICacheCreationTTLTokensFromUsage(value gjson.Result, aggregate int) (int, int, bool) {
+	for _, path := range []string{"input_tokens_details", "prompt_tokens_details"} {
+		details := value.Get(path + ".cache_write_tokens_details")
+		if !details.Exists() {
+			continue
+		}
+		short, long := details.Get("ttl_30m_tokens"), details.Get("ttl_12h_tokens")
+		if short.Type != gjson.Number || long.Type != gjson.Number {
+			return 0, 0, true
+		}
+		a, b := short.Int(), long.Int()
+		if a < 0 || b < 0 || float64(a) != short.Float() || float64(b) != long.Float() ||
+			a > int64(aggregate) || b != int64(aggregate)-a {
+			return 0, 0, true
+		}
+		return int(a), int(b), true
+	}
+	return 0, 0, false
 }
 
 func enrichResult(result *RelayResult, state *relayState, duration time.Duration) {
@@ -1473,6 +1525,13 @@ func shouldParseUsage(eventType string) bool {
 		return true
 	}
 	return strings.HasPrefix(eventType, "response.") && !strings.HasSuffix(eventType, ".delta")
+}
+
+func (s *relayState) startsFirstToken(eventType string, message []byte) bool {
+	if s.isFirstTokenEvent != nil {
+		return !isTerminalEvent(eventType) && s.isFirstTokenEvent(eventType, message)
+	}
+	return isTokenEvent(eventType)
 }
 
 func isTokenEvent(eventType string) bool {

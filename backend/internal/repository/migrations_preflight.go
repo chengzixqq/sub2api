@@ -74,6 +74,10 @@ var outOfOrderMigrationAllowlist = map[string]struct{}{
 	"247_scoped_admin_api_keys.sql":                 {},
 	"248_group_image_count_billing.sql":             {},
 	"249_mcp_oauth.sql":                             {},
+	// v0.2.21 adds an independent index and nullable/defaulted pricing fields;
+	// neither changes the meaning of the custom migrations through 259.
+	"249_add_usage_logs_api_key_cost_index_notx.sql": {},
+	"250_openai_cache_write_ttl.sql":                 {},
 }
 
 // Valid reports whether applying the pending suffix is safe from migration

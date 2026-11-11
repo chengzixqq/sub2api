@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,6 +93,38 @@ func TestAdvisorBilling_PreflightRejectsUnknownAndAllowsFree(t *testing.T) {
 	require.NotNil(t, cost.BillingDetails.Components[1].TotalCost)
 	require.Zero(t, *cost.BillingDetails.Components[1].TotalCost)
 	require.Equal(t, "complete", cost.BillingDetails.Status)
+}
+
+func TestAdvisorBilling_NewFallbackModelsRemainStrictlyIdentified(t *testing.T) {
+	s, key := advisorTestService()
+	s.billingService.initFallbackPricing()
+	for _, model := range []string{"claude-fable-5-2", "claude-mythos-5-2"} {
+		body := []byte(fmt.Sprintf(`{"tools":[{"type":"advisor_20260301","model":%q}]}`, model))
+		require.NoError(t, s.ValidateAdvisorPricing(context.Background(), key, body))
+		cost := s.calculateTokenCost(context.Background(), &ForwardResult{Usage: advisorTestUsage(model)}, key, "claude-sonnet-4", 2, time.Now())
+		advisor := cost.BillingDetails.Components[1]
+		require.InDelta(t, 10*8e-6+20*40e-6, *advisor.TotalCost, 1e-12)
+		require.InDelta(t, 2*(10*8e-6+20*40e-6), *advisor.ActualCost, 1e-12)
+	}
+	for _, model := range []string{"claude-fable-5-20", "claude-fable-5-2-preview", "claude-mythos-5-20"} {
+		body := []byte(fmt.Sprintf(`{"tools":[{"type":"advisor_20260301","model":%q}]}`, model))
+		require.ErrorIs(t, s.ValidateAdvisorPricing(context.Background(), key, body), ErrAdvisorPricingUnavailable)
+		cost := s.calculateTokenCost(context.Background(), &ForwardResult{Usage: advisorTestUsage(model)}, key, "claude-sonnet-4", 1, time.Now())
+		require.Equal(t, "partial_unpriced", cost.BillingDetails.Status)
+		require.Nil(t, cost.BillingDetails.Components[1].TotalCost)
+	}
+}
+
+func TestAdvisorBilling_Explicit12hPriceMustBeFiniteAndNonnegative(t *testing.T) {
+	s, key := advisorTestService()
+	body := []byte(`{"tools":[{"type":"advisor_20260301","model":"advisor-test"}]}`)
+	for _, price := range []float64{math.NaN(), math.Inf(1), -1} {
+		key.Group.ModelPricing = []ChannelModelPricing{{Models: []string{"advisor-test"}, CacheWrite12hPrice: &price}}
+		require.ErrorIs(t, s.ValidateAdvisorPricing(context.Background(), key, body), ErrAdvisorPricingUnavailable)
+	}
+	zero := 0.0
+	key.Group.ModelPricing = []ChannelModelPricing{{Models: []string{"advisor-test"}, CacheWrite12hPrice: &zero}}
+	require.NoError(t, s.ValidateAdvisorPricing(context.Background(), key, body))
 }
 
 func TestAdvisorBilling_PreflightBeforeUpstream(t *testing.T) {

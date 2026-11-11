@@ -191,14 +191,14 @@
           @select-all-results="handleSelectAllResults"
           @toggle-schedulable="handleBulkToggleSchedulable"
         />
-        <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div ref="accountTableRef" class="flex min-h-0 flex-1 flex-col overflow-hidden" :aria-busy="loading" :inert="loading && accounts.length > 0">
         <DataTable
           column-order-key="admin.accounts"
           :column-order-columns="allColumns"
           ref="dataTableRef"
           :columns="cols"
           :data="accounts"
-          :loading="loading"
+          :loading="loading && accounts.length === 0"
           row-key="id"
           :server-side-sort="true"
           @sort="handleSort"

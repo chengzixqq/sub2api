@@ -209,12 +209,14 @@ func observeClaudeIterationUsage(node gjson.Result, usage *ClaudeUsage) {
 func claudeUsageTokens(u ClaudeUsage) UsageTokens {
 	return UsageTokens{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheCreationTokens: u.CacheCreationInputTokens,
 		CacheReadTokens: u.CacheReadInputTokens, CacheCreation5mTokens: u.CacheCreation5mTokens, CacheCreation1hTokens: u.CacheCreation1hTokens,
+		CacheCreation30mTokens: u.CacheCreation30mTokens, CacheCreation12hTokens: u.CacheCreation12hTokens,
 		ImageInputTokens: u.ImageInputTokens, ImageCacheReadTokens: u.ImageCacheReadTokens, ImageOutputTokens: u.ImageOutputTokens}
 }
 
 func claudeUsageFromTokens(u UsageTokens) ClaudeUsage {
 	return ClaudeUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheCreationInputTokens: u.CacheCreationTokens,
-		CacheReadInputTokens: u.CacheReadTokens, CacheCreation5mTokens: u.CacheCreation5mTokens, CacheCreation1hTokens: u.CacheCreation1hTokens}
+		CacheReadInputTokens: u.CacheReadTokens, CacheCreation5mTokens: u.CacheCreation5mTokens, CacheCreation1hTokens: u.CacheCreation1hTokens,
+		CacheCreation30mTokens: u.CacheCreation30mTokens, CacheCreation12hTokens: u.CacheCreation12hTokens}
 }
 
 func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
@@ -222,11 +224,15 @@ func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
 	if s == nil || !s.Present || s.Invalid || !s.Terminal {
 		return false
 	}
-	var sums [6]int
-	limits := [6]int{u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens, u.CacheCreation5mTokens, u.CacheCreation1hTokens}
-	checkTTL := u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0
-	if !checkTTL {
+	var sums [8]int
+	limits := [8]int{u.InputTokens, u.OutputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens, u.CacheCreation5mTokens, u.CacheCreation1hTokens, u.CacheCreation30mTokens, u.CacheCreation12hTokens}
+	checkClaudeTTL := u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0
+	checkOpenAITTL := u.CacheCreation30mTokens > 0 || u.CacheCreation12hTokens > 0
+	if !checkClaudeTTL {
 		limits[4], limits[5] = u.CacheCreationInputTokens, u.CacheCreationInputTokens
+	}
+	if !checkOpenAITTL {
+		limits[6], limits[7] = u.CacheCreationInputTokens, u.CacheCreationInputTokens
 	}
 	for _, entry := range s.Iterations {
 		if entry.Type == "advisor_message" {
@@ -236,7 +242,7 @@ func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
 			return false
 		}
 		t := entry.Usage
-		values := [6]int{t.InputTokens, t.OutputTokens, t.CacheCreationTokens, t.CacheReadTokens, t.CacheCreation5mTokens, t.CacheCreation1hTokens}
+		values := [8]int{t.InputTokens, t.OutputTokens, t.CacheCreationTokens, t.CacheReadTokens, t.CacheCreation5mTokens, t.CacheCreation1hTokens, t.CacheCreation30mTokens, t.CacheCreation12hTokens}
 		for i, value := range values {
 			if value < 0 || limits[i] < sums[i] || value > limits[i]-sums[i] {
 				return false
@@ -244,8 +250,11 @@ func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
 			sums[i] += value
 		}
 	}
-	if !checkTTL {
+	if !checkClaudeTTL {
 		sums[4], sums[5] = limits[4], limits[5]
+	}
+	if !checkOpenAITTL {
+		sums[6], sums[7] = limits[6], limits[7]
 	}
 	return sums == limits
 }

@@ -22,7 +22,7 @@
         <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
           <div v-for="field in tokenFields" :key="field.key">
             <dt class="text-gray-500 dark:text-gray-400">{{ t(field.label) }}</dt>
-            <dd class="mt-0.5 tabular-nums">{{ component[field.key].toLocaleString() }}</dd>
+            <dd class="mt-0.5 tabular-nums">{{ (component[field.key] ?? 0).toLocaleString() }}</dd>
           </div>
         </dl>
         <dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-gray-100 pt-3 text-xs dark:border-gray-700 sm:grid-cols-3">
@@ -65,6 +65,8 @@ const tokenFields = [
   { key: 'cache_read_tokens', label: 'admin.usage.cacheReadTokens' },
   { key: 'cache_creation_5m_tokens', label: 'usage.billingCache5m' },
   { key: 'cache_creation_1h_tokens', label: 'usage.billingCache1h' },
+  { key: 'cache_creation_30m_tokens', label: 'usage.billingCache30m' },
+  { key: 'cache_creation_12h_tokens', label: 'usage.billingCache12h' },
 ] as const
 const costFields = [
   { key: 'input_cost', label: 'admin.usage.inputCost' },

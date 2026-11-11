@@ -587,12 +587,14 @@ func claudeUsageToOpenAIUsage(u *ClaudeUsage) OpenAIUsage {
 		return OpenAIUsage{}
 	}
 	return OpenAIUsage{
-		InputTokens:              u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
-		OutputTokens:             u.OutputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		CacheCreation5mTokens:    u.CacheCreation5mTokens,
-		CacheCreation1hTokens:    u.CacheCreation1hTokens,
-		CacheReadInputTokens:     u.CacheReadInputTokens,
-		IterationUsage:           u.Clone().IterationUsage,
+		InputTokens:                 u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
+		OutputTokens:                u.OutputTokens,
+		CacheCreationInputTokens:    u.CacheCreationInputTokens,
+		CacheCreation5mTokens:       u.CacheCreation5mTokens,
+		CacheCreation1hTokens:       u.CacheCreation1hTokens,
+		CacheCreation30mInputTokens: u.CacheCreation30mTokens,
+		CacheCreation12hInputTokens: u.CacheCreation12hTokens,
+		CacheReadInputTokens:        u.CacheReadInputTokens,
+		IterationUsage:              u.Clone().IterationUsage,
 	}
 }

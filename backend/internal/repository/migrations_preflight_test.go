@@ -300,9 +300,11 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"247_scoped_admin_api_keys.sql",
 			"248_group_image_count_billing.sql",
 			"248_redeem_code_batches.sql",
+			"249_add_usage_logs_api_key_cost_index_notx.sql",
 			"249_admin_user_adjustments_request_id_index.sql",
 			"249_mcp_oauth.sql",
 			"250_add_account_error_at.sql",
+			"250_openai_cache_write_ttl.sql",
 			"251_add_account_config_version.sql",
 			"252_admin_access_tokens.sql",
 			"253_ops_alert_event_rule_snapshot.sql",
@@ -353,4 +355,40 @@ func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
 	require.Equal(t, pending, report.Pending)
 	require.Equal(t, pending[:3], report.OutOfOrderPending)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
+	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
+	require.NoError(t, err)
+	pending := []string{"249_add_usage_logs_api_key_cost_index_notx.sql", "250_openai_cache_write_ttl.sql"}
+	for _, appliedNew := range []int{0, 1, 2} {
+		t.Run(pendingStateName(appliedNew), func(t *testing.T) {
+			rows := sqlmock.NewRows([]string{"filename", "checksum"})
+			for _, item := range embedded {
+				unapplied := false
+				for _, name := range pending[appliedNew:] {
+					unapplied = unapplied || item.filename == name
+				}
+				if !unapplied {
+					rows.AddRow(item.filename, item.checksum)
+				}
+			}
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = db.Close() })
+			mock.ExpectQuery(`SELECT filename, checksum FROM schema_migrations ORDER BY filename`).WillReturnRows(rows)
+			report, err := CheckMigrationPreflight(context.Background(), db)
+			require.NoError(t, err)
+			require.True(t, report.Valid())
+			require.Empty(t, report.Missing)
+			require.Empty(t, report.ChecksumMismatches)
+			require.Equal(t, pending[appliedNew:], report.Pending)
+			require.Equal(t, pending[appliedNew:], report.OutOfOrderPending)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func pendingStateName(applied int) string {
+	return []string{"before_upgrade", "after_index_before_ttl", "after_upgrade"}[applied]
 }

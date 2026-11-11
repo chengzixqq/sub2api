@@ -38,4 +38,17 @@ describe('UsageBillingDetails', () => {
     expect(wrapper.text()).toContain('private-rule')
     expect(wrapper.text()).toContain('usage.billingAccountStatsCost')
   })
+
+  it('displays new cache buckets and renders historical missing buckets as zero', () => {
+    const ttlDetails = { ...details, components: [{ ...details.components[0]!, cache_creation_30m_tokens: 11, cache_creation_12h_tokens: 19 }] }
+    const wrapper = mount(UsageBillingDetails, { props: { details: ttlDetails, showAccountBilling: false } })
+    const bucket = (label: string) => wrapper.findAll('dt').find(item => item.text() === label)!.element.nextElementSibling!.textContent
+    expect(bucket('usage.billingCache30m')).toBe('11')
+    expect(bucket('usage.billingCache12h')).toBe('19')
+    wrapper.unmount()
+    const historical = mount(UsageBillingDetails, { props: { details, showAccountBilling: false } })
+    for (const label of ['usage.billingCache30m', 'usage.billingCache12h']) {
+      expect(historical.findAll('dt').find(item => item.text() === label)!.element.nextElementSibling!.textContent).toBe('0')
+    }
+  })
 })
