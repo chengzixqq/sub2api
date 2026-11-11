@@ -64,10 +64,11 @@ func TestDashboardUserTrendCache_SeparatesQueryContexts(t *testing.T) {
 			start := time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)
 			ctxA := usagequery.WithOptions(context.Background(), usagequery.Options{Identity: "admin:1", Timezone: "UTC"})
 			ctxB := usagequery.WithOptions(context.Background(), usagequery.Options{Identity: "admin:1", Timezone: "Asia/Shanghai"})
-			if dimension == "account_scope" {
+			switch dimension {
+			case "account_scope":
 				ctxA = service.WithUsageAccountScope(ctxA, []int64{101})
 				ctxB = service.WithUsageAccountScope(ctxA, []int64{202})
-			} else if dimension == "identity" {
+			case "identity":
 				ctxB = usagequery.WithOptions(context.Background(), usagequery.Options{Identity: "admin:2", Timezone: "UTC"})
 			}
 			a, hit, err := h.getUserUsageTrendCached(ctxA, start, start.Add(24*time.Hour), "hour", 12, "tokens")

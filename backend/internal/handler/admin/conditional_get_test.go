@@ -184,7 +184,7 @@ func TestOpsDashboardBucketedCache_MonitoringCheckedBeforeCache(t *testing.T) {
 func generatedAtOf(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
 	data := decodeIncrementalData(t, rec)
-	return data["query"].(map[string]any)["generated_at"].(string)
+	return requireJSONType[string](t, requireJSONType[map[string]any](t, data["query"])["generated_at"])
 }
 
 func paginatedShape(t *testing.T, rec *httptest.ResponseRecorder) string {

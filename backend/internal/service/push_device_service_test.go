@@ -155,7 +155,7 @@ func TestPushDeviceService_OmittedEnvironmentFollowsSiteConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pushEnvProduction, explicit.Environment)
 
-	d, _, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken, Environment: pushEnvProduction})
+	_, _, err = svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken, Environment: pushEnvProduction})
 	require.NoError(t, err)
 	d, created, err := svc.Register(ctx, 1, PushDeviceInput{Platform: "ios", APNsToken: pushTestAPNsToken})
 	require.NoError(t, err)

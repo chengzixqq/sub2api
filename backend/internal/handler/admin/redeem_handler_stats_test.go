@@ -42,7 +42,7 @@ func TestRedeemHandler_Stats_ReturnsRealCountsAndPassesFilter(t *testing.T) {
 	require.Equal(t, "2f6c9a0e-8f1b-4c43-9d0e-6a1b2c3d4e5f", f.BatchID.String())
 	require.Empty(t, f.Status, "status is ignored: the stats are the status breakdown")
 
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	require.EqualValues(t, 10, data["total_codes"])
 	require.EqualValues(t, 4, data["active_codes"])
 	require.EqualValues(t, 3, data["used_codes"])
@@ -59,7 +59,7 @@ func TestRedeemHandler_Stats_EmptyStatsKeepShape(t *testing.T) {
 	status, body := serveRedeemStats(t, stub, "")
 
 	require.Equal(t, http.StatusOK, status, body)
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	require.EqualValues(t, 0, data["total_codes"])
 	require.EqualValues(t, 0, data["total_value_distributed"])
 	require.Equal(t, map[string]any{"unused": 0.0, "used": 0.0, "expired": 0.0, "disabled": 0.0}, data["by_status"])

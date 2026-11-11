@@ -33,7 +33,7 @@ func newGroupCapacityByIDsFixture() (*GroupCapacityService, *groupCapacityAccoun
 }
 
 func TestGetGroupCapacityByIDsReturnsOnlyRequestedActiveGroup(t *testing.T) {
-	svc, accountRepo, _ := newGroupCapacityByIDsFixture()
+	svc, _, _ := newGroupCapacityByIDsFixture()
 	all, err := svc.GetAllGroupCapacity(context.Background())
 	require.NoError(t, err)
 	var want GroupCapacitySummary
@@ -44,7 +44,7 @@ func TestGetGroupCapacityByIDsReturnsOnlyRequestedActiveGroup(t *testing.T) {
 	}
 	require.Equal(t, int64(20), want.GroupID)
 
-	svc, accountRepo, _ = newGroupCapacityByIDsFixture()
+	svc, accountRepo, _ := newGroupCapacityByIDsFixture()
 	got, err := svc.GetGroupCapacityByIDs(context.Background(), []int64{20})
 	require.NoError(t, err)
 	require.Equal(t, []int64{20}, accountRepo.requested)

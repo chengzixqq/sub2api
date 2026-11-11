@@ -198,7 +198,7 @@ func TestAccountHandlerListIncludeCountsETagReflectsCounts(t *testing.T) {
 	router.ServeHTTP(refreshed, refreshedReq)
 	require.Equal(t, http.StatusOK, refreshed.Code, "items unchanged but counts changed must not be 304")
 	require.NotEqual(t, etag, refreshed.Header().Get("ETag"))
-	counts := decodeAccountListData(t, refreshed.Body.Bytes())["counts"].(map[string]any)
+	counts := requireJSONType[map[string]any](t, decodeAccountListData(t, refreshed.Body.Bytes())["counts"])
 	require.EqualValues(t, 8, counts["needs_attention"])
 }
 

@@ -135,7 +135,7 @@ func TestOpsRequestErrors_SinceID(t *testing.T) {
 	require.EqualValues(t, 15, data["latest_id"])
 	require.Equal(t, true, data["has_more"])
 	require.Nil(t, data["total"])
-	query := data["query"].(map[string]any)
+	query := requireJSONType[map[string]any](t, data["query"])
 	require.Nil(t, query["start_time"])
 	require.Nil(t, query["end_time"])
 

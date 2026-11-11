@@ -108,11 +108,13 @@ func TestAPNsSender_StatusMappingAndRequest(t *testing.T) {
 		return &key.PublicKey, nil
 	})
 	require.NoError(t, err)
-	claims := parsed.Claims.(jwt.MapClaims)
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	require.True(t, ok)
 	require.Equal(t, "TEAM123456", claims["iss"])
 	require.InDelta(t, float64(time.Now().Unix()), claims["iat"], 60)
 
-	aps := req.body["aps"].(map[string]any)
+	aps, ok := req.body["aps"].(map[string]any)
+	require.True(t, ok)
 	require.Equal(t, map[string]any{"title": "[P1] 错误率", "body": "当前 12.3"}, aps["alert"])
 	require.Equal(t, "ops-alert", aps["thread-id"])
 	require.Equal(t, "time-sensitive", aps["interruption-level"])

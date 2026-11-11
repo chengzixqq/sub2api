@@ -53,8 +53,3 @@ func SessionBindingFromContext(ctx context.Context) *SessionBinding {
 	binding, _ := ctx.Value(sessionBindingCtxKey{}).(*SessionBinding)
 	return binding
 }
-
-// sessionBindingHashFromContext 提取指纹哈希，缺失时返回空串。
-func sessionBindingHashFromContext(ctx context.Context) string {
-	return SessionBindingFromContext(ctx).Hash()
-}

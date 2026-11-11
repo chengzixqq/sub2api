@@ -129,7 +129,7 @@ func observeAccountTestEvent(c *gin.Context, event TestEvent) {
 				t.firstOutputAt = time.Now()
 			}
 			if event.Type == "content" && t.responseText.Len() < accountTestTraceMaxTextBytes {
-				t.responseText.WriteString(event.Text)
+				_, _ = t.responseText.WriteString(event.Text) // strings.Builder always returns a nil error.
 			}
 		case "error":
 			t.errorMessage = event.Error

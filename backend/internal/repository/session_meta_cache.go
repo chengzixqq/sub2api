@@ -67,7 +67,7 @@ func (c *refreshTokenCache) GetSessionMeta(ctx context.Context, sessionID string
 }
 
 func (c *refreshTokenCache) ListUserSessions(ctx context.Context, userID int64, limit int) ([]*service.SessionMeta, error) {
-	ids, err := c.rdb.ZRevRange(ctx, userSessionsKey(userID), 0, int64(limit-1)).Result()
+	ids, err := c.rdb.ZRevRange(ctx, userSessionsKey(userID), 0, int64(limit-1)).Result() //nolint:staticcheck // SA1019: preserve Redis 6.0 support; ZRANGE REV requires Redis 6.2.
 	if err != nil {
 		return nil, err
 	}

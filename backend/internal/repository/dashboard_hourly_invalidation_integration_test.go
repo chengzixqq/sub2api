@@ -18,6 +18,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func cleanupUsageLogsBatchWithRollupInvalidation(ctx context.Context, db *sql.DB, cutoff time.Time) (int64, error) {
+	affected, _, err := cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx, db, cutoff)
+	return affected, err
+}
+
 func hourlyInvalidationDB(t *testing.T, partitioned bool) *sql.DB {
 	t.Helper()
 	ctx := context.Background()

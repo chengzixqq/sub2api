@@ -79,7 +79,7 @@ func TestDashboardUsersRanking_SortByAndTotals(t *testing.T) {
 	require.EqualValues(t, 512.08, body.Data["total_account_cost"])
 	require.EqualValues(t, 18204, body.Data["total_requests"])
 	require.EqualValues(t, 96400000, body.Data["total_tokens"])
-	row := body.Data["ranking"].([]any)[0].(map[string]any)
+	row := requireJSONType[map[string]any](t, requireJSONType[[]any](t, body.Data["ranking"])[0])
 	require.EqualValues(t, 260.1, row["cost"])
 	require.EqualValues(t, 88.2, row["account_cost"])
 	require.EqualValues(t, 210.5, row["actual_cost"])

@@ -228,6 +228,11 @@ func newAccountTestRunFixture(run func(context.Context, AccountTestCaptureInput)
 	return f
 }
 
+// wait blocks until background runs started so far have finished (tests).
+func (s *AccountTestRunService) wait() {
+	s.running.Wait()
+}
+
 func (f *accountTestRunFixture) waitFinished(t *testing.T, runID string) *AccountTestRun {
 	t.Helper()
 	deadline := time.After(5 * time.Second)

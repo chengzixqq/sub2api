@@ -95,7 +95,7 @@ func TestAdminAnnouncementReadSummary(t *testing.T) {
 
 	rec, body := serveReadStats(router, "/admin/announcements/31/read-summary")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -106,7 +106,7 @@ func TestAdminAnnouncementReadSummary(t *testing.T) {
 	require.EqualValues(t, 1036, data["eligible_count"])
 	require.EqualValues(t, 412, data["read_count"])
 	require.EqualValues(t, 410, data["eligible_read_count"])
-	computedAt := data["computed_at"].(string)
+	computedAt := requireJSONType[string](t, data["computed_at"])
 	require.True(t, strings.HasSuffix(computedAt, "Z"), computedAt)
 	_, err := time.Parse(time.RFC3339, computedAt)
 	require.NoError(t, err)
@@ -154,13 +154,13 @@ func TestAdminAnnouncementIncludeReadStats(t *testing.T) {
 	require.Zero(t, readRepo.summarized, "stats are only computed on request")
 
 	_, body := serveReadStats(router, "/admin/announcements?include_read_stats=true")
-	list := body["data"].(map[string]any)["items"].([]any)
+	list := requireJSONType[[]any](t, requireJSONType[map[string]any](t, body["data"])["items"])
 	require.Len(t, list, 2)
-	require.Equal(t, map[string]any{"eligible_count": float64(1036), "read_count": float64(412), "eligible_read_count": float64(410)}, list[0].(map[string]any)["read_stats"])
-	require.Equal(t, map[string]any{"eligible_count": float64(5), "read_count": float64(0), "eligible_read_count": float64(0)}, list[1].(map[string]any)["read_stats"])
+	require.Equal(t, map[string]any{"eligible_count": float64(1036), "read_count": float64(412), "eligible_read_count": float64(410)}, requireJSONType[map[string]any](t, list[0])["read_stats"])
+	require.Equal(t, map[string]any{"eligible_count": float64(5), "read_count": float64(0), "eligible_read_count": float64(0)}, requireJSONType[map[string]any](t, list[1])["read_stats"])
 
 	_, body = serveReadStats(router, "/admin/announcements/32?include_read_stats=1")
-	require.Equal(t, map[string]any{"eligible_count": float64(5), "read_count": float64(0), "eligible_read_count": float64(0)}, body["data"].(map[string]any)["read_stats"])
+	require.Equal(t, map[string]any{"eligible_count": float64(5), "read_count": float64(0), "eligible_read_count": float64(0)}, requireJSONType[map[string]any](t, body["data"])["read_stats"])
 }
 
 func TestAdminAnnouncementReadStatusInvalidFilter(t *testing.T) {
@@ -181,7 +181,7 @@ func TestAdminAnnouncementReadStatusInvalidFilter(t *testing.T) {
 	require.True(t, *readRepo.listFilter.Eligible)
 	require.Equal(t, "bob", readRepo.listFilter.Search)
 	require.Equal(t, pagination.PaginationParams{Page: 2, PageSize: 50, SortBy: "email", SortOrder: "asc"}, readRepo.listParams)
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	require.EqualValues(t, 7, data["total"], "total reflects the filtered count")
 	require.Len(t, data["items"], 1)
 

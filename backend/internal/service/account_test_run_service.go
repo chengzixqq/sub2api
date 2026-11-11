@@ -273,11 +273,6 @@ func (s *AccountTestRunService) RecordManual(ctx context.Context, in ManualAccou
 	return s.repo.Prune(ctx, run.AccountID, AccountTestRunKeepPerAccount)
 }
 
-// wait blocks until background runs started so far have finished (tests).
-func (s *AccountTestRunService) wait() {
-	s.running.Wait()
-}
-
 func failedAccountTestCapture(modelID string, startedAt time.Time, message string) AccountTestCapture {
 	finishedAt := time.Now()
 	return AccountTestCapture{

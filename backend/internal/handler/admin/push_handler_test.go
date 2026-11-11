@@ -149,7 +149,7 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 
 	code, resp := doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices", body)
 	require.Equal(t, http.StatusCreated, code)
-	data := resp["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, resp["data"])
 	require.Equal(t, true, data["created"])
 	require.Equal(t, "abab", data["token_hint"])
 	require.NotContains(t, mustJSON(t, resp), token, "the token is never returned")
@@ -157,8 +157,8 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 
 	code, resp = doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices", body)
 	require.Equal(t, http.StatusOK, code, "registering the same token again is idempotent")
-	require.Equal(t, id, resp["data"].(map[string]any)["id"])
-	require.Equal(t, false, resp["data"].(map[string]any)["created"])
+	require.Equal(t, id, requireJSONType[map[string]any](t, resp["data"])["id"])
+	require.Equal(t, false, requireJSONType[map[string]any](t, resp["data"])["created"])
 
 	code, resp = doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices/1/test", "")
 	require.Equal(t, http.StatusServiceUnavailable, code)
@@ -178,7 +178,7 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 
 	code, resp = doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/devices", "")
 	require.Equal(t, http.StatusOK, code)
-	require.Len(t, resp["data"].(map[string]any)["items"], 1)
+	require.Len(t, requireJSONType[map[string]any](t, resp["data"])["items"], 1)
 
 	// Another admin on the same handler and repository: device 1 exists but belongs to user 7, so every device route
 	// answers 404 to user 8 and leaves the device alone.
@@ -194,17 +194,17 @@ func TestPushHandler_RegisterAndTestWithoutAPNs(t *testing.T) {
 	}
 	code, resp = doPushRequest(t, other, http.MethodGet, "/api/v1/admin/push/devices", "")
 	require.Equal(t, http.StatusOK, code)
-	require.Empty(t, resp["data"].(map[string]any)["items"], "another admin does not see the device")
+	require.Empty(t, requireJSONType[map[string]any](t, resp["data"])["items"], "another admin does not see the device")
 	code, resp = doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/devices", "")
 	require.Equal(t, http.StatusOK, code)
-	items := resp["data"].(map[string]any)["items"].([]any)
+	items := requireJSONType[[]any](t, requireJSONType[map[string]any](t, resp["data"])["items"])
 	require.Len(t, items, 1, "the owner still has the device")
-	sub := items[0].(map[string]any)["subscription"].(map[string]any)
+	sub := requireJSONType[map[string]any](t, requireJSONType[map[string]any](t, items[0])["subscription"])
 	require.Equal(t, "P1", sub["min_severity"], "the other admin's subscription change was not applied")
 
 	code, resp = doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/config", "")
 	require.Equal(t, http.StatusOK, code)
-	cfg := resp["data"].(map[string]any)
+	cfg := requireJSONType[map[string]any](t, resp["data"])
 	require.Equal(t, false, cfg["apns_enabled"])
 	require.Equal(t, false, cfg["apns_private_key_configured"])
 	require.NotContains(t, cfg, "apns_private_key")
@@ -228,7 +228,7 @@ func TestPushHandler_ReadOnlyTokenRegistersOnlyIOS(t *testing.T) {
 	}
 	code, resp := doPushRequest(t, r, http.MethodGet, "/api/v1/admin/push/devices", "")
 	require.Equal(t, http.StatusOK, code)
-	require.Empty(t, resp["data"].(map[string]any)["items"], "nothing was registered")
+	require.Empty(t, requireJSONType[map[string]any](t, resp["data"])["items"], "nothing was registered")
 
 	code, _ = doPushRequest(t, r, http.MethodPost, "/api/v1/admin/push/devices", `{"platform":"ios","apns_token":"`+strings.Repeat("ab", 32)+`"}`)
 	require.Equal(t, http.StatusCreated, code, "the App's own APNs device is fine")

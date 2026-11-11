@@ -507,11 +507,6 @@ func (r *dashboardAggregationRepository) cleanupUsageLogsBatches(ctx context.Con
 	}
 }
 
-func cleanupUsageLogsBatchWithRollupInvalidation(ctx context.Context, db *sql.DB, cutoff time.Time) (int64, error) {
-	affected, _, err := cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx, db, cutoff)
-	return affected, err
-}
-
 func cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx context.Context, db *sql.DB, cutoff time.Time) (int64, bool, error) {
 	tx, ctx, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 	if err != nil {

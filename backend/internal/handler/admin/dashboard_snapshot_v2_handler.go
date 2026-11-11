@@ -293,7 +293,7 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 	return filters, nil
 }
 
-var errInvalidModelSource = errors.New("Invalid model_source, use requested/upstream/mapping")
+var errInvalidModelSource = errors.New("Invalid model_source, use requested/upstream/mapping") //nolint:staticcheck // ST1005: preserve the existing client-facing validation message.
 
 // parseModelFilterSource reads model_source, the matching rule for the model
 // filter. Empty means requested.

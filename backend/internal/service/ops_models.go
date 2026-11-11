@@ -93,10 +93,10 @@ type OpsErrorLogDetail struct {
 	UpstreamErrors       string `json:"upstream_errors,omitempty"` // JSON array (string) for display/parsing
 
 	// Timings (optional)
-	AuthLatencyMs      *int64 `json:"auth_latency_ms"`
-	RoutingLatencyMs   *int64 `json:"routing_latency_ms"`
-	UpstreamLatencyMs  *int64 `json:"upstream_latency_ms"`
-	ResponseLatencyMs  *int64 `json:"response_latency_ms"`
+	AuthLatencyMs     *int64 `json:"auth_latency_ms"`
+	RoutingLatencyMs  *int64 `json:"routing_latency_ms"`
+	UpstreamLatencyMs *int64 `json:"upstream_latency_ms"`
+	ResponseLatencyMs *int64 `json:"response_latency_ms"`
 
 	// vNext metric semantics
 	IsBusinessLimited bool `json:"is_business_limited"`

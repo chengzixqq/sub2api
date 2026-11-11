@@ -55,8 +55,10 @@ func TestAppendOpsUpstreamErrorAttemptStartClaimedOnce(t *testing.T) {
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{AccountID: 42, AtUnixMs: 1300, UpstreamStatusCode: 401, Kind: "http_error"})
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{AccountID: 42, AtUnixMs: 1350, Kind: "account_auth", Stage: "account_auth", Message: "refresh failed"})
 
-	v, _ := c.Get(OpsUpstreamErrorsKey)
-	events := v.([]*OpsUpstreamErrorEvent)
+	v, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := v.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
 	require.Len(t, events, 2)
 	require.Equal(t, int64(1000), events[0].StartedAtUnixMs)
 	require.Equal(t, int64(300), *events[0].DurationMs)

@@ -16,8 +16,10 @@ func TestBillingDetailsJSONValue_NullAndPartialAndInvalid(t *testing.T) {
 	details := &service.BillingDetails{Version: 1, Status: "partial_unpriced", Components: []service.BillingComponent{{Role: "advisor", Model: "unknown", InputTokens: 17}}}
 	v, err = (billingDetailsJSONValue{details: details}).Value()
 	require.NoError(t, err)
+	encoded, ok := v.(string)
+	require.True(t, ok)
 	var decoded service.BillingDetails
-	require.NoError(t, json.Unmarshal([]byte(v.(string)), &decoded))
+	require.NoError(t, json.Unmarshal([]byte(encoded), &decoded))
 	require.Equal(t, *details, decoded)
 	invalid := math.Inf(1)
 	details.Components[0].TotalCost = &invalid

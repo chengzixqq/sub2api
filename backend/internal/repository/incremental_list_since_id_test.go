@@ -49,11 +49,11 @@ func TestUsageLogRepositoryListWithFiltersSinceIDKeepsOtherFilters(t *testing.T)
 }
 
 func TestBuildOpsErrorLogsWhere_SinceID(t *testing.T) {
-	where, args := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
+	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
 	require.NotContains(t, where, "e.id >")
 
 	sinceID := int64(42)
-	where, args = buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{SinceID: &sinceID})
+	where, args := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{SinceID: &sinceID})
 	require.True(t, strings.HasSuffix(where, " AND e.id > $"+itoa(len(args))), where)
 	require.Equal(t, sinceID, args[len(args)-1])
 }

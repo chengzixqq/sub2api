@@ -96,9 +96,9 @@ func TestAccountTestRunHandler_StartReturns202(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	require.Equal(t, float64(0), body["code"])
 	require.Equal(t, "accepted", body["message"])
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	require.Equal(t, "running", data["status"])
-	require.True(t, strings.HasPrefix(data["run_id"].(string), "tr_"))
+	require.True(t, strings.HasPrefix(requireJSONType[string](t, data["run_id"]), "tr_"))
 	require.Equal(t, float64(12), data["account_id"])
 	require.Equal(t, int64(12), api.startIn.AccountID)
 	require.Nil(t, api.startIn.RecoverOnSuccess, "an absent flag defaults to recovering")
@@ -126,7 +126,7 @@ func TestAccountTestRunHandler_ConflictAndBusyReasons(t *testing.T) {
 	rec, body := doAccountTestRunRequest(r, http.MethodPost, "/api/v1/admin/accounts/12/test-runs", "")
 	require.Equal(t, http.StatusConflict, rec.Code)
 	require.Equal(t, "ACCOUNT_TEST_RUNNING", body["reason"])
-	require.Equal(t, "tr_existing", body["metadata"].(map[string]any)["run_id"])
+	require.Equal(t, "tr_existing", requireJSONType[map[string]any](t, body["metadata"])["run_id"])
 	require.NotContains(t, body, "data")
 
 	api.startErr = service.ErrAccountTestBusy
@@ -163,7 +163,7 @@ func TestAccountTestRunHandler_ViewJSONShape(t *testing.T) {
 	rec, body := doAccountTestRunRequest(r, http.MethodGet, "/api/v1/admin/accounts/12/test-runs/latest", "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, int64(12), api.latestID)
-	data := body["data"].(map[string]any)
+	data := requireJSONType[map[string]any](t, body["data"])
 	for _, key := range []string{"run_id", "account_id", "source", "status", "model", "latency_ms", "first_token_ms",
 		"upstream_status_code", "error_kind", "error_summary", "error_message", "response_text", "recovery", "started_at", "finished_at"} {
 		require.Contains(t, data, key)
@@ -183,13 +183,13 @@ func TestAccountTestRunHandler_ViewJSONShape(t *testing.T) {
 	failed.FinishedAt = &finishedAt
 	api.run = failed
 	_, body = doAccountTestRunRequest(r, http.MethodGet, "/api/v1/admin/account-test-runs/"+failed.RunID, "")
-	data = body["data"].(map[string]any)
+	data = requireJSONType[map[string]any](t, body["data"])
 	require.Equal(t, service.AccountErrorKindAuth, data["error_kind"])
 	require.Equal(t, "API returned 401: invalid key", data["error_summary"])
 
 	api.run = runningAccountTestRun()
 	_, body = doAccountTestRunRequest(r, http.MethodGet, "/api/v1/admin/account-test-runs/"+api.run.RunID, "")
-	data = body["data"].(map[string]any)
+	data = requireJSONType[map[string]any](t, body["data"])
 	require.Nil(t, data["latency_ms"])
 	require.Nil(t, data["finished_at"])
 	require.Nil(t, data["recovery"])
