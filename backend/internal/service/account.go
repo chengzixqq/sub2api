@@ -48,7 +48,8 @@ type Account struct {
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 
-	Schedulable bool
+	Schedulable   bool
+	DispatchScope string
 
 	RateLimitedAt    *time.Time
 	RateLimitResetAt *time.Time

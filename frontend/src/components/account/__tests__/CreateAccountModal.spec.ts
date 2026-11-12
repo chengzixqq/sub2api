@@ -14,7 +14,10 @@ const {
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
+  refreshOpenAITokenMock,
+  createFromSSOMock,
   authIsSimpleMode,
+  authIsOwner,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
@@ -22,7 +25,10 @@ const {
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
+  refreshOpenAITokenMock: vi.fn(),
+  createFromSSOMock: vi.fn(),
   authIsSimpleMode: { value: true },
+  authIsOwner: { value: false },
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -35,6 +41,7 @@ vi.mock('@/stores/app', () => ({
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
+    get isOwner() { return authIsOwner.value },
     get isSimpleMode() {
       return authIsSimpleMode.value
     },
@@ -43,6 +50,7 @@ vi.mock('@/stores/auth', () => ({
 
 vi.mock('@/api/admin', () => ({
   adminAPI: {
+    grok: { createFromSSO: createFromSSOMock },
     accounts: {
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
@@ -50,6 +58,7 @@ vi.mock('@/api/admin', () => ({
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
       importCodexSession: importCodexSessionMock,
       createOpenAICodexPAT: createOpenAICodexPATMock,
+      refreshOpenAIToken: refreshOpenAITokenMock,
     },
     settings: {
       getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }),
@@ -91,11 +100,13 @@ const OAuthAuthorizationFlowStub = defineComponent({
     initialInputMethod: String,
   },
   data: () => ({ inputMethod: 'manual' }),
-  emits: ['import-codex-session', 'import-codex-pat'],
+  emits: ['import-codex-session', 'import-codex-pat', 'validate-refresh-token', 'import-sso'],
   template: `
     <div>
       <button data-testid="import-codex-session" @click="$emit('import-codex-session', 'session-json')">session</button>
       <button data-testid="import-codex-pat" @click="$emit('import-codex-pat', 'pat-token')">pat</button>
+      <button data-testid="import-refresh-token" @click="$emit('validate-refresh-token', 'refresh-token')">refresh</button>
+      <button data-testid="import-sso" @click="$emit('import-sso', 'sso-token')">sso</button>
     </div>
   `,
 })
@@ -202,6 +213,7 @@ async function openCodexImportStep(toggleClicks = 0) {
 describe('CreateAccountModal OpenAI long-context billing', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+    authIsOwner.value = false
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
@@ -215,9 +227,80 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       warnings: [],
     })
     createOpenAICodexPATMock.mockReset().mockResolvedValue({})
+    refreshOpenAITokenMock.mockReset().mockResolvedValue({ access_token: 'test-access', refresh_token: 'refresh-token' })
+    createFromSSOMock.mockReset().mockResolvedValue({ created: [{ index: 1 }], failed: [] })
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('creates an authorized-only account without binding a default group', async () => {
+    authIsOwner.value = true
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('private test')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-api-key')
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_scope: 'authorized_only',
+      skip_default_group_bind: true,
+      group_ids: []
+    }))
+  })
+
+  it('creates an authorized-only OAuth account through the ordinary POST flow', async () => {
+    authIsOwner.value = true
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('private OAuth')
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-refresh-token"]').trigger('click')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'oauth',
+      dispatch_scope: 'authorized_only',
+      skip_default_group_bind: true,
+      group_ids: []
+    }))
+  })
+
+  it.each([
+    ['import-codex-pat', () => createOpenAICodexPATMock],
+    ['import-codex-session', () => importCodexSessionMock]
+  ] as const)('preserves authorized-only scope in the %s flow', async (buttonID, getMock) => {
+    authIsOwner.value = true
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('private imported account')
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get(`[data-testid="${buttonID}"]`).trigger('click')
+    await flushPromises()
+    expect(getMock()).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_scope: 'authorized_only',
+      skip_default_group_bind: true,
+      group_ids: []
+    }))
+  })
+
+  it('preserves authorized-only scope when creating Grok OAuth accounts from SSO', async () => {
+    authIsOwner.value = true
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="grok-platform-option"]').trigger('click')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('private Grok account')
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-sso"]').trigger('click')
+    await flushPromises()
+    expect(createFromSSOMock).toHaveBeenCalledWith(expect.objectContaining({
+      dispatch_scope: 'authorized_only',
+      skip_default_group_bind: true,
+      group_ids: []
+    }))
+  })
 
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })

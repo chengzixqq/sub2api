@@ -264,8 +264,14 @@ func init() {
 	accountDescSchedulable := accountFields[20].Descriptor()
 	// account.DefaultSchedulable holds the default value on creation for the schedulable field.
 	account.DefaultSchedulable = accountDescSchedulable.Default.(bool)
+	// accountDescDispatchScope is the schema descriptor for dispatch_scope field.
+	accountDescDispatchScope := accountFields[21].Descriptor()
+	// account.DefaultDispatchScope holds the default value on creation for the dispatch_scope field.
+	account.DefaultDispatchScope = accountDescDispatchScope.Default.(string)
+	// account.DispatchScopeValidator is a validator for the "dispatch_scope" field. It is called by the builders before save.
+	account.DispatchScopeValidator = accountDescDispatchScope.Validators[0].(func(string) error)
 	// accountDescSessionWindowStatus is the schema descriptor for session_window_status field.
-	accountDescSessionWindowStatus := accountFields[28].Descriptor()
+	accountDescSessionWindowStatus := accountFields[29].Descriptor()
 	// account.SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	account.SessionWindowStatusValidator = accountDescSessionWindowStatus.Validators[0].(func(string) error)
 	accountgroupFields := schema.AccountGroup{}.Fields()

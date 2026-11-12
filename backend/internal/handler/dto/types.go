@@ -255,7 +255,9 @@ type Account struct {
 	CreatedAt               time.Time                      `json:"created_at"`
 	UpdatedAt               time.Time                      `json:"updated_at"`
 
-	Schedulable bool `json:"schedulable"`
+	Schedulable   bool   `json:"schedulable"`
+	DispatchScope string `json:"dispatch_scope"`
+	ConfigVersion int64  `json:"config_version"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`
@@ -389,7 +391,9 @@ type AccountListItem struct {
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
 
-	Schedulable bool `json:"schedulable"`
+	Schedulable   bool   `json:"schedulable"`
+	DispatchScope string `json:"dispatch_scope"`
+	ConfigVersion int64  `json:"config_version"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`

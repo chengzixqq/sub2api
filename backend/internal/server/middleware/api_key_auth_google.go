@@ -140,6 +140,9 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 		// Scoped live counters use the standard request context, not Gin values.
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
 		ctx = context.WithValue(ctx, ctxkey.APIKeyID, apiKey.ID)
+		if apiKey.GroupID != nil {
+			ctx = context.WithValue(ctx, ctxkey.AccountDispatchGroupID, *apiKey.GroupID)
+		}
 		c.Request = c.Request.WithContext(ctx)
 
 		// 简易模式：跳过余额和订阅检查

@@ -468,6 +468,23 @@ func TestCreateShadow_DefaultGroupBinding(t *testing.T) {
 	require.Equal(t, []int64{99}, repo.groupsOf[shadow.ID], "未指定分组应回落绑定 openai-default(id=99)")
 }
 
+func TestCreateShadow_AuthorizedOnlyInheritsScopeWithoutDefaultGroup(t *testing.T) {
+	t.Setenv(accountDispatchWritesEnv, "1")
+	ctx := WithScope(context.Background(), AdminScope())
+	for _, groups := range [][]int64{nil, {11, 22}} {
+		repo := newSparkShadowRepoStub()
+		groupRepo := &sparkShadowGroupRepoStub{groups: []Group{{ID: 99, Name: PlatformOpenAI + "-default"}}}
+		svc := &adminServiceImpl{accountRepo: repo, groupRepo: groupRepo}
+		parent := &Account{Name: "private-parent", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, DispatchScope: DispatchScopeAuthorizedOnly, GroupIDs: groups}
+		require.NoError(t, repo.Create(ctx, parent))
+		shadow, err := svc.CreateShadow(ctx, parent.ID, ShadowOptions{})
+		require.NoError(t, err)
+		require.Equal(t, DispatchScopeAuthorizedOnly, shadow.DispatchScope)
+		require.Equal(t, groups, repo.groupsOf[shadow.ID])
+		require.Equal(t, groups, shadow.GroupIDs)
+	}
+}
+
 // TestCreateShadow_InheritsParentGroups 验证外审 G1:未指定 group_ids 时
 // 影子继承母账号当前分组(而非仅 openai-default),以便母在自定义组时影子也可路由。
 func TestCreateShadow_InheritsParentGroups(t *testing.T) {

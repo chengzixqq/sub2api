@@ -64,6 +64,8 @@ const (
 	FieldAutoPauseOnExpired = "auto_pause_on_expired"
 	// FieldSchedulable holds the string denoting the schedulable field in the database.
 	FieldSchedulable = "schedulable"
+	// FieldDispatchScope holds the string denoting the dispatch_scope field in the database.
+	FieldDispatchScope = "dispatch_scope"
 	// FieldRateLimitedAt holds the string denoting the rate_limited_at field in the database.
 	FieldRateLimitedAt = "rate_limited_at"
 	// FieldRateLimitResetAt holds the string denoting the rate_limit_reset_at field in the database.
@@ -161,6 +163,7 @@ var Columns = []string{
 	FieldExpiresAt,
 	FieldAutoPauseOnExpired,
 	FieldSchedulable,
+	FieldDispatchScope,
 	FieldRateLimitedAt,
 	FieldRateLimitResetAt,
 	FieldOverloadUntil,
@@ -231,6 +234,10 @@ var (
 	DefaultAutoPauseOnExpired bool
 	// DefaultSchedulable holds the default value on creation for the "schedulable" field.
 	DefaultSchedulable bool
+	// DefaultDispatchScope holds the default value on creation for the "dispatch_scope" field.
+	DefaultDispatchScope string
+	// DispatchScopeValidator is a validator for the "dispatch_scope" field. It is called by the builders before save.
+	DispatchScopeValidator func(string) error
 	// SessionWindowStatusValidator is a validator for the "session_window_status" field. It is called by the builders before save.
 	SessionWindowStatusValidator func(string) error
 )
@@ -377,6 +384,11 @@ func ByAutoPauseOnExpired(opts ...sql.OrderTermOption) OrderOption {
 // BySchedulable orders the results by the schedulable field.
 func BySchedulable(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSchedulable, opts...).ToFunc()
+}
+
+// ByDispatchScope orders the results by the dispatch_scope field.
+func ByDispatchScope(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldDispatchScope, opts...).ToFunc()
 }
 
 // ByRateLimitedAt orders the results by the rate_limited_at field.

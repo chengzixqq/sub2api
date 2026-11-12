@@ -21,6 +21,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -1427,12 +1428,26 @@ func mixedListingModelAllowed(groupPlatform, model string) bool {
 }
 
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
+	models, _ := s.GetAvailableModelsWithError(ctx, groupID, platform)
+	return models
+}
+
+// GetAvailableModelsWithError keeps an unavailable authorization/account lookup
+// distinct from an unmapped account, which may legitimately use static models.
+func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupID *int64, platform string) ([]string, error) {
+	var policyErr error
+	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
+	if policyErr != nil {
+		return nil, policyErr
+	}
+	userID, _ := ctx.Value(ctxkey.UserID).(int64)
+	useSharedCache := userID <= 0
 	cacheKey := modelsListCacheKey(groupID, platform)
-	if s.modelsListCache != nil {
+	if useSharedCache && s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
 			if models, ok := cached.([]string); ok {
 				modelsListCacheHitTotal.Add(1)
-				return cloneStringSlice(models)
+				return cloneStringSlice(models), nil
 			}
 		}
 	}
@@ -1447,8 +1462,18 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts, err = s.accountRepo.ListSchedulable(ctx)
 	}
 
-	if err != nil || len(accounts) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	accounts, err = accountDispatchCandidates(ctx, s.accountRepo, groupID, platform, accounts, platform == PlatformGemini)
+	if err != nil {
+		return nil, err
+	}
+	if len(accounts) == 0 {
+		if AccountDispatchHasReplacePolicy(ctx) {
+			return []string{}, nil
+		}
+		return nil, nil
 	}
 
 	// Filter by platform if specified. Mixed scheduling (a gemini group routing
@@ -1462,6 +1487,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 			}
 		}
 		accounts = filtered
+	}
+	if len(accounts) == 0 && AccountDispatchHasReplacePolicy(ctx) {
+		return []string{}, nil
 	}
 
 	// Collect unique models from all accounts
@@ -1495,15 +1523,15 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	if !hasAnyMapping && platform == PlatformOpenAI {
 		models := filterRetiredOpenAIModelIDs(accounts, openai.DefaultModelIDs())
 		if len(models) != len(openai.DefaultModels) {
-			return models
+			return models, nil
 		}
 	}
 	if !hasAnyMapping {
-		if s.modelsListCache != nil {
+		if useSharedCache && s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
 		}
-		return nil
+		return nil, nil
 	}
 
 	// Convert to slice
@@ -1519,15 +1547,15 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		// nil means "use defaults" to listing callers; an empty filtered catalog
 		// must remain authoritative instead of resurrecting retired defaults.
 		if len(models) == 0 {
-			return models
+			return models, nil
 		}
 	}
 
-	if s.modelsListCache != nil {
+	if useSharedCache && s.modelsListCache != nil {
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
 		modelsListCacheStoreTotal.Add(1)
 	}
-	return cloneStringSlice(models)
+	return cloneStringSlice(models), nil
 }
 
 func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, groupID int64, model string) (CompositeModelOwnership, error) {
@@ -1603,9 +1631,19 @@ func (s *GatewayService) FilterCompositeCodexModels(ctx context.Context, groupID
 // GetSchedulablePlatforms returns the concrete platforms that currently have
 // schedulable accounts in the target group.
 func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *int64) map[string]struct{} {
+	platforms, _ := s.GetSchedulablePlatformsWithError(ctx, groupID)
+	return platforms
+}
+
+func (s *GatewayService) GetSchedulablePlatformsWithError(ctx context.Context, groupID *int64) (map[string]struct{}, error) {
 	platforms := make(map[string]struct{})
 	if s == nil || s.accountRepo == nil {
-		return platforms
+		return platforms, nil
+	}
+	var policyErr error
+	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
+	if policyErr != nil {
+		return platforms, policyErr
 	}
 
 	var accounts []Account
@@ -1616,7 +1654,11 @@ func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *i
 		accounts, err = s.accountRepo.ListSchedulable(ctx)
 	}
 	if err != nil {
-		return platforms
+		return platforms, err
+	}
+	accounts, err = accountDispatchCandidates(ctx, s.accountRepo, groupID, "", accounts, false)
+	if err != nil {
+		return platforms, err
 	}
 
 	for _, acc := range accounts {
@@ -1625,7 +1667,7 @@ func (s *GatewayService) GetSchedulablePlatforms(ctx context.Context, groupID *i
 			platforms[platform] = struct{}{}
 		}
 	}
-	return platforms
+	return platforms, nil
 }
 
 func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform string) {

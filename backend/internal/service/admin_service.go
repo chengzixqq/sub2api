@@ -471,7 +471,8 @@ type CreateAccountInput struct {
 	// This should only be set when the caller has explicitly confirmed the risk.
 	SkipMixedChannelCheck bool
 	// Schedulable=false writes the account outside the scheduler in the same INSERT (nil keeps true).
-	Schedulable *bool
+	Schedulable   *bool
+	DispatchScope string
 }
 
 // ShadowOptions is the input for CreateShadow.
@@ -496,6 +497,7 @@ type UpdateAccountInput struct {
 	RateMultiplier        *float64 // 账号计费倍率（>=0，允许 0）
 	LoadFactor            *int
 	Status                string
+	DispatchScope         *string
 	GroupIDs              *[]int64
 	ExpiresAt             *int64
 	AutoPauseOnExpired    *bool

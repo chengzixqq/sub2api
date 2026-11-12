@@ -353,6 +353,14 @@ func (s *OpenAIGatewayService) SelectMediaVideoRequestAccount(
 	if accountID <= 0 || strings.TrimSpace(sessionHash) == "" {
 		return nil, decision, ErrNoAvailableAccounts
 	}
+	// The caller has already resolved the authenticated task owner. A submitted
+	// job may finish after its dispatch grant is revoked; pin only that owner
+	// instead of performing a new account authorization or allowing fallback.
+	ctx = context.WithValue(ctx, accountDispatchContextKey{}, &accountDispatchSelection{
+		requestGroupID: derefGroupID(groupID),
+		policy:         &AccountDispatchPolicy{Mode: AccountDispatchModeReplace},
+		grants:         map[int64]string{accountID: AccountDispatchOriginExtra},
+	})
 	ctx = s.withOpenAIGroupPrivacyRequirement(WithOpenAIProfitControlSuppressed(ctx), groupID)
 	scheduler := &defaultOpenAIAccountScheduler{service: s}
 	selection, _, err := scheduler.selectBySessionHash(ctx, OpenAIAccountScheduleRequest{

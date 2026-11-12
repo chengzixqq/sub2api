@@ -111,6 +111,7 @@ func accountReadableSnapshotJSON(account *Account) []byte {
 	clone.Credentials = nil
 	// Workspace ownership is an internal authorization boundary, not plugin metadata.
 	clone.WorkspaceID = 0
+	clone.DispatchScope = ""
 	clone.Groups = nil
 	clone.AccountGroups = nil
 	data, err := json.Marshal(&clone)

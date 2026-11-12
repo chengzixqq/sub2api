@@ -58,6 +58,7 @@ type DataProxy struct {
 // 影子的独立调度配置(priority/并发/分组/status 管理员可单独调)亦不在本备份范围,属已知局限
 // (外审第6轮裁决:保持排除 + 前端警告,而非升级格式做完整往返)。
 type DataAccount struct {
+	DispatchScope      string         `json:"dispatch_scope,omitempty"`
 	Name               string         `json:"name"`
 	Notes              *string        `json:"notes,omitempty"`
 	Platform           string         `json:"platform"`
@@ -200,6 +201,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			expiresAt = &v
 		}
 		dataAccounts = append(dataAccounts, DataAccount{
+			DispatchScope:      acc.DispatchScope,
 			Name:               acc.Name,
 			Notes:              acc.Notes,
 			Platform:           acc.Platform,
@@ -434,6 +436,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		enrichCredentialsFromIDToken(&item)
 
 		accountInput := &service.CreateAccountInput{
+			DispatchScope:        item.DispatchScope,
 			Name:                 item.Name,
 			Notes:                item.Notes,
 			Platform:             item.Platform,

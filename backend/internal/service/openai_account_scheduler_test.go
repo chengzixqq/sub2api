@@ -1147,6 +1147,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 	groupID := int64(10107)
 	accounts := []Account{
 		{
+			GroupIDs:    []int64{groupID},
 			ID:          37001,
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,
@@ -1159,6 +1160,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 			},
 		},
 		{
+			GroupIDs:    []int64{groupID},
 			ID:          37002,
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,
@@ -2313,6 +2315,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSticky(
 	ctx := context.Background()
 	groupID := int64(9)
 	account := Account{
+		GroupIDs:    []int64{groupID},
 		ID:          1001,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,

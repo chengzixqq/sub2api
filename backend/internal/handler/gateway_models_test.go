@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,6 +22,52 @@ type gatewayModelsAccountRepoStub struct {
 	service.AccountRepository
 
 	byGroup map[int64][]service.Account
+}
+
+type gatewayModelsDispatchRepoStub struct {
+	*gatewayModelsAccountRepoStub
+	policy *service.AccountDispatchPolicy
+	err    error
+}
+
+func (s *gatewayModelsDispatchRepoStub) GetAccountDispatchPolicy(context.Context, int64, int64) (*service.AccountDispatchPolicy, error) {
+	return s.policy, s.err
+}
+
+func TestGatewayModels_DispatchPolicyFailureAndEmptyList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(20)
+	for _, test := range []struct {
+		name   string
+		policy *service.AccountDispatchPolicy
+		err    error
+		status int
+	}{
+		{name: "read fails closed", err: errors.New("database unavailable"), status: http.StatusServiceUnavailable},
+		{name: "empty replace stays empty", policy: &service.AccountDispatchPolicy{Mode: service.AccountDispatchModeReplace}, status: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := &gatewayModelsDispatchRepoStub{
+				gatewayModelsAccountRepoStub: &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformGemini}}}},
+				policy:                       test.policy, err: test.err,
+			}
+			h := newGatewayModelsHandlerForTest(repo)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.UserID, int64(100)))
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+				UserID: 100, GroupID: &groupID, Group: &service.Group{ID: groupID, Platform: service.PlatformGemini},
+			})
+			h.Models(c)
+			require.Equal(t, test.status, rec.Code)
+			if test.status == http.StatusOK {
+				var got gatewayModelsResponseForTest
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+				require.Empty(t, got.Data)
+			}
+		})
+	}
 }
 
 type gatewayModelsRouteRepoStub struct {

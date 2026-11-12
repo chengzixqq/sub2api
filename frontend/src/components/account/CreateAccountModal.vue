@@ -3769,6 +3769,13 @@
           :mixed-scheduling="mixedScheduling"
           data-tour="account-form-groups"
         />
+        <div v-if="isOwner" class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.authorizedOnly') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.authorizedOnlyHint') }}</p>
+          </div>
+          <Toggle v-model="authorizedOnly" data-testid="account-dispatch-scope" :aria-label="t('admin.accounts.authorizedOnly')" />
+        </div>
       </div>
 
     </form>
@@ -4257,7 +4264,7 @@ const { t } = useI18n()
 const browserTimeZone = getBrowserTimeZone()
 
 // 站长恒真；vendor 侧这两个字段会被后端覆盖，藏掉免得填了不生效。
-const { isVendor, canSetPriority, canSetAccountRate } = useWorkspacePerms()
+const { isOwner, isVendor, canSetPriority, canSetAccountRate } = useWorkspacePerms()
 
 const oauthStepTitle = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
@@ -5057,6 +5064,7 @@ const form = reactive({
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+const authorizedOnly = ref(false)
 
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
@@ -5548,6 +5556,18 @@ const withAntigravityConfirmFlag = (payload: CreateAccountRequest): CreateAccoun
   return cloned
 }
 
+const accountDispatchOptions = (groupIDs: number[] | undefined) => {
+  if (!isOwner.value || !authorizedOnly.value) return {}
+  return {
+    dispatch_scope: 'authorized_only',
+    skip_default_group_bind: (groupIDs?.length ?? 0) === 0
+  } as const
+}
+
+const createAccountWithDispatchScope = (payload: CreateAccountRequest) => {
+  return adminAPI.accounts.create({ ...payload, ...accountDispatchOptions(payload.group_ids) })
+}
+
 const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<void>): Promise<boolean> => {
   if (!needsMixedChannelCheck(form.platform)) {
     return true
@@ -5581,7 +5601,7 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
 const submitCreateAccount = async (payload: CreateAccountRequest) => {
   submitting.value = true
   try {
-    const account = await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
+    const account = await createAccountWithDispatchScope(withAntigravityConfirmFlag(payload))
     const modelMapping = payload.credentials.model_mapping
     const hasConcreteMappedTarget = payload.type === 'apikey' &&
       typeof modelMapping === 'object' &&
@@ -5646,6 +5666,7 @@ const resetForm = () => {
   form.priority = 1
   form.rate_multiplier = 1
   form.group_ids = []
+  authorizedOnly.value = false
   form.expires_at = null
   accountCategory.value = 'oauth-based'
   addMethod.value = 'oauth'
@@ -6431,7 +6452,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
           return
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithDispatchScope({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
@@ -6501,6 +6522,7 @@ const handleGrokImportSSO = async (ssoInput: string) => {
 
   try {
     const result = await adminAPI.grok.createFromSSO({
+      ...accountDispatchOptions(form.group_ids),
       sso_tokens: ssoTokens,
       name: form.name || undefined,
       notes: form.notes || undefined,
@@ -6608,7 +6630,7 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
           return
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithDispatchScope({
           name: accountName,
           notes: form.notes,
           platform: 'grok',
@@ -6707,7 +6729,7 @@ const handleOpenAIExchange = async (authCode: string) => {
     }
 
     if (shouldCreateOpenAI) {
-      await adminAPI.accounts.create({
+      await createAccountWithDispatchScope({
         name: form.name,
         notes: form.notes,
         platform: 'openai',
@@ -6816,6 +6838,7 @@ const handleOpenAIImportCodexSession = async (content: string) => {
   try {
     const extra = buildOpenAICodexImportExtra()
     const result = await adminAPI.accounts.importCodexSession({
+      ...accountDispatchOptions(form.group_ids),
       content: trimmed,
       name: form.name,
       notes: form.notes || null,
@@ -6894,6 +6917,7 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
   try {
     const extra = buildOpenAICodexImportExtra()
     await adminAPI.accounts.createOpenAICodexPAT({
+      ...accountDispatchOptions(form.group_ids),
       access_token: trimmed,
       name: form.name,
       notes: form.notes || null,
@@ -6988,7 +7012,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
         const accountName = refreshTokens.length > 1 ? `${baseName} #${i + 1}` : baseName
 
         if (shouldCreateOpenAI) {
-          await adminAPI.accounts.create({
+          await createAccountWithDispatchScope({
             name: accountName,
             notes: form.notes,
             platform: 'openai',
@@ -7103,7 +7127,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
           expires_at: form.expires_at,
           auto_pause_on_expired: autoPauseOnExpired.value
         })
-        await adminAPI.accounts.create(createPayload)
+        await createAccountWithDispatchScope(createPayload)
         successCount++
       } catch (error: any) {
         failedCount++
@@ -7468,7 +7492,7 @@ const handleCookieAuth = async (sessionKey: string) => {
           credentials.temp_unschedulable_rules = tempUnschedPayload
         }
 
-        await adminAPI.accounts.create({
+        await createAccountWithDispatchScope({
           name: accountName,
           notes: form.notes,
           platform: form.platform,

@@ -268,7 +268,7 @@ type schedulerSnapshotEntry struct {
 	lastUsedKeys []string
 }
 
-const schedulerMetadataVersion = 1
+const schedulerMetadataVersion = 2
 
 type schedulerMetadataPayload struct {
 	service.Account
@@ -1235,6 +1235,7 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		ExpiresAt:               account.ExpiresAt,
 		AutoPauseOnExpired:      account.AutoPauseOnExpired,
 		Schedulable:             account.Schedulable,
+		DispatchScope:           account.DispatchScope,
 		RateLimitedAt:           account.RateLimitedAt,
 		RateLimitResetAt:        account.RateLimitResetAt,
 		OverloadUntil:           account.OverloadUntil,

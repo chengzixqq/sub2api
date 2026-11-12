@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -239,7 +240,15 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 	if repo == nil {
 		return nil, nil, nil
 	}
+	ctx, err = withAccountDispatchSelection(ctx, repo, &groupID)
+	if err != nil {
+		return nil, nil, err
+	}
 	visible, err = repo.ListSchedulableByGroupID(ctx, groupID)
+	if err != nil {
+		return nil, nil, err
+	}
+	visible, err = accountDispatchCandidates(ctx, repo, &groupID, "", visible, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -264,7 +273,11 @@ func loadCodexGroupCatalogAccounts(ctx context.Context, repo AccountRepository, 
 	if listErr != nil {
 		return visible, catalog, nil
 	}
-	return visible, groupAccounts, nil
+	catalog, err = accountDispatchCandidates(ctx, repo, &groupID, "", groupAccounts, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	return visible, catalog, nil
 }
 
 func openAIConfiguredCodexModelIDs(accounts []Account) []string {
@@ -883,6 +896,9 @@ func (s *GatewayService) BuildCodexModelsManifestForGroup(
 
 	_, catalog, err := loadCodexGroupCatalogAccounts(ctx, s.accountRepo, group.ID)
 	if err != nil {
+		if userID, ok := ctx.Value(ctxkey.UserID).(int64); ok && userID > 0 {
+			return nil, fmt.Errorf("load group Codex model accounts: %w", err)
+		}
 		return BuildCodexModelsManifest(modelIDs)
 	}
 	var compositeRoutes []CompositeModelRoute

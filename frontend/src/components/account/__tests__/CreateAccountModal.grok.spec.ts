@@ -11,7 +11,7 @@ describe('CreateAccountModal Grok account types', () => {
   it('hides the Grok creation entry from workspace vendors', () => {
     expect(source).toContain('data-testid="grok-platform-option"')
     expect(source).toContain('v-if="!isVendor"')
-    expect(source).toContain('const { isVendor, canSetPriority, canSetAccountRate }')
+    expect(source).toContain('isVendor, canSetPriority, canSetAccountRate }')
   })
 
   it('offers API-key setup alongside OAuth with the official xAI default', () => {

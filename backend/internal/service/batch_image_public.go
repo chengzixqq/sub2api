@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"go.uber.org/zap"
@@ -634,7 +635,7 @@ func (s *BatchImagePublicService) ListModels(ctx context.Context, owner BatchIma
 		if !ok || provider == nil {
 			continue
 		}
-		accounts, err := s.listCandidateAccounts(ctx, owner.GroupID, batchImageProviderPlatform(providerName))
+		accounts, err := s.listCandidateAccounts(ctx, owner, batchImageProviderPlatform(providerName))
 		if err != nil {
 			return nil, err
 		}
@@ -943,7 +944,7 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 		if !ok || provider == nil {
 			continue
 		}
-		accounts, err := s.listCandidateAccounts(ctx, owner.GroupID, batchImageProviderPlatform(providerName))
+		accounts, err := s.listCandidateAccounts(ctx, owner, batchImageProviderPlatform(providerName))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -970,14 +971,25 @@ func (s *BatchImagePublicService) selectProviderAndAccount(ctx context.Context, 
 	return nil, nil, ErrBatchImageNoAccountAvailable
 }
 
-func (s *BatchImagePublicService) listCandidateAccounts(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
+func (s *BatchImagePublicService) listCandidateAccounts(ctx context.Context, owner BatchImageOwner, platform string) ([]Account, error) {
 	if s.AccountRepo == nil {
 		return nil, ErrBatchImageNoAccountAvailable
 	}
-	if groupID != nil && *groupID > 0 {
-		return s.AccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
+	ctx = context.WithValue(ctx, ctxkey.UserID, owner.UserID)
+	ctx, err := withAccountDispatchSelection(ctx, s.AccountRepo, owner.GroupID)
+	if err != nil {
+		return nil, err
 	}
-	return s.AccountRepo.ListSchedulableByPlatform(ctx, platform)
+	var accounts []Account
+	if owner.GroupID != nil && *owner.GroupID > 0 {
+		accounts, err = s.AccountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *owner.GroupID, platform)
+	} else {
+		accounts, err = s.AccountRepo.ListSchedulableByPlatform(ctx, platform)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return accountDispatchCandidates(ctx, s.AccountRepo, owner.GroupID, platform, accounts, false)
 }
 
 func (s *BatchImagePublicService) ensureGroupAllowsBatchImage(ctx context.Context, groupID *int64) error {

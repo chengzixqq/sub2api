@@ -32,6 +32,9 @@ func newUserEntRepo(t *testing.T) (*userRepository, *dbent.Client) {
 	drv := entsql.OpenDB(dialect.SQLite, db)
 	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
 	t.Cleanup(func() { _ = client.Close() })
+	// This policy table is migration-owned rather than an Ent schema.
+	_, err = db.Exec(`CREATE TABLE user_group_account_policies (user_id INTEGER NOT NULL, group_id INTEGER NOT NULL, mode TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (user_id, group_id))`)
+	require.NoError(t, err)
 
 	return newUserRepositoryWithSQL(client, db), client
 }

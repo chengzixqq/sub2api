@@ -22,6 +22,7 @@ import (
 const codexImportClockSkewSeconds int64 = 120
 
 type CodexSessionImportRequest struct {
+	DispatchScope           string         `json:"dispatch_scope"`
 	Content                 string         `json:"content"`
 	Contents                []string       `json:"contents"`
 	Name                    string         `json:"name"`
@@ -255,6 +256,17 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 
 		existing, matchedKey := index.Find(item.IdentityKeys, item.UserID)
 		if existing != nil && updateExisting {
+			currentScope := existing.DispatchScope
+			if currentScope == "" {
+				currentScope = service.DispatchScopeShared
+			}
+			if req.DispatchScope != "" && req.DispatchScope != currentScope {
+				message := "已有账号的调度范围与导入设置不一致，请先在账号编辑中切换调度范围后重试"
+				result.Failed++
+				result.Items = append(result.Items, CodexSessionImportItem{Index: entry.Index, Name: accountName, AccountID: existing.ID, Action: "failed", Message: message})
+				result.Errors = append(result.Errors, CodexSessionImportMessage{Index: entry.Index, Name: accountName, Message: message})
+				continue
+			}
 			if strings.HasPrefix(matchedKey, "account:") && item.UserID != "" &&
 				codexCredentialString(existing.Credentials, "chatgpt_user_id") == "" {
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
@@ -329,6 +341,7 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		}
 
 		account, createErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
+			DispatchScope:         req.DispatchScope,
 			Name:                  accountName,
 			Notes:                 req.Notes,
 			Platform:              service.PlatformOpenAI,

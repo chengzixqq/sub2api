@@ -144,6 +144,10 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 		return service.ErrAccountNilInput
 	}
 
+	dispatchScope := account.DispatchScope
+	if dispatchScope == "" {
+		dispatchScope = service.DispatchScopeShared
+	}
 	builder := client.Account.Create().
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
@@ -156,6 +160,7 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 		SetStatus(account.Status).
 		SetErrorMessage(account.ErrorMessage).
 		SetSchedulable(account.Schedulable).
+		SetDispatchScope(dispatchScope).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired).
 		SetWorkspaceID(account.WorkspaceID)
 
@@ -606,6 +611,9 @@ func (r *accountRepository) updateLockedAccount(
 		SetSchedulable(schedulable).
 		SetAutoPauseOnExpired(account.AutoPauseOnExpired).
 		AddConfigVersion(1)
+	if scope, ok := service.AccountDispatchScopeUpdateFromContext(ctx); ok {
+		builder.SetDispatchScope(scope)
+	}
 
 	if account.Status == service.StatusError {
 		errorAt := time.Now()
@@ -1154,6 +1162,9 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
+		return err
+	}
+	if err := deleteAccountDispatchGrants(ctx, txClient, "account_id = $1", id); err != nil {
 		return err
 	}
 	if _, err := txClient.ExecContext(ctx, "DELETE FROM scheduled_test_plans WHERE account_id = $1", id); err != nil {
@@ -2037,7 +2048,16 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 }
 
 func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, groupID int64) error {
-	_, err := r.client.AccountGroup.Delete().
+	tx, err := r.client.Tx(ctx)
+	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+		return err
+	}
+	client := r.client
+	if err == nil {
+		defer func() { _ = tx.Rollback() }()
+		client = tx.Client()
+	}
+	_, err = client.AccountGroup.Delete().
 		Where(
 			dbaccountgroup.AccountIDEQ(accountID),
 			dbaccountgroup.GroupIDEQ(groupID),
@@ -2045,6 +2065,14 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 		Exec(ctx)
 	if err != nil {
 		return err
+	}
+	if err := deleteMemberAccountDispatchGrants(ctx, client, accountID, []int64{groupID}); err != nil {
+		return err
+	}
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	payload := buildSchedulerGroupPayload([]int64{groupID})
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountGroupsChanged, &accountID, nil, payload); err != nil {
@@ -2100,6 +2128,22 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID)).Exec(ctx); err != nil {
+		return err
+	}
+	removedGroupIDs := make([]int64, 0, len(existingGroupIDs))
+	for _, oldGroupID := range existingGroupIDs {
+		found := false
+		for _, newGroupID := range groupIDs {
+			if oldGroupID == newGroupID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			removedGroupIDs = append(removedGroupIDs, oldGroupID)
+		}
+	}
+	if err := deleteMemberAccountDispatchGrants(ctx, txClient, accountID, removedGroupIDs); err != nil {
 		return err
 	}
 
@@ -3849,6 +3893,7 @@ func accountEntityToService(m *dbent.Account) *service.Account {
 		CreatedAt:               m.CreatedAt,
 		UpdatedAt:               m.UpdatedAt,
 		Schedulable:             m.Schedulable,
+		DispatchScope:           m.DispatchScope,
 		RateLimitedAt:           m.RateLimitedAt,
 		RateLimitResetAt:        m.RateLimitResetAt,
 		OverloadUntil:           m.OverloadUntil,

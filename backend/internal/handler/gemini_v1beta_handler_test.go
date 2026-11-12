@@ -238,7 +238,12 @@ func TestGeminiV1BetaGetModel_CompositeAntigravityRoute(t *testing.T) {
 			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
 		})
 
-		(&GatewayHandler{}).GeminiV1BetaGetModel(c)
+		repo := &geminiAllowlistAccountRepoStub{gatewayModelsAccountRepoStub: gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{
+			groupID: {{ID: 1, Platform: service.PlatformAntigravity, Credentials: map[string]any{
+				"model_mapping": map[string]any{"gemini-4-argon-high": "gemini-4-argon-high"},
+			}}},
+		}}}
+		(&GatewayHandler{geminiCompatService: service.NewGeminiMessagesCompatService(repo, nil, nil, nil, nil, nil, nil, nil, nil)}).GeminiV1BetaGetModel(c)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), "models/gemini-4-argon-high")
 	})

@@ -370,6 +370,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 		AutoPauseOnExpired:    &autoPauseOnExpired,
 		SkipDefaultGroupBind:  true,
 		SkipMixedChannelCheck: true,
+		DispatchScope:         source.DispatchScope,
 	}
 	// 源账号已过 GetByIDScoped 的归属校验，但它继承来的分组未必都在本工作区授权表内
 	// ——站长可以把一个 vendor 的账号挂进任意分组。若不校验，复制就成了
@@ -473,6 +474,20 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	if input.DispatchScope == "" {
+		input.DispatchScope = DispatchScopeShared
+	}
+	if input.DispatchScope != DispatchScopeShared && input.DispatchScope != DispatchScopeAuthorizedOnly {
+		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_DISPATCH_SCOPE", "dispatch_scope must be shared or authorized_only")
+	}
+	if input.DispatchScope == DispatchScopeAuthorizedOnly {
+		if ScopeFromContextOrDeny(ctx).IsVendor() {
+			return nil, domain.ErrWorkspaceScopeViolation
+		}
+		if err := requireAccountDispatchWritesEnabled(); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateAccountCreateScope(ctx, input.Platform); err != nil {
 		return nil, err
 	}
@@ -498,18 +513,19 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 	delete(accountExtra, OpenCodeGoUsageSnapshotExtraKey)
 	accountExtra = prepareCodexFingerprintExtraForCreate(input.Platform, input.Type, accountExtra)
 	account := &Account{
-		Name:        input.Name,
-		Notes:       normalizeAccountNotes(input.Notes),
-		Platform:    input.Platform,
-		Type:        input.Type,
-		Credentials: input.Credentials,
-		Extra:       accountExtra,
-		ProxyID:     input.ProxyID,
-		Concurrency: normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
-		Priority:    input.Priority,
-		Status:      StatusActive,
-		Schedulable: input.Schedulable == nil || *input.Schedulable,
-		WorkspaceID: resolveNewAccountWorkspaceID(ctx),
+		Name:          input.Name,
+		Notes:         normalizeAccountNotes(input.Notes),
+		Platform:      input.Platform,
+		Type:          input.Type,
+		Credentials:   input.Credentials,
+		Extra:         accountExtra,
+		ProxyID:       input.ProxyID,
+		Concurrency:   normalizeAccountConcurrency(input.Platform, input.Type, input.Concurrency),
+		Priority:      input.Priority,
+		Status:        StatusActive,
+		Schedulable:   input.Schedulable == nil || *input.Schedulable,
+		DispatchScope: input.DispatchScope,
+		WorkspaceID:   resolveNewAccountWorkspaceID(ctx),
 	}
 	if input.ProbeEnabled != nil && *input.ProbeEnabled {
 		if !isUpstreamBillingProbeAccount(account) {
@@ -589,6 +605,9 @@ func resolveNewAccountWorkspaceID(ctx context.Context) int64 {
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	if input.DispatchScope == DispatchScopeAuthorizedOnly {
+		input.SkipDefaultGroupBind = true
+	}
 	accountExtra, err := normalizeOpenAILongContextBillingExtra(input.Platform, input.Extra)
 	if err != nil {
 		return nil, err
@@ -729,6 +748,9 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 		return nil, err
 	}
 	update := input.Fields
+	if update.DispatchScope != nil && input.ExpectedConfigVersion == nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_DISPATCH_SCOPE_VERSION_REQUIRED", "dispatch_scope requires If-Match")
+	}
 	if err := applyAccountFieldScope(ctx, "update", &update.RateMultiplier); err != nil {
 		return nil, err
 	}
@@ -756,6 +778,23 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 }
 
 func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, account *Account, input *UpdateAccountInput) (*Account, error) {
+	if input.DispatchScope != nil {
+		base, ok := AccountPatchBaseFromContext(ctx, account.ID)
+		if !ok || base.ExpectedConfigVersion == nil {
+			return nil, infraerrors.BadRequest("ACCOUNT_DISPATCH_SCOPE_VERSION_REQUIRED", "dispatch_scope requires versioned PATCH")
+		}
+		if *input.DispatchScope != DispatchScopeShared && *input.DispatchScope != DispatchScopeAuthorizedOnly {
+			return nil, infraerrors.BadRequest("INVALID_ACCOUNT_DISPATCH_SCOPE", "dispatch_scope must be shared or authorized_only")
+		}
+		if ScopeFromContextOrDeny(ctx).IsVendor() {
+			return nil, domain.ErrWorkspaceScopeViolation
+		}
+		if err := requireAccountDispatchWritesEnabled(); err != nil {
+			return nil, err
+		}
+		ctx = withAccountDispatchScopeUpdate(ctx, *input.DispatchScope)
+		account.DispatchScope = *input.DispatchScope
+	}
 	var err error
 	if account.Platform == PlatformTypeSafe && input.Type != "" && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
@@ -1621,6 +1660,11 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		return nil, infraerrors.New(http.StatusBadRequest, "SPARK_SHADOW_PARENT_IS_SHADOW",
 			"spark shadow parent must be a real account, not another spark shadow")
 	}
+	if parent.DispatchScope == DispatchScopeAuthorizedOnly {
+		if err := requireAccountDispatchWritesEnabled(); err != nil {
+			return nil, err
+		}
+	}
 
 	// 2. 一母一影校验
 	shadows, err := s.accountRepo.ListShadowsByParent(ctx, parentID)
@@ -1645,7 +1689,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		}
 	} else if len(parent.GroupIDs) > 0 {
 		groupIDs = append([]int64(nil), parent.GroupIDs...)
-	} else if s.groupRepo != nil {
+	} else if parent.DispatchScope != DispatchScopeAuthorizedOnly && s.groupRepo != nil {
 		defaultGroupName := PlatformOpenAI + "-default"
 		if groups, gerr := s.groupRepo.ListActiveByPlatform(ctx, PlatformOpenAI); gerr == nil {
 			for _, g := range groups {
@@ -1691,6 +1735,7 @@ func (s *adminServiceImpl) CreateShadow(ctx context.Context, parentID int64, opt
 		priority = parent.Priority
 	}
 	shadow := &Account{
+		DispatchScope:   parent.DispatchScope,
 		Name:            name,
 		Platform:        PlatformOpenAI,
 		Type:            AccountTypeOAuth,

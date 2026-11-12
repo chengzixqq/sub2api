@@ -313,7 +313,9 @@ func TestGrokMediaLookupSlotLifecycle(t *testing.T) {
 			}
 			require.Zero(t, bindings.writes, "lookups must preserve owner and TTL")
 			if scenario == "mismatch acquired" {
-				require.Equal(t, 20, slots.released)
+				// Dispatch authorization now rejects a mismatched owner before
+				// acquiring an account slot; the pool must remain untouched.
+				require.Zero(t, slots.released)
 			}
 			if slots.full {
 				require.Zero(t, slots.released)

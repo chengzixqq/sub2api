@@ -77,6 +77,10 @@ const (
 	// APIKeyID is the authenticated key's database ID, never a request body value.
 	APIKeyID Key = "ctx_api_key_id"
 
+	// AccountDispatchGroupID remains the authenticated API key's original group
+	// even when a handler changes Group to a fallback routing destination.
+	AccountDispatchGroupID Key = "ctx_account_dispatch_group_id"
+
 	// IsMaxTokensOneHaikuRequest 标识当前请求是否为 max_tokens=1 + haiku 模型的探测请求
 	// 用于 ClaudeCodeOnly 验证绕过（绕过 system prompt 检查，但仍需验证 User-Agent）
 	IsMaxTokensOneHaikuRequest Key = "ctx_is_max_tokens_one_haiku"

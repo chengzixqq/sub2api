@@ -3467,6 +3467,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return mapping.MappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
+				if err := h.gatewayService.CheckAccountDispatchForTurn(ctx, apiKey.UserID, apiKey.GroupID, account.ID); err != nil {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "account is no longer authorized for this connection, please reconnect", err)
+				}
 				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。
 				if cyberBlockedThisConn && !h.cyberPolicyLogOnly(c, apiKey) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)

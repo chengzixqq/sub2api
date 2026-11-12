@@ -65,6 +65,8 @@ export interface GrokSSOToOAuthRequest {
   notes?: string | null
   proxy_id?: number | null
   group_ids?: number[]
+  dispatch_scope?: 'shared' | 'authorized_only'
+  skip_default_group_bind?: boolean
   credentials?: Record<string, unknown>
   extra?: Record<string, unknown>
   concurrency?: number

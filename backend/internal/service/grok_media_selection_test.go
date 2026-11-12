@@ -10,7 +10,7 @@ import (
 )
 
 func TestSelectGrokMediaVideoRequestAccountPreservesOwner(t *testing.T) {
-	for _, state := range []string{"available", "full", "unavailable", "wrong group", "missing", "invalid id"} {
+	for _, state := range []string{"available", "full", "unavailable", "removed membership", "revoked grant", "missing", "invalid id"} {
 		t.Run(state, func(t *testing.T) {
 			groupID := int64(24)
 			ownerID := int64(1)
@@ -22,8 +22,11 @@ func TestSelectGrokMediaVideoRequestAccountPreservesOwner(t *testing.T) {
 				until := time.Now().Add(time.Minute)
 				owner.TempUnschedulableUntil = &until
 			}
-			if state == "wrong group" {
+			if state == "removed membership" {
 				owner.GroupIDs = []int64{25}
+			}
+			if state == "revoked grant" {
+				owner.DispatchScope = DispatchScopeAuthorizedOnly
 			}
 			accounts := []Account{owner, other}
 			if state == "missing" {
@@ -51,7 +54,7 @@ func TestSelectGrokMediaVideoRequestAccountPreservesOwner(t *testing.T) {
 			for range 20 {
 				selection, decision, err := svc.SelectGrokMediaVideoRequestAccount(ctx, &groupID, sessionHash, ownerID, "")
 				switch state {
-				case "available":
+				case "available", "removed membership", "revoked grant":
 					require.NoError(t, err)
 					require.Equal(t, int64(1), selection.Account.ID)
 					require.True(t, selection.Acquired)
@@ -73,7 +76,7 @@ func TestSelectGrokMediaVideoRequestAccountPreservesOwner(t *testing.T) {
 			}
 			require.NotContains(t, acquired, int64(2))
 			require.Empty(t, cache.deletedSessions)
-			if state == "available" {
+			if state == "available" || state == "removed membership" || state == "revoked grant" {
 				require.Len(t, released, 20)
 			} else {
 				require.Empty(t, released)

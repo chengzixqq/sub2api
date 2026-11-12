@@ -212,6 +212,9 @@ func (r *accountRepository) scopedAdminBindGroups(ctx context.Context, accountID
 		if _, err := r.client.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(accountID), dbaccountgroup.GroupIDIn(removed...)).Exec(ctx); err != nil {
 			return err
 		}
+		if err := deleteMemberAccountDispatchGrants(ctx, r.client, accountID, removed); err != nil {
+			return err
+		}
 	}
 	for _, id := range added {
 		if _, err := r.client.AccountGroup.Create().SetAccountID(accountID).SetGroupID(id).SetPriority(slices.Index(groupIDs, id) + 1).Save(ctx); err != nil {

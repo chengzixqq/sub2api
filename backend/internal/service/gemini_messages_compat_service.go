@@ -125,6 +125,11 @@ func (s *GeminiMessagesCompatService) SelectAccountForModel(ctx context.Context,
 }
 
 func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	var policyErr error
+	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
+	if policyErr != nil {
+		return nil, policyErr
+	}
 	// 1. 确定目标平台和调度模式
 	// Determine target platform and scheduling mode
 	platform, useMixedScheduling, hasForcePlatform, err := s.resolvePlatformAndSchedulingMode(ctx, groupID)
@@ -142,13 +147,15 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 3. 查询可调度账户（强制平台模式：优先按分组查找，找不到再查全部）
 	// Query schedulable accounts (force platform mode: try group first, fallback to all)
-	accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, platform, hasForcePlatform)
+	effectiveGroupID := groupID
+	accounts, err := s.listSchedulableAccountsOnce(ctx, effectiveGroupID, platform, hasForcePlatform)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
 	// 强制平台模式下，分组中找不到账户时回退查询全部
 	if len(accounts) == 0 && groupID != nil && hasForcePlatform {
-		accounts, err = s.listSchedulableAccountsOnce(ctx, nil, platform, hasForcePlatform)
+		effectiveGroupID = nil
+		accounts, err = s.listSchedulableAccountsOnce(ctx, effectiveGroupID, platform, hasForcePlatform)
 		if err != nil {
 			return nil, fmt.Errorf("query accounts failed: %w", err)
 		}
@@ -171,7 +178,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
 	}
 
-	return s.hydrateSelectedAccount(ctx, selected)
+	return s.hydrateSelectedAccount(ctx, selected, effectiveGroupID)
 }
 
 // resolvePlatformAndSchedulingMode 解析目标平台和调度模式。
@@ -233,6 +240,16 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
 	if err != nil {
+		return nil
+	}
+	if account != nil && s.accountRepo != nil {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
+		if err != nil {
+			return nil
+		}
+	}
+	if !accountDispatchAllows(ctx, account, groupID, s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
+		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 		return nil
 	}
 
@@ -450,39 +467,61 @@ func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context,
 	return s.accountRepo.GetByID(ctx, accountID)
 }
 
-func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
-	if account == nil || s.schedulerSnapshot == nil {
-		return account, nil
+func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account, effectiveGroupID *int64) (*Account, error) {
+	if account == nil {
+		return nil, nil
 	}
-	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
-	if err != nil {
-		return nil, err
+	hydrated := account
+	if s.schedulerSnapshot != nil {
+		var err error
+		hydrated, err = s.schedulerSnapshot.GetAccount(ctx, account.ID)
+		if err != nil {
+			return nil, err
+		}
+		if hydrated == nil {
+			return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+		}
 	}
-	if hydrated == nil {
-		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+	if userID, _ := ctx.Value(ctxkey.UserID).(int64); userID > 0 {
+		current, err := s.accountRepo.GetByID(ctx, account.ID)
+		if err != nil || current == nil || !current.IsSchedulable() {
+			return nil, ErrNoAvailableAccounts
+		}
+		if !accountDispatchAllows(ctx, current, effectiveGroupID, s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
+			return nil, ErrNoAvailableAccounts
+		}
 	}
 	return hydrated, nil
 }
 
 func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, error) {
-	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
-		return accounts, err
+	var policyErr error
+	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
+	if policyErr != nil {
+		return nil, policyErr
 	}
-
 	useMixedScheduling := platform == PlatformGemini && !hasForcePlatform
-	queryPlatforms := []string{platform}
-	if useMixedScheduling {
-		queryPlatforms = []string{platform, PlatformAntigravity}
+	var accounts []Account
+	var err error
+	if s.schedulerSnapshot != nil {
+		accounts, _, err = s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
+	} else {
+		queryPlatforms := []string{platform}
+		if useMixedScheduling {
+			queryPlatforms = []string{platform, PlatformAntigravity}
+		}
+		if groupID != nil {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, queryPlatforms)
+		} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, queryPlatforms)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, queryPlatforms)
+		}
 	}
-
-	if groupID != nil {
-		return s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, queryPlatforms)
+	if err != nil {
+		return nil, err
 	}
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		return s.accountRepo.ListSchedulableByPlatforms(ctx, queryPlatforms)
-	}
-	return s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, queryPlatforms)
+	return accountDispatchCandidates(ctx, s.accountRepo, groupID, platform, accounts, useMixedScheduling)
 }
 
 func (s *GeminiMessagesCompatService) validateUpstreamBaseURL(raw string) (string, error) {

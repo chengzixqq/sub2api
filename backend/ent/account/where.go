@@ -165,6 +165,11 @@ func Schedulable(v bool) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldSchedulable, v))
 }
 
+// DispatchScope applies equality check predicate on the "dispatch_scope" field. It's identical to DispatchScopeEQ.
+func DispatchScope(v string) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldDispatchScope, v))
+}
+
 // RateLimitedAt applies equality check predicate on the "rate_limited_at" field. It's identical to RateLimitedAtEQ.
 func RateLimitedAt(v time.Time) predicate.Account {
 	return predicate.Account(sql.FieldEQ(FieldRateLimitedAt, v))
@@ -1248,6 +1253,71 @@ func SchedulableEQ(v bool) predicate.Account {
 // SchedulableNEQ applies the NEQ predicate on the "schedulable" field.
 func SchedulableNEQ(v bool) predicate.Account {
 	return predicate.Account(sql.FieldNEQ(FieldSchedulable, v))
+}
+
+// DispatchScopeEQ applies the EQ predicate on the "dispatch_scope" field.
+func DispatchScopeEQ(v string) predicate.Account {
+	return predicate.Account(sql.FieldEQ(FieldDispatchScope, v))
+}
+
+// DispatchScopeNEQ applies the NEQ predicate on the "dispatch_scope" field.
+func DispatchScopeNEQ(v string) predicate.Account {
+	return predicate.Account(sql.FieldNEQ(FieldDispatchScope, v))
+}
+
+// DispatchScopeIn applies the In predicate on the "dispatch_scope" field.
+func DispatchScopeIn(vs ...string) predicate.Account {
+	return predicate.Account(sql.FieldIn(FieldDispatchScope, vs...))
+}
+
+// DispatchScopeNotIn applies the NotIn predicate on the "dispatch_scope" field.
+func DispatchScopeNotIn(vs ...string) predicate.Account {
+	return predicate.Account(sql.FieldNotIn(FieldDispatchScope, vs...))
+}
+
+// DispatchScopeGT applies the GT predicate on the "dispatch_scope" field.
+func DispatchScopeGT(v string) predicate.Account {
+	return predicate.Account(sql.FieldGT(FieldDispatchScope, v))
+}
+
+// DispatchScopeGTE applies the GTE predicate on the "dispatch_scope" field.
+func DispatchScopeGTE(v string) predicate.Account {
+	return predicate.Account(sql.FieldGTE(FieldDispatchScope, v))
+}
+
+// DispatchScopeLT applies the LT predicate on the "dispatch_scope" field.
+func DispatchScopeLT(v string) predicate.Account {
+	return predicate.Account(sql.FieldLT(FieldDispatchScope, v))
+}
+
+// DispatchScopeLTE applies the LTE predicate on the "dispatch_scope" field.
+func DispatchScopeLTE(v string) predicate.Account {
+	return predicate.Account(sql.FieldLTE(FieldDispatchScope, v))
+}
+
+// DispatchScopeContains applies the Contains predicate on the "dispatch_scope" field.
+func DispatchScopeContains(v string) predicate.Account {
+	return predicate.Account(sql.FieldContains(FieldDispatchScope, v))
+}
+
+// DispatchScopeHasPrefix applies the HasPrefix predicate on the "dispatch_scope" field.
+func DispatchScopeHasPrefix(v string) predicate.Account {
+	return predicate.Account(sql.FieldHasPrefix(FieldDispatchScope, v))
+}
+
+// DispatchScopeHasSuffix applies the HasSuffix predicate on the "dispatch_scope" field.
+func DispatchScopeHasSuffix(v string) predicate.Account {
+	return predicate.Account(sql.FieldHasSuffix(FieldDispatchScope, v))
+}
+
+// DispatchScopeEqualFold applies the EqualFold predicate on the "dispatch_scope" field.
+func DispatchScopeEqualFold(v string) predicate.Account {
+	return predicate.Account(sql.FieldEqualFold(FieldDispatchScope, v))
+}
+
+// DispatchScopeContainsFold applies the ContainsFold predicate on the "dispatch_scope" field.
+func DispatchScopeContainsFold(v string) predicate.Account {
+	return predicate.Account(sql.FieldContainsFold(FieldDispatchScope, v))
 }
 
 // RateLimitedAtEQ applies the EQ predicate on the "rate_limited_at" field.

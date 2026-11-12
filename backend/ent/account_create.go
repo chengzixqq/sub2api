@@ -321,6 +321,20 @@ func (_c *AccountCreate) SetNillableSchedulable(v *bool) *AccountCreate {
 	return _c
 }
 
+// SetDispatchScope sets the "dispatch_scope" field.
+func (_c *AccountCreate) SetDispatchScope(v string) *AccountCreate {
+	_c.mutation.SetDispatchScope(v)
+	return _c
+}
+
+// SetNillableDispatchScope sets the "dispatch_scope" field if the given value is not nil.
+func (_c *AccountCreate) SetNillableDispatchScope(v *string) *AccountCreate {
+	if v != nil {
+		_c.SetDispatchScope(*v)
+	}
+	return _c
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (_c *AccountCreate) SetRateLimitedAt(v time.Time) *AccountCreate {
 	_c.mutation.SetRateLimitedAt(v)
@@ -627,6 +641,10 @@ func (_c *AccountCreate) defaults() error {
 		v := account.DefaultSchedulable
 		_c.mutation.SetSchedulable(v)
 	}
+	if _, ok := _c.mutation.DispatchScope(); !ok {
+		v := account.DefaultDispatchScope
+		_c.mutation.SetDispatchScope(v)
+	}
 	if _, ok := _c.mutation.QuotaDimension(); !ok {
 		v := account.DefaultQuotaDimension
 		_c.mutation.SetQuotaDimension(v)
@@ -700,6 +718,14 @@ func (_c *AccountCreate) check() error {
 	}
 	if _, ok := _c.mutation.Schedulable(); !ok {
 		return &ValidationError{Name: "schedulable", err: errors.New(`ent: missing required field "Account.schedulable"`)}
+	}
+	if _, ok := _c.mutation.DispatchScope(); !ok {
+		return &ValidationError{Name: "dispatch_scope", err: errors.New(`ent: missing required field "Account.dispatch_scope"`)}
+	}
+	if v, ok := _c.mutation.DispatchScope(); ok {
+		if err := account.DispatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "dispatch_scope", err: fmt.Errorf(`ent: validator failed for field "Account.dispatch_scope": %w`, err)}
+		}
 	}
 	if v, ok := _c.mutation.SessionWindowStatus(); ok {
 		if err := account.SessionWindowStatusValidator(v); err != nil {
@@ -832,6 +858,10 @@ func (_c *AccountCreate) createSpec() (*Account, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Schedulable(); ok {
 		_spec.SetField(account.FieldSchedulable, field.TypeBool, value)
 		_node.Schedulable = value
+	}
+	if value, ok := _c.mutation.DispatchScope(); ok {
+		_spec.SetField(account.FieldDispatchScope, field.TypeString, value)
+		_node.DispatchScope = value
 	}
 	if value, ok := _c.mutation.RateLimitedAt(); ok {
 		_spec.SetField(account.FieldRateLimitedAt, field.TypeTime, value)
@@ -1376,6 +1406,18 @@ func (u *AccountUpsert) SetSchedulable(v bool) *AccountUpsert {
 // UpdateSchedulable sets the "schedulable" field to the value that was provided on create.
 func (u *AccountUpsert) UpdateSchedulable() *AccountUpsert {
 	u.SetExcluded(account.FieldSchedulable)
+	return u
+}
+
+// SetDispatchScope sets the "dispatch_scope" field.
+func (u *AccountUpsert) SetDispatchScope(v string) *AccountUpsert {
+	u.Set(account.FieldDispatchScope, v)
+	return u
+}
+
+// UpdateDispatchScope sets the "dispatch_scope" field to the value that was provided on create.
+func (u *AccountUpsert) UpdateDispatchScope() *AccountUpsert {
+	u.SetExcluded(account.FieldDispatchScope)
 	return u
 }
 
@@ -2029,6 +2071,20 @@ func (u *AccountUpsertOne) SetSchedulable(v bool) *AccountUpsertOne {
 func (u *AccountUpsertOne) UpdateSchedulable() *AccountUpsertOne {
 	return u.Update(func(s *AccountUpsert) {
 		s.UpdateSchedulable()
+	})
+}
+
+// SetDispatchScope sets the "dispatch_scope" field.
+func (u *AccountUpsertOne) SetDispatchScope(v string) *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetDispatchScope(v)
+	})
+}
+
+// UpdateDispatchScope sets the "dispatch_scope" field to the value that was provided on create.
+func (u *AccountUpsertOne) UpdateDispatchScope() *AccountUpsertOne {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdateDispatchScope()
 	})
 }
 
@@ -2877,6 +2933,20 @@ func (u *AccountUpsertBulk) SetSchedulable(v bool) *AccountUpsertBulk {
 func (u *AccountUpsertBulk) UpdateSchedulable() *AccountUpsertBulk {
 	return u.Update(func(s *AccountUpsert) {
 		s.UpdateSchedulable()
+	})
+}
+
+// SetDispatchScope sets the "dispatch_scope" field.
+func (u *AccountUpsertBulk) SetDispatchScope(v string) *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.SetDispatchScope(v)
+	})
+}
+
+// UpdateDispatchScope sets the "dispatch_scope" field to the value that was provided on create.
+func (u *AccountUpsertBulk) UpdateDispatchScope() *AccountUpsertBulk {
+	return u.Update(func(s *AccountUpsert) {
+		s.UpdateDispatchScope()
 	})
 }
 

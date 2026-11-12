@@ -449,6 +449,15 @@
                   t("admin.groups.rpmOverrides")
                 }}</span>
               </button>
+              <button
+                v-if="authStore.isOwner && !authStore.isSimpleMode"
+                data-testid="group-account-policies"
+                @click="handleAccountPolicies(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-emerald-600 dark:hover:bg-dark-700 dark:hover:text-emerald-400"
+              >
+                <Icon name="shield" size="sm" />
+                <span class="text-xs">{{ t("admin.groups.accountPolicies") }}</span>
+              </button>
               <!-- 删分组同为站长专属：DELETE 不在 vendor 白名单内 -->
               <button
                 v-if="canDeleteGroups"
@@ -4312,6 +4321,12 @@
       @close="showRPMOverridesModal = false"
       @success="loadGroups"
     />
+    <GroupAccountPoliciesModal
+      :show="showAccountPoliciesModal"
+      :group="accountPoliciesGroup"
+      @close="showAccountPoliciesModal = false"
+      @success="loadGroups"
+    />
   </AppLayout>
 </template>
 
@@ -4354,6 +4369,7 @@ import Icon from "@/components/icons/Icon.vue";
 import GroupI18nField from "@/components/admin/group/GroupI18nField.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
+import GroupAccountPoliciesModal from "@/components/admin/group/GroupAccountPoliciesModal.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
 import ReasoningEffortPolicyFields from "@/components/admin/group/ReasoningEffortPolicyFields.vue";
 import CodexManifestAccountsField from "@/components/admin/group/CodexManifestAccountsField.vue";
@@ -4909,6 +4925,8 @@ const showRateMultipliersModal = ref(false);
 const rateMultipliersGroup = ref<AdminGroup | null>(null);
 const showRPMOverridesModal = ref(false);
 const rpmOverridesGroup = ref<AdminGroup | null>(null);
+const showAccountPoliciesModal = ref(false);
+const accountPoliciesGroup = ref<AdminGroup | null>(null);
 const sortableGroups = ref<AdminGroup[]>([]);
 type ConcreteGroupPlatform = Exclude<GroupPlatform, "composite">;
 type CompositeRouteFormState = {
@@ -6515,6 +6533,11 @@ const handleRateMultipliers = (group: AdminGroup) => {
 const handleRPMOverrides = (group: AdminGroup) => {
   rpmOverridesGroup.value = group;
   showRPMOverridesModal.value = true;
+};
+
+const handleAccountPolicies = (group: AdminGroup) => {
+  accountPoliciesGroup.value = group;
+  showAccountPoliciesModal.value = true;
 };
 
 const handleDuplicate = async (group: AdminGroup) => {

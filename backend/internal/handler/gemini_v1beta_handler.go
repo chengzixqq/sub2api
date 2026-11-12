@@ -48,6 +48,12 @@ func (h *GatewayHandler) GeminiV1BetaListModels(c *gin.Context) {
 		googleError(c, http.StatusBadRequest, "API key group platform is not gemini")
 		return
 	}
+	ctx, err := h.geminiCompatService.BindAccountDispatchPolicy(c.Request.Context(), apiKey.UserID, apiKey.GroupID)
+	if err != nil {
+		googleError(c, http.StatusServiceUnavailable, "Account dispatch policy unavailable")
+		return
+	}
+	c.Request = c.Request.WithContext(ctx)
 
 	// 分组级模型白名单开启时过滤 models[].name（名字形如 models/xxx）。
 	filterGeminiModels := func(models []gemini.Model) []gemini.Model {
@@ -272,9 +278,24 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 		googleError(c, http.StatusBadRequest, "API key group platform is not gemini")
 		return
 	}
+	ctx, err := h.geminiCompatService.BindAccountDispatchPolicy(c.Request.Context(), apiKey.UserID, apiKey.GroupID)
+	if err != nil {
+		googleError(c, http.StatusServiceUnavailable, "Account dispatch policy unavailable")
+		return
+	}
+	c.Request = c.Request.WithContext(ctx)
 
 	// 强制 antigravity 模式或 composite 路由到 antigravity：返回 antigravity 模型信息
 	if forcePlatform == service.PlatformAntigravity || effectivePlatform == service.PlatformAntigravity {
+		models, err := h.geminiCompatService.AntigravityGeminiModelIDs(ctx, apiKey.GroupID, false)
+		if err != nil {
+			googleError(c, http.StatusServiceUnavailable, "Unable to list Antigravity models")
+			return
+		}
+		if !service.DeclaredModelsCover(models, modelName) {
+			googleError(c, http.StatusNotFound, "models/"+modelName+" is not found")
+			return
+		}
 		c.JSON(http.StatusOK, antigravity.FallbackGeminiModel(modelName))
 		return
 	}

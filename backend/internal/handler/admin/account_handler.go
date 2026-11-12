@@ -160,7 +160,8 @@ type CreateAccountRequest struct {
 	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
 	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 	// Schedulable=false creates the account outside the scheduler (test first, enable after); default true.
-	Schedulable *bool `json:"schedulable"`
+	Schedulable   *bool  `json:"schedulable"`
+	DispatchScope string `json:"dispatch_scope"`
 	// SkipDefaultGroupBind=true does not auto-join the <platform>-default group when group_ids is empty.
 	SkipDefaultGroupBind *bool `json:"skip_default_group_bind"`
 }
@@ -205,6 +206,7 @@ type PatchAccountRequest struct {
 	RateMultiplier          *float64       `json:"rate_multiplier"`
 	LoadFactor              *int           `json:"load_factor"`
 	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
+	DispatchScope           *string        `json:"dispatch_scope"`
 	GroupIDs                *[]int64       `json:"group_ids"`
 	ExpiresAt               *int64         `json:"expires_at"`
 	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
@@ -1046,6 +1048,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 			ProbeEnabled:          req.ProbeEnabled,
 			SkipMixedChannelCheck: skipCheck,
 			Schedulable:           req.Schedulable,
+			DispatchScope:         req.DispatchScope,
 			SkipDefaultGroupBind:  req.SkipDefaultGroupBind != nil && *req.SkipDefaultGroupBind,
 		})
 		if execErr != nil {
@@ -1252,6 +1255,7 @@ func (h *AccountHandler) Patch(c *gin.Context) {
 			RateMultiplier:        req.RateMultiplier,
 			LoadFactor:            req.LoadFactor,
 			Status:                req.Status,
+			DispatchScope:         req.DispatchScope,
 			GroupIDs:              req.GroupIDs,
 			ExpiresAt:             req.ExpiresAt,
 			AutoPauseOnExpired:    req.AutoPauseOnExpired,

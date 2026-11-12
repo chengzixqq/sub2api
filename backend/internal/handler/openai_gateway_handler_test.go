@@ -1967,6 +1967,8 @@ type openAIResponsesWSUsageLogCase struct {
 	billingModelSource        string
 	accountModelMapping       map[string]any
 	afterFirstUpstreamRequest func(channelSvc *service.ChannelService) error
+	dispatchPolicyReader      func(context.Context, int64, int64) (*service.AccountDispatchPolicy, error)
+	accountDispatchScope      string
 	// group 覆盖 apiKey.Group（分组级模型白名单测试用）；nil 保持原有无分组行为。
 	group *service.Group
 	// apiKeyService 非 nil 时模拟 API Key 认证中间件：连接认证快照经它按
@@ -1991,7 +1993,15 @@ type openAIResponsesWSUsageLogResult struct {
 
 type openAIWSUsageHandlerAccountRepoStub struct {
 	service.AccountRepository
-	account service.Account
+	account              service.Account
+	dispatchPolicyReader func(context.Context, int64, int64) (*service.AccountDispatchPolicy, error)
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) GetAccountDispatchPolicy(ctx context.Context, userID, groupID int64) (*service.AccountDispatchPolicy, error) {
+	if s.dispatchPolicyReader != nil {
+		return s.dispatchPolicyReader(ctx, userID, groupID)
+	}
+	return nil, nil
 }
 
 func (s *openAIWSUsageHandlerAccountRepoStub) ListSchedulableByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
@@ -2011,6 +2021,16 @@ func (s *openAIWSUsageHandlerAccountRepoStub) GetByID(ctx context.Context, id in
 	}
 	account := s.account
 	return &account, nil
+}
+
+func (s *openAIWSUsageHandlerAccountRepoStub) GetByIDs(ctx context.Context, ids []int64) ([]*service.Account, error) {
+	for _, id := range ids {
+		if id == s.account.ID {
+			account := s.account
+			return []*service.Account{&account}, nil
+		}
+	}
+	return nil, nil
 }
 
 type openAIWSFailoverHandlerAccountRepoStub struct {
@@ -3097,6 +3117,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		account.Platform = tc.accountPlatform
 	}
 	account.RateMultiplier = tc.accountRateMultiplier
+	account.DispatchScope = tc.accountDispatchScope
 	if strings.TrimSpace(tc.ingressMode) != "" {
 		account.Extra["openai_apikey_responses_websockets_v2_mode"] = tc.ingressMode
 	}
@@ -3114,7 +3135,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
 	cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
 
-	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account}
+	accountRepo := &openAIWSUsageHandlerAccountRepoStub{account: account, dispatchPolicyReader: tc.dispatchPolicyReader}
 	usageRepo := &openAIWSUsageHandlerUsageLogRepoStub{created: make(chan *service.UsageLog, turnCount)}
 
 	if len(tc.channelMapping) > 0 {
@@ -3204,6 +3225,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.User.ID, Concurrency: 1})
+		requestCtx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
+		requestCtx = context.WithValue(requestCtx, ctxkey.AccountDispatchGroupID, *apiKey.GroupID)
+		c.Request = c.Request.WithContext(requestCtx)
 		if tc.apiKeyService != nil && apiKey.Group != nil {
 			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, apiKey.Group))
 		}

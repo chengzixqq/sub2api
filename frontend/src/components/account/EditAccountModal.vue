@@ -3388,6 +3388,13 @@
         :mixed-scheduling="mixedScheduling"
         data-tour="account-form-groups"
       />
+      <div v-if="isOwner" class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600">
+        <div>
+          <label class="input-label mb-0">{{ t('admin.accounts.authorizedOnly') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.authorizedOnlyHint') }}</p>
+        </div>
+        <Toggle v-model="authorizedOnly" data-testid="account-dispatch-scope" :aria-label="t('admin.accounts.authorizedOnly')" />
+      </div>
 
     </form>
 
@@ -3582,7 +3589,7 @@ const appStore = useAppStore()
 const browserTimeZone = getBrowserTimeZone()
 
 // 站长恒真；vendor 侧这两个字段会被后端覆盖，藏掉免得改了不生效。
-const { canSetPriority, canSetAccountRate } = useWorkspacePerms()
+const { isOwner, canSetPriority, canSetAccountRate } = useWorkspacePerms()
 const selectableGroups = computed(() => {
   const groups = new Map<number, Group>(props.groups.map(group => [group.id, group]))
   const assignedIds = new Set(props.account?.group_ids ?? [])
@@ -4572,6 +4579,7 @@ const form = reactive({
   group_ids: [] as number[],
   expires_at: null as number | null
 })
+const authorizedOnly = ref(false)
 
 const claudeBooleanOverrideKeys = [
   'thinking_prefilter_enabled',
@@ -4742,6 +4750,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     ? newAccount.status
     : 'active'
   form.group_ids = newAccount.group_ids || []
+  authorizedOnly.value = newAccount.dispatch_scope === 'authorized_only'
   form.expires_at = newAccount.expires_at ?? null
   void loadClaudeCustomization(newAccount.id)
 
@@ -5739,13 +5748,26 @@ const persistGrokMediaEligibility = async (accountID: number, updatedAccount: Ac
   return updatedAccount
 }
 
-const submitUpdateAccount = async (accountID: number, updatePayload: Record<string, unknown>) => {
+const submitUpdateAccount = async (
+  accountID: number,
+  updatePayload: Record<string, unknown>,
+  dispatchScope: 'shared' | 'authorized_only' | null
+) => {
   // Freeze the policy for this account before the main save yields. Switching
   // accounts or a late policy response must not change the pending payload.
   const customization = pendingClaudeCustomization(accountID)
   submitting.value = true
   try {
     let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
+    if (dispatchScope) {
+      try {
+        updatedAccount = await adminAPI.accounts.patchDispatchScope(accountID, dispatchScope)
+      } catch {
+        emit('updated', updatedAccount)
+        appStore.showWarning(t('admin.accounts.authorizedOnlyPartialSave'))
+        return
+      }
+    }
     if (customization) await adminAPI.accounts.updateClaudeCustomization(accountID, customization)
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
@@ -5757,7 +5779,7 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
         message: error.message,
         onConfirm: async () => {
           antigravityMixedChannelConfirmed.value = true
-          await submitUpdateAccount(accountID, updatePayload)
+          await submitUpdateAccount(accountID, updatePayload, dispatchScope)
         }
       })
       return
@@ -5785,6 +5807,9 @@ const handleSubmit = async () => {
 	}
 
   const updatePayload: Record<string, unknown> = { ...form }
+  const dispatchScope = isOwner.value && authorizedOnly.value !== (props.account.dispatch_scope === 'authorized_only')
+    ? (authorizedOnly.value ? 'authorized_only' : 'shared')
+    : null
   try {
     // 后端期望 proxy_id: 0 表示清除代理，而不是 null
     if (updatePayload.proxy_id === null) {
@@ -6536,13 +6561,13 @@ const handleSubmit = async () => {
     }
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
-      await submitUpdateAccount(accountID, updatePayload)
+      await submitUpdateAccount(accountID, updatePayload, dispatchScope)
     })
     if (!canContinue) {
       return
     }
 
-    await submitUpdateAccount(accountID, updatePayload)
+    await submitUpdateAccount(accountID, updatePayload, dispatchScope)
   } catch (error: any) {
     appStore.showError(error.message || t('admin.accounts.failedToUpdate'))
   }

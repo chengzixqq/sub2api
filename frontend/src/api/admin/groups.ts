@@ -445,6 +445,51 @@ export async function clearGroupRPMOverrides(id: number): Promise<{ message: str
   return data
 }
 
+export type AccountPolicyMode = 'append' | 'replace'
+export type AccountPolicyOrigin = 'member' | 'extra'
+
+export interface AccountPolicySelection {
+  account_id: number
+  origin: AccountPolicyOrigin
+  account_name?: string
+  dispatch_scope?: 'shared' | 'authorized_only'
+}
+
+export interface GroupAccountPolicy {
+  user_id: number
+  group_id: number
+  username: string
+  email: string
+  version: number
+  mode: AccountPolicyMode
+  accounts: AccountPolicySelection[]
+}
+
+export async function getGroupAccountPolicies(id: number): Promise<GroupAccountPolicy[]> {
+  const { data } = await apiClient.get<{ entries: GroupAccountPolicy[] }>(`/admin/groups/${id}/account-policies`)
+  return data.entries
+}
+
+export async function putGroupAccountPolicy(
+  id: number,
+  userID: number,
+  version: number,
+  policy: Pick<GroupAccountPolicy, 'mode' | 'accounts'>
+): Promise<GroupAccountPolicy> {
+  const { data } = await apiClient.put<GroupAccountPolicy>(
+    `/admin/groups/${id}/account-policies/${userID}`,
+    policy,
+    { headers: { 'If-Match': String(version) } }
+  )
+  return data
+}
+
+export async function deleteGroupAccountPolicy(id: number, userID: number, version: number): Promise<void> {
+  await apiClient.delete(`/admin/groups/${id}/account-policies/${userID}`, {
+    headers: { 'If-Match': String(version) }
+  })
+}
+
 /**
  * Get usage summary (today + yesterday + cumulative cost) for all groups
  * @returns Array of group usage summaries
@@ -496,6 +541,9 @@ export const groupsAPI = {
   getGroupRPMOverrides,
   clearGroupRPMOverrides,
   batchSetGroupRPMOverrides,
+  getGroupAccountPolicies,
+  putGroupAccountPolicy,
+  deleteGroupAccountPolicy,
   updateSortOrder,
   getUsageSummary,
   getCapacitySummary

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -1169,6 +1170,22 @@ func TestBuildCodexModelsManifestForGroupFallsBackWhenCapabilityLookupFails(t *t
 	require.Len(t, models, 2)
 	require.Equal(t, []any{"text"}, models[0]["input_modalities"])
 	require.Equal(t, []any{"text"}, models[1]["input_modalities"])
+}
+
+func TestBuildCodexModelsManifestForGroupRejectsAuthorizedRequestOnLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	repo := &countingCodexModelsAccountRepo{err: errors.New("account repository unavailable")}
+	svc := &GatewayService{accountRepo: repo}
+	ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(100))
+	body, err := svc.BuildCodexModelsManifestForGroup(
+		ctx,
+		&Group{ID: 734, Platform: PlatformOpenAI},
+		"",
+		[]string{"gpt-5.6-sol"},
+	)
+	require.Error(t, err)
+	require.Nil(t, body)
 }
 
 func TestMergeGroupConfiguredCodexModelsInjectsCurrentGroupAliases(t *testing.T) {

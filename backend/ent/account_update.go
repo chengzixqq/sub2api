@@ -432,6 +432,20 @@ func (_u *AccountUpdate) SetNillableSchedulable(v *bool) *AccountUpdate {
 	return _u
 }
 
+// SetDispatchScope sets the "dispatch_scope" field.
+func (_u *AccountUpdate) SetDispatchScope(v string) *AccountUpdate {
+	_u.mutation.SetDispatchScope(v)
+	return _u
+}
+
+// SetNillableDispatchScope sets the "dispatch_scope" field if the given value is not nil.
+func (_u *AccountUpdate) SetNillableDispatchScope(v *string) *AccountUpdate {
+	if v != nil {
+		_u.SetDispatchScope(*v)
+	}
+	return _u
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (_u *AccountUpdate) SetRateLimitedAt(v time.Time) *AccountUpdate {
 	_u.mutation.SetRateLimitedAt(v)
@@ -839,6 +853,11 @@ func (_u *AccountUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "Account.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.DispatchScope(); ok {
+		if err := account.DispatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "dispatch_scope", err: fmt.Errorf(`ent: validator failed for field "Account.dispatch_scope": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SessionWindowStatus(); ok {
 		if err := account.SessionWindowStatusValidator(v); err != nil {
 			return &ValidationError{Name: "session_window_status", err: fmt.Errorf(`ent: validator failed for field "Account.session_window_status": %w`, err)}
@@ -974,6 +993,9 @@ func (_u *AccountUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.Schedulable(); ok {
 		_spec.SetField(account.FieldSchedulable, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.DispatchScope(); ok {
+		_spec.SetField(account.FieldDispatchScope, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RateLimitedAt(); ok {
 		_spec.SetField(account.FieldRateLimitedAt, field.TypeTime, value)
@@ -1652,6 +1674,20 @@ func (_u *AccountUpdateOne) SetNillableSchedulable(v *bool) *AccountUpdateOne {
 	return _u
 }
 
+// SetDispatchScope sets the "dispatch_scope" field.
+func (_u *AccountUpdateOne) SetDispatchScope(v string) *AccountUpdateOne {
+	_u.mutation.SetDispatchScope(v)
+	return _u
+}
+
+// SetNillableDispatchScope sets the "dispatch_scope" field if the given value is not nil.
+func (_u *AccountUpdateOne) SetNillableDispatchScope(v *string) *AccountUpdateOne {
+	if v != nil {
+		_u.SetDispatchScope(*v)
+	}
+	return _u
+}
+
 // SetRateLimitedAt sets the "rate_limited_at" field.
 func (_u *AccountUpdateOne) SetRateLimitedAt(v time.Time) *AccountUpdateOne {
 	_u.mutation.SetRateLimitedAt(v)
@@ -2072,6 +2108,11 @@ func (_u *AccountUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "Account.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.DispatchScope(); ok {
+		if err := account.DispatchScopeValidator(v); err != nil {
+			return &ValidationError{Name: "dispatch_scope", err: fmt.Errorf(`ent: validator failed for field "Account.dispatch_scope": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SessionWindowStatus(); ok {
 		if err := account.SessionWindowStatusValidator(v); err != nil {
 			return &ValidationError{Name: "session_window_status", err: fmt.Errorf(`ent: validator failed for field "Account.session_window_status": %w`, err)}
@@ -2224,6 +2265,9 @@ func (_u *AccountUpdateOne) sqlSave(ctx context.Context) (_node *Account, err er
 	}
 	if value, ok := _u.mutation.Schedulable(); ok {
 		_spec.SetField(account.FieldSchedulable, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.DispatchScope(); ok {
+		_spec.SetField(account.FieldDispatchScope, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.RateLimitedAt(); ok {
 		_spec.SetField(account.FieldRateLimitedAt, field.TypeTime, value)

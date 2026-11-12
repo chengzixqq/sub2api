@@ -1,29 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, checkMixedChannelRiskMock, authIsSimpleMode } = vi.hoisted(() => ({
+const { updateAccountMock, patchDispatchScopeMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode, authIsOwner } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
+  patchDispatchScopeMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
-  authIsSimpleMode: { value: true }
+  showWarningMock: vi.fn(),
+  authIsSimpleMode: { value: true },
+  authIsOwner: { value: true }
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError: vi.fn(),
     showSuccess: vi.fn(),
-    showInfo: vi.fn()
+    showInfo: vi.fn(),
+    showWarning: showWarningMock
   })
 }))
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
-    isOwner: true,
+    get isOwner() { return authIsOwner.value },
     isVendor: false,
     workspace: undefined,
     get isSimpleMode() {
@@ -36,6 +40,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      patchDispatchScope: patchDispatchScopeMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
@@ -335,9 +340,49 @@ function mountModal(account = buildAccount(), renderGroupSelector = false) {
 describe('EditAccountModal', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
+    authIsOwner.value = true
+    patchDispatchScopeMock.mockReset()
+    showWarningMock.mockReset()
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('writes a changed dispatch scope through a separate CAS PATCH after the normal update', async () => {
+    const account = buildAccount()
+    account.dispatch_scope = 'shared'
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    patchDispatchScopeMock.mockResolvedValue({ ...account, dispatch_scope: 'authorized_only' })
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.dispatch_scope).toBeUndefined()
+    expect(patchDispatchScopeMock).toHaveBeenCalledWith(account.id, 'authorized_only')
+  })
+
+  it('keeps the dialog open and reports partial save when the CAS PATCH fails', async () => {
+    const account = buildAccount()
+    account.dispatch_scope = 'shared'
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    patchDispatchScopeMock.mockRejectedValue(new Error('version conflict'))
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(wrapper.find('form#edit-account-form').exists()).toBe(true)
+    expect(wrapper.emitted('close')).toBeUndefined()
+    expect(wrapper.emitted('updated')?.[0]?.[0]).toEqual(account)
+    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.authorizedOnlyPartialSave')
+  })
+
+  it('hides the authorized-only switch from non-owner administrators', () => {
+    authIsOwner.value = false
+    const wrapper = mountModal(buildAccount())
+    expect(wrapper.find('[data-testid="account-dispatch-scope"]').exists()).toBe(false)
+  })
 
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()

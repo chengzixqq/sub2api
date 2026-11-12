@@ -79,6 +79,11 @@ func DeclaredModelsCover(declared []string, model string) bool {
 // Vertex 账号排在所有 AI Studio 兼容账号之后，混合分组始终由 AI Studio 兼容账号应答。
 // 同级账号按 priority、最近使用时间挑选。DeclaredModelIDs 非空时模型接口按声明的模型应答，不经过选号。
 func (s *GeminiMessagesCompatService) SelectAccountForModelsEndpoints(ctx context.Context, groupID *int64) (*Account, error) {
+	var policyErr error
+	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
+	if policyErr != nil {
+		return nil, policyErr
+	}
 	accounts, err := s.listSchedulableAccountsOnce(ctx, groupID, PlatformGemini, true)
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
@@ -127,7 +132,7 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelsEndpoints(ctx contex
 	if selected == nil {
 		return nil, errors.New("no available Gemini accounts")
 	}
-	return s.hydrateSelectedAccount(ctx, selected)
+	return s.hydrateSelectedAccount(ctx, selected, groupID)
 }
 
 // modelsEndpointAccountRank 返回账号在模型接口选号中的优先级，数值越小越优先，顺序见 SelectAccountForModelsEndpoints。

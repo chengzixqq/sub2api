@@ -13,6 +13,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_Hit(t *testing.T
 	ctx := context.Background()
 	groupID := int64(23)
 	account := Account{
+		GroupIDs:    []int64{groupID},
 		ID:          2,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -213,6 +214,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_APIKeyForceHTTPH
 	ctx := context.Background()
 	groupID := int64(23)
 	account := Account{
+		GroupIDs:    []int64{groupID},
 		ID:          11,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -284,6 +286,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_BusyKeepsSticky(
 	groupID := int64(23)
 	accounts := []Account{
 		{
+			GroupIDs:    []int64{groupID},
 			ID:          21,
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,
@@ -296,6 +299,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_BusyKeepsSticky(
 			},
 		},
 		{
+			GroupIDs:    []int64{groupID},
 			ID:          22,
 			Platform:    PlatformOpenAI,
 			Type:        AccountTypeAPIKey,

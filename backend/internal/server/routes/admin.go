@@ -429,6 +429,9 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		groups.DELETE("/:id/rate-multipliers", h.Admin.Group.ClearGroupRateMultipliers)
 		groups.PUT("/:id/rpm-overrides", h.Admin.Group.BatchSetGroupRPMOverrides)
 		groups.DELETE("/:id/rpm-overrides", h.Admin.Group.ClearGroupRPMOverrides)
+		groups.GET("/:id/account-policies", h.Admin.Group.ListAccountDispatchPolicies)
+		groups.PUT("/:id/account-policies/:user_id", h.Admin.Group.PutAccountDispatchPolicy)
+		groups.DELETE("/:id/account-policies/:user_id", h.Admin.Group.DeleteAccountDispatchPolicy)
 		groups.GET("/:id/api-keys", h.Admin.Group.GetGroupAPIKeys)
 	}
 }

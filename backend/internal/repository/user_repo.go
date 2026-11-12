@@ -508,6 +508,17 @@ func (r *userRepository) Delete(ctx context.Context, id int64) error {
 
 // deleteUser 在给定 client（可能是外部事务 client）上删除用户及其身份关联记录，自身不开启/提交事务。
 func (r *userRepository) deleteUser(ctx context.Context, exec *dbent.Client, id int64) error {
+	_, err := exec.User.Query().Where(dbuser.IDEQ(id), func(s *entsql.Selector) {
+		if s.Dialect() == "postgres" {
+			s.ForUpdate()
+		}
+	}).OnlyID(ctx)
+	if err != nil {
+		return translatePersistenceError(err, service.ErrUserNotFound, nil)
+	}
+	if _, err := exec.ExecContext(ctx, "DELETE FROM user_group_account_policies WHERE user_id = $1", id); err != nil {
+		return err
+	}
 	identityIDs, err := exec.AuthIdentity.Query().
 		Where(authidentity.UserIDEQ(id)).
 		IDs(ctx)

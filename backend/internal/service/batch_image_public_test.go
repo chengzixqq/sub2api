@@ -852,6 +852,10 @@ type publicBatchImageAccountRepo struct {
 	accounts []Account
 }
 
+func (r *publicBatchImageAccountRepo) GetAccountDispatchPolicy(context.Context, int64, int64) (*AccountDispatchPolicy, error) {
+	return nil, nil
+}
+
 func (r *publicBatchImageAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
 	for i := range r.accounts {
 		if r.accounts[i].ID == id {

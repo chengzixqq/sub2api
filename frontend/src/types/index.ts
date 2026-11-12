@@ -1358,6 +1358,7 @@ export interface Account {
 
   // Rate limit & scheduling fields
   schedulable: boolean
+  dispatch_scope?: 'shared' | 'authorized_only'
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null
@@ -1640,6 +1641,8 @@ export interface CreateAccountRequest {
   priority?: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   group_ids?: number[]
+  dispatch_scope?: 'shared' | 'authorized_only'
+  skip_default_group_bind?: boolean
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
@@ -1660,6 +1663,7 @@ export interface UpdateAccountRequest {
   schedulable?: boolean
   status?: 'active' | 'inactive' | 'error'
   group_ids?: number[]
+  dispatch_scope?: 'shared' | 'authorized_only'
   expires_at?: number | null
   auto_pause_on_expired?: boolean
   upstream_billing_probe_enabled?: boolean
@@ -1781,6 +1785,7 @@ export interface CodexSessionImportRequest {
   name?: string
   notes?: string | null
   group_ids?: number[]
+  dispatch_scope?: 'shared' | 'authorized_only'
   proxy_id?: number | null
   concurrency?: number
   priority?: number
@@ -1800,6 +1805,7 @@ export interface OpenAICodexPATCreateRequest {
   name?: string
   notes?: string | null
   group_ids?: number[]
+  dispatch_scope?: 'shared' | 'authorized_only'
   proxy_id?: number | null
   concurrency?: number
   priority?: number

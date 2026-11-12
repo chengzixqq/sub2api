@@ -260,6 +260,21 @@ export async function update(id: number, updates: UpdateAccountRequest): Promise
   return data
 }
 
+export async function patchDispatchScope(
+  id: number,
+  dispatchScope: 'shared' | 'authorized_only'
+): Promise<Account> {
+  const current = await apiClient.get<Account>(`/admin/accounts/${id}`)
+  const etag = current.headers['etag'] as string | undefined
+  if (!etag) throw new Error('Account ETag is missing')
+  const { data } = await apiClient.patch<Account>(
+    `/admin/accounts/${id}`,
+    { dispatch_scope: dispatchScope },
+    { headers: { 'If-Match': etag } }
+  )
+  return data
+}
+
 export async function getGrokMediaEligibility(id: number): Promise<GrokMediaEligibilityState> {
   const { data } = await apiClient.get<GrokMediaEligibilityState>(
     `/admin/accounts/${id}/grok-media-eligibility`
@@ -1158,6 +1173,7 @@ export const accountsAPI = {
   create,
   duplicate,
   update,
+  patchDispatchScope,
   getGrokMediaEligibility,
   updateGrokMediaEligibility,
   checkMixedChannelRisk,
