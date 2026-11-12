@@ -21,6 +21,7 @@ import (
 // This converts Chat Completions requests to Anthropic format (via Responses format chain),
 // forwards to Anthropic upstream, and converts responses back to Chat Completions format.
 func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	streamStarted := false
 
 	requestStart := time.Now()
@@ -244,6 +245,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				reqLog.Info("gateway.cc.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if !isAccountSelectionCapacityError(err) {
+				reqLog.Warn("gateway.cc.account_select_failed", zap.Error(err))
+				h.chatCompletionsErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Account selection failed")
+				return
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, groupPlatform)
 				cls = classifySelectionFailureError(err, cls)
@@ -257,7 +263,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 				h.chatCompletionsErrorResponse(c, cls.Status, cls.ErrType, message)
 				return
 			}
-			action := fs.HandleSelectionExhausted(c.Request.Context())
+			action := fs.HandleSelectionExhausted(c.Request.Context(), err)
 			switch action {
 			case FailoverContinue:
 				continue

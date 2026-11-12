@@ -11,6 +11,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,10 +54,38 @@ func TestAccountDispatchPolicyRepository_ReadFailureDoesNotBecomeNoPolicy(t *tes
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func expectDispatchPolicyWriteLock(mock sqlmock.Sqlmock, version int64) {
+func TestAccountDispatchPolicyRepository_AdminListPreservesIneligibleGrants(t *testing.T) {
+	repo, mock := newDispatchPolicyRepositoryMock(t)
+	mock.ExpectQuery(`(?s)SELECT p.user_id, p.group_id, p.version.*ineligible_reason.*FROM user_group_account_policies`).
+		WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "group_id", "version", "mode", "username", "email", "account_id", "origin", "name", "dispatch_scope", "ineligible_reason"}).
+			AddRow(7, 9, 12, "replace", "user", "u@example.test", 15, "member", "removed", "shared", "member_removed").
+			AddRow(7, 9, 12, "replace", "user", "u@example.test", 16, "extra", "test", "authorized_only", nil))
+	policies, err := repo.ListAccountDispatchPolicies(context.Background(), 9)
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.Len(t, policies[0].Accounts, 2)
+	require.False(t, *policies[0].Accounts[0].Eligible)
+	require.Equal(t, "member_removed", policies[0].Accounts[0].IneligibleReason)
+	require.True(t, *policies[0].Accounts[1].Eligible)
+	require.Empty(t, policies[0].Accounts[1].IneligibleReason)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func expectDispatchPolicyWriteLock(mock sqlmock.Sqlmock, version int64, grants ...service.AccountDispatchGrant) {
 	mock.ExpectBegin()
+	if len(grants) > 0 {
+		mock.ExpectQuery(`(?s)SELECT id, platform, workspace_id FROM accounts.*ORDER BY id FOR NO KEY UPDATE`).
+			WithArgs("{15}").
+			WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "workspace_id"}).AddRow(15, "openai", 1))
+	}
 	mock.ExpectQuery(`SELECT id FROM users .* FOR NO KEY UPDATE`).WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
-	mock.ExpectQuery(`SELECT id FROM groups .* FOR NO KEY UPDATE`).WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(9))
+	mock.ExpectQuery(`SELECT platform FROM groups .* FOR NO KEY UPDATE`).WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"platform"}).AddRow("openai"))
+	if len(grants) > 0 {
+		mock.ExpectQuery(`(?s)SELECT account_id FROM account_groups.*ORDER BY account_id FOR UPDATE`).
+			WithArgs(int64(9), "{15}").
+			WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow(15))
+	}
 	mock.ExpectExec(`(?s)INSERT INTO user_group_account_policies`).WithArgs(int64(7), int64(9), "replace").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`(?s)SELECT version FROM user_group_account_policies.*FOR UPDATE`).WithArgs(int64(7), int64(9)).WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(version))
 }
@@ -86,15 +115,69 @@ func TestAccountDispatchPolicyRepository_EmptyReplaceUsesNonReusableVersion(t *t
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestAccountDispatchPolicyRepository_BulkWritesMaximumGrantCount(t *testing.T) {
+	repo, mock := newDispatchPolicyRepositoryMock(t)
+	grants := make([]service.AccountDispatchGrant, 500)
+	accountIDs := make([]int64, len(grants))
+	origins := make([]string, len(grants))
+	accountRows := sqlmock.NewRows([]string{"id", "platform", "workspace_id"})
+	readRows := dispatchPolicyRows()
+	for i := range grants {
+		id := int64(i + 1000)
+		grants[i] = service.AccountDispatchGrant{AccountID: id, Origin: service.AccountDispatchOriginExtra}
+		accountIDs[i] = id
+		origins[i] = service.AccountDispatchOriginExtra
+		accountRows.AddRow(id, "openai", int64(1))
+		readRows.AddRow(int64(7), int64(9), int64(42), "replace", "user", "u@example.test", id, "extra", "account", "shared", nil)
+	}
+	idArray, err := pq.Array(accountIDs).Value()
+	require.NoError(t, err)
+	originArray, err := pq.Array(origins).Value()
+	require.NoError(t, err)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, platform, workspace_id FROM accounts.*ORDER BY id FOR NO KEY UPDATE`).
+		WithArgs(idArray).WillReturnRows(accountRows)
+	mock.ExpectQuery(`SELECT id FROM users .* FOR NO KEY UPDATE`).WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectQuery(`SELECT platform FROM groups .* FOR NO KEY UPDATE`).WithArgs(int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"platform"}).AddRow("openai"))
+	mock.ExpectQuery(`(?s)SELECT account_id FROM account_groups.*ORDER BY account_id FOR UPDATE`).
+		WithArgs(int64(9), idArray).WillReturnRows(sqlmock.NewRows([]string{"account_id"}))
+	mock.ExpectExec(`(?s)INSERT INTO user_group_account_policies`).WithArgs(int64(7), int64(9), "replace").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`(?s)SELECT version FROM user_group_account_policies.*FOR UPDATE`).WithArgs(int64(7), int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
+	mock.ExpectExec(`(?s)UPDATE user_group_account_policies.*nextval`).WithArgs(int64(7), int64(9), "replace").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`DELETE FROM user_group_account_grants`).WithArgs(int64(7), int64(9)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`(?s)INSERT INTO user_group_account_grants.*FROM unnest`).
+		WithArgs(int64(7), int64(9), idArray, originArray).WillReturnResult(sqlmock.NewResult(0, 500))
+	mock.ExpectCommit()
+	mock.ExpectQuery(`(?s)SELECT.*user_group_account_policies`).WithArgs(int64(7), int64(9)).
+		WillReturnRows(readRows)
+
+	policy, err := repo.PutAccountDispatchPolicy(context.Background(), &service.AccountDispatchPolicy{
+		UserID: 7, GroupID: 9, Mode: service.AccountDispatchModeReplace, Accounts: grants,
+	}, 0)
+	require.NoError(t, err)
+	require.Len(t, policy.Accounts, 500)
+	require.Equal(t, int64(1000), policy.Accounts[0].AccountID)
+	require.Equal(t, int64(1499), policy.Accounts[499].AccountID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestAccountDispatchPolicyRepository_RevokedWorkspaceRollsBack(t *testing.T) {
 	repo, mock := newDispatchPolicyRepositoryMock(t)
-	expectDispatchPolicyWriteLock(mock, 41)
-	mock.ExpectExec(`(?s)UPDATE user_group_account_policies.*nextval`).WithArgs(int64(7), int64(9), "replace").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec(`DELETE FROM user_group_account_grants`).WithArgs(int64(7), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(`(?s)SELECT a.platform, a.workspace_id, grp.platform.*FOR NO KEY UPDATE`).WithArgs(int64(15), int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"platform", "workspace_id", "group_platform"}).AddRow("openai", 2, "openai"))
-	mock.ExpectQuery(`SELECT 1 FROM account_groups.*FOR UPDATE`).WithArgs(int64(15), int64(9)).WillReturnRows(sqlmock.NewRows([]string{"exists"}))
-	mock.ExpectQuery(`(?s)SELECT 1 FROM workspace_group_grants wg.*w.status = 'active'.*wg.enabled = TRUE.*FOR SHARE OF wg, w`).WithArgs(int64(2), int64(9)).
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT id, platform, workspace_id FROM accounts.*ORDER BY id FOR NO KEY UPDATE`).
+		WithArgs("{15}").WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "workspace_id"}).AddRow(15, "openai", 2))
+	mock.ExpectQuery(`SELECT id FROM users .* FOR NO KEY UPDATE`).WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectQuery(`SELECT platform FROM groups .* FOR NO KEY UPDATE`).WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"platform"}).AddRow("openai"))
+	mock.ExpectQuery(`(?s)SELECT account_id FROM account_groups.*ORDER BY account_id FOR UPDATE`).
+		WithArgs(int64(9), "{15}").WillReturnRows(sqlmock.NewRows([]string{"account_id"}))
+	mock.ExpectQuery(`(?s)SELECT wg.workspace_id FROM workspace_group_grants wg.*w.status = 'active'.*wg.enabled = TRUE.*FOR SHARE OF wg, w`).WithArgs("{2}", int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}))
 	mock.ExpectRollback()
 	_, err := repo.PutAccountDispatchPolicy(context.Background(), &service.AccountDispatchPolicy{UserID: 7, GroupID: 9, Mode: "replace", Accounts: []service.AccountDispatchGrant{{AccountID: 15, Origin: "extra"}}}, 41)
@@ -104,12 +187,14 @@ func TestAccountDispatchPolicyRepository_RevokedWorkspaceRollsBack(t *testing.T)
 
 func TestAccountDispatchPolicyRepository_MemberRevocationInvalidatesStaleVersion(t *testing.T) {
 	repo, mock := newDispatchPolicyRepositoryMock(t)
-	mock.ExpectExec(`(?s)WITH revoked AS.*DELETE FROM user_group_account_grants WHERE account_id = \$1 AND origin = 'member'.*RETURNING user_id, group_id.*UPDATE user_group_account_policies p.*nextval`).
+	mock.ExpectQuery(`(?s)SELECT p.user_id, p.group_id.*FROM user_group_account_policies.*FOR UPDATE OF p`).
+		WithArgs(int64(15), "{9}").WillReturnRows(sqlmock.NewRows([]string{"user_id", "group_id"}).AddRow(7, 9))
+	mock.ExpectExec(`(?s)WITH revoked AS.*DELETE FROM user_group_account_grants AS g WHERE g.account_id = \$1 AND g.origin = 'member'.*RETURNING g.user_id, g.group_id.*UPDATE user_group_account_policies p.*nextval`).
 		WithArgs(int64(15), "{9}").WillReturnResult(sqlmock.NewResult(0, 1))
 	require.NoError(t, deleteMemberAccountDispatchGrants(context.Background(), repo.client, 15, []int64{9}))
 	// The structural edit advanced 41 -> 42; an editor loaded before removal
 	// cannot save the old member grant even if the account later rejoins.
-	expectDispatchPolicyWriteLock(mock, 42)
+	expectDispatchPolicyWriteLock(mock, 42, service.AccountDispatchGrant{AccountID: 15, Origin: service.AccountDispatchOriginMember})
 	mock.ExpectRollback()
 	_, err := repo.PutAccountDispatchPolicy(context.Background(), &service.AccountDispatchPolicy{UserID: 7, GroupID: 9, Mode: "replace", Accounts: []service.AccountDispatchGrant{{AccountID: 15, Origin: "member"}}}, 41)
 	require.ErrorContains(t, err, "current=42")

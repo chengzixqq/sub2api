@@ -8,11 +8,48 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
 type snapshotHydrationCache struct {
 	snapshot []*Account
 	accounts map[int64]*Account
+}
+
+type dispatchFreshAccountRepo struct {
+	stubOpenAIAccountRepo
+	fresh  map[int64]*Account
+	reads  map[int64]int
+	flipAt map[int64]int
+}
+
+func (r *dispatchFreshAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	if r.reads == nil {
+		r.reads = make(map[int64]int)
+	}
+	r.reads[id]++
+	if flipAt := r.flipAt[id]; flipAt > 0 && r.reads[id] >= flipAt {
+		account := *r.fresh[id]
+		account.Schedulable = false
+		return &account, nil
+	}
+	if account := r.fresh[id]; account != nil {
+		return account, nil
+	}
+	return nil, ErrAccountNotFound
+}
+
+type dispatchRetryConcurrencyCache struct {
+	mockConcurrencyCache
+	releases map[int64]int
+}
+
+func (c *dispatchRetryConcurrencyCache) ReleaseAccountSlot(_ context.Context, accountID int64, _ string) error {
+	if c.releases == nil {
+		c.releases = make(map[int64]int)
+	}
+	c.releases[accountID]++
+	return nil
 }
 
 func (c *snapshotHydrationCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
@@ -206,6 +243,63 @@ func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedu
 	}
 	if got := result.Account.GetCredential("api_key"); got != "anthropic-live-key" {
 		t.Fatalf("expected hydrated api key, got %q", got)
+	}
+}
+
+func TestGatewaySelectAccountWithLoadAwareness_RetriesStaleCandidateForBothLoadModes(t *testing.T) {
+	for _, loadBatch := range []bool{false, true} {
+		t.Run(map[bool]string{false: "load_batch_disabled", true: "load_batch_enabled"}[loadBatch], func(t *testing.T) {
+			staleSnapshot := &Account{
+				ID: 1, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive,
+				Schedulable: true, Concurrency: 1, Priority: 1,
+				Credentials: map[string]any{"api_key": "stale-key"},
+			}
+			healthySnapshot := &Account{
+				ID: 2, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive,
+				Schedulable: true, Concurrency: 1, Priority: 2,
+				Credentials: map[string]any{"api_key": "healthy-key"},
+			}
+			cache := &snapshotHydrationCache{
+				snapshot: []*Account{staleSnapshot, healthySnapshot},
+				accounts: map[int64]*Account{1: staleSnapshot, 2: healthySnapshot},
+			}
+			freshStale := *staleSnapshot
+			freshStale.Schedulable = false
+			freshHealthy := *healthySnapshot
+			repo := &dispatchFreshAccountRepo{fresh: map[int64]*Account{1: &freshStale, 2: &freshHealthy}}
+			concurrencyCache := &dispatchRetryConcurrencyCache{}
+			cfg := testConfig()
+			cfg.Gateway.Scheduling.LoadBatchEnabled = loadBatch
+			service := &GatewayService{
+				accountRepo:        repo,
+				schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, repo, nil, cfg),
+				cache:              &mockGatewayCacheForPlatform{},
+				concurrencyService: NewConcurrencyService(concurrencyCache),
+				cfg:                cfg,
+			}
+			ctx := context.WithValue(context.Background(), ctxkey.UserID, int64(100))
+
+			selection, err := service.SelectAccountWithLoadAwareness(ctx, nil, "", "claude-3-5-sonnet-20241022", nil, "", 0)
+			if err != nil {
+				t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+			}
+			if selection == nil || selection.Account == nil || selection.Account.ID != healthySnapshot.ID {
+				t.Fatalf("selection = %#v; want healthy account %d", selection, healthySnapshot.ID)
+			}
+			if got := repo.reads[staleSnapshot.ID]; got != 1 {
+				t.Fatalf("stale account was hydrated %d times; want exactly once", got)
+			}
+			wantReleases := 0
+			if loadBatch {
+				wantReleases = 1
+			}
+			if got := concurrencyCache.releases[staleSnapshot.ID]; got != wantReleases {
+				t.Fatalf("stale account slot released %d times; want %d", got, wantReleases)
+			}
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		})
 	}
 }
 

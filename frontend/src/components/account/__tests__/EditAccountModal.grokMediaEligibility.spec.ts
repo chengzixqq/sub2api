@@ -24,6 +24,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      patch: updateAccountMock,
       getGrokMediaEligibility: getEligibilityMock,
       updateGrokMediaEligibility: updateEligibilityMock,
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false })
@@ -58,7 +59,7 @@ const account = (platform = 'grok', type = 'oauth', extra: Record<string, unknow
 
 function mountModal(value = account()) {
   return mount(EditAccountModal, {
-    props: { show: true, account: value, proxies: [], groups: [] },
+    props: { show: true, account: value, accountEtag: 'etag-12', proxies: [], groups: [] },
     global: { stubs: {
       BaseDialog: BaseDialogStub, Select: true, Icon: true, ProxySelector: true,
       GroupSelector: true, ModelWhitelistSelector: true

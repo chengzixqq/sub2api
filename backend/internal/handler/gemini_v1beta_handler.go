@@ -342,6 +342,7 @@ func (h *GatewayHandler) GeminiV1BetaGetModel(c *gin.Context) {
 // POST /v1beta/models/{model}:generateContent
 // POST /v1beta/models/{model}:streamGenerateContent?alt=sse
 func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	apiKey, ok := middleware.GetAPIKeyFromContext(c)
 	if !ok || apiKey == nil {
 		googleError(c, http.StatusUnauthorized, "Invalid API key")
@@ -636,7 +637,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		// 缓存只存在于绑定账号：排除分组内其余账号，失败不换号。
 		maxAccountSwitches = 0
 		sessionBoundAccountID = cachedContentBinding.AccountID
-		c.Request = c.Request.WithContext(service.WithGeminiCachedContentBound(c.Request.Context()))
+		c.Request = c.Request.WithContext(service.WithGeminiCachedContentBoundAccount(c.Request.Context(), cachedContentBinding.AccountID))
 		cachedContentExclusions, err = h.gatewayService.GeminiExplicitCacheExclusions(c.Request.Context(), apiKey.GroupID, cachedContentBinding.AccountID)
 		if err != nil {
 			reqLog.Warn("gemini.cached_content.list_accounts_failed", zap.Error(err))
@@ -678,6 +679,11 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				reqLog.Info("gemini.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if !isAccountSelectionCapacityError(err) {
+				reqLog.Warn("gemini.account_select_failed", zap.Error(err))
+				googleError(c, http.StatusServiceUnavailable, "Account selection failed")
+				return
+			}
 			if cachedContentBinding != nil {
 				if fs.LastFailoverErr != nil {
 					h.handleGeminiCachedContentFailoverExhausted(c, fs.LastFailoverErr)
@@ -704,7 +710,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				googleError(c, cls.Status, message)
 				return
 			}
-			action := fs.HandleSelectionExhausted(c.Request.Context())
+			action := fs.HandleSelectionExhausted(c.Request.Context(), err)
 			switch action {
 			case FailoverContinue:
 				ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())

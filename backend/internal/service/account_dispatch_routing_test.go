@@ -181,6 +181,59 @@ func TestAccountDispatchSelection_ReadFailureIsFatal(t *testing.T) {
 	}
 }
 
+func TestAccountDispatchCandidateRetry_OnlyRetriesEachRejectedIDOnce(t *testing.T) {
+	state := newAccountDispatchCandidateRetry(map[int64]struct{}{9: {}})
+	if retry, err := state.retry(context.Background(), errors.New("database unavailable")); retry || err == nil {
+		t.Fatalf("database error retry = %v, %v; want fail-closed", retry, err)
+	}
+	if retry, err := state.retry(context.Background(), rejectAccountDispatchCandidate(1, "stale")); !retry || err != nil {
+		t.Fatalf("first stale candidate retry = %v, %v; want retry", retry, err)
+	}
+	if _, ok := state.excluded[1]; !ok {
+		t.Fatal("stale candidate was not excluded")
+	}
+	if retry, err := state.retry(context.Background(), rejectAccountDispatchCandidate(1, "stale again")); retry || !errors.Is(err, ErrNoAvailableAccounts) {
+		t.Fatalf("duplicate stale candidate retry = %v, %v; want exhausted", retry, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if retry, err := state.retry(ctx, rejectAccountDispatchCandidate(2, "stale")); retry || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled retry = %v, %v; want context canceled", retry, err)
+	}
+}
+
+func TestAccountDispatchGeminiBoundOwnerDoesNotGrantAuthorization(t *testing.T) {
+	groupID := int64(10)
+	owner := accountDispatchTestAccount(1, []int64{20}, DispatchScopeAuthorizedOnly)
+	other := accountDispatchTestAccount(2, []int64{30}, DispatchScopeAuthorizedOnly)
+	repo := &accountDispatchTestRepo{
+		policy: &AccountDispatchPolicy{Mode: AccountDispatchModeReplace, Accounts: []AccountDispatchGrant{
+			{AccountID: owner.ID, Origin: AccountDispatchOriginExtra},
+			{AccountID: other.ID, Origin: AccountDispatchOriginExtra},
+		}},
+		accounts: []*Account{&owner, &other},
+	}
+	ctx, err := withAccountDispatchSelection(accountDispatchTestContext(100), repo, &groupID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = WithGeminiCachedContentBoundAccount(ctx, owner.ID)
+	if !accountDispatchAllows(ctx, &owner, &groupID, false) {
+		t.Fatal("explicitly authorized cached-content owner was rejected")
+	}
+	if accountDispatchAllows(ctx, &other, &groupID, false) {
+		t.Fatal("cached-content owner binding admitted a different authorized account")
+	}
+	if accountDispatchAllows(WithGeminiCachedContentBoundAccount(context.Background(), owner.ID), &owner, &groupID, false) {
+		t.Fatal("cached-content owner binding granted authorization without policy")
+	}
+	candidates, err := accountDispatchCandidates(ctx, repo, &groupID, PlatformOpenAI, nil, false)
+	if err != nil || len(candidates) != 1 || candidates[0].ID != owner.ID {
+		t.Fatalf("owner-bound candidates = %v, %v; want only owner", candidates, err)
+	}
+}
+
 func TestEnsureAccountDispatchPolicy_RejectsLookupFailure(t *testing.T) {
 	groupID := int64(10)
 	repo := &accountDispatchTestRepo{readErr: errors.New("database unavailable")}

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import type { AdminGroup } from '@/types'
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import Select from '@/components/common/Select.vue'
 import GroupAccountPoliciesModal from '../GroupAccountPoliciesModal.vue'
 
 const mocks = vi.hoisted(() => ({
@@ -37,7 +39,13 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 const group = (id: number) => ({ id, name: `Group ${id}`, platform: 'openai' } as AdminGroup)
-const policy = (userID: number, mode: 'append' | 'replace', accounts: Array<{ account_id: number; origin: 'member' | 'extra'; account_name?: string }> = []) => ({
+const policy = (userID: number, mode: 'append' | 'replace', accounts: Array<{
+  account_id: number
+  origin: 'member' | 'extra'
+  account_name?: string
+  eligible?: boolean
+  ineligible_reason?: string
+}> = []) => ({
   user_id: userID,
   group_id: 1,
   username: `user${userID}`,
@@ -88,8 +96,80 @@ describe('group account policies', () => {
     const wrapper = await openModal([policy(1, 'replace')])
     await wrapper.findAll('button').find(button => button.text().includes('user1'))!.trigger('click')
     await wrapper.findAll('button').find(button => button.text() === 'admin.groups.accountPolicyRestore')!.trigger('click')
+    const confirmation = wrapper.getComponent(ConfirmDialog)
+    expect(confirmation.props('show')).toBe(true)
+    confirmation.vm.$emit('confirm')
+    await flushPromises()
     expect(mocks.deleteGroupAccountPolicy).toHaveBeenCalledWith(1, 1, 3)
     expect(mocks.putGroupAccountPolicy).not.toHaveBeenCalled()
+  })
+
+  it('uses the shared user selector and rounded, accessible mode switch', async () => {
+    const wrapper = await openModal()
+    expect(wrapper.findComponent(Select).exists()).toBe(true)
+    await wrapper.findAll('button').find(button => button.text().includes('user1'))!.trigger('click')
+
+    const modeSwitch = wrapper.get('[role="group"][aria-label="admin.groups.accountPolicyMode"]')
+    expect(modeSwitch.classes()).toContain('tabs')
+    const modeButtons = modeSwitch.findAll('button')
+    expect(modeButtons).toHaveLength(2)
+    expect(modeButtons[0]!.attributes('aria-pressed')).toBe('true')
+    expect(modeButtons[1]!.attributes('aria-pressed')).toBe('false')
+    expect(modeButtons.every(button => !button.attributes('role'))).toBe(true)
+  })
+
+  it('keeps a removed member grant labeled as in-group and explains why it is invalid', async () => {
+    const invalid = policy(1, 'replace', [{
+      account_id: 10,
+      origin: 'member',
+      account_name: 'detached-account',
+      eligible: false,
+      ineligible_reason: 'member_not_in_group'
+    }])
+    const wrapper = await openModal([invalid])
+    mocks.listAccounts.mockResolvedValue({
+      items: [{ id: 10, name: 'detached-account', group_ids: [], dispatch_scope: 'shared' }],
+      pages: 1
+    })
+    await wrapper.findAll('button').find(button => button.text().includes('user1'))!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 250))
+    await flushPromises()
+
+    const row = wrapper.findAll('label').find(label => label.text().includes('detached-account'))!
+    expect(row.text()).toContain('admin.groups.accountPolicyMember')
+    expect(row.text()).not.toContain('admin.groups.accountPolicyExtra')
+    expect(wrapper.text()).toContain('member_not_in_group')
+    expect(wrapper.text()).toContain('admin.groups.accountPolicyInvalidGrantsWarning')
+  })
+
+  it('asks before discarding a dirty draft when switching users', async () => {
+    const wrapper = await openModal([policy(1, 'append'), policy(2, 'append')])
+    await wrapper.findAll('button').find(button => button.text().includes('user1'))!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === 'admin.groups.accountPolicyReplace')!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text().includes('user2'))!.trigger('click')
+
+    const confirmation = wrapper.getComponent(ConfirmDialog)
+    expect(confirmation.props('show')).toBe(true)
+    expect(confirmation.props('message')).toBe('admin.groups.accountPolicyDiscardConfirmMessage')
+    confirmation.vm.$emit('cancel')
+    await flushPromises()
+    expect(wrapper.text()).toContain('user1@example.com')
+  })
+
+  it('locks editing controls while a policy write is pending', async () => {
+    const pending = deferred<ReturnType<typeof policy>>()
+    mocks.putGroupAccountPolicy.mockReturnValue(pending.promise)
+    const wrapper = await openModal()
+    await wrapper.findAll('button').find(button => button.text().includes('user1'))!.trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === 'common.save')!.trigger('click')
+
+    expect(wrapper.findComponent(Select).props('disabled')).toBe(true)
+    expect(wrapper.get('[role="group"] button').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#account-policy-account-search').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAll('button').find(button => button.text() === 'common.save')!.attributes('disabled')).toBeDefined()
+
+    pending.resolve({ ...policy(1, 'append'), version: 4 })
+    await flushPromises()
   })
 
   it('retains selected accounts across pages and marks outside accounts as extra', async () => {
@@ -143,6 +223,7 @@ describe('group account policies', () => {
     else mocks.deleteGroupAccountPolicy.mockRejectedValueOnce({ status: 412 })
     const actionLabel = action === 'save' ? 'common.save' : 'admin.groups.accountPolicyRestore'
     await wrapper.findAll('button').find(button => button.text() === actionLabel)!.trigger('click')
+    if (action === 'restore') wrapper.getComponent(ConfirmDialog).vm.$emit('confirm')
     await flushPromises()
     expect(mocks.showError).toHaveBeenCalledWith('admin.groups.accountPolicyConflict')
     expect(wrapper.text()).toContain('admin.groups.accountPolicyChooseUser')

@@ -37,6 +37,7 @@ func rejectSystemOneOnlyPlatform(c *gin.Context, apiKey *service.APIKey, writeEr
 
 // SystemOne proxies TypeSafe's native, non-streaming System One protocol.
 func (h *GatewayHandler) SystemOne(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	requestStart := time.Now()
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok || apiKey == nil || apiKey.Group == nil {
@@ -135,6 +136,11 @@ func (h *GatewayHandler) SystemOne(c *gin.Context) {
 				reqLog.Info("systemone.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if !isAccountSelectionCapacityError(err) {
+				reqLog.Warn("systemone.account_select_failed", zap.Error(err))
+				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Account selection failed")
+				return
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, model, model, service.PlatformTypeSafe)
 				cls = classifySelectionFailureError(err, cls)
@@ -145,7 +151,7 @@ func (h *GatewayHandler) SystemOne(c *gin.Context) {
 				h.errorResponse(c, cls.Status, cls.ErrType, cls.Message)
 				return
 			}
-			switch fs.HandleSelectionExhausted(c.Request.Context()) {
+			switch fs.HandleSelectionExhausted(c.Request.Context(), err) {
 			case FailoverContinue:
 				continue
 			case FailoverCanceled:

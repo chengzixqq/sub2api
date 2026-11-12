@@ -2,12 +2,54 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type grokMediaSelectionReadErrorRepo struct {
+	AccountRepository
+	err error
+}
+
+func (r grokMediaSelectionReadErrorRepo) GetByID(context.Context, int64) (*Account, error) {
+	return nil, r.err
+}
+
+func TestSelectGrokMediaVideoRequestAccountPreservesReadError(t *testing.T) {
+	for _, readErr := range []error{errors.New("database unavailable"), errors.New("account not found")} {
+		t.Run(readErr.Error(), func(t *testing.T) {
+			groupID := int64(24)
+			var acquired, released []int64
+			cache := &schedulerTestGatewayCache{}
+			svc := &OpenAIGatewayService{
+				accountRepo: grokMediaSelectionReadErrorRepo{err: readErr},
+				cache:       cache,
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{
+					acquireResults: map[int64]bool{1: true, 2: true},
+					acquiredIDs:    &acquired, releasedIDs: &released,
+				}),
+			}
+			ctx := context.Background()
+			require.NoError(t, svc.BindGrokMediaVideoRequestAccount(ctx, &groupID, "task", 10, 20, 1))
+			sessionHash := GrokMediaVideoRequestSessionHash("task", 10, 20)
+
+			selection, _, err := svc.SelectGrokMediaVideoRequestAccount(ctx, &groupID, sessionHash, 1, "")
+			require.ErrorIs(t, err, readErr)
+			require.NotErrorIs(t, err, ErrNoAvailableAccounts)
+			require.Nil(t, selection)
+			require.Empty(t, acquired)
+			require.Empty(t, released)
+			require.Empty(t, cache.deletedSessions)
+			bound, err := svc.ResolveGrokMediaVideoRequestAccount(ctx, &groupID, "task", 10, 20)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), bound)
+		})
+	}
+}
 
 func TestSelectGrokMediaVideoRequestAccountPreservesOwner(t *testing.T) {
 	for _, state := range []string{"available", "full", "unavailable", "removed membership", "revoked grant", "missing", "invalid id"} {

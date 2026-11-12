@@ -125,6 +125,23 @@ func (s *GeminiMessagesCompatService) SelectAccountForModel(ctx context.Context,
 }
 
 func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	ctx, retry := withAccountDispatchCandidateRetry(ctx, excludedIDs)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		account, err := s.selectAccountForModelWithExclusionsOnce(ctx, groupID, sessionHash, requestedModel, retry.excluded)
+		if err == nil {
+			return account, nil
+		}
+		retryAgain, retryErr := retry.retry(ctx, err)
+		if !retryAgain {
+			return nil, retryErr
+		}
+	}
+}
+
+func (s *GeminiMessagesCompatService) selectAccountForModelWithExclusionsOnce(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
 	var policyErr error
 	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
 	if policyErr != nil {
@@ -141,7 +158,9 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 
 	// 2. 尝试粘性会话命中
 	// Try sticky session hit
-	if account := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); account != nil {
+	if account, err := s.tryStickySessionHit(ctx, groupID, sessionHash, cacheKey, requestedModel, excludedIDs, platform, useMixedScheduling); err != nil {
+		return nil, err
+	} else if account != nil {
 		return account, nil
 	}
 
@@ -172,13 +191,15 @@ func (s *GeminiMessagesCompatService) SelectAccountForModelWithExclusions(ctx co
 		return nil, errors.New("no available Gemini accounts")
 	}
 
-	// 5. 设置粘性会话绑定
-	// Set sticky session binding
-	if sessionHash != "" {
+	hydrated, err := s.hydrateSelectedAccount(ctx, selected, effectiveGroupID)
+	if err != nil {
+		return nil, err
+	}
+	// Set sticky binding only after the fresh admission check succeeds.
+	if sessionHash != "" && s.cache != nil {
 		_ = s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), cacheKey, selected.ID, geminiStickySessionTTL)
 	}
-
-	return s.hydrateSelectedAccount(ctx, selected, effectiveGroupID)
+	return hydrated, nil
 }
 
 // resolvePlatformAndSchedulingMode 解析目标平台和调度模式。
@@ -216,7 +237,8 @@ func (s *GeminiMessagesCompatService) resolvePlatformAndSchedulingMode(ctx conte
 // 如果命中且账号可用则返回账号；如果账号不可用则清理会话并返回 nil。
 //
 // tryStickySessionHit attempts to get account from sticky session.
-// Returns account if hit and usable; clears session and returns nil if account unavailable.
+// Returns an account on a usable hit; only confirmed stale bindings may be cleared.
+// Read failures are returned so they cannot silently switch the request to another account.
 func (s *GeminiMessagesCompatService) tryStickySessionHit(
 	ctx context.Context,
 	groupID *int64,
@@ -224,52 +246,67 @@ func (s *GeminiMessagesCompatService) tryStickySessionHit(
 	excludedIDs map[int64]struct{},
 	platform string,
 	useMixedScheduling bool,
-) *Account {
-	if sessionHash == "" {
-		return nil
+) (*Account, error) {
+	if sessionHash == "" || s.cache == nil {
+		return nil, nil
 	}
 
 	accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 	if err != nil || accountID <= 0 {
-		return nil
+		return nil, nil
 	}
 
 	if _, excluded := excludedIDs[accountID]; excluded {
-		return nil
+		return nil, nil
 	}
 
-	account, err := s.getSchedulableAccount(ctx, accountID)
-	if err != nil {
-		return nil
+	discardStaleBinding := func() {
+		if excludedIDs != nil {
+			excludedIDs[accountID] = struct{}{}
+		}
+		excludeStaleAccountDispatchCandidate(ctx, accountID)
+		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
 	}
-	if account != nil && s.accountRepo != nil {
+	account, err := s.getSchedulableAccount(ctx, accountID)
+	if err != nil && !errors.Is(err, ErrAccountNotFound) {
+		return nil, fmt.Errorf("load sticky Gemini account %d: %w", accountID, err)
+	}
+	if err != nil || account == nil {
+		discardStaleBinding()
+		return nil, nil
+	}
+	if s.accountRepo != nil {
 		account, err = s.accountRepo.GetByID(ctx, accountID)
-		if err != nil {
-			return nil
+		if err != nil && !errors.Is(err, ErrAccountNotFound) {
+			return nil, fmt.Errorf("reload sticky Gemini account %d: %w", accountID, err)
+		}
+		if err != nil || account == nil {
+			discardStaleBinding()
+			return nil, nil
 		}
 	}
-	if !accountDispatchAllows(ctx, account, groupID, s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
-		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
-		return nil
+	if !account.IsSchedulable() || !accountDispatchAllows(ctx, account, groupID, s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
+		discardStaleBinding()
+		return nil, nil
 	}
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
 	if shouldClearStickySession(account, requestedModel) {
 		_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), cacheKey)
-		return nil
+		return nil, nil
 	}
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
 	if !s.isAccountUsableForRequest(ctx, account, requestedModel, platform, useMixedScheduling) {
-		return nil
+		return nil, nil
 	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
 	_ = s.cache.RefreshSessionTTL(ctx, derefGroupID(groupID), cacheKey, geminiStickySessionTTL)
-	return account
+	return account, nil
 }
 
 // isAccountUsableForRequest 检查账号是否可用于当前请求。
@@ -476,19 +513,31 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 		var err error
 		hydrated, err = s.schedulerSnapshot.GetAccount(ctx, account.ID)
 		if err != nil {
+			if errors.Is(err, ErrAccountNotFound) {
+				return nil, rejectAccountDispatchCandidate(account.ID, "snapshot account no longer exists")
+			}
 			return nil, err
 		}
 		if hydrated == nil {
-			return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
+			return nil, rejectAccountDispatchCandidate(account.ID, "snapshot account no longer exists")
 		}
 	}
 	if userID, _ := ctx.Value(ctxkey.UserID).(int64); userID > 0 {
 		current, err := s.accountRepo.GetByID(ctx, account.ID)
-		if err != nil || current == nil || !current.IsSchedulable() {
-			return nil, ErrNoAvailableAccounts
+		if err != nil {
+			if errors.Is(err, ErrAccountNotFound) {
+				return nil, rejectAccountDispatchCandidate(account.ID, "database account no longer exists")
+			}
+			return nil, fmt.Errorf("reload selected Gemini account %d: %w", account.ID, err)
+		}
+		if current == nil {
+			return nil, rejectAccountDispatchCandidate(account.ID, "database account no longer exists")
+		}
+		if !current.IsSchedulable() {
+			return nil, rejectAccountDispatchCandidate(account.ID, "latest account state is not schedulable")
 		}
 		if !accountDispatchAllows(ctx, current, effectiveGroupID, s.cfg != nil && s.cfg.RunMode == config.RunModeSimple) {
-			return nil, ErrNoAvailableAccounts
+			return nil, rejectAccountDispatchCandidate(account.ID, "latest account is not authorized for this request")
 		}
 	}
 	return hydrated, nil

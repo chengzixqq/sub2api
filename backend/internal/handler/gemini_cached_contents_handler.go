@@ -96,6 +96,7 @@ func (h *GatewayHandler) checkGeminiCachedContentBilling(c *gin.Context, reqLog 
 // GeminiCachedContentsCreate POST /v1beta/cachedContents
 // 创建请求内一次性收取缓存 token 的输入费与整个有效期的存储费。
 func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	apiKey, authSubject, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.create")
 	if !ok {
 		return
@@ -399,7 +400,7 @@ func (h *GatewayHandler) GeminiCachedContentsGet(c *gin.Context) {
 // 同一缓存的修改串行执行：上游修改、本地写回与计费都在修改意图的租约内完成，并发的修改返回 409。
 // 上游结果未知或本地写回失败的修改不计费，租约过期后由恢复流程把上游有效期回滚到修改前的到期时间。
 func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
-	apiKey, _, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.patch")
+	apiKey, authSubject, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.patch")
 	if !ok {
 		return
 	}
@@ -419,6 +420,16 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		return
 	}
 	if account == nil {
+		googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+		return
+	}
+	allowed, err := svc.AccountDispatchAllowed(c.Request.Context(), authSubject.UserID, apiKey.GroupID, account)
+	if err != nil {
+		reqLog.Error("gemini.cached_content.dispatch_policy_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+		return
+	}
+	if !allowed {
 		googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
 		return
 	}
@@ -522,7 +533,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 // GeminiCachedContentsDelete DELETE /v1beta/cachedContents/:cacheID
 // 删除不退还已收取的存储费。
 func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
-	apiKey, _, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.delete")
+	apiKey, authSubject, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.delete")
 	if !ok {
 		return
 	}
@@ -538,18 +549,28 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 		return
 	}
 	if account != nil {
-		setOpsSelectedAccount(c, account.ID, account.Platform)
-		if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
-			var upErr *service.GeminiCachedContentUpstreamError
-			if !errors.As(err, &upErr) {
-				reqLog.Warn("gemini.cached_content.upstream_delete_error", zap.Int64("account_id", account.ID), zap.Error(err))
-				googleError(c, http.StatusBadGateway, "Upstream request failed")
-				return
+		allowed, policyErr := svc.AccountDispatchAllowed(c.Request.Context(), authSubject.UserID, apiKey.GroupID, account)
+		if policyErr != nil {
+			reqLog.Error("gemini.cached_content.dispatch_policy_failed", zap.Int64("account_id", account.ID), zap.Error(policyErr))
+			googleError(c, http.StatusServiceUnavailable, geminiCachedContentUnavailableMessage)
+			return
+		}
+		if allowed {
+			setOpsSelectedAccount(c, account.ID, account.Platform)
+			if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
+				var upErr *service.GeminiCachedContentUpstreamError
+				if !errors.As(err, &upErr) {
+					reqLog.Warn("gemini.cached_content.upstream_delete_error", zap.Int64("account_id", account.ID), zap.Error(err))
+					googleError(c, http.StatusBadGateway, "Upstream request failed")
+					return
+				}
+				if !upErr.NotFound() {
+					h.writeGeminiCachedContentUpstreamError(c, upErr)
+					return
+				}
 			}
-			if !upErr.NotFound() {
-				h.writeGeminiCachedContentUpstreamError(c, upErr)
-				return
-			}
+		} else {
+			reqLog.Info("gemini.cached_content.delete_locally_after_dispatch_revocation", zap.Int64("account_id", account.ID))
 		}
 	}
 	persistCtx, cancelPersist := geminiCachedContentPersistContext(c)

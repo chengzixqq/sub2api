@@ -4,6 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/DATA-DOG/go-sqlmock"
+	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -88,6 +93,43 @@ func TestAdminAccountDispatchPolicy_ValidatesOriginAndPlatform(t *testing.T) {
 	require.ErrorContains(t, err, "single-platform")
 	_, err = s.PutAccountDispatchPolicy(context.Background(), policy, 0)
 	require.Error(t, err)
+}
+
+func TestAdminAccountDispatchPolicy_BatchesWorkspaceGrantChecks(t *testing.T) {
+	t.Setenv(accountDispatchWritesEnv, "1")
+	ctx := WithScope(context.Background(), AdminScope())
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { _ = client.Close() })
+
+	accounts := make([]*Account, 500)
+	grants := make([]AccountDispatchGrant, len(accounts))
+	for i := range accounts {
+		id := int64(i + 1000)
+		workspaceID := int64(2 + i%2)
+		accounts[i] = &Account{ID: id, Platform: PlatformOpenAI, WorkspaceID: workspaceID}
+		grants[i] = AccountDispatchGrant{AccountID: id, Origin: AccountDispatchOriginExtra}
+	}
+	repo := &dispatchPolicyAdminRepo{accounts: accounts}
+	s := &adminServiceImpl{
+		accountRepo: repo,
+		groupRepo:   dispatchPolicyGroupRepo{group: &Group{ID: 9, Platform: PlatformOpenAI}},
+		userRepo:    dispatchPolicyUserRepo{user: &User{ID: 7}},
+		entClient:   client,
+	}
+	workspaceIDs, err := pq.Array([]int64{2, 3}).Value()
+	require.NoError(t, err)
+	mock.ExpectQuery(`(?s)SELECT wg.workspace_id FROM workspace_group_grants wg.*ANY\(\$1::bigint\[\]\).*ORDER BY wg.workspace_id`).
+		WithArgs(workspaceIDs, int64(9)).
+		WillReturnRows(sqlmock.NewRows([]string{"workspace_id"}).AddRow(2).AddRow(3))
+
+	policy, err := s.PutAccountDispatchPolicy(ctx, &AccountDispatchPolicy{
+		UserID: 7, GroupID: 9, Mode: AccountDispatchModeAppend, Accounts: grants,
+	}, 0)
+	require.NoError(t, err)
+	require.Len(t, policy.Accounts, 500)
+	require.NoError(t, mock.ExpectationsWereMet(), "workspace access must be checked in one query for unique workspace IDs")
 }
 
 func TestBuildAccountForCreate_AuthorizedOnlyRequiresGateAndPreservesState(t *testing.T) {

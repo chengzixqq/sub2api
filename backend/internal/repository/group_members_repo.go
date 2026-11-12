@@ -23,12 +23,36 @@ func (r *groupRepository) UpdateGroupMembers(ctx context.Context, groupID int64,
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
 		return nil, err
 	}
-	exec := sqlExecutor(r.client)
+	client := r.client
+	exec := sqlExecutor(client)
 	if tx != nil {
 		defer func() { _ = tx.Rollback() }()
-		exec = tx.Client()
+		client = tx.Client()
+		exec = client
+	}
+	accountIDs := make([]int64, 0, len(adds)+len(removeIDs))
+	for _, add := range adds {
+		accountIDs = append(accountIDs, add.AccountID)
+	}
+	accountIDs = append(accountIDs, removeIDs...)
+	accountIDs = sortedUniqueIDs(accountIDs)
+	if err := lockAccountRows(ctx, exec, accountIDs); err != nil {
+		return nil, err
+	}
+	addIDs := make([]int64, 0, len(adds))
+	for _, add := range adds {
+		addIDs = append(addIDs, add.AccountID)
+	}
+	if err := requireLiveAccountRows(ctx, exec, addIDs); err != nil {
+		return nil, err
+	}
+	if err := lockMemberAccountDispatchPolicyUsers(ctx, client, groupID, removeIDs); err != nil {
+		return nil, err
 	}
 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
+		return nil, err
+	}
+	if err := lockAccountGroupRows(ctx, exec, groupID, accountIDs); err != nil {
 		return nil, err
 	}
 
@@ -74,6 +98,15 @@ func (r *groupRepository) UpdateGroupMembers(ctx context.Context, groupID int64,
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
+		}
+		removedIDs := make([]int64, 0, len(change.Removed))
+		for _, removed := range change.Removed {
+			removedIDs = append(removedIDs, removed.AccountID)
+		}
+		if len(removedIDs) > 0 {
+			if err := deleteAccountDispatchGrants(ctx, client, "g.group_id = $1 AND g.origin = 'member' AND g.account_id = ANY($2::bigint[])", groupID, pq.Array(removedIDs)); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if tx != nil {

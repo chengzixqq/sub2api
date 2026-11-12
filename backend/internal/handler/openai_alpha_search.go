@@ -20,6 +20,7 @@ import (
 
 // AlphaSearch proxies the standalone search endpoint used by Codex Responses Lite.
 func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 	setOpenAIClientTransportHTTP(c)

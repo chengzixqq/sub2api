@@ -467,7 +467,7 @@
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
-    <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
+    <EditAccountModal :show="showEdit" :account="edAcc" :account-etag="edAccountEtag" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
@@ -637,6 +637,7 @@ const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
 const edAcc = ref<Account | null>(null)
+const edAccountEtag = ref<string | null>(null)
 const tempUnschedAcc = ref<Account | null>(null)
 const deletingAcc = ref<Account | null>(null)
 const creatingShadowAcc = ref<Account | null>(null)
@@ -1896,11 +1897,11 @@ const cols = computed(() =>
 )
 
 const accountDetailLoading = new Set<number>()
-const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise<Account | null> => {
+const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise<{ account: Account; etag: string } | null> => {
   if (accountDetailLoading.has(account.id)) return null
   accountDetailLoading.add(account.id)
   try {
-    return await adminAPI.accounts.getById(account.id)
+    return await adminAPI.accounts.getByIdWithEtag(account.id)
   } catch (error) {
     console.error('Failed to load account details:', error)
     appStore.showError(extractApiErrorMessage(error, t('common.error')))
@@ -1911,9 +1912,10 @@ const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise
 }
 
 const handleEdit = async (a: Pick<AccountListItem, 'id'>) => {
-  const account = await loadAccountDetails(a)
-  if (!account) return
-  edAcc.value = account
+  const detail = await loadAccountDetails(a)
+  if (!detail) return
+  edAcc.value = detail.account
+  edAccountEtag.value = detail.etag
   showEdit.value = true
 }
 
@@ -1947,9 +1949,10 @@ const openEditFromDeepLink = async (link: AccountDeepLink) => {
   if (isAccountsViewUnmounted) return
   if (link.editId !== null) {
     if (!canOpenDeepLinkEditor()) return
-    const account = await loadAccountDetails({ id: link.editId })
-    if (!account || !canOpenDeepLinkEditor()) return
-    edAcc.value = account
+    const detail = await loadAccountDetails({ id: link.editId })
+    if (!detail || !canOpenDeepLinkEditor()) return
+    edAcc.value = detail.account
+    edAccountEtag.value = detail.etag
     showEdit.value = true
     return
   }
@@ -2440,15 +2443,15 @@ const closeTestModal = () => { showTest.value = false; testingAcc.value = null }
 const closeStatsModal = () => { showStats.value = false; statsAcc.value = null }
 const closeReAuthModal = () => { showReAuth.value = false; reAuthAcc.value = null }
 const handleTest = async (a: AccountListItem) => {
-  const account = await loadAccountDetails(a)
-  if (!account) return
-  testingAcc.value = account
+  const detail = await loadAccountDetails(a)
+  if (!detail) return
+  testingAcc.value = detail.account
   showTest.value = true
 }
 const handleViewStats = async (a: AccountListItem) => {
-  const account = await loadAccountDetails(a)
-  if (!account) return
-  statsAcc.value = account
+  const detail = await loadAccountDetails(a)
+  if (!detail) return
+  statsAcc.value = detail.account
   showStats.value = true
 }
 const handleSchedule = async (a: Account) => {

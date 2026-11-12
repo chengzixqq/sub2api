@@ -30,6 +30,7 @@ vi.mock('@/api/admin', () => ({
       list: listAccounts,
       listWithEtag,
       getById,
+      getByIdWithEtag: async (id: number) => ({ account: await getById(id), etag: `etag-${id}` }),
       getBatchTodayStats,
       getUpstreamBillingProbeSettings,
       delete: vi.fn(),
@@ -61,12 +62,13 @@ vi.mock('vue-i18n', async () => {
 })
 
 const EditAccountModalStub = {
-  props: ['show', 'account', 'proxies', 'groups'],
+  props: ['show', 'account', 'accountEtag', 'proxies', 'groups'],
   template: `
     <div
       data-test="edit-modal"
       :data-show="String(show)"
       :data-account-id="account?.id ?? ''"
+      :data-account-etag="accountEtag ?? ''"
       :data-proxy-count="proxies?.length ?? 0"
       :data-group-count="groups?.length ?? 0"
     />
@@ -183,6 +185,7 @@ describe('admin AccountsView edit deep link', () => {
     const modal = wrapper.get('[data-test="edit-modal"]')
     expect(modal.attributes('data-show')).toBe('true')
     expect(modal.attributes('data-account-id')).toBe('12')
+    expect(modal.attributes('data-account-etag')).toBe('etag-12')
     expect(router.currentRoute.value.path).toBe('/admin/accounts')
     expect(router.currentRoute.value.query).toEqual({})
     expect(showError).not.toHaveBeenCalled()

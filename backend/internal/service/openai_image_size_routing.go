@@ -274,9 +274,8 @@ func selectOpenAIAccountByImageSizePasses(ctx context.Context, selectFn openAIAc
 			}
 			queuedIDs[selection.Account.ID] = struct{}{}
 		case err != nil && !errors.Is(err, ErrNoAvailableAccounts) && !errors.Is(err, ErrNoAvailableCompactAccounts):
-			if waiting != nil {
-				return finish(waiting, waitingDecision, nil)
-			}
+			// An earlier queue candidate cannot turn a real lookup/admission error
+			// into success. Only ordinary capacity exhaustion may use it.
 			return finish(selection, decision, err)
 		default:
 			lastDecision, lastErr = decision, err

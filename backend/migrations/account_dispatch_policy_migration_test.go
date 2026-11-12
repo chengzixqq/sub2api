@@ -21,3 +21,16 @@ func TestAccountDispatchPolicyMigrationKeepsEmptyReplaceDistinct(t *testing.T) {
 	require.Contains(t, sql, "PRIMARY KEY (user_id, group_id)")
 	require.NotContains(t, sql, "DROP TABLE")
 }
+
+func TestStaleMemberDispatchGrantMigrationKeepsExtrasAndAdvancesVersions(t *testing.T) {
+	content, err := FS.ReadFile("261_revoke_stale_member_dispatch_grants.sql")
+	require.NoError(t, err)
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "DELETE FROM user_group_account_grants g")
+	require.Contains(t, sql, "g.origin = 'member'")
+	require.Contains(t, sql, "NOT EXISTS ( SELECT 1 FROM account_groups ag")
+	require.Contains(t, sql, "RETURNING g.user_id, g.group_id")
+	require.Contains(t, sql, "nextval('user_group_account_policy_version_seq')")
+	require.NotContains(t, sql, "origin = 'extra'")
+	require.NotContains(t, sql, "DELETE FROM user_group_account_policies")
+}

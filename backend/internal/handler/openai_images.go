@@ -21,6 +21,7 @@ import (
 // POST /v1/images/generations
 // POST /v1/images/edits
 func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 

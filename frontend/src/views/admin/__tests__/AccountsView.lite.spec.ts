@@ -34,6 +34,7 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       list: listAccounts,
       getById,
+      getByIdWithEtag: async (id: number) => ({ account: await getById(id), etag: `etag-${id}` }),
       listWithEtag,
       getBatchTodayStats,
       getUpstreamBillingProbeSettings,

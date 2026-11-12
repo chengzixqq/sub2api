@@ -158,6 +158,12 @@ type AccountBillingSettingsRepository interface {
 	) error
 }
 
+// AccountSchedulerSnapshotRefresher republishes an account and its linked
+// shadows after a surrounding account-edit transaction commits.
+type AccountSchedulerSnapshotRefresher interface {
+	RefreshAccountSchedulerSnapshots(ctx context.Context, accountID int64) error
+}
+
 // AdminAccountRepository makes the account-duplication write capability an explicit
 // construction dependency without forcing read-only gateway test doubles to implement it.
 type AdminAccountRepository interface {

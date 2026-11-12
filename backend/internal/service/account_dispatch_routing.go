@@ -2,17 +2,146 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
 type accountDispatchContextKey struct{}
+type accountDispatchRetryContextKey struct{}
+type accountDispatchRetryScopeContextKey struct{}
+
+type accountDispatchRetryScope struct {
+	mu       sync.Mutex
+	rejected map[int64]struct{}
+}
+
+// WithAccountDispatchRetryScope starts a fresh scope for sequential selections in
+// one HTTP request or WebSocket turn. Reuse the returned context across failover
+// calls; create another scope for each new turn or concurrent batch subrequest.
+// Only confirmed stale candidates survive between selections, not caller-supplied
+// failed IDs, so rebuilding a transient upstream-failure list keeps its meaning.
+func WithAccountDispatchRetryScope(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, accountDispatchRetryScopeContextKey{}, &accountDispatchRetryScope{
+		rejected: make(map[int64]struct{}),
+	})
+}
+
+func (s *accountDispatchRetryScope) exclude(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	s.mu.Lock()
+	s.rejected[accountID] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *accountDispatchRetryScope) copyRejectedTo(retry *accountDispatchCandidateRetry) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for accountID := range s.rejected {
+		retry.excluded[accountID] = struct{}{}
+		retry.attempted[accountID] = struct{}{}
+	}
+}
 
 type accountDispatchSelection struct {
 	requestGroupID int64
 	policy         *AccountDispatchPolicy
 	grants         map[int64]string
+}
+
+type accountDispatchCandidateRejectedError struct {
+	accountID int64
+	reason    string
+}
+
+func (e *accountDispatchCandidateRejectedError) Error() string {
+	if e == nil {
+		return "account dispatch candidate rejected"
+	}
+	return fmt.Sprintf("account dispatch candidate %d rejected: %s", e.accountID, e.reason)
+}
+
+func rejectAccountDispatchCandidate(accountID int64, reason string) error {
+	return &accountDispatchCandidateRejectedError{accountID: accountID, reason: reason}
+}
+
+type accountDispatchCandidateRetry struct {
+	excluded  map[int64]struct{}
+	attempted map[int64]struct{}
+	scope     *accountDispatchRetryScope
+}
+
+func newAccountDispatchCandidateRetry(excluded map[int64]struct{}) *accountDispatchCandidateRetry {
+	state := &accountDispatchCandidateRetry{
+		excluded:  make(map[int64]struct{}, len(excluded)+1),
+		attempted: make(map[int64]struct{}, len(excluded)+1),
+	}
+	for accountID := range excluded {
+		state.excluded[accountID] = struct{}{}
+		state.attempted[accountID] = struct{}{}
+	}
+	return state
+}
+
+func withAccountDispatchCandidateRetry(ctx context.Context, excluded map[int64]struct{}) (context.Context, *accountDispatchCandidateRetry) {
+	scope, _ := ctx.Value(accountDispatchRetryScopeContextKey{}).(*accountDispatchRetryScope)
+	if retry, _ := ctx.Value(accountDispatchRetryContextKey{}).(*accountDispatchCandidateRetry); retry != nil && retry.scope == scope {
+		for accountID := range excluded {
+			retry.excluded[accountID] = struct{}{}
+			retry.attempted[accountID] = struct{}{}
+		}
+		return ctx, retry
+	}
+	retry := newAccountDispatchCandidateRetry(excluded)
+	retry.scope = scope
+	scope.copyRejectedTo(retry)
+	return context.WithValue(ctx, accountDispatchRetryContextKey{}, retry), retry
+}
+
+// A confirmed stale account stays excluded across nested selection and image-size
+// passes. Transient read errors and pass-specific eligibility do not call this.
+func excludeStaleAccountDispatchCandidate(ctx context.Context, accountID int64) {
+	if accountID <= 0 {
+		return
+	}
+	scope, _ := ctx.Value(accountDispatchRetryScopeContextKey{}).(*accountDispatchRetryScope)
+	if retry, _ := ctx.Value(accountDispatchRetryContextKey{}).(*accountDispatchCandidateRetry); retry != nil && retry.scope == scope {
+		retry.excluded[accountID] = struct{}{}
+		retry.attempted[accountID] = struct{}{}
+	}
+	scope.exclude(accountID)
+}
+
+// retry adds only a candidate that failed fresh admission. Each account ID is
+// retried at most once; context cancellation/deadlines remain authoritative.
+func (r *accountDispatchCandidateRetry) retry(ctx context.Context, err error) (bool, error) {
+	var rejected *accountDispatchCandidateRejectedError
+	if !errors.As(err, &rejected) {
+		return false, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	if rejected.accountID <= 0 {
+		return false, ErrNoAvailableAccounts
+	}
+	if _, exists := r.attempted[rejected.accountID]; exists {
+		return false, ErrNoAvailableAccounts
+	}
+	r.attempted[rejected.accountID] = struct{}{}
+	r.excluded[rejected.accountID] = struct{}{}
+	r.scope.exclude(rejected.accountID)
+	return true, nil
 }
 
 // withAccountDispatchSelection binds the policy to the original API key group,
@@ -142,6 +271,9 @@ func accountDispatchAllows(ctx context.Context, account *Account, effectiveGroup
 	if account == nil {
 		return false
 	}
+	if boundAccountID := geminiCachedContentBoundAccountIDFromContext(ctx); boundAccountID > 0 && account.ID != boundAccountID {
+		return false
+	}
 	selection := accountDispatchFromContext(ctx)
 	if accountDispatchExplicitlyAllowed(selection, account) {
 		return true
@@ -176,7 +308,11 @@ func accountDispatchCandidates(ctx context.Context, repo any, groupID *int64, pl
 		return result, nil
 	}
 	ids := make([]int64, 0, len(selection.grants))
+	boundAccountID := geminiCachedContentBoundAccountIDFromContext(ctx)
 	for id := range selection.grants {
+		if boundAccountID > 0 && id != boundAccountID {
+			continue
+		}
 		if _, ok := seen[id]; !ok {
 			ids = append(ids, id)
 		}

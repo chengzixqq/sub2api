@@ -22,6 +22,7 @@ import (
 // GrokRealtime exposes xAI's native Voice Realtime WebSocket.
 // Only Grok-platform API keys may use this endpoint.
 func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	if c == nil || c.Request == nil || !isOpenAIWSUpgradeRequest(c.Request) {
 		h.errorResponse(c, http.StatusUpgradeRequired, "invalid_request_error", "WebSocket upgrade required (Upgrade: websocket)")
 		return
@@ -184,6 +185,7 @@ func isExpectedGrokRealtimeClose(err error) bool {
 
 // GrokVoice handles xAI Voice HTTP endpoints. endpoint is "tts", "stt", or "custom-voices".
 func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
+	bindAccountDispatchRetryScope(c)
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok || apiKey.Group == nil || apiKey.Group.Platform != service.PlatformGrok {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Voice API is not supported for this platform")

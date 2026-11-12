@@ -6,6 +6,8 @@ export default {
       authorizedOnly: '仅授权调度',
       authorizedOnlyHint: '默认不参与用户调度，只能通过用户专属账号配置使用。',
       authorizedOnlyPartialSave: '其他设置已保存，但调度范围未更新，请刷新后重试。',
+      accountVersionMissing: '缺少账号版本信息，请重新加载账号后再保存。',
+      accountVersionConflict: '账号在编辑期间已被修改。当前草稿会保留；重试前请明确重新加载账号。',
       autoRefresh: '自动刷新',
       enableAutoRefresh: '启用自动刷新',
       refreshInterval5s: '5 秒',

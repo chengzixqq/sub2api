@@ -3,15 +3,15 @@ import { defineComponent } from 'vue'
 import { flushPromises, shallowMount, type VueWrapper } from '@vue/test-utils'
 import type { Account } from '@/types'
 
-const { getCustomization, updateCustomization, updateAccount } = vi.hoisted(() => ({
-  getCustomization: vi.fn(), updateCustomization: vi.fn(), updateAccount: vi.fn()
+const { getCustomization, updateCustomization, patchAccount } = vi.hoisted(() => ({
+  getCustomization: vi.fn(), updateCustomization: vi.fn(), patchAccount: vi.fn()
 }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showError: vi.fn(), showSuccess: vi.fn(), showInfo: vi.fn() }) }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isOwner: true, isVendor: false, isSimpleMode: true }) }))
 vi.mock('vue-i18n', async () => ({ ...await vi.importActual<typeof import('vue-i18n')>('vue-i18n'), useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/api/admin', () => ({
   adminAPI: {
-    accounts: { getClaudeCustomization: getCustomization, updateClaudeCustomization: updateCustomization, update: updateAccount, checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }) },
+    accounts: { getClaudeCustomization: getCustomization, updateClaudeCustomization: updateCustomization, patch: patchAccount, checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }) },
     settings: { getWebSearchEmulationConfig: vi.fn().mockResolvedValue({ enabled: false, providers: [] }), getSettings: vi.fn().mockResolvedValue({}) },
     tlsFingerprintProfiles: { list: vi.fn().mockResolvedValue([]) }
   }
@@ -30,7 +30,7 @@ function deferred<T>() {
 const wrappers: VueWrapper[] = []
 function mountModal(id = 1) {
   const wrapper = shallowMount(EditAccountModal, {
-    props: { show: true, account: account(id), proxies: [], groups: [] },
+    props: { show: true, account: account(id), accountEtag: `etag-${id}`, proxies: [], groups: [] },
     global: { stubs: { BaseDialog: defineComponent({ template: '<div><slot /><slot name="footer" /></div>' }) } }
   })
   wrappers.push(wrapper)
@@ -48,7 +48,7 @@ describe('EditAccountModal Claude policy isolation', () => {
     vi.clearAllMocks()
     getCustomization.mockReset().mockResolvedValue({ overrides: {} })
     updateCustomization.mockResolvedValue({ overrides: {} })
-    updateAccount.mockImplementation(async (id: number) => account(id))
+    patchAccount.mockImplementation(async (id: number) => account(id))
   })
   afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()) })
 
@@ -57,11 +57,11 @@ describe('EditAccountModal Claude policy isolation', () => {
     const wrapper = mountModal()
     await flushPromises()
     expect((fallback(wrapper).element as HTMLSelectElement).value).toBe('strict')
-    await wrapper.setProps({ account: account(2) })
+    await wrapper.setProps({ account: account(2), accountEtag: 'etag-2' })
     await flushPromises()
     expect((fallback(wrapper).element as HTMLSelectElement).value).not.toBe('strict')
     await saveName(wrapper)
-    expect(updateAccount).toHaveBeenCalledWith(2, expect.objectContaining({ name: 'Renamed' }))
+    expect(patchAccount).toHaveBeenCalledWith(2, expect.objectContaining({ name: 'Renamed' }), 'etag-2')
     expect(updateCustomization).not.toHaveBeenCalled()
   })
 
@@ -69,7 +69,7 @@ describe('EditAccountModal Claude policy isolation', () => {
     const first = deferred<{ overrides: Record<string, unknown> }>()
     getCustomization.mockReturnValueOnce(first.promise).mockResolvedValueOnce({ overrides: { fallback_policy: 'native_passthrough' } })
     const wrapper = mountModal()
-    await wrapper.setProps({ account: account(2) })
+    await wrapper.setProps({ account: account(2), accountEtag: 'etag-2' })
     await flushPromises()
     first.resolve({ overrides: { fallback_policy: 'strict' } })
     await flushPromises()
@@ -83,7 +83,7 @@ describe('EditAccountModal Claude policy isolation', () => {
     const wrapper = mountModal()
     await flushPromises()
     await saveName(wrapper)
-    expect(updateAccount).toHaveBeenCalledTimes(1)
+    expect(patchAccount).toHaveBeenCalledTimes(1)
     expect(updateCustomization).not.toHaveBeenCalled()
     expect(wrapper.emitted('updated')).toHaveLength(1)
   })
@@ -93,7 +93,7 @@ describe('EditAccountModal Claude policy isolation', () => {
     getCustomization.mockReturnValueOnce(pending.promise)
     const wrapper = mountModal()
     await saveName(wrapper)
-    expect(updateAccount).toHaveBeenCalledTimes(1)
+    expect(patchAccount).toHaveBeenCalledTimes(1)
     expect(updateCustomization).not.toHaveBeenCalled()
     pending.resolve({ overrides: { fallback_policy: 'strict' } })
     await flushPromises()
@@ -102,12 +102,12 @@ describe('EditAccountModal Claude policy isolation', () => {
   it('persists an explicit edit and freezes it before the account save awaits', async () => {
     getCustomization.mockResolvedValueOnce({ overrides: { fallback_policy: 'strict' } }).mockResolvedValueOnce({ overrides: { fallback_policy: 'fable_native_passthrough' } })
     const pendingSave = deferred<Account>()
-    updateAccount.mockReturnValueOnce(pendingSave.promise)
+    patchAccount.mockReturnValueOnce(pendingSave.promise)
     const wrapper = mountModal()
     await flushPromises()
     await fallback(wrapper).setValue('native_passthrough')
     await wrapper.get('#edit-account-form').trigger('submit')
-    await wrapper.setProps({ account: account(2) })
+    await wrapper.setProps({ account: account(2), accountEtag: 'etag-2' })
     await flushPromises()
     pendingSave.resolve(account(1))
     await flushPromises()

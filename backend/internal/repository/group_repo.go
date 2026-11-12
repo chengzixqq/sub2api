@@ -864,11 +864,29 @@ func (r *groupRepository) DeleteAccountGroupsByGroupID(ctx context.Context, grou
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
 	}
+	accountIDs, err := accountIDsForGroup(ctx, client, groupID)
+	if err != nil {
+		return 0, err
+	}
+	if err := lockAccountRows(ctx, client, accountIDs); err != nil {
+		return 0, err
+	}
+	var lockedGroupID int64
+	if err := scanSingleRow(ctx, client, `SELECT id FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, []any{groupID}, &lockedGroupID); err != nil {
+		return 0, translatePersistenceError(err, service.ErrGroupNotFound, nil)
+	}
+	accountIDs, err = accountIDsForGroup(ctx, client, groupID)
+	if err != nil {
+		return 0, err
+	}
+	if err := lockAccountGroupRows(ctx, client, groupID, accountIDs); err != nil {
+		return 0, err
+	}
 	res, err := client.ExecContext(ctx, "DELETE FROM account_groups WHERE group_id = $1", groupID)
 	if err != nil {
 		return 0, err
 	}
-	if err := deleteAccountDispatchGrants(ctx, client, "group_id = $1 AND origin = 'member'", groupID); err != nil {
+	if err := deleteAccountDispatchGrants(ctx, client, "g.group_id = $1 AND g.origin = 'member'", groupID); err != nil {
 		return 0, err
 	}
 	affected, _ := res.RowsAffected()
@@ -906,8 +924,16 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 		txClient = exec
 	}
 	// err 为 dbent.ErrTxStarted 时，复用当前 client 参与同一事务。
+	accountIDs, err := accountIDsForGroup(ctx, exec, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockAccountRows(ctx, exec, accountIDs); err != nil {
+		return nil, err
+	}
 
-	// Lock the group row to avoid concurrent writes while we cascade.
+	// Account rows are acquired first to match all membership writers; the group
+	// row then excludes new membership changes while the cascade proceeds.
 	// 这里使用 exec.QueryContext 手动扫描，确保同一事务内加锁并能区分"未找到"与其他错误。
 	rows, err := exec.QueryContext(ctx, "SELECT id, subscription_type FROM groups WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id)
 	if err != nil {
@@ -929,6 +955,13 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 	}
 	if lockedID == 0 {
 		return nil, service.ErrGroupNotFound
+	}
+	accountIDs, err = accountIDsForGroup(ctx, exec, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockAccountGroupRows(ctx, exec, id, accountIDs); err != nil {
+		return nil, err
 	}
 	if requireEmpty {
 		var hasAccount bool
@@ -1206,7 +1239,17 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 		defer func() { _ = tx.Rollback() }()
 		exec = tx.Client()
 	}
+	accountIDs = sortedUniqueIDs(accountIDs)
+	if err := lockAccountRows(ctx, exec, accountIDs); err != nil {
+		return err
+	}
+	if err := requireLiveAccountRows(ctx, exec, accountIDs); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
+		return err
+	}
+	if err := lockAccountGroupRows(ctx, exec, groupID, accountIDs); err != nil {
 		return err
 	}
 

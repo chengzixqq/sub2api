@@ -195,6 +195,18 @@ export async function getById(id: number): Promise<Account> {
   return data
 }
 
+export interface AccountWithEtagResult {
+  account: Account
+  etag: string
+}
+
+export async function getByIdWithEtag(id: number): Promise<AccountWithEtagResult> {
+  const response = await apiClient.get<Account>(`/admin/accounts/${id}`)
+  const etag = typeof response.headers?.etag === 'string' ? response.headers.etag : ''
+  if (!etag) throw new Error('Account ETag is missing')
+  return { account: response.data, etag }
+}
+
 /**
  * Create new account
  * @param accountData - Account data
@@ -260,16 +272,15 @@ export async function update(id: number, updates: UpdateAccountRequest): Promise
   return data
 }
 
-export async function patchDispatchScope(
+export async function patchAccount(
   id: number,
-  dispatchScope: 'shared' | 'authorized_only'
+  payload: Record<string, unknown>,
+  etag: string
 ): Promise<Account> {
-  const current = await apiClient.get<Account>(`/admin/accounts/${id}`)
-  const etag = current.headers['etag'] as string | undefined
   if (!etag) throw new Error('Account ETag is missing')
   const { data } = await apiClient.patch<Account>(
     `/admin/accounts/${id}`,
-    { dispatch_scope: dispatchScope },
+    payload,
     { headers: { 'If-Match': etag } }
   )
   return data
@@ -1170,10 +1181,11 @@ export const accountsAPI = {
   listWithEtag,
   getUpstreamBillingRatesWithEtag,
   getById,
+  getByIdWithEtag,
   create,
   duplicate,
   update,
-  patchDispatchScope,
+  patch: patchAccount,
   getGrokMediaEligibility,
   updateGrokMediaEligibility,
   checkMixedChannelRisk,

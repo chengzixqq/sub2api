@@ -6,6 +6,8 @@ export default {
       authorizedOnly: 'Authorized users only',
       authorizedOnlyHint: 'Excluded from default scheduling; available only through a user-specific account policy.',
       authorizedOnlyPartialSave: 'Other settings were saved, but scheduling access was not updated. Refresh and try again.',
+      accountVersionMissing: 'The account version is missing. Reload the account before saving.',
+      accountVersionConflict: 'This account changed while you were editing. Your draft remains open; explicitly reload the account before retrying.',
       autoRefresh: 'Auto Refresh',
       enableAutoRefresh: 'Enable auto refresh',
       refreshInterval5s: '5 seconds',

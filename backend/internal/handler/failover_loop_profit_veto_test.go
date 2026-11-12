@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +38,7 @@ func runProfitVetoLoop(t *testing.T, fs *FailoverState, pool []int64, vetoed map
 		}
 		if picked == 0 {
 			// 选号耗尽，交给退避决策。
-			switch fs.HandleSelectionExhausted(context.Background()) {
+			switch fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts) {
 			case FailoverContinue:
 				res.backoffRetries++
 				continue
@@ -134,6 +135,6 @@ func TestHandleSelectionExhaustedUnaffectedWithoutProfitVeto(t *testing.T) {
 	fs.SwitchCount = 1
 	fs.FailedAccountIDs[100] = struct{}{}
 
-	require.Equal(t, FailoverContinue, fs.HandleSelectionExhausted(context.Background()))
+	require.Equal(t, FailoverContinue, fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts))
 	require.Empty(t, fs.FailedAccountIDs, "无利润否决时排除列表应被完全清空")
 }

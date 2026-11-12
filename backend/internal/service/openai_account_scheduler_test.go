@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -31,7 +30,7 @@ func (r schedulerTestOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (
 			return &r.accounts[i], nil
 		}
 	}
-	return nil, errors.New("account not found")
+	return nil, ErrAccountNotFound
 }
 
 // GetByIDScoped 是管理端专用的带归属过滤读取。
@@ -2294,7 +2293,8 @@ func TestOpenAIGatewayService_RecheckSelectedOpenAIAccountFromDB_SimpleModeUsesF
 	requestedGroupID := int64(100)
 
 	for _, groupID := range []*int64{nil, &requestedGroupID} {
-		fresh := svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &grouped, groupID, PlatformOpenAI, "gpt-5.1", false, "")
+		fresh, err := svc.recheckSelectedOpenAIAccountFromDBResult(context.Background(), &grouped, groupID, PlatformOpenAI, "gpt-5.1", false, "")
+		require.NoError(t, err)
 		require.NotNil(t, fresh)
 		require.Equal(t, grouped.ID, fresh.ID)
 	}
@@ -2307,8 +2307,12 @@ func TestOpenAIGatewayService_RecheckSelectedOpenAIAccountFromDB_SimpleModeUsesF
 		cfg:               &config.Config{RunMode: config.RunModeStandard},
 		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{}},
 	}
-	require.Nil(t, standardSvc.recheckSelectedOpenAIAccountFromDB(context.Background(), &grouped, nil, PlatformOpenAI, "gpt-5.1", false, ""))
-	require.NotNil(t, standardSvc.recheckSelectedOpenAIAccountFromDB(context.Background(), &ungrouped, nil, PlatformOpenAI, "gpt-5.1", false, ""))
+	fresh, err := standardSvc.recheckSelectedOpenAIAccountFromDBResult(context.Background(), &grouped, nil, PlatformOpenAI, "gpt-5.1", false, "")
+	require.NoError(t, err)
+	require.Nil(t, fresh)
+	fresh, err = standardSvc.recheckSelectedOpenAIAccountFromDBResult(context.Background(), &ungrouped, nil, PlatformOpenAI, "gpt-5.1", false, "")
+	require.NoError(t, err)
+	require.NotNil(t, fresh)
 }
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSticky(t *testing.T) {

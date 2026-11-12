@@ -126,6 +126,7 @@ func NewGatewayHandler(
 // Messages handles Claude API compatible messages endpoint
 // POST /v1/messages
 func (h *GatewayHandler) Messages(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	defer beginGatewayRequestTiming(c)()
 	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -409,6 +410,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
 					return
 				}
+				if !isAccountSelectionCapacityError(err) {
+					reqLog.Warn("gateway.account_select_failed", zap.Error(err))
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
+					return
+				}
 				if len(fs.FailedAccountIDs) == 0 {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini)
 					if !cls.ModelNotFound {
@@ -428,7 +434,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 					return
 				}
-				action := fs.HandleSelectionExhausted(c.Request.Context())
+				action := fs.HandleSelectionExhausted(c.Request.Context(), err)
 				switch action {
 				case FailoverContinue:
 					ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())
@@ -740,6 +746,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					reqLog.Info("gateway.account_select_aborted_client_disconnected", zap.Error(err))
 					return
 				}
+				if !isAccountSelectionCapacityError(err) {
+					reqLog.Warn("gateway.account_select_failed", zap.Error(err))
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
+					return
+				}
 				if len(fs.FailedAccountIDs) == 0 {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
 					if !cls.ModelNotFound {
@@ -760,7 +771,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 					return
 				}
-				action := fs.HandleSelectionExhausted(c.Request.Context())
+				action := fs.HandleSelectionExhausted(c.Request.Context(), err)
 				switch action {
 				case FailoverContinue:
 					ctx := service.WithSingleAccountRetry(c.Request.Context(), true, h.metadataBridgeEnabled())

@@ -21,6 +21,7 @@ import (
 // This converts Responses API requests to Anthropic format, forwards to Anthropic
 // upstream, and converts responses back to Responses format.
 func (h *GatewayHandler) Responses(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	streamStarted := false
 
 	requestStart := time.Now()
@@ -247,6 +248,11 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				reqLog.Info("gateway.responses.account_select_aborted_client_disconnected", zap.Error(err))
 				return
 			}
+			if !isAccountSelectionCapacityError(err) {
+				reqLog.Warn("gateway.responses.account_select_failed", zap.Error(err))
+				h.responsesErrorResponse(c, http.StatusServiceUnavailable, "api_error", "Account selection failed")
+				return
+			}
 			if len(fs.FailedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, effectiveAPIKeyPlatform(c, apiKey))
 				cls = classifySelectionFailureError(err, cls)
@@ -260,7 +266,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				h.responsesErrorResponse(c, cls.Status, cls.ErrType, message)
 				return
 			}
-			action := fs.HandleSelectionExhausted(requestCtx)
+			action := fs.HandleSelectionExhausted(requestCtx, err)
 			switch action {
 			case FailoverContinue:
 				continue

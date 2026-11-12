@@ -21,6 +21,7 @@ import (
 // Embeddings handles the OpenAI-compatible Embeddings API.
 // POST /v1/embeddings
 func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
+	bindAccountDispatchRetryScope(c)
 	streamStarted := false
 	requestStart := time.Now()
 

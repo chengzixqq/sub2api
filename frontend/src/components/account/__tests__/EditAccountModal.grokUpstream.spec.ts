@@ -69,6 +69,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
+      patch: updateAccountMock,
       getById: getByIdMock,
       syncUpstreamModels: syncUpstreamModelsMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
@@ -183,6 +184,7 @@ function mountModal(account: any, attachTo?: HTMLElement) {
     props: {
       show: true,
       account,
+      accountEtag: 'etag-5',
       proxies: [],
       groups: []
     },
@@ -206,6 +208,7 @@ function mountLiveSelectorModal(account: any) {
     props: {
       show: true,
       account,
+      accountEtag: 'etag-5',
       proxies: [],
       groups: []
     },
@@ -272,7 +275,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://my-relay.example.com')
+    expect(payload?.credentials_patch?.base_url).toBe('https://my-relay.example.com')
   })
 
   it('accepts the official API host as a manual endpoint switch and persists it', async () => {
@@ -288,7 +291,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://api.x.ai/v1')
+    expect(payload?.credentials_patch?.base_url).toBe('https://api.x.ai/v1')
   })
 
   it('echoes a stored official API endpoint with the toggle on', async () => {
@@ -330,7 +333,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://my-relay.example.com')
+    expect(payload?.credentials_patch).toBeUndefined()
   })
 
   it('keeps stored header overrides intact on an untouched save', async () => {
@@ -351,13 +354,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.header_override_enabled).toBe(true)
-    expect(payload?.credentials?.header_overrides).toEqual({
-      'user-agent': 'grok-pager/0.2.93',
-      'x-grok-client-identifier': 'grok-pager',
-      'x-grok-client-version': '0.2.93',
-      'x-xai-token-auth': 'xai-grok-cli'
-    })
+    expect(payload?.credentials_patch).toBeUndefined()
   })
 
   it('shows the client-tool cache switch only for Grok OAuth accounts', () => {
@@ -394,8 +391,8 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.extra?.custom_setting).toBe('keep-me')
-    expect(payload?.extra?.grok_client_tool_cache_enabled).toBe(false)
+    expect(payload?.extra_patch?.custom_setting).toBeUndefined()
+    expect(payload?.extra_patch?.grok_client_tool_cache_enabled).toBe(false)
   })
 
   it('defaults client-tool caching on when the setting is missing and persists explicit true', async () => {
@@ -410,10 +407,10 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.extra).toMatchObject({
-      grok_client_tool_cache_enabled: true,
-      custom_setting: 'keep-me'
+    expect(payload?.extra_patch).toMatchObject({
+      grok_client_tool_cache_enabled: true
     })
+    expect(payload?.extra_patch?.custom_setting).toBeUndefined()
   })
 
   it('keeps an explicit false opt-out when saving an untouched account', async () => {
@@ -434,10 +431,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
 
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.extra).toMatchObject({
-      grok_client_tool_cache_enabled: false,
-      custom_setting: 'keep-me'
-    })
+    expect(payload?.extra_patch).toBeUndefined()
   })
 
   it('shows malformed cache settings as disabled so the UI matches the fail-closed backend', () => {
@@ -513,7 +507,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.model_mapping).toEqual({ friendly: 'grok-4.5' })
+    expect(payload?.credentials_patch?.model_mapping).toEqual({ friendly: 'grok-4.5' })
     expect(JSON.stringify(payload)).not.toContain('extra-catalog-id')
     expect(JSON.stringify(payload)).not.toContain('catalog-only-model')
   })
@@ -957,9 +951,9 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.model_mapping).toEqual({ friendly: 'grok-4.5' })
-    expect(JSON.stringify(payload?.credentials?.model_mapping)).not.toContain('new-catalog-id')
-    expect(payload?.credentials?.grok_model_diagnostics).toBeUndefined()
+    expect(payload?.credentials_patch?.model_mapping).toEqual({ friendly: 'grok-4.5' })
+    expect(JSON.stringify(payload?.credentials_patch?.model_mapping)).not.toContain('new-catalog-id')
+    expect(payload?.credentials_patch?.grok_model_diagnostics).toBeUndefined()
   })
 
   it.each([
@@ -1100,12 +1094,12 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://draft.example.com')
-    expect(payload?.credentials?.model_mapping).toEqual({
+    expect(payload?.credentials_patch?.base_url).toBe('https://draft.example.com')
+    expect(payload?.credentials_patch?.model_mapping).toEqual({
       'keep-local': 'keep-local',
       'new-catalog-id': 'new-catalog-id'
     })
-    expect(payload?.credentials?.grok_model_diagnostics).toBeUndefined()
+    expect(payload?.credentials_patch?.grok_model_diagnostics).toBeUndefined()
     expect(payload?.grok_model_diagnostics).toBeUndefined()
   })
 
@@ -1133,10 +1127,9 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
     const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.credentials?.base_url).toBe('https://draft-api.example.com')
-    expect(payload?.credentials?.model_mapping).toEqual({ friendly: 'grok-4.7' })
-    expect(JSON.stringify(payload?.credentials?.model_mapping)).not.toContain('new-catalog-id')
-    expect(payload?.credentials?.grok_model_diagnostics).toBeUndefined()
+    expect(payload?.credentials_patch?.base_url).toBe('https://draft-api.example.com')
+    expect(payload?.credentials_patch?.model_mapping).toBeUndefined()
+    expect(payload?.credentials_patch?.grok_model_diagnostics).toBeUndefined()
   })
 
   it('collapses diagnostics when switching accounts while details are open', async () => {
@@ -1346,11 +1339,11 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
 
       await wrapper.get('form#edit-account-form').trigger('submit.prevent')
       await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
-      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials_patch?.model_mapping).toEqual({
         friendly: longTarget,
         'grok-latest': 'grok-4.5'
       })
-      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.grok_model_diagnostics).toBeUndefined()
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials_patch?.grok_model_diagnostics).toBeUndefined()
     }
   )
 
@@ -1464,7 +1457,7 @@ describe('EditAccountModal Grok OAuth upstream config', () => {
 
       await wrapper.get('form#edit-account-form').trigger('submit.prevent')
       await vi.waitFor(() => expect(updateAccountMock).toHaveBeenCalledTimes(1))
-      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials_patch?.model_mapping).toEqual({
         [custom]: custom,
         friendly: 'grok-4.7-kept'
       })

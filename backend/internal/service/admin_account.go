@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -741,6 +742,32 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 	if input == nil {
 		return nil, ErrAccountNilInput
 	}
+	if s.entClient != nil {
+		tx, err := s.entClient.Tx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		txCtx := dbent.NewTxContext(ctx, tx)
+		account, err := s.patchAccountInContext(txCtx, id, input)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		if refresher, ok := s.accountRepo.(AccountSchedulerSnapshotRefresher); ok {
+			if err := refresher.RefreshAccountSchedulerSnapshots(dbent.WithoutTx(ctx), id); err != nil {
+				logger.LegacyPrintf("service.admin_account", "[Scheduler] refresh account snapshots after patch failed: account=%d err=%v", id, err)
+			}
+		}
+		return account, nil
+	}
+	return s.patchAccountInContext(ctx, id, input)
+}
+
+func (s *adminServiceImpl) patchAccountInContext(ctx context.Context, id int64, input *PatchAccountInput) (*Account, error) {
 	if err := validateAccountCredentialsPatch(input.CredentialsPatch); err != nil {
 		return nil, err
 	}

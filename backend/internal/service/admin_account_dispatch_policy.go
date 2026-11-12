@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"net/http"
+	"sort"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/lib/pq"
 )
 
 func (s *adminServiceImpl) accountDispatchPolicyWriter(ctx context.Context) (AccountDispatchPolicyWriter, error) {
@@ -89,6 +91,8 @@ func (s *adminServiceImpl) PutAccountDispatchPolicy(ctx context.Context, policy 
 	for _, account := range accounts {
 		accountByID[account.ID] = account
 	}
+	workspaceIDs := make([]int64, 0)
+	workspaceSeen := make(map[int64]struct{})
 	for _, grant := range policy.Accounts {
 		account := accountByID[grant.AccountID]
 		if account == nil {
@@ -108,28 +112,65 @@ func (s *adminServiceImpl) PutAccountDispatchPolicy(ctx context.Context, policy 
 			return nil, infraerrors.BadRequest("ACCOUNT_DISPATCH_PLATFORM_MISMATCH", "extra account must match a single-platform group")
 		}
 		if grant.Origin == AccountDispatchOriginExtra && account.WorkspaceID != domain.DefaultWorkspaceID {
-			if !s.accountDispatchWorkspaceGranted(ctx, account.WorkspaceID, group.ID) {
-				return nil, infraerrors.New(http.StatusForbidden, "ACCOUNT_DISPATCH_WORKSPACE_DENIED", "account workspace is not granted this group")
+			if _, exists := workspaceSeen[account.WorkspaceID]; !exists {
+				workspaceSeen[account.WorkspaceID] = struct{}{}
+				workspaceIDs = append(workspaceIDs, account.WorkspaceID)
 			}
+		}
+	}
+	grantedWorkspaces := make(map[int64]struct{}, len(workspaceIDs))
+	if len(workspaceIDs) > 0 {
+		sort.Slice(workspaceIDs, func(i, j int) bool { return workspaceIDs[i] < workspaceIDs[j] })
+		grantedWorkspaces, err = s.accountDispatchWorkspaceGrants(ctx, workspaceIDs, group.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, grant := range policy.Accounts {
+		account := accountByID[grant.AccountID]
+		if grant.Origin != AccountDispatchOriginExtra || account.WorkspaceID == domain.DefaultWorkspaceID {
+			continue
+		}
+		if _, granted := grantedWorkspaces[account.WorkspaceID]; !granted {
+			return nil, infraerrors.New(http.StatusForbidden, "ACCOUNT_DISPATCH_WORKSPACE_DENIED", "account workspace is not granted this group")
 		}
 	}
 	return writer.PutAccountDispatchPolicy(ctx, policy, expectedVersion)
 }
 
-func (s *adminServiceImpl) accountDispatchWorkspaceGranted(ctx context.Context, workspaceID, groupID int64) bool {
+func (s *adminServiceImpl) accountDispatchWorkspaceGrants(ctx context.Context, workspaceIDs []int64, groupID int64) (map[int64]struct{}, error) {
+	granted := make(map[int64]struct{}, len(workspaceIDs))
+	if len(workspaceIDs) == 0 {
+		return granted, nil
+	}
 	if s.entClient == nil {
-		return false
+		return nil, infraerrors.InternalServer("ACCOUNT_DISPATCH_WORKSPACE_CHECK_FAILED", "workspace group grants are unavailable")
 	}
 	rows, err := s.entClient.QueryContext(ctx, `
-		SELECT 1 FROM workspace_group_grants wg
+		SELECT wg.workspace_id FROM workspace_group_grants wg
 		JOIN workspaces w ON w.id = wg.workspace_id AND w.deleted_at IS NULL AND w.status = 'active'
-		WHERE wg.workspace_id = $1 AND wg.group_id = $2 AND wg.enabled = TRUE LIMIT 1
-	`, workspaceID, groupID)
+		WHERE wg.workspace_id = ANY($1::bigint[]) AND wg.group_id = $2 AND wg.enabled = TRUE
+		ORDER BY wg.workspace_id
+	`, pq.Array(workspaceIDs), groupID)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	return rows.Next()
+	for rows.Next() {
+		var workspaceID int64
+		if err := rows.Scan(&workspaceID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		granted[workspaceID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return granted, nil
 }
 
 func (s *adminServiceImpl) DeleteAccountDispatchPolicy(ctx context.Context, userID, groupID, expectedVersion int64) error {

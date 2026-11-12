@@ -17,10 +17,12 @@ const (
 )
 
 type AccountDispatchGrant struct {
-	AccountID     int64  `json:"account_id"`
-	Origin        string `json:"origin"`
-	AccountName   string `json:"account_name,omitempty"`
-	DispatchScope string `json:"dispatch_scope,omitempty"`
+	AccountID        int64  `json:"account_id"`
+	Origin           string `json:"origin"`
+	AccountName      string `json:"account_name,omitempty"`
+	DispatchScope    string `json:"dispatch_scope,omitempty"`
+	Eligible         *bool  `json:"eligible,omitempty"`
+	IneligibleReason string `json:"ineligible_reason,omitempty"`
 }
 
 type AccountDispatchPolicy struct {

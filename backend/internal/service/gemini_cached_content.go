@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -262,10 +263,29 @@ func ParseGeminiCachedContentPublicID(name string) (string, bool) {
 }
 
 type geminiCachedContentBoundCtxKey struct{}
+type geminiCachedContentBoundAccountCtxKey struct{}
 
 // WithGeminiCachedContentBound 标记请求引用了显式缓存并已硬绑定到持有账号。
 func WithGeminiCachedContentBound(ctx context.Context) context.Context {
 	return context.WithValue(ctx, geminiCachedContentBoundCtxKey{}, true)
+}
+
+// WithGeminiCachedContentBoundAccount restricts a request referencing cached
+// content to its owner account without granting access outside normal policy.
+func WithGeminiCachedContentBoundAccount(ctx context.Context, accountID int64) context.Context {
+	ctx = WithGeminiCachedContentBound(ctx)
+	if accountID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, geminiCachedContentBoundAccountCtxKey{}, accountID)
+}
+
+func geminiCachedContentBoundAccountIDFromContext(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	accountID, _ := ctx.Value(geminiCachedContentBoundAccountCtxKey{}).(int64)
+	return accountID
 }
 
 func geminiCachedContentBoundFromContext(ctx context.Context) bool {
@@ -904,6 +924,25 @@ func (s *GeminiCachedContentService) BoundAccount(ctx context.Context, record *G
 		return nil, nil
 	}
 	return account, err
+}
+
+// AccountDispatchAllowed reloads the current user/group policy before allowing
+// cached-content management to touch its upstream account. Cached content is
+// bound to an account, but that binding does not outlive dispatch authorization.
+func (s *GeminiCachedContentService) AccountDispatchAllowed(ctx context.Context, userID int64, groupID *int64, account *Account) (bool, error) {
+	if userID <= 0 || groupID == nil || *groupID <= 0 || account == nil {
+		return false, nil
+	}
+	if s == nil || s.compat == nil || s.compat.accountRepo == nil {
+		return false, errors.New("account repository not configured")
+	}
+	ctx = context.WithValue(ctx, ctxkey.UserID, userID)
+	ctx = context.WithValue(ctx, accountDispatchContextKey{}, (*accountDispatchSelection)(nil))
+	ctx, err := withAccountDispatchSelection(ctx, s.compat.accountRepo, groupID)
+	if err != nil {
+		return false, err
+	}
+	return accountDispatchAllows(ctx, account, groupID, false), nil
 }
 
 // boundAccount 返回持有缓存的账号：账号已删除返回 nil；账号存在但当前不支持显式缓存返回

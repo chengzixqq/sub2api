@@ -908,7 +908,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		fs := NewFailoverState(3, false)
 		// LastFailoverErr 为 nil
 
-		action := fs.HandleSelectionExhausted(context.Background())
+		action := fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts)
 		require.Equal(t, FailoverExhausted, action)
 	})
 
@@ -916,7 +916,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		fs := NewFailoverState(3, false)
 		fs.LastFailoverErr = newTestFailoverErr(500, false, false)
 
-		action := fs.HandleSelectionExhausted(context.Background())
+		action := fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts)
 		require.Equal(t, FailoverExhausted, action)
 	})
 
@@ -927,7 +927,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		fs.SwitchCount = 1
 
 		start := time.Now()
-		action := fs.HandleSelectionExhausted(context.Background())
+		action := fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts)
 		elapsed := time.Since(start)
 
 		require.Equal(t, FailoverContinue, action)
@@ -942,7 +942,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		fs.SwitchCount = 3 // > MaxSwitches(2)
 
 		start := time.Now()
-		action := fs.HandleSelectionExhausted(context.Background())
+		action := fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts)
 		elapsed := time.Since(start)
 
 		require.Equal(t, FailoverExhausted, action)
@@ -957,7 +957,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		cancel()
 
 		start := time.Now()
-		action := fs.HandleSelectionExhausted(ctx)
+		action := fs.HandleSelectionExhausted(ctx, service.ErrNoAvailableAccounts)
 		elapsed := time.Since(start)
 
 		require.Equal(t, FailoverCanceled, action)
@@ -973,7 +973,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		action := fs.HandleSelectionExhausted(ctx)
+		action := fs.HandleSelectionExhausted(ctx, service.ErrNoAvailableAccounts)
 		require.Equal(t, FailoverCanceled, action)
 	})
 
@@ -983,7 +983,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		action := fs.HandleSelectionExhausted(ctx)
+		action := fs.HandleSelectionExhausted(ctx, service.ErrNoAvailableAccounts)
 		require.Equal(t, FailoverCanceled, action)
 	})
 
@@ -992,7 +992,7 @@ func TestHandleSelectionExhausted(t *testing.T) {
 		fs.LastFailoverErr = newTestFailoverErr(503, false, false)
 		fs.SwitchCount = 2 // == MaxSwitches，条件是 <=，仍可重试
 
-		action := fs.HandleSelectionExhausted(context.Background())
+		action := fs.HandleSelectionExhausted(context.Background(), service.ErrNoAvailableAccounts)
 		require.Equal(t, FailoverContinue, action)
 	})
 }

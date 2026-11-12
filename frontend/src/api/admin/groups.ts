@@ -453,6 +453,15 @@ export interface AccountPolicySelection {
   origin: AccountPolicyOrigin
   account_name?: string
   dispatch_scope?: 'shared' | 'authorized_only'
+  eligible: boolean
+  ineligible_reason?: string
+}
+
+export type AccountPolicyWriteSelection = Pick<AccountPolicySelection, 'account_id' | 'origin'>
+
+export interface GroupAccountPolicyWrite {
+  mode: AccountPolicyMode
+  accounts: AccountPolicyWriteSelection[]
 }
 
 export interface GroupAccountPolicy {
@@ -474,7 +483,7 @@ export async function putGroupAccountPolicy(
   id: number,
   userID: number,
   version: number,
-  policy: Pick<GroupAccountPolicy, 'mode' | 'accounts'>
+  policy: GroupAccountPolicyWrite
 ): Promise<GroupAccountPolicy> {
   const { data } = await apiClient.put<GroupAccountPolicy>(
     `/admin/groups/${id}/account-policies/${userID}`,

@@ -477,7 +477,10 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if policyErr != nil {
 		return nil, policyErr
 	}
-	accountID, account, responseID, store := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	accountID, account, responseID, store, err := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	if err != nil {
+		return nil, err
+	}
 	if accountID <= 0 || account == nil || store == nil {
 		return nil, nil
 	}
@@ -520,9 +523,9 @@ func (s *OpenAIGatewayService) ResolveAccountIDByPreviousResponseIDForScheduler(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
-) int64 {
-	accountID, _, _, _ := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
-	return accountID
+) (int64, error) {
+	accountID, _, _, _, err := s.resolveAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, requiredCapability, requireCompact)
+	return accountID, err
 }
 
 func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
@@ -533,117 +536,125 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
 	requireCompact bool,
-) (int64, *Account, string, OpenAIWSStateStore) {
+) (int64, *Account, string, OpenAIWSStateStore, error) {
 	if s == nil {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	var policyErr error
 	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
 	if policyErr != nil {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, policyErr
 	}
 	responseID := strings.TrimSpace(previousResponseID)
 	if responseID == "" {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	store := s.getOpenAIWSStateStore()
 	if store == nil {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 
 	accountID, err := store.GetResponseAccount(ctx, derefGroupID(groupID), responseID)
 	if err != nil || accountID <= 0 {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if excludedIDs != nil {
 		if _, excluded := excludedIDs[accountID]; excluded {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 	}
 
 	account, err := s.getSchedulableAccount(ctx, accountID)
-	if err != nil || account == nil {
+	if err != nil && !errors.Is(err, ErrAccountNotFound) {
+		return 0, nil, "", nil, err
+	}
+	if account == nil || errors.Is(err, ErrAccountNotFound) {
+		excludeStaleAccountDispatchCandidate(ctx, accountID)
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	// OAuth/SetupToken continuation state lives on the WSv2 session and cannot
 	// survive an HTTP fallback. Official API-key Responses HTTP requests are
 	// different: previous_response_id is supported by the provider and scoped to
 	// the selected key/project, so the response-id binding must retain that key.
 	if !account.IsOpenAIApiKey() && s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if requestedModel != "" && !supportsOpenAIRequestModel(account, requestedModel, requireCompact) {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	// Quota auto-pause must also gate the previous_response_id sticky path; otherwise an
 	// account over its 5h/7d threshold keeps serving the same response chain even though
 	// normal scheduling skips it. Pause is transient, so fall through to normal scheduling
 	// without deleting the binding (the window may reset before the next turn).
 	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	// 分组利润控制：与 quota auto-pause 同语义——利润不合格是暂时
 	// 状态（上游倍率/高峰随时间变化），只跳过本次复用、落回普通调度，不删除
 	// 绑定（倍率恢复后可继续按 previous_response_id 粘连）。
 	if vetoed, _ := openAIProfitControlVetoReason(ctx, account); vetoed {
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
 	if s.accountRepo != nil {
 		latest, latestErr := s.accountRepo.GetByID(ctx, account.ID)
-		if latestErr != nil || latest == nil {
+		if latestErr != nil && !errors.Is(latestErr, ErrAccountNotFound) {
+			return 0, nil, "", nil, latestErr
+		}
+		if latest == nil || errors.Is(latestErr, ErrAccountNotFound) {
+			excludeStaleAccountDispatchCandidate(ctx, accountID)
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if shouldClearStickySession(latest, requestedModel) || !latest.IsOpenAI() || !latest.IsSchedulable() {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if !s.openAIAccountMatchesSchedulingGroup(ctx, latest, groupID) {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !latest.IsPrivacySet() {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if !parentHealthyForShadow(latest, s.parentAccountLookup(ctx)) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if requestedModel != "" && !supportsOpenAIRequestModel(latest, requestedModel, requireCompact) {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if !latest.SupportsOpenAIEndpointCapability(requiredCapability) {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, latest); paused {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		// 利润门对最新账号状态复检一次，语义同上：跳过复用、不删绑定。
 		if vetoed, _ := openAIProfitControlVetoReason(ctx, latest); vetoed {
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		if s.isOpenAIAccountRequestRuntimeBlocked(latest, requestedModel) {
 			_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-			return 0, nil, "", nil
+			return 0, nil, "", nil, nil
 		}
 		account = latest
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return 0, nil, "", nil
+		return 0, nil, "", nil, nil
 	}
-	return accountID, account, responseID, store
+	return accountID, account, responseID, store, nil
 }
 
 func classifyOpenAIWSAcquireError(err error) string {

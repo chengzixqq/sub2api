@@ -294,6 +294,9 @@ func (r *accountRepository) ListIDsByWorkspace(ctx context.Context, workspaceID 
 // 不经过管理端中间件，就地收窄会让它们全部退化成 workspace_id = 0
 // 而查不到账号，等同于打死线上转发。管理端写入口显式改用本方法。
 func (r *accountRepository) GetByIDScoped(ctx context.Context, id int64) (*service.Account, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.GetByIDScoped(ctx, id)
+	}
 	q := r.client.Account.Query().Where(dbaccount.IDEQ(id))
 	if workspaceID := service.ScopeFromContextOrDeny(ctx).WorkspaceFilter(); workspaceID != nil {
 		q = q.Where(dbaccount.WorkspaceIDEQ(*workspaceID))
@@ -1142,10 +1145,6 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 	if scoped := r.accountTransactionScope(ctx); scoped != r {
 		return scoped.Delete(ctx, id)
 	}
-	groupIDs, err := r.loadAccountGroupIDs(ctx, id)
-	if err != nil {
-		return err
-	}
 	// 使用事务保证账号与关联分组的删除原子性
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
@@ -1160,11 +1159,18 @@ func (r *accountRepository) Delete(ctx context.Context, id int64) error {
 		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
 	}
+	if err := lockAccountRows(ctx, txClient, []int64{id}); err != nil {
+		return err
+	}
+	groupIDs, err := accountGroupIDsForAccount(ctx, txClient, id, true)
+	if err != nil {
+		return err
+	}
 
 	if _, err := txClient.AccountGroup.Delete().Where(dbaccountgroup.AccountIDEQ(id)).Exec(ctx); err != nil {
 		return err
 	}
-	if err := deleteAccountDispatchGrants(ctx, txClient, "account_id = $1", id); err != nil {
+	if err := deleteAccountDispatchGrants(ctx, txClient, "g.account_id = $1", id); err != nil {
 		return err
 	}
 	if _, err := txClient.ExecContext(ctx, "DELETE FROM scheduled_test_plans WHERE account_id = $1", id); err != nil {
@@ -2024,7 +2030,16 @@ func (r *accountRepository) AddToGroup(ctx context.Context, accountID, groupID i
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
 	}
+	if err := lockAccountRows(ctx, client, []int64{accountID}); err != nil {
+		return err
+	}
+	if err := requireLiveAccountRows(ctx, client, []int64{accountID}); err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, client, []int64{groupID}); err != nil {
+		return err
+	}
+	if err := lockAccountGroupRows(ctx, client, groupID, []int64{accountID}); err != nil {
 		return err
 	}
 	_, err = client.AccountGroup.Create().
@@ -2056,6 +2071,18 @@ func (r *accountRepository) RemoveFromGroup(ctx context.Context, accountID, grou
 	if err == nil {
 		defer func() { _ = tx.Rollback() }()
 		client = tx.Client()
+	}
+	if err := lockAccountRows(ctx, client, []int64{accountID}); err != nil {
+		return err
+	}
+	if err := lockMemberAccountDispatchPolicyUsers(ctx, client, groupID, []int64{accountID}); err != nil {
+		return err
+	}
+	if err := lockLiveGroups(ctx, client, []int64{groupID}); err != nil {
+		return err
+	}
+	if err := lockAccountGroupRows(ctx, client, groupID, []int64{accountID}); err != nil {
+		return err
 	}
 	_, err = client.AccountGroup.Delete().
 		Where(
@@ -2105,10 +2132,6 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 	if adminaccess.RestrictedFromContext(ctx) != nil {
 		return r.scopedAdminBindGroups(ctx, accountID, groupIDs)
 	}
-	existingGroupIDs, err := r.loadAccountGroupIDs(ctx, accountID)
-	if err != nil {
-		return err
-	}
 	// 使用事务保证删除旧绑定与创建新绑定的原子性
 	tx, err := r.client.Tx(ctx)
 	if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
@@ -2123,7 +2146,20 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 		// 已处于外部事务中（ErrTxStarted），复用当前 client
 		txClient = r.client
 	}
+	if err := lockAccountRows(ctx, txClient, []int64{accountID}); err != nil {
+		return err
+	}
+	if err := requireLiveAccountRows(ctx, txClient, []int64{accountID}); err != nil {
+		return err
+	}
+	existingGroupIDs, err := accountGroupIDsForAccount(ctx, txClient, accountID, false)
+	if err != nil {
+		return err
+	}
 	if err := lockLiveGroups(ctx, txClient, groupIDs); err != nil {
+		return err
+	}
+	if _, err := accountGroupIDsForAccount(ctx, txClient, accountID, true); err != nil {
 		return err
 	}
 
@@ -2143,6 +2179,7 @@ func (r *accountRepository) BindGroups(ctx context.Context, accountID int64, gro
 			removedGroupIDs = append(removedGroupIDs, oldGroupID)
 		}
 	}
+	removedGroupIDs = sortedUniqueIDs(removedGroupIDs)
 	if err := deleteMemberAccountDispatchGrants(ctx, txClient, accountID, removedGroupIDs); err != nil {
 		return err
 	}

@@ -178,7 +178,9 @@ func (r *cachedBillingRepo) expireLease(id int64) {
 
 type cachedBillingAccountRepo struct {
 	service.AccountRepository
-	accounts map[int64]*service.Account
+	accounts  map[int64]*service.Account
+	policy    *service.AccountDispatchPolicy
+	policyErr error
 }
 
 func (r *cachedBillingAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
@@ -188,6 +190,13 @@ func (r *cachedBillingAccountRepo) GetByID(_ context.Context, id int64) (*servic
 	}
 	cp := *account
 	return &cp, nil
+}
+
+func (r *cachedBillingAccountRepo) GetAccountDispatchPolicy(context.Context, int64, int64) (*service.AccountDispatchPolicy, error) {
+	if r.policyErr != nil {
+		return nil, r.policyErr
+	}
+	return r.policy, nil
 }
 
 type cachedBillingUpstream struct {
@@ -299,12 +308,13 @@ func (r *cachedBillingUsageRepo) totals() []float64 {
 }
 
 type cachedBillingEnv struct {
-	h        *GatewayHandler
-	repo     *cachedBillingRepo
-	upstream *cachedBillingUpstream
-	usage    *cachedBillingUsageRepo
-	apiKey   *service.APIKey
-	group    *service.Group
+	h           *GatewayHandler
+	repo        *cachedBillingRepo
+	accountRepo *cachedBillingAccountRepo
+	upstream    *cachedBillingUpstream
+	usage       *cachedBillingUsageRepo
+	apiKey      *service.APIKey
+	group       *service.Group
 	// accounts 是调度快照桩直接返回的账号对象，测试可改其凭据。
 	accounts map[int64]*service.Account
 }
@@ -345,7 +355,8 @@ func newCachedBillingEnv(t *testing.T, balance float64, accountIDs ...int64) *ca
 	gw := service.NewGatewayService(nil, &fakeGroupRepo{group: group}, usage, nil, userRepo, nil, nil, nil, cfg, snapshot, nil,
 		billing, nil, &service.BillingCacheService{}, nil, nil, &service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	upstream := &cachedBillingUpstream{}
-	compat := service.NewGeminiMessagesCompatService(&cachedBillingAccountRepo{accounts: accounts}, nil, nil, nil, nil, nil, upstream, nil, cfg)
+	accountRepo := &cachedBillingAccountRepo{accounts: accounts}
+	compat := service.NewGeminiMessagesCompatService(accountRepo, nil, nil, nil, nil, nil, upstream, nil, cfg)
 	repo := &cachedBillingRepo{records: map[string]*service.GeminiCachedContent{}, mutations: map[int64]cachedBillingMutation{}}
 	h := &GatewayHandler{
 		gatewayService:             gw,
@@ -355,7 +366,7 @@ func newCachedBillingEnv(t *testing.T, balance float64, accountIDs ...int64) *ca
 	}
 	apiKey := &service.APIKey{ID: 7, UserID: 3, GroupID: &groupID, Group: group, Status: service.StatusActive,
 		User: &service.User{ID: 3, Concurrency: 10, Balance: balance}}
-	return &cachedBillingEnv{h: h, repo: repo, upstream: upstream, usage: usage, apiKey: apiKey, group: group, accounts: accounts}
+	return &cachedBillingEnv{h: h, repo: repo, accountRepo: accountRepo, upstream: upstream, usage: usage, apiKey: apiKey, group: group, accounts: accounts}
 }
 
 // TestGeminiExplicitCacheExclusions_FiltersUnsupportedAccountsFromSnapshot 候选过滤直接按快照里的凭据判定：
@@ -745,6 +756,60 @@ func TestGeminiCachedContentsPatch_UnaffordableExtensionRejectedBeforeUpstream(t
 	require.NotEqual(t, http.StatusOK, rec.Code)
 	require.Zero(t, env.upstream.methodCalls(http.MethodPatch), "余额不足以支付延长部分时不调用上游")
 	require.Empty(t, env.usage.totals())
+}
+
+func revokeCachedContentAccountForUser(env *cachedBillingEnv) {
+	env.accounts[900].DispatchScope = service.DispatchScopeAuthorizedOnly
+	env.accountRepo.policy = &service.AccountDispatchPolicy{
+		UserID:   env.apiKey.UserID,
+		GroupID:  *env.apiKey.GroupID,
+		Mode:     service.AccountDispatchModeReplace,
+		Accounts: []service.AccountDispatchGrant{},
+	}
+}
+
+func TestGeminiCachedContentsPatch_RevokedDispatchAccountBlockedBeforeBillingAndUpstream(t *testing.T) {
+	env := newCachedBillingEnv(t, 1000, 900)
+	env.seed(time.Now().Add(time.Hour))
+	revokeCachedContentAccountForUser(env)
+
+	rec := env.patch()
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Zero(t, env.upstream.methodCalls(http.MethodPatch))
+	require.Empty(t, env.usage.totals())
+	require.Empty(t, env.repo.deleted)
+}
+
+func TestGeminiCachedContentsDelete_RevokedDispatchAccountDeletesLocallyOnly(t *testing.T) {
+	env := newCachedBillingEnv(t, 1000, 900)
+	env.seed(time.Now().Add(time.Hour))
+	revokeCachedContentAccountForUser(env)
+
+	rec := env.serve(http.MethodDelete, "/v1beta/cachedContents/abc", "",
+		gin.Params{{Key: "cacheID", Value: "abc"}}, env.h.GeminiCachedContentsDelete)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Zero(t, env.upstream.methodCalls(http.MethodDelete))
+	require.Equal(t, []int64{100}, env.repo.deleted)
+}
+
+func TestGeminiCachedContentsMutation_DispatchPolicyReadFailureFailsClosed(t *testing.T) {
+	for _, method := range []string{http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			env := newCachedBillingEnv(t, 1000, 900)
+			env.seed(time.Now().Add(time.Hour))
+			env.accountRepo.policyErr = errors.New("policy database unavailable")
+			var rec *httptest.ResponseRecorder
+			if method == http.MethodPatch {
+				rec = env.patch()
+			} else {
+				rec = env.serve(http.MethodDelete, "/v1beta/cachedContents/abc", "",
+					gin.Params{{Key: "cacheID", Value: "abc"}}, env.h.GeminiCachedContentsDelete)
+			}
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+			require.Zero(t, env.upstream.methodCalls(method))
+			require.Empty(t, env.repo.deleted)
+		})
+	}
 }
 
 // 上游对缓存不存在的响应：AI Studio 403；Vertex 缓存资源接口 404，文案含上游缓存数字 ID。

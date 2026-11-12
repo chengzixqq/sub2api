@@ -277,7 +277,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.NoError(t, err)
 		require.True(t, report.Valid())
 		require.Empty(t, report.Missing)
-		require.Equal(t, []string{upstream246, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql"}, report.Pending)
+		require.Equal(t, []string{upstream246, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql"}, report.Pending)
 		require.Equal(t, []string{upstream246}, report.OutOfOrderPending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -315,6 +315,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"258_group_usage_rollup_optimistic.sql",
 			"259_usage_log_billing_details.sql",
 			"260_account_dispatch_policy.sql",
+			"261_revoke_stale_member_dispatch_grants.sql",
 		}, report.Pending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -334,7 +335,7 @@ func withOutOfOrderMigrations(t *testing.T, names ...string) {
 func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
-	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_mcp_oauth.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql"}
+	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_mcp_oauth.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql"}
 	missing := map[string]bool{}
 	for _, name := range pending {
 		missing[name] = true
@@ -366,7 +367,7 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 		t.Run(pendingStateName(appliedNew), func(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"filename", "checksum"})
 			for _, item := range embedded {
-				unapplied := item.filename == "260_account_dispatch_policy.sql"
+				unapplied := item.filename == "260_account_dispatch_policy.sql" || item.filename == "261_revoke_stale_member_dispatch_grants.sql"
 				for _, name := range pending[appliedNew:] {
 					unapplied = unapplied || item.filename == name
 				}
@@ -383,7 +384,7 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 			require.True(t, report.Valid())
 			require.Empty(t, report.Missing)
 			require.Empty(t, report.ChecksumMismatches)
-			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "260_account_dispatch_policy.sql")
+			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql")
 			require.Equal(t, expectedPending, report.Pending)
 			require.Equal(t, pending[appliedNew:], report.OutOfOrderPending)
 			require.NoError(t, mock.ExpectationsWereMet())

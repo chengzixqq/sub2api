@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -266,6 +267,10 @@ func (s *FailoverState) HandleFailoverError(
 	return FailoverContinue
 }
 
+func isAccountSelectionCapacityError(err error) bool {
+	return errors.Is(err, service.ErrNoAvailableAccounts) || errors.Is(err, service.ErrNoAvailableCompactAccounts)
+}
+
 // HandleSelectionExhausted 处理选号失败（所有候选账号都在排除列表中）时的退避重试决策。
 // 针对 Antigravity 单账号分组的 503 (MODEL_CAPACITY_EXHAUSTED) 场景：
 // 清除排除列表、等待退避后重新选号。
@@ -273,11 +278,16 @@ func (s *FailoverState) HandleFailoverError(
 // 返回 FailoverContinue 时，调用方应设置 SingleAccountRetry context 并 continue。
 // 返回 FailoverExhausted 时，调用方应返回错误响应。
 // 返回 FailoverCanceled 时，调用方应直接 return。
-func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAction {
+func (s *FailoverState) HandleSelectionExhausted(ctx context.Context, selectionErr error) FailoverAction {
 	// 客户端已断开时选号失败是 context canceled 的必然结果，
 	// 不代表账号耗尽，直接按取消终止。
 	if ctx.Err() != nil {
 		return FailoverCanceled
+	}
+	// Only confirmed capacity exhaustion can release failed-account exclusions.
+	// A policy/database read error must stop this request even after an upstream 503.
+	if !isAccountSelectionCapacityError(selectionErr) {
+		return FailoverExhausted
 	}
 
 	if s.LastFailoverErr != nil &&

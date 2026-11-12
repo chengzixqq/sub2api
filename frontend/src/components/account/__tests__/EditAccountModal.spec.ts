@@ -7,9 +7,9 @@ import {
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, patchDispatchScopeMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode, authIsOwner } = vi.hoisted(() => ({
+const { updateAccountMock, patchAccountMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode, authIsOwner } = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
-  patchDispatchScopeMock: vi.fn(),
+  patchAccountMock: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
   showWarningMock: vi.fn(),
   authIsSimpleMode: { value: true },
@@ -40,7 +40,7 @@ vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
       update: updateAccountMock,
-      patchDispatchScope: patchDispatchScopeMock,
+      patch: patchAccountMock,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
@@ -68,6 +68,30 @@ vi.mock('vue-i18n', async () => {
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+
+const editAccountFixtures = new Map<number, any>()
+
+function applyMapPatch(base: Record<string, unknown> | undefined, patch: Record<string, unknown> | undefined) {
+  const result = { ...(base || {}) }
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value === null) delete result[key]
+    else result[key] = value
+  }
+  return result
+}
+
+function setUpPatchAdapter() {
+  patchAccountMock.mockReset()
+  patchAccountMock.mockImplementation(async (id: number, payload: Record<string, any>, _etag: string) => {
+    const baseline = editAccountFixtures.get(id)
+    const legacyPayload = { ...payload }
+    delete legacyPayload.credentials_patch
+    delete legacyPayload.extra_patch
+    legacyPayload.credentials = applyMapPatch(baseline?.credentials, payload.credentials_patch)
+    legacyPayload.extra = applyMapPatch(baseline?.extra, payload.extra_patch)
+    return updateAccountMock(id, legacyPayload)
+  })
+}
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -316,11 +340,13 @@ function buildOpenAIOAuthParentAccount() {
   } as any
 }
 
-function mountModal(account = buildAccount(), renderGroupSelector = false) {
+function mountModal(account = buildAccount(), renderGroupSelector = false, accountEtag = '"cv-1"') {
+  editAccountFixtures.set(account.id, account)
   return mount(EditAccountModal, {
     props: {
       show: true,
       account,
+      accountEtag,
       proxies: [],
       groups: []
     },
@@ -341,32 +367,49 @@ describe('EditAccountModal', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
     authIsOwner.value = true
-    patchDispatchScopeMock.mockReset()
+    editAccountFixtures.clear()
+    setUpPatchAdapter()
     showWarningMock.mockReset()
   })
 
   afterEach(() => vi.useRealTimers())
 
-  it('writes a changed dispatch scope through a separate CAS PATCH after the normal update', async () => {
+  it('writes a changed dispatch scope with account fields in one versioned PATCH', async () => {
     const account = buildAccount()
     account.dispatch_scope = 'shared'
     updateAccountMock.mockReset().mockResolvedValue(account)
-    patchDispatchScopeMock.mockResolvedValue({ ...account, dispatch_scope: 'authorized_only' })
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
-    const wrapper = mountModal(account)
+    const wrapper = mountModal(account, false, '"cv-7"')
     await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     await flushPromises()
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.dispatch_scope).toBeUndefined()
-    expect(patchDispatchScopeMock).toHaveBeenCalledWith(account.id, 'authorized_only')
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock.mock.calls[0]?.[0]).toBe(account.id)
+    expect(patchAccountMock.mock.calls[0]?.[1]).toMatchObject({
+      dispatch_scope: 'authorized_only',
+      priority: account.priority
+    })
+    expect(patchAccountMock.mock.calls[0]?.[2]).toBe('"cv-7"')
   })
 
-  it('keeps the dialog open and reports partial save when the CAS PATCH fails', async () => {
+  it('does not send dispatch_scope for an unchanged owner setting', async () => {
     const account = buildAccount()
     account.dispatch_scope = 'shared'
     updateAccountMock.mockReset().mockResolvedValue(account)
-    patchDispatchScopeMock.mockRejectedValue(new Error('version conflict'))
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('dispatch_scope')
+    expect(patchAccountMock.mock.calls[0]?.[2]).toBe('"cv-1"')
+  })
+
+  it('keeps the edited draft open on the API client 412 error shape', async () => {
+    const account = buildAccount()
+    account.dispatch_scope = 'shared'
+    patchAccountMock.mockRejectedValue({ status: 412, message: 'stale version', reason: 'ACCOUNT_VERSION_CONFLICT' })
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     const wrapper = mountModal(account)
     await wrapper.get('[data-testid="account-dispatch-scope"]').trigger('click')
@@ -374,8 +417,8 @@ describe('EditAccountModal', () => {
     await flushPromises()
     expect(wrapper.find('form#edit-account-form').exists()).toBe(true)
     expect(wrapper.emitted('close')).toBeUndefined()
-    expect(wrapper.emitted('updated')?.[0]?.[0]).toEqual(account)
-    expect(showWarningMock).toHaveBeenCalledWith('admin.accounts.authorizedOnlyPartialSave')
+    expect(wrapper.emitted('updated')).toBeUndefined()
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
   })
 
   it('hides the authorized-only switch from non-owner administrators', () => {

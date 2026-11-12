@@ -187,7 +187,13 @@ func (r *accountRepository) scopedAdminBindGroups(ctx context.Context, accountID
 	if dbent.TxFromContext(ctx) == nil {
 		return fmt.Errorf("受限分组写入需要数据库事务")
 	}
-	existing, err := r.loadAccountGroupIDs(ctx, accountID)
+	if err := lockAccountRows(ctx, r.client, []int64{accountID}); err != nil {
+		return err
+	}
+	if err := requireLiveAccountRows(ctx, r.client, []int64{accountID}); err != nil {
+		return err
+	}
+	existing, err := accountGroupIDsForAccount(ctx, r.client, accountID, false)
 	if err != nil {
 		return err
 	}
@@ -206,6 +212,9 @@ func (r *accountRepository) scopedAdminBindGroups(ctx context.Context, accountID
 		return nil
 	}
 	if err := lockLiveGroups(ctx, r.client, added); err != nil {
+		return err
+	}
+	if _, err := accountGroupIDsForAccount(ctx, r.client, accountID, true); err != nil {
 		return err
 	}
 	if len(removed) > 0 {

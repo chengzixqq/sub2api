@@ -3,6 +3,8 @@
     :show="show"
     :title="t('admin.accounts.editAccount')"
     width="wide"
+    :close-on-escape="!submitting"
+    :show-close-button="!submitting"
     @close="handleClose"
   >
     <form
@@ -3400,7 +3402,7 @@
 
     <template #footer>
       <div v-if="account" class="flex justify-end gap-3">
-        <button @click="handleClose" type="button" class="btn btn-secondary">
+        <button @click="handleClose" type="button" class="btn btn-secondary" :disabled="submitting">
           {{ t('common.cancel') }}
         </button>
         <button
@@ -3548,6 +3550,7 @@ import {
   parseDateTimeLocalInput
 } from '@/utils/format'
 import { extractApiErrorMessage, extractI18nErrorMessage } from '@/utils/apiError'
+import { buildAccountMapPatch } from '@/components/account/accountMapPatch'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { supportsAccountQuota } from '@/utils/accountQuota'
 import { getAccountExpiryTimestamp } from '@/components/account/accountExpiry'
@@ -3574,6 +3577,7 @@ import {
 interface Props {
   show: boolean
   account: Account | null
+  accountEtag?: string | null
   proxies: Proxy[]
   groups: AdminGroup[]
 }
@@ -5706,6 +5710,7 @@ const parseDateTimeLocal = parseDateTimeLocalInput
 
 // Methods
 const handleClose = () => {
+  if (submitting.value) return
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
   emit('close')
@@ -5756,22 +5761,35 @@ const submitUpdateAccount = async (
   // Freeze the policy for this account before the main save yields. Switching
   // accounts or a late policy response must not change the pending payload.
   const customization = pendingClaudeCustomization(accountID)
+  const accountETag = props.accountEtag
+  const account = props.account
+  const patchPayload = { ...updatePayload }
+  const credentialsPatch = buildAccountMapPatch(
+    (account?.credentials as Record<string, unknown> | undefined) ?? {},
+    patchPayload.credentials as Record<string, unknown> | undefined
+  )
+  const extraPatch = buildAccountMapPatch(
+    (account?.extra as Record<string, unknown> | undefined) ?? {},
+    patchPayload.extra as Record<string, unknown> | undefined
+  )
+  delete patchPayload.credentials
+  delete patchPayload.extra
+  if (Object.keys(credentialsPatch).length > 0) patchPayload.credentials_patch = credentialsPatch
+  if (Object.keys(extraPatch).length > 0) patchPayload.extra_patch = extraPatch
+  if (dispatchScope) patchPayload.dispatch_scope = dispatchScope
   submitting.value = true
   try {
-    let updatedAccount = await adminAPI.accounts.update(accountID, withAntigravityConfirmFlag(updatePayload))
-    if (dispatchScope) {
-      try {
-        updatedAccount = await adminAPI.accounts.patchDispatchScope(accountID, dispatchScope)
-      } catch {
-        emit('updated', updatedAccount)
-        appStore.showWarning(t('admin.accounts.authorizedOnlyPartialSave'))
-        return
-      }
-    }
+    if (!accountETag) throw new Error(t('admin.accounts.accountVersionMissing'))
+    let updatedAccount = await adminAPI.accounts.patch(
+      accountID,
+      withAntigravityConfirmFlag(patchPayload),
+      accountETag
+    )
     if (customization) await adminAPI.accounts.updateClaudeCustomization(accountID, customization)
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))
     emit('updated', updatedAccount)
+    submitting.value = false
     handleClose()
   } catch (error: any) {
     if (error.status === 409 && error.error === 'mixed_channel_warning' && needsMixedChannelCheck()) {
@@ -5782,6 +5800,10 @@ const submitUpdateAccount = async (
           await submitUpdateAccount(accountID, updatePayload, dispatchScope)
         }
       })
+      return
+    }
+    if (error.status === 412) {
+      appStore.showError(t('admin.accounts.accountVersionConflict'))
       return
     }
     appStore.showError(error.message || t('admin.accounts.failedToUpdate'))
