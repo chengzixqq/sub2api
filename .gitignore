@@ -134,6 +134,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 docs/*
 !docs/ACCOUNT_DISPATCH_POLICY.md
+!docs/frontend-i18n-build.md
 !docs/agent-resource-safety.md
 !docs/moego-json-batching.md
 !docs/admin-api-keys.md

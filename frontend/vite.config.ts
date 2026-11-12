@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import checker from 'vite-plugin-checker'
 import { resolve } from 'path'
+import { verifyI18nDependencies } from './build-tools/verifyI18nDependencies'
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -80,6 +81,8 @@ function injectPublicSettings(backendUrl: string): Plugin {
 }
 
 export default defineConfig(({ mode }) => {
+  verifyI18nDependencies(__dirname)
+
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
