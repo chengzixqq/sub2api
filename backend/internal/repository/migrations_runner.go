@@ -181,6 +181,9 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	}
 	sort.Strings(files) // 确保按文件名顺序执行迁移
 
+	// The official rollup replacement and the custom compatibility layer must
+	// become visible together, including on databases that already applied 258.
+	var deferredRollupContent, deferredRollupChecksum string
 	for _, name := range files {
 		// 读取迁移文件内容
 		contentBytes, err := fs.ReadFile(fsys, name)
@@ -190,6 +193,9 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 
 		content := strings.TrimSpace(string(contentBytes))
 		if content == "" {
+			if name == groupUsageRollupCompatibilityMigration && deferredRollupContent != "" {
+				return fmt.Errorf("paired migration %s must not be empty", name)
+			}
 			continue // 跳过空文件
 		}
 
@@ -201,6 +207,9 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		var existing string
 		rowErr := lockConn.QueryRowContext(ctx, "SELECT checksum FROM schema_migrations WHERE filename = $1", name).Scan(&existing)
 		if rowErr == nil {
+			if name == groupUsageRollupCompatibilityMigration && deferredRollupContent != "" {
+				return fmt.Errorf("migration %s is missing although its compatibility migration is already applied", groupUsageRollupUpstreamMigration)
+			}
 			// 迁移已应用，验证校验和是否匹配
 			if existing != checksum {
 				// 兼容特定历史误改场景（仅白名单规则），其余仍保持严格不可变约束。
@@ -228,6 +237,15 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		nonTx, err := validateMigrationExecutionMode(name, content)
 		if err != nil {
 			return fmt.Errorf("validate migration %s: %w", name, err)
+		}
+
+		if name == groupUsageRollupUpstreamMigration {
+			if _, statErr := fs.Stat(fsys, groupUsageRollupCompatibilityMigration); statErr == nil {
+				deferredRollupContent, deferredRollupChecksum = content, checksum
+				continue
+			} else if !errors.Is(statErr, fs.ErrNotExist) {
+				return fmt.Errorf("stat rollup compatibility migration: %w", statErr)
+			}
 		}
 
 		if nonTx {
@@ -262,6 +280,23 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			return fmt.Errorf("begin migration %s: %w", name, err)
 		}
 
+		if name == groupUsageRollupCompatibilityMigration && deferredRollupContent != "" {
+			// Writers take usage_logs before the state row. Acquire that source
+			// relation first, before upstream ALTER TABLE takes its state lock.
+			if _, err := tx.ExecContext(ctx, groupUsageRollupMigrationSourceGuard); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("drain source writers for migration %s: %w", name, err)
+			}
+			if _, err := tx.ExecContext(ctx, deferredRollupContent); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("apply paired migration %s: %w", groupUsageRollupUpstreamMigration, err)
+			}
+			if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)", groupUsageRollupUpstreamMigration, deferredRollupChecksum); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("record paired migration %s: %w", groupUsageRollupUpstreamMigration, err)
+			}
+		}
+
 		// 执行迁移 SQL
 		if _, err := tx.ExecContext(ctx, content); err != nil {
 			_ = tx.Rollback()
@@ -279,10 +314,20 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			_ = tx.Rollback()
 			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
+		if name == groupUsageRollupCompatibilityMigration {
+			deferredRollupContent, deferredRollupChecksum = "", ""
+		}
 	}
 
+	if deferredRollupContent != "" {
+		return fmt.Errorf("paired migration %s was not applied", groupUsageRollupCompatibilityMigration)
+	}
 	return nil
 }
+
+const groupUsageRollupUpstreamMigration = "251_group_usage_rollup_nonblocking_build.sql"
+const groupUsageRollupCompatibilityMigration = "262_group_usage_rollup_protocol_compat.sql"
+const groupUsageRollupMigrationSourceGuard = "SET LOCAL lock_timeout = '250ms'; SET LOCAL statement_timeout = '2s'; LOCK TABLE usage_logs IN SHARE ROW EXCLUSIVE MODE"
 
 type migrationConnection interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)

@@ -174,7 +174,7 @@ func (s *GatewayService) applyAdvisorAccountStatsCost(ctx context.Context, log *
 			}
 			executorStatsRequestRecorded = true
 			amount = resolveAccountStatsCost(ctx, s.channelService, s.billingService, account.ID, groupID, model, tokens, requestCount, *c.TotalCost,
-				optionalStringValue(result.ServiceTier), at, longContext, optionalStringValue(result.ReasoningEffort))
+				optionalStringValue(result.ServiceTier), at, longContext, result.upstreamPriceFactor(), optionalStringValue(result.ReasoningEffort))
 		} else {
 			amount = s.advisorAccountStatsCost(ctx, account.ID, groupID, c.Model, tokens, *c.TotalCost, at)
 		}

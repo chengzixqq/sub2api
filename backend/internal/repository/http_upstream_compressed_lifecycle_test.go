@@ -91,7 +91,8 @@ func TestHTTPUpstreamCompressedReadCloseConcurrent(t *testing.T) {
 					t.Fatal("compressed Close did not cancel blocked Read")
 				}
 				select {
-				case <-readDone:
+				case err := <-readDone:
+					require.Error(t, err, "closed response read must finish with an error")
 				case <-time.After(time.Second):
 					t.Fatal("compressed Read did not finish")
 				}

@@ -348,7 +348,9 @@ func TestPassthroughLifecycle_CyberTerminalEventsMarkBeforeAfterTurn(t *testing.
 			}
 			require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 			select {
-			case <-serverErr:
+			case err := <-serverErr:
+				// Client-side assertions above check the outcome; this wait checks termination.
+				t.Logf("websocket worker terminated: %v", err)
 			case <-time.After(3 * time.Second):
 				t.Fatal("cyber passthrough test did not exit")
 			}
@@ -396,7 +398,9 @@ func TestPassthroughLifecycle_NonCyberFailureKeepsAccountSideEffects(t *testing.
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("non-cyber passthrough test did not exit")
 	}
@@ -425,7 +429,9 @@ func TestPassthroughLifecycle_CyberSkipsFailureAccountSideEffects(t *testing.T) 
 
 	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("cyber side-effect test did not exit")
 	}
@@ -457,7 +463,9 @@ func TestPassthroughLifecycle_CloseReasonTruncationPreservesUTF8(t *testing.T) {
 	require.Equal(t, strings.Repeat("a", 119), closeErr.Reason)
 
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough close reason test did not exit")
 	}
@@ -522,7 +530,9 @@ func TestPassthroughLifecycle_ResponsesLiteFirstFramePinsParallelToolCalls(t *te
 	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
 	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("Lite 首帧测试等待 passthrough 退出超时")
 	}
@@ -585,7 +595,9 @@ func TestPassthroughLifecycle_LeaseLossSendsRetryClose(t *testing.T) {
 	require.Equal(t, coderws.StatusTryAgainLater, closeErr.Code)
 	require.Equal(t, "websocket ingress capacity lease lost; please reconnect", closeErr.Reason)
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough lease-loss reader did not exit")
 	}
@@ -610,7 +622,9 @@ func TestPassthroughLifecycle_CompletedTurnStartsInterTurnIdle(t *testing.T) {
 	require.Equal(t, coderws.StatusNormalClosure, closeErr.Code)
 	require.Equal(t, "websocket idle timeout", closeErr.Reason)
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough idle reader did not exit")
 	}
@@ -670,7 +684,9 @@ func TestPassthroughLifecycle_PreambleAllowsPromptClientCancel(t *testing.T) {
 
 	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough cancel test did not exit")
 	}
@@ -747,7 +763,9 @@ func TestPassthroughLifecycle_ActiveTurnActivityRefreshesReadTimeout(t *testing.
 	}
 	require.NoError(t, clientConn.Close(coderws.StatusNormalClosure, "done"))
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough active-turn refresh test did not exit")
 	}

@@ -171,13 +171,14 @@ func (s *FrontendServer) serveIndexHTML(c *gin.Context) {
 	cached, err := s.loadHTML(ctx)
 	if err != nil {
 		// Fallback: serve without injection
+		applyHTMLNoCacheHeaders(c.Writer.Header())
 		c.Data(http.StatusOK, "text/html; charset=utf-8", s.baseHTML)
 		c.Abort()
 		return
 	}
 
 	c.Header("ETag", cached.ETag)
-	c.Header("Cache-Control", "no-cache")
+	applyHTMLNoCacheHeaders(c.Writer.Header())
 	// A nonce-bearing CSP is unique to this request. Returning 304 would make
 	// the browser reuse an older HTML body with a different inline-script nonce.
 	if nonce == "" && c.GetHeader("If-None-Match") == cached.ETag {

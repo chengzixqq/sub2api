@@ -187,6 +187,12 @@ func clearOpsFields(in *UpdateGroupInput) []string {
 	if in.AllowLive != nil {
 		drop("allow_live", func() { in.AllowLive = nil })
 	}
+	if in.ForceOpenAIFast != nil {
+		drop("force_openai_fast", func() { in.ForceOpenAIFast = nil })
+	}
+	if in.ForceOpenAIUltrafast != nil {
+		drop("force_openai_ultrafast", func() { in.ForceOpenAIUltrafast = nil })
+	}
 	if in.DefaultMappedModel != nil {
 		drop("default_mapped_model", func() { in.DefaultMappedModel = nil })
 	}

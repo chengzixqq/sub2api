@@ -57,6 +57,9 @@ func (r *dashboardAggregationRepository) SyncGroupUsageRollups(ctx context.Conte
 	}
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", groupUsageRollupPublisherLock).Scan(&acquired); err != nil {
+		// A canceled response can conceal a lock that PostgreSQL already took.
+		// Never return that session to the pool with uncertain lock ownership.
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		return err
 	}
 	if !acquired {
@@ -67,7 +70,8 @@ func (r *dashboardAggregationRepository) SyncGroupUsageRollups(ctx context.Conte
 		defer cancel()
 		// If unlock fails, discard the connection instead of returning a session
 		// advisory lock to the pool, where another job could re-enter it.
-		if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock($1)", groupUsageRollupPublisherLock); err != nil {
+		var unlocked bool
+		if err := conn.QueryRowContext(unlockCtx, "SELECT pg_advisory_unlock($1)", groupUsageRollupPublisherLock).Scan(&unlocked); err != nil || !unlocked {
 			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
@@ -178,7 +182,11 @@ func scanGroupUsageRollup(ctx context.Context, conn *sql.Conn, plan *groupUsageR
 		return nil, err
 	}
 	plan.start = start
-	plan.end = start.In(timezone.Location()).AddDate(0, 0, 1)
+	// Advancing an exceptional 01:00 day start by one calendar day preserves
+	// 01:00 and overlaps the following midnight hour. Resolve the next date
+	// from its noon, then ask for that date's actual first instant.
+	year, month, day := start.In(timezone.Location()).Date()
+	plan.end = service.GroupUsageTodayStart(time.Date(year, month, day+1, 12, 0, 0, 0, timezone.Location()))
 	if !start.Before(plan.todayStart) {
 		plan.start, plan.end = plan.todayStart, plan.todayStart
 		return nil, nil

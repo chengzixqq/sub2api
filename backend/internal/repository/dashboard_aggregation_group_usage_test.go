@@ -19,7 +19,7 @@ func expectGroupPublisherLock(mock sqlmock.Sqlmock) {
 		WillReturnRows(sqlmock.NewRows([]string{"locked"}).AddRow(true))
 }
 func expectGroupPublisherUnlock(mock sqlmock.Sqlmock) {
-	mock.ExpectExec(`SELECT pg_advisory_unlock`).WithArgs(groupUsageRollupPublisherLock).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT pg_advisory_unlock`).WithArgs(groupUsageRollupPublisherLock).WillReturnRows(sqlmock.NewRows([]string{"unlocked"}).AddRow(true))
 }
 func expectGroupPrepare(mock sqlmock.Sqlmock, closed, zone string, retained time.Time) {
 	mock.ExpectBegin()
@@ -339,4 +339,41 @@ func expectDashboardRetentionSafety(mock sqlmock.Sqlmock) {
 func setGroupUsageRollupTestTimezone(t *testing.T) {
 	t.Helper()
 	useGroupUsageRepositoryTestTimezone(t, "Asia/Shanghai")
+}
+
+func TestDashboardAggregationRepositorySyncGroupUsageRollupsDiscardsUncertainLockSession(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectQuery(`SELECT pg_try_advisory_lock`).WithArgs(groupUsageRollupPublisherLock).WillReturnError(context.Canceled)
+	mock.ExpectClose()
+	err = newDashboardAggregationRepositoryWithSQL(db).SyncGroupUsageRollups(context.Background(), time.Now())
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, db.Stats().OpenConnections, "uncertain session lock ownership must not return to the pool")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDashboardAggregationRepositorySyncGroupUsageRollupsDiscardsFailedUnlockSession(t *testing.T) {
+	for _, responseError := range []bool{false, true} {
+		t.Run(map[bool]string{false: "false_result", true: "response_error"}[responseError], func(t *testing.T) {
+			setGroupUsageRollupTestTimezone(t)
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			today := time.Date(2026, 8, 13, 16, 0, 0, 0, time.UTC)
+			expectGroupPublisherLock(mock)
+			expectGroupPrepare(mock, service.GroupUsageDate(today), service.GroupUsageTimezoneName(), time.Unix(0, 0).UTC())
+			mock.ExpectCommit()
+			q := mock.ExpectQuery(`SELECT pg_advisory_unlock`).WithArgs(groupUsageRollupPublisherLock)
+			if responseError {
+				q.WillReturnError(context.DeadlineExceeded)
+			} else {
+				q.WillReturnRows(sqlmock.NewRows([]string{"unlocked"}).AddRow(false))
+			}
+			mock.ExpectClose()
+			require.NoError(t, newDashboardAggregationRepositoryWithSQL(db).SyncGroupUsageRollups(context.Background(), today))
+			require.Zero(t, db.Stats().OpenConnections)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }

@@ -95,7 +95,9 @@ func TestChannelMonitorWSHooks_TerminalAndPartialSnapshots(t *testing.T) {
 					require.Error(t, err)
 				}
 				select {
-				case <-done:
+				case err := <-done:
+					// Client-side assertions above check the outcome; this wait checks termination.
+					t.Logf("websocket worker terminated: %v", err)
 				case <-ctx.Done():
 					t.Fatal("websocket did not finish")
 				}

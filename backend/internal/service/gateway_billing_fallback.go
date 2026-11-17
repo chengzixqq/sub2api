@@ -33,6 +33,7 @@ type FailureBillingMetadata struct {
 	UpstreamResponseModel         string
 	UpstreamResponseModelConflict bool
 	UpstreamResponseServiceTier   string
+	UpstreamPriceMultiplier       float64
 }
 
 // FailureBillingInput contains only values needed for a failure settlement;
@@ -112,6 +113,7 @@ func DecideFailureBilling(in FailureBillingInput) FailureBillingDecision {
 	if in.Usage.InputTokens > 0 || in.Usage.OutputTokens > 0 ||
 		in.Usage.CacheReadInputTokens > 0 || in.Usage.CacheCreationInputTokens > 0 ||
 		in.Usage.CacheCreation5mTokens > 0 || in.Usage.CacheCreation1hTokens > 0 ||
+		in.Usage.CacheCreation30mTokens > 0 || in.Usage.CacheCreation12hTokens > 0 ||
 		in.Usage.ImageInputTokens > 0 || in.Usage.ImageCacheReadTokens > 0 ||
 		in.Usage.ImageOutputTokens > 0 || in.Usage.HasAdvisorUsage() || imageCount > 0 {
 		baseDecision.Billable = true

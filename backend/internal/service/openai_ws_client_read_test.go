@@ -136,7 +136,9 @@ func TestReadOpenAIWSClientMessage_ParentCancellationStillJoinsRead(t *testing.T
 	require.Equal(t, "websocket request canceled", clientClose.Reason)
 
 	select {
-	case <-serverResult:
+	case err := <-serverResult:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("server read goroutine leaked after parent cancellation")
 	}

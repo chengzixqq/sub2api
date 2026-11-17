@@ -228,7 +228,10 @@ func TestDecompressedBodyCloseInterruptsBlockedRead(t *testing.T) {
 		t.Fatal("close did not interrupt blocked read")
 	}
 	select {
-	case <-readDone:
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("closed response read unexpectedly succeeded")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked read did not exit")
 	}

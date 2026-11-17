@@ -413,6 +413,10 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 	}
 	publicStats := *stats
 	publicStats.TotalAccountCost = nil
+	publicStats.Endpoints = append(publicStats.Endpoints[:0:0], publicStats.Endpoints...)
+	for i := range publicStats.Endpoints {
+		publicStats.Endpoints[i].AccountCost = 0
+	}
 	publicStats.UpstreamEndpoints = nil
 	publicStats.EndpointPaths = nil
 

@@ -38,6 +38,7 @@ const (
 
 var (
 	integrationDB        *sql.DB
+	integrationDSN       string
 	integrationEntClient *dbent.Client
 	integrationRedis     *redisclient.Client
 
@@ -96,6 +97,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	integrationDSN = dsn
 	integrationDB, err = openSQLWithRetry(ctx, dsn, 30*time.Second)
 	if err != nil {
 		log.Printf("failed to open sql db: %v", err)
@@ -155,6 +157,7 @@ func runLocalDatabaseTests(ctx context.Context, m *testing.M, dsn string) int {
 	query.Set("TimeZone", "UTC")
 	u.RawQuery = query.Encode()
 	dsn = u.String()
+	integrationDSN = dsn
 	integrationDB, err = openSQLWithRetry(ctx, dsn, 30*time.Second)
 	if err != nil {
 		log.Print(err)

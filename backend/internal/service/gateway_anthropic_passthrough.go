@@ -604,6 +604,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		keepaliveTimer.Reset(keepaliveInterval)
 	}
 	inPartialEvent := false
+	clientModel := compositeClientModel(ctx, "")
 
 	for {
 		select {
@@ -692,11 +693,16 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 				}
 
 				if !clientDisconnected {
-					clientLine := []byte(line)
-					if inErrorEvent {
-						clientLine = redactUpstreamResponseBodyForClient(c, clientLine)
+					clientLine := line
+					if data, ok := extractAnthropicSSEDataLine(line); ok && clientModel != "" && gjson.Get(data, "type").String() == "message_start" && gjson.Get(data, "message.model").Exists() {
+						if rewritten, err := sjson.Set(data, "message.model", clientModel); err == nil {
+							clientLine = "data: " + rewritten
+						}
 					}
-					restored := string(reverseToolNamesIfPresent(c, clientLine))
+					if inErrorEvent {
+						clientLine = string(redactUpstreamResponseBodyForClient(c, []byte(clientLine)))
+					}
+					restored := reverseToolNamesIfPresentString(c, clientLine)
 					if _, err := io.WriteString(w, restored); err != nil {
 						clientDisconnected = true
 						logger.LegacyPrintf("service.gateway", "[Anthropic passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
@@ -1042,6 +1048,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	if contentType == "" {
 		contentType = "application/json"
 	}
+	body = restoreCompositeClientModel(ctx, body)
 	body = reverseToolNamesIfPresent(c, body)
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil

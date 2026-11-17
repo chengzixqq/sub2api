@@ -130,9 +130,7 @@ func (s *GatewayService) forwardBedrock(
 
 	// 错误/failover 处理
 	if resp.StatusCode >= 400 {
-		// 账号状态按模型隔离时用调度器的模型键（账号映射后的模型名），不是发往上游的 Bedrock 模型 ID；
-		// 两者不一致会让模型级冷却写到调度器不会读取的键上。
-		return s.handleBedrockUpstreamErrors(ctx, resp, c, account, account.GetMappedModel(reqModel))
+		return s.handleBedrockUpstreamErrors(ctx, resp, c, account, bedrockSchedulingModelKey(ctx, account, reqModel))
 	}
 
 	// Bedrock 分支绕过通用 Forward 成功路径，这里保持上游接受回调语义一致。
@@ -169,15 +167,18 @@ func (s *GatewayService) forwardBedrock(
 	}
 
 	return &ForwardResult{
-		RequestID:        resp.Header.Get("x-amzn-requestid"),
-		UpstreamHeaders:  resp.Header,
-		Usage:            *usage,
-		Model:            reqModel,
-		UpstreamModel:    mappedModel,
-		Stream:           reqStream,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                     resp.Header.Get("x-amzn-requestid"),
+		UpstreamHeaders:               resp.Header,
+		Usage:                         *usage,
+		Model:                         reqModel,
+		UpstreamModel:                 mappedModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+		Stream:                        reqStream,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnect,
 	}, responseErr
 }
 
@@ -280,6 +281,16 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	account *Account,
 	modelKey string,
 ) (*ForwardResult, error) {
+	// 内容过滤由请求内容决定，换号结果相同：不换号，按普通错误返回客户端。
+	if resp.StatusCode >= http.StatusInternalServerError {
+		respBody, _ := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if isBedrockContentFilterError(resp.StatusCode, respBody) {
+			return s.handleErrorResponse(ctx, resp, c, account, modelKey)
+		}
+	}
+
 	// retry exhausted + failover
 	if s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {

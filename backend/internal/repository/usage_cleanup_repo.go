@@ -323,62 +323,43 @@ func (r *usageCleanupRepository) DeleteUsageLogsBatch(ctx context.Context, filte
 	return deleted, nil
 }
 
+// Manual deletion invalidates through the row triggers, in the same bounded
+// transaction as the DELETE. Do not take FOR UPDATE on the global group state:
+// the trigger's KEY SHARE lock is enough to serialize with short publications.
 func (r *usageCleanupRepository) deleteUsageLogsBatchWithRollupInvalidation(ctx context.Context, db *sql.DB, whereClause string, args []any) (int64, error) {
 	tx, ctx, cancel, err := beginGroupUsageRollupTransaction(ctx, db)
 	if err != nil {
 		return 0, err
 	}
 	defer cancel()
-	rollback := func(err error) (int64, error) {
-		_ = tx.Rollback()
-		return 0, err
-	}
-
-	if err := lockGroupUsageRollupState(ctx, tx); err != nil {
-		return rollback(err)
-	}
+	defer func() { _ = tx.Rollback() }()
 	query := fmt.Sprintf(`
 		WITH target AS (
-			SELECT id
-			FROM usage_logs
-			WHERE %s
-			ORDER BY created_at ASC, id ASC
-			LIMIT $%d
+			SELECT id FROM usage_logs WHERE %s
+			ORDER BY created_at ASC, id ASC LIMIT $%d
 		)
-		DELETE FROM usage_logs
-		WHERE id IN (SELECT id FROM target)
+		DELETE FROM usage_logs WHERE id IN (SELECT id FROM target)
 		RETURNING created_at
 	`, whereClause, len(args))
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return rollback(err)
+		return 0, err
 	}
-
 	var deleted int64
-	var earliestDeletedAt time.Time
 	for rows.Next() {
 		var deletedAt time.Time
 		if err := rows.Scan(&deletedAt); err != nil {
 			_ = rows.Close()
-			return rollback(err)
+			return 0, err
 		}
 		deleted++
-		if earliestDeletedAt.IsZero() || deletedAt.Before(earliestDeletedAt) {
-			earliestDeletedAt = deletedAt
-		}
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return rollback(err)
+		return 0, err
 	}
 	if err := rows.Close(); err != nil {
-		return rollback(err)
-	}
-
-	if deleted > 0 {
-		if err := invalidateGroupUsageRollupsAt(ctx, tx, earliestDeletedAt); err != nil {
-			return rollback(err)
-		}
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err

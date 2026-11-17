@@ -130,3 +130,68 @@ func TestUsageLogRepositoryGetAllGroupUsageSummaryFallsBackWhenWatermarkInvalid(
 		})
 	}
 }
+
+// 已发布水位才决定原始尾段的起点。尚未实际删除的历史记录继续参与统计，
+// retained_from 仅裁剪已发布日桶，不能预先隐藏待清理的原始记录。
+func TestUsageLogRepositoryGetAllGroupUsageSummaryTailStartsAtPublishedBoundary(t *testing.T) {
+	todayStart := time.Date(2026, 3, 9, 4, 0, 0, 0, time.UTC)
+	yesterdayStart := time.Date(2026, 3, 8, 5, 0, 0, 0, time.UTC)
+	retainedFrom := time.Date(2026, 2, 10, 5, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		rows      *sqlmock.Rows
+		valid     bool
+		retained  string
+		closed    string
+		tailStart time.Time
+	}{
+		{
+			name: "水位有效但早于保留下界",
+			rows: sqlmock.NewRows([]string{"count", "closed_before", "retained_from", "timezone_name"}).
+				AddRow(1, "2026-02-01", retainedFrom, "America/New_York"),
+			valid:     true,
+			retained:  "2026-02-10",
+			closed:    "2026-02-01",
+			tailStart: time.Date(2026, 2, 1, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "有效日桶保留原有历史下界",
+			rows: sqlmock.NewRows([]string{"count", "closed_before", "retained_from", "timezone_name"}).
+				AddRow(1, "2026-03-07", time.Date(2026, 1, 20, 5, 0, 0, 0, time.UTC), "America/New_York"),
+			valid:     true,
+			retained:  "2026-01-20",
+			closed:    "2026-03-07",
+			tailStart: time.Date(2026, 3, 7, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "水位无效",
+			rows: sqlmock.NewRows([]string{"count", "closed_before", "retained_from", "timezone_name"}).
+				AddRow(1, "2026-03-07", retainedFrom, "Asia/Shanghai"),
+			valid:     false,
+			retained:  "1970-01-01",
+			closed:    "1970-01-01",
+			tailStart: time.Unix(0, 0).UTC(),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock := newSQLMock(t)
+			repo := newUsageLogRepositoryWithSQL(nil, db)
+			useGroupUsageRepositoryTestTimezone(t, "America/New_York")
+
+			mock.ExpectBegin()
+			mock.ExpectQuery(`(?s)COUNT\(\*\).*usage_group_rollup_state.*WHERE id = 1`).
+				WillReturnRows(tc.rows)
+			mock.ExpectQuery(`(?s)usage_group_daily_rollups.*FROM usage_logs ul\s+WHERE ul\.created_at >= \$7`).
+				WithArgs(todayStart, yesterdayStart, "2026-03-08", tc.valid, tc.retained, tc.closed, tc.tailStart).
+				WillReturnRows(sqlmock.NewRows([]string{"group_id", "total_cost", "today_cost", "yesterday_cost"}))
+
+			mock.ExpectCommit()
+			_, err := repo.GetAllGroupUsageSummary(context.Background(), todayStart)
+			require.NoError(t, err)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

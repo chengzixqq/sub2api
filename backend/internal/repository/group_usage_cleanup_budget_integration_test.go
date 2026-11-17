@@ -50,13 +50,13 @@ func TestGroupUsageCleanupBudget_SlowDeleteRollsBackAndReleasesIngest(t *testing
 		var sleeping bool
 		return setup.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
 			WHERE application_name=$1 AND wait_event='PgSleep' AND query LIKE '%DELETE FROM usage_logs%')`, "cleanup_budget_"+f.schema).Scan(&sleeping) == nil && sleeping
-	}, 2*time.Second, 10*time.Millisecond, "actual cleanup DELETE must reach the slow row trigger while holding the group gate")
+	}, 2*time.Second, 10*time.Millisecond, "actual cleanup DELETE must reach the slow row trigger")
 	writeCtx, writeCancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	writeStarted := time.Now()
 	_, err = writer.ExecContext(writeCtx, `INSERT INTO usage_logs(id,user_id,group_id,actual_cost,created_at) VALUES(2,1,10,2,$1)`, f.today.Add(time.Hour))
 	writeElapsed := time.Since(writeStarted)
 	writeCancel()
-	require.NoError(t, err, "cleanup timeout must release the group gate before ingest's deadline")
+	require.NoError(t, err, "an unrelated insert must finish while cleanup is bounded by its own deadline")
 	result := <-done
 	require.Error(t, result.err, "slow maintenance DELETE must hit its bounded statement/transaction budget")
 	require.Zero(t, result.deleted, "rolled-back rows must not be counted as committed progress")
@@ -73,13 +73,15 @@ func TestGroupUsageCleanupBudget_SlowDeleteRollsBackAndReleasesIngest(t *testing
 	require.Equal(t, initialRevision, revision, "failed deletion must not publish invalidation metadata")
 }
 
-func TestGroupUsageCleanupBudget_InFlightWriterDefersCleanup(t *testing.T) {
+func TestGroupUsageCleanupBudget_InFlightWriterDoesNotBlockUnrelatedCleanup(t *testing.T) {
 	useGroupUsageRepositoryTestTimezone(t, "UTC")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	f := newOptimisticGroupRollupFixture(t, ctx, false)
 	setup, writer := f.conn(t, ctx), f.conn(t, ctx)
 	f.seed(t, ctx, setup, 1, f.today.Add(-time.Hour), "1.25")
+	_, err := setup.ExecContext(ctx, "UPDATE usage_group_rollup_state SET closed_before=$1::date,scan_before=$2 WHERE id=1", f.today.Format("2006-01-02"), f.today)
+	require.NoError(t, err)
 	pool := groupUsageBudgetTestDB(t, f.schema)
 	tx, err := writer.BeginTx(ctx, nil)
 	require.NoError(t, err)
@@ -90,13 +92,17 @@ func TestGroupUsageCleanupBudget_InFlightWriterDefersCleanup(t *testing.T) {
 	deleted, err := (&usageCleanupRepository{sql: pool}).DeleteUsageLogsBatch(ctx, service.UsageCleanupFilters{
 		StartTime: f.today.AddDate(0, 0, -1), EndTime: f.today,
 	}, 5)
-	require.Error(t, err)
-	require.Zero(t, deleted)
-	require.Less(t, time.Since(started), time.Second, "cleanup gate wait must use the 250ms maintenance lock budget")
-	require.NoError(t, tx.Commit(), "maintenance failure must not abort the original writer")
-	var count int
-	require.NoError(t, setup.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs`).Scan(&count))
-	require.Equal(t, 2, count)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, deleted)
+	require.Less(t, time.Since(started), time.Second, "a writer on another row must not block manual cleanup's compatible trigger lock")
+	require.NoError(t, tx.Commit(), "cleanup must preserve the in-flight writer")
+	var oldRows, newRows int
+	require.NoError(t, setup.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE id=1),COUNT(*) FILTER(WHERE id=2) FROM usage_logs`).Scan(&oldRows, &newRows))
+	require.Zero(t, oldRows)
+	require.Equal(t, 1, newRows)
+	var closed string
+	require.NoError(t, setup.QueryRowContext(ctx, "SELECT closed_before::text FROM usage_group_rollup_state WHERE id=1").Scan(&closed))
+	require.Equal(t, f.today.Add(-time.Hour).Format("2006-01-02"), closed, "committed historical deletion must still invalidate its day")
 }
 
 // The production cleanup entry point accepts *sql.DB. A separate pool with a

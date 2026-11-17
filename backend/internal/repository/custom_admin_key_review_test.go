@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
 
@@ -38,7 +39,13 @@ func TestScopedAdminReviewGroupPriorityAndStatus(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close(); _, _ = base.Exec(`DROP SCHEMA ` + name + ` CASCADE`); _ = base.Close() })
 	driver := entsql.OpenDB(dialect.Postgres, db)
 	client := dbent.NewClient(dbent.Driver(driver))
-	require.NoError(t, migrate.Create(context.Background(), migrate.NewSchema(driver), []*schema.Table{migrate.ProxiesTable, migrate.AccountsTable, migrate.GroupsTable, migrate.AccountGroupsTable}, migrate.WithForeignKeys(false)))
+	require.NoError(t, migrate.Create(context.Background(), migrate.NewSchema(driver), []*schema.Table{migrate.UsersTable, migrate.ProxiesTable, migrate.AccountsTable, migrate.GroupsTable, migrate.AccountGroupsTable}, migrate.WithForeignKeys(false)))
+	// Account group changes and deletion revoke member dispatch grants. These
+	// tables are managed by SQL migrations rather than Ent schema generation.
+	dispatchPolicyMigration, err := migrations.FS.ReadFile("260_account_dispatch_policy.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(dispatchPolicyMigration))
+	require.NoError(t, err)
 	_, err = db.Exec(`CREATE TABLE scheduler_outbox(id BIGSERIAL PRIMARY KEY,event_type TEXT,account_id BIGINT,group_id BIGINT,payload JSONB,dedup_key TEXT,created_at TIMESTAMPTZ DEFAULT NOW());CREATE UNIQUE INDEX review_outbox_dedup ON scheduler_outbox(dedup_key) WHERE dedup_key IS NOT NULL`)
 	require.NoError(t, err)
 	cache := &scopedReviewSchedulerCache{accounts: make(map[int64]*service.Account)}

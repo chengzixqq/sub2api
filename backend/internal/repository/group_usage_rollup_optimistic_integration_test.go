@@ -498,6 +498,10 @@ type optimisticGroupRollupFixture struct {
 }
 
 func newOptimisticGroupRollupFixture(t *testing.T, ctx context.Context, partitioned bool) optimisticGroupRollupFixture {
+	return newOptimisticGroupRollupFixtureWithMigrations(t, ctx, partitioned, []string{"258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql"})
+}
+
+func newOptimisticGroupRollupFixtureWithMigrations(t *testing.T, ctx context.Context, partitioned bool, protocolMigrations []string) optimisticGroupRollupFixture {
 	t.Helper()
 	f := optimisticGroupRollupFixture{
 		schema: fmt.Sprintf("group_rollup_optimistic_%d", time.Now().UnixNano()),
@@ -531,7 +535,7 @@ func newOptimisticGroupRollupFixture(t *testing.T, ctx context.Context, partitio
 	}
 	_, err = conn.ExecContext(ctx, `CREATE TABLE users(id BIGINT PRIMARY KEY); CREATE TABLE groups(id BIGINT PRIMARY KEY);`+usageDDL)
 	require.NoError(t, err)
-	for _, name := range []string{"222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql", "258_group_usage_rollup_optimistic.sql"} {
+	for _, name := range append([]string{"222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql"}, protocolMigrations...) {
 		migration, readErr := migrations.FS.ReadFile(name)
 		require.NoError(t, readErr)
 		_, err = conn.ExecContext(ctx, string(migration))

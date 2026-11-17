@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
@@ -55,7 +56,8 @@ func AccumulateSearchCount(current, delta int, component string) int {
 // countGrokNativeSearchCallsFromJSONBytes counts completed native search tool
 // calls in a Responses-style JSON body (output array or nested response.output).
 // Counts: web_search_call, x_search_call, tool_search_call, and function_call
-// named tool_search / web_search / x_search.
+// named tool_search / web_search / x_search, and custom_tool_call items the xAI
+// server runs itself (apicompat.IsServerSideSearchCall: call_id xs_ / as_).
 func countGrokNativeSearchCallsFromJSONBytes(body []byte) int {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return 0
@@ -289,6 +291,9 @@ func isGrokNativeSearchOutputItem(item gjson.Result) bool {
 	case "web_search_call", "x_search_call", "tool_search_call":
 		return true
 	case "function_call", "custom_tool_call":
+		if apicompat.IsServerSideSearchCall(itemType, item.Get("call_id").String()) {
+			return true
+		}
 		name := strings.ToLower(strings.TrimSpace(item.Get("name").String()))
 		return name == "web_search" || name == "x_search" || name == "tool_search"
 	default:

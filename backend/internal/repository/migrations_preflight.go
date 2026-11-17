@@ -66,7 +66,7 @@ type MigrationPreflightReport struct {
 //   - 同编号前缀下至少有一个文件已经执行（说明它是与已执行迁移并存的同编号插队文件，
 //     而不是整段迁移历史缺失）。
 //
-// 登记的文件必须只依赖它之前的迁移、可以在任意后续迁移之后安全执行。
+// 登记的文件必须能安全补跑；替换既有协议的迁移必须由执行器与兼容迁移原子提交。
 var outOfOrderMigrationAllowlist = map[string]struct{}{
 	// 官方 v0.2.18：把 gemini/antigravity 分组的生图开关置为开启。只更新 groups
 	// 的既有列，247-257 均不触及 groups，晚于它们执行结果相同。
@@ -78,6 +78,9 @@ var outOfOrderMigrationAllowlist = map[string]struct{}{
 	// neither changes the meaning of the custom migrations through 259.
 	"249_add_usage_logs_api_key_cost_index_notx.sql": {},
 	"250_openai_cache_write_ttl.sql":                 {},
+	"251_group_force_openai_ultrafast.sql":           {},
+	// The runner pairs this replacement atomically with 262 to retain 258.
+	"251_group_usage_rollup_nonblocking_build.sql": {},
 }
 
 // Valid reports whether applying the pending suffix is safe from migration
@@ -191,6 +194,9 @@ func checkMigrationPreflightFS(ctx context.Context, queryer MigrationPreflightQu
 			continue
 		}
 		switch {
+		case item.filename == groupUsageRollupUpstreamMigration && appliedByName[groupUsageRollupCompatibilityMigration].Filename != "":
+			// Reapplying 251 after a recorded 262 would overwrite its repair.
+			report.Missing = append(report.Missing, item.filename)
 		case i > lastAppliedIndex:
 			report.Pending = append(report.Pending, item.filename)
 		case isAllowedOutOfOrderMigration(item.filename, appliedPrefixes):

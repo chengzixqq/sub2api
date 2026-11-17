@@ -94,6 +94,27 @@ func newUserUsageRequestTypeTestRouter(repo *userUsageRepoCapture) *gin.Engine {
 	return router
 }
 
+func TestUserUsageStats_RedactsEndpointCostWithoutMutatingCachedSnapshot(t *testing.T) {
+	accountCost := 17.5
+	repo := &userUsageRepoCapture{stats: &usagestats.UsageStats{
+		TotalAccountCost:  &accountCost,
+		Endpoints:         []usagestats.EndpointStat{{Endpoint: "/v1/messages", ActualCost: 23, AccountCost: accountCost}},
+		UpstreamEndpoints: []usagestats.EndpointStat{{Endpoint: "/internal", AccountCost: accountCost}},
+	}}
+	router := newUserUsageRequestTypeTestRouter(repo)
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/usage/stats", nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		require.NotContains(t, recorder.Body.String(), "account_cost")
+		require.NotContains(t, recorder.Body.String(), "/internal")
+		require.Contains(t, recorder.Body.String(), `"actual_cost":23`)
+		require.Equal(t, accountCost, *repo.stats.TotalAccountCost)
+		require.Equal(t, accountCost, repo.stats.Endpoints[0].AccountCost)
+		require.Len(t, repo.stats.UpstreamEndpoints, 1)
+	}
+}
+
 func TestUserUsageListRequestTypePriority(t *testing.T) {
 	repo := &userUsageRepoCapture{}
 	router := newUserUsageRequestTypeTestRouter(repo)

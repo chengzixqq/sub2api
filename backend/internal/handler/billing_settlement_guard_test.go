@@ -24,6 +24,33 @@ func newGuardWiringTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 	return c, rec
 }
 
+func TestBillingSettlementGuard_VertexFactorAndCacheDurationsSurviveFailure(t *testing.T) {
+	t.Run("actual Vertex endpoint multiplier", func(t *testing.T) {
+		var decision service.FailureBillingDecision
+		g := newBillingSettlementGuard(guardDeps{sink: func(d service.FailureBillingDecision, _ *service.Account) { decision = d }})
+		g.ObserveAttempt(&service.Account{ID: 7})
+		result := &service.ForwardResult{Usage: service.ClaudeUsage{InputTokens: 10}, UpstreamPriceMultiplier: 1.1}
+		g.ObserveForwardResult(result)
+		result.UpstreamPriceMultiplier = 0
+		g.Flush()
+		require.True(t, decision.Billable)
+		require.Equal(t, 1.1, decision.UpstreamPriceMultiplier)
+	})
+	t.Run("OpenAI 30m and 12h cache", func(t *testing.T) {
+		var decision service.FailureBillingDecision
+		g := newBillingSettlementGuard(guardDeps{sink: func(d service.FailureBillingDecision, _ *service.Account) { decision = d }})
+		g.ObserveAttempt(&service.Account{ID: 7})
+		result := &service.OpenAIForwardResult{}
+		result.Usage.CacheCreation30mInputTokens = 11
+		result.Usage.CacheCreation12hInputTokens = 19
+		g.ObserveOpenAIForwardResult(result)
+		g.Flush()
+		require.True(t, decision.Billable)
+		require.Equal(t, 11, decision.Usage.CacheCreation30mTokens)
+		require.Equal(t, 19, decision.Usage.CacheCreation12hTokens)
+	})
+}
+
 func TestBillingSettlementGuard(t *testing.T) {
 	t.Run("settled request does not double bill", func(t *testing.T) {
 		called := 0

@@ -447,7 +447,9 @@ func (r *dashboardAggregationRepository) CleanupUsageLogs(ctx context.Context, c
 				// An old certified gap can exceed the DROP lock budget. Reuse the
 				// bounded row/gap prefix below; retry the month in a later cycle.
 			} else if errors.Is(err, errDashboardRetentionDeferred) {
-				return nil // Retry after the bounded repair/writer finishes next cycle.
+				// DROP must never wait on the parent relation behind live writers.
+				// Try the bounded row path; its own source/hour barriers still
+				// defer safely if a publisher or invalidated archive is in flight.
 			} else {
 				return err
 			}

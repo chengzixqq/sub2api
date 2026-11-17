@@ -36,6 +36,47 @@ func TestGroupFieldScopeBillingOnlyCannotTouchOps(t *testing.T) {
 	}
 }
 
+func TestGroupFieldScopeForcedOpenAITiersRequireOps(t *testing.T) {
+	for _, role := range []struct {
+		name string
+		ctx  context.Context
+		deny bool
+	}{
+		{"billing_only", vendorFieldCtx(WorkspacePermissions{GroupBilling: true}), true},
+		{"ops_only", vendorFieldCtx(WorkspacePermissions{GroupOps: true}), false},
+		{"admin", WithScope(context.Background(), AdminScope()), false},
+	} {
+		t.Run(role.name, func(t *testing.T) {
+			for _, operation := range []string{"enable", "disable", "omit"} {
+				t.Run(operation, func(t *testing.T) {
+					enabled := operation == "enable"
+					input := &UpdateGroupInput{ForceOpenAIFast: &enabled, ForceOpenAIUltrafast: &enabled}
+					if operation == "omit" {
+						input.ForceOpenAIFast, input.ForceOpenAIUltrafast = nil, nil
+					}
+					originalFast, originalUltrafast := input.ForceOpenAIFast, input.ForceOpenAIUltrafast
+
+					dropped := applyGroupFieldScope(role.ctx, input, false)
+
+					wantDropped := role.deny && operation != "omit"
+					if wantDropped {
+						if input.ForceOpenAIFast != nil || input.ForceOpenAIUltrafast != nil {
+							t.Fatal("billing-only vendor must not change forced upstream routing tiers")
+						}
+					} else if input.ForceOpenAIFast != originalFast || input.ForceOpenAIUltrafast != originalUltrafast {
+						t.Fatal("authorized or omitted routing tiers must remain unchanged")
+					}
+					for _, field := range []string{"force_openai_fast", "force_openai_ultrafast"} {
+						if slices.Contains(dropped, field) != wantDropped {
+							t.Fatalf("%s audit entry must match field removal: dropped=%v", field, dropped)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestGroupFieldScopeI18nRequiresOps(t *testing.T) {
 	roles := []struct {
 		name string

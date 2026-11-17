@@ -334,7 +334,8 @@ func accountDispatchCandidates(ctx context.Context, repo any, groupID *int64, pl
 		if !accountDispatchExplicitlyAllowed(selection, account) || !account.IsSchedulable() {
 			continue
 		}
-		if platform != "" && account.Platform != platform && !(allowMixed && account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() && selection.grants[account.ID] == "member") {
+		allowedMixedAccount := allowMixed && account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() && selection.grants[account.ID] == "member"
+		if platform != "" && account.Platform != platform && !allowedMixedAccount {
 			continue
 		}
 		if _, ok := seen[account.ID]; ok {

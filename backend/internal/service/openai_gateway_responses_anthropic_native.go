@@ -46,6 +46,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 		writeResponsesError(c, http.StatusServiceUnavailable, "advisor_pricing_unavailable", "Advisor model pricing is unavailable")
 		return nil, err
 	}
+	SetActualOpenAIUpstreamEndpoint(c, "/v1/messages")
 
 	// 1. Lower Codex client-side tools to function tools understood by Anthropic.
 	adaptedBody, clientToolMapping, err := adaptResponsesClientToolsForAnthropic(body)

@@ -46,6 +46,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 		writeChatCompletionsError(c, http.StatusServiceUnavailable, "advisor_pricing_unavailable", "Advisor model pricing is unavailable")
 		return nil, err
 	}
+	SetActualOpenAIUpstreamEndpoint(c, "/v1/messages")
 
 	// 1. Parse Chat Completions request
 	var ccReq apicompat.ChatCompletionsRequest
@@ -101,6 +102,7 @@ func (s *OpenAIGatewayService) forwardChatCompletionsViaNativeAnthropic(
 	if err != nil {
 		return nil, fmt.Errorf("preserve advisor tools: %w", err)
 	}
+	anthropicBody = withChatCompletionsMetadataUserID(body, anthropicBody)
 
 	// 与 /v1/messages 直通路径相同的 pre-filter。
 	anthropicBody = StripEmptyTextBlocks(anthropicBody)
@@ -419,7 +421,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 		if err != nil {
 			return false
 		}
-		out := string(reverseToolNamesIfPresent(c, []byte(sse)))
+		out := reverseToolNamesIfPresentString(c, sse)
 		if _, err := fmt.Fprint(c.Writer, out); err != nil {
 			clientDisconnected = true
 			return false

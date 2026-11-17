@@ -273,7 +273,9 @@ func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T
 	_ = clientConn.CloseNow()
 	cancelControl(context.Canceled)
 	select {
-	case <-serverErr:
+	case err := <-serverErr:
+		// Client-side assertions above check the outcome; this wait checks termination.
+		t.Logf("websocket worker terminated: %v", err)
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough ingress did not exit")
 	}
