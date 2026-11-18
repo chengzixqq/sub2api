@@ -46,6 +46,24 @@ func TestOpsSystemLogSink_ShouldIndex(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "warn with skip marker excluded from database sink",
+			event: &logger.LogEvent{
+				Level:     "warn",
+				Component: "app",
+				Fields:    map[string]any{logger.OpsSystemLogSkipField: true},
+			},
+			want: false,
+		},
+		{
+			name: "error with skip marker excluded from database sink",
+			event: &logger.LogEvent{
+				Level:     "error",
+				Component: "app",
+				Fields:    map[string]any{"component": "service.gateway", logger.OpsSystemLogSkipField: true},
+			},
+			want: false,
+		},
+		{
 			name: "access component from fields disabled by default",
 			event: &logger.LogEvent{
 				Level:     "info",
@@ -101,6 +119,36 @@ func TestOpsSystemLogSink_ShouldIndexAccessLogsOnlyWhenEnabled(t *testing.T) {
 		Fields:    map[string]any{logger.OpsSystemLogSkipField: true},
 	}) {
 		t.Fatal("explicit skip marker must override access-log persistence")
+	}
+}
+
+func TestOpsSystemLogSink_WriteLogEvent_SkipsLegacyPrintfSkipOpsSystemLog(t *testing.T) {
+	captured, restore := captureStructuredLog(t)
+	defer restore()
+
+	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d", 1, "indexed", 429)
+	logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d", 2, "skipped", 429)
+
+	captured.mu.Lock()
+	events := append([]*logger.LogEvent(nil), captured.events...)
+	captured.mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("captured events = %d, want 2", len(events))
+	}
+	if events[0].Level != events[1].Level {
+		t.Fatalf("skip variant level = %q, want %q", events[1].Level, events[0].Level)
+	}
+
+	sink := &OpsSystemLogSink{queue: make(chan *logger.LogEvent, len(events))}
+	for _, event := range events {
+		sink.WriteLogEvent(event)
+	}
+
+	if got := len(sink.queue); got != 1 {
+		t.Fatalf("queue len = %d, want 1 (skip variant must not be indexed)", got)
+	}
+	if queued := <-sink.queue; !strings.Contains(queued.Message, "Account=1(indexed)") {
+		t.Fatalf("queued message = %q, want the LegacyPrintf event", queued.Message)
 	}
 }
 

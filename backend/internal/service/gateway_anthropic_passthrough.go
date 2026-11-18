@@ -278,7 +278,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+			logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), s.upstreamErrorBodyForLog(c, respBody))
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account, input.RequestModel)
@@ -314,7 +314,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+		logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), s.upstreamErrorBodyForLog(c, respBody))
 
 		s.handleFailoverSideEffects(ctx, resp, account, input.RequestModel)

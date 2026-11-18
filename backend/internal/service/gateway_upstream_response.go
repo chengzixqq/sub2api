@@ -458,7 +458,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 
 	// 调试日志：打印上游错误响应
 	logBody := s.upstreamErrorBodyForLog(c, body)
-	logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+	logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Forward] Upstream error (non-retryable): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))

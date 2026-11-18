@@ -468,7 +468,7 @@ func inferStdLogLevel(msg string) Level {
 		return LevelError
 	}
 
-	if strings.Contains(lower, " failed") || strings.Contains(lower, "error") || strings.Contains(lower, "panic") || strings.Contains(lower, "fatal") {
+	if strings.Contains(lower, " failed") || strings.Contains(lower, "失败") || strings.Contains(lower, "error") || strings.Contains(lower, "panic") || strings.Contains(lower, "fatal") {
 		return LevelError
 	}
 	if strings.Contains(lower, "warning") || strings.Contains(lower, "warn") || strings.Contains(lower, " queue full") || strings.Contains(lower, "fallback") {
@@ -479,7 +479,20 @@ func inferStdLogLevel(msg string) Level {
 
 // LegacyPrintf 用于平滑迁移历史的 printf 风格日志到结构化 logger。
 func LegacyPrintf(component, format string, args ...any) {
-	msg := normalizeStdLogMessage(fmt.Sprintf(format, args...))
+	legacyPrintf(component, fmt.Sprintf(format, args...))
+}
+
+// LegacyPrintfSkipOpsSystemLog 与 LegacyPrintf 行为一致（标准输出/文件照常输出），
+// 但事件带 OpsSystemLogSkipField=true，不写入运维系统日志库（ops_system_logs）。
+// 仅用于同一事件已有结构化记录（如 appendOpsUpstreamError）的调用点，避免重复入库。
+func LegacyPrintfSkipOpsSystemLog(component, format string, args ...any) {
+	legacyPrintf(component, fmt.Sprintf(format, args...), zap.Bool(OpsSystemLogSkipField, true))
+}
+
+// legacyPrintf 只能由上面的导出函数直接调用：caller skip 按
+// 业务调用点 → 导出函数 → legacyPrintf 两层计算。
+func legacyPrintf(component, raw string, extra ...zap.Field) {
+	msg := normalizeStdLogMessage(raw)
 	if msg == "" {
 		return
 	}
@@ -495,17 +508,21 @@ func LegacyPrintf(component, format string, args ...any) {
 	if component != "" {
 		l = l.With(zap.String("component", component))
 	}
-	l = l.WithOptions(zap.AddCallerSkip(1))
+	l = l.WithOptions(zap.AddCallerSkip(2))
+
+	fields := make([]zap.Field, 0, 1+len(extra))
+	fields = append(fields, zap.Bool("legacy_printf", true))
+	fields = append(fields, extra...)
 
 	switch inferStdLogLevel(msg) {
 	case LevelDebug:
-		l.Debug(msg, zap.Bool("legacy_printf", true))
+		l.Debug(msg, fields...)
 	case LevelWarn:
-		l.Warn(msg, zap.Bool("legacy_printf", true))
+		l.Warn(msg, fields...)
 	case LevelError, LevelFatal:
-		l.Error(msg, zap.Bool("legacy_printf", true))
+		l.Error(msg, fields...)
 	default:
-		l.Info(msg, zap.Bool("legacy_printf", true))
+		l.Info(msg, fields...)
 	}
 }
 

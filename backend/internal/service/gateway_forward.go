@@ -760,7 +760,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 			// 调试日志：打印重试耗尽后的错误响应
 			logBody := s.upstreamErrorBodyForLog(c, respBody)
-			logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+			logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Forward] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account, reqModel)
@@ -798,7 +798,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 		// 调试日志：打印上游错误响应
 		logBody := s.upstreamErrorBodyForLog(c, respBody)
-		logger.LegacyPrintf("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+		logger.LegacyPrintfSkipOpsSystemLog("service.gateway", "[Forward] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), logBody)
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
