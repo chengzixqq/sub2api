@@ -1759,15 +1759,26 @@ func (h *GatewayHandler) Usage(c *gin.Context) {
 
 	// Best-effort: 获取用量统计（按当前 API Key 过滤），失败不影响基础响应
 	usageData := h.buildUsageData(ctx, apiKey.ID)
-	dailyUsage := h.buildAPIKeyDailyUsage(c, subject.UserID, apiKey.ID, days)
+	// 按天趋势与模型统计只用于展示，按 Key、用户与原始查询参数缓存。
+	// 加载可能在请求结束后继续执行，只能捕获普通值，不能再读取会被 gin 复用的 c。
+	apiKeyID, userID := apiKey.ID, subject.UserID
+	cacheKey := gatewayUsageCacheKey(c, apiKeyID, userID)
+	dailyStart, dailyEnd := apiKeyDailyUsageRange(days, c.Query("timezone"))
+	dailyUsage := loadGatewayUsageSummary(ctx, gatewayUsageDailyCache, cacheKey, func(work context.Context) (any, error) {
+		return h.buildAPIKeyDailyUsage(work, userID, apiKeyID, dailyStart, dailyEnd)
+	})
 
 	// Best-effort: 获取模型统计
-	var modelStats any
-	if h.usageService != nil {
-		if stats, err := h.usageService.GetAPIKeyModelStats(ctx, apiKey.ID, startTime, endTime); err == nil && len(stats) > 0 {
-			modelStats = stats
+	modelStats := loadGatewayUsageSummary(ctx, gatewayUsageModelStatsCache, cacheKey, func(work context.Context) (any, error) {
+		if h.usageService == nil {
+			return nil, nil
 		}
-	}
+		stats, err := h.usageService.GetAPIKeyModelStats(work, apiKeyID, startTime, endTime)
+		if err != nil || len(stats) == 0 {
+			return nil, err
+		}
+		return stats, nil
+	})
 
 	// 判断模式: key 有总额度或速率限制 → quota_limited，否则 → unrestricted
 	isQuotaLimited := apiKey.Quota > 0 || apiKey.HasRateLimits()
@@ -1836,16 +1847,15 @@ func (h *GatewayHandler) buildUsageData(ctx context.Context, apiKeyID int64) gin
 	}
 }
 
-func (h *GatewayHandler) buildAPIKeyDailyUsage(c *gin.Context, userID, apiKeyID int64, days int) any {
+func (h *GatewayHandler) buildAPIKeyDailyUsage(ctx context.Context, userID, apiKeyID int64, startTime, endTime time.Time) (any, error) {
 	if h.usageService == nil {
-		return nil
+		return nil, nil
 	}
-	startTime, endTime := apiKeyDailyUsageRange(days, c.Query("timezone"))
-	stats, err := h.usageService.GetAPIKeyDailyUsage(c.Request.Context(), userID, apiKeyID, startTime, endTime)
+	stats, err := h.usageService.GetAPIKeyDailyUsage(ctx, userID, apiKeyID, startTime, endTime)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return stats
+	return stats, nil
 }
 
 // usageQuotaLimited 处理 quota_limited 模式的响应

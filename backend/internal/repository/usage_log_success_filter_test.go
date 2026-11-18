@@ -56,7 +56,7 @@ func newCapturingSQLMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *[]string) {
 
 // findCapturedQuery 通过一个只应出现在目标查询里的结构性子串（fingerprint）从 captured 里
 // 定位它,而不是依赖下标位置——下标会随着方法内前置查询数量的变化而失效,fingerprint 只要
-// 选得足够独特（比如别名 "ul"，本包里只有这两条查询会把 usage_logs 起别名为 ul）就不受影响。
+// 选得足够独特（比如别名 "ul"，或看板历史段/当天段各自的 created_at 边界条件）就不受影响。
 // 要求 fingerprint 命中且只命中一条,命中 0 条或多条都说明测试假设已经不成立,直接 fail。
 func findCapturedQuery(t *testing.T, captured []string, fingerprint string) string {
 	t.Helper()
@@ -111,13 +111,14 @@ func trailingWhereClause(t *testing.T, query string) string {
 }
 
 // TestUsageLogSuccessFilter_DashboardPlatformQuery_AppliedOnlyToRequestCounts 用 go-sqlmock
-// 捕获 GetUserDashboardStats 里 platformQuery 实际下发的 SQL,校验 usageLogSuccessFilterUL
-// 只以 FILTER (WHERE ...) 的形式施加在 total_requests/today_requests 这两个"请求数"聚合列
-// 上：
+// 捕获 GetUserDashboardStats 里历史段（今天零点之前）与当天段两条分平台查询实际下发的 SQL,
+// 校验 usageLogSuccessFilterUL 在两条查询里都只以 FILTER (WHERE ...) 的形式施加在
+// successful_requests 这个"分平台请求数"聚合列上：
 //   - 不出现在查询末尾裸的 WHERE 子句里——否则会把被计费的失败行整行过滤掉,连它产生的真实
 //     cost/token 都不计入,与"必须计入花费类统计"的要求相悖；
-//   - 不出现在 total_tokens/total_actual_cost/today_tokens/today_actual_cost 这些花费类聚合
-//     上——否则被计费的失败行产生的真实上游费用会从花费报表里消失,与不做该过滤的总账对不上。
+//   - 不出现在 total_requests（总请求数）/total_input_tokens/total_actual_cost 这些总量与
+//     花费类聚合上——否则被计费的失败行产生的真实上游费用会从花费报表里消失,与不做该过滤的
+//     总账对不上。
 //
 // 只断言常量文本在整条 SQL 字符串里"某处出现"是不够的：把过滤器拼进 WHERE 子句的回退版本
 // 同样会让 strings.Contains(sql, "billing_provenance") 为真,而那正是这个测试要拦住的 bug。
@@ -126,46 +127,41 @@ func TestUsageLogSuccessFilter_DashboardPlatformQuery_AppliedOnlyToRequestCounts
 	db, mock, captured := newCapturingSQLMock(t)
 	repo := &usageLogRepository{sql: db}
 
-	// One key-count query, one all-history aggregate, one recent range query.
+	// One key-count query, the history and today segments, one recent range query.
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"total", "active"}).AddRow(1, 1))
-	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows(userDashboardAggregateColumns))
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows(userDashboardSegmentColumns))
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows(userDashboardSegmentColumns))
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"request_count", "token_count"}).AddRow(0, 0))
 
 	_, err := repo.GetUserDashboardStats(context.Background(), 42)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 
-	platformQuery := findCapturedQuery(t, *captured, "usage_logs ul")
+	for _, boundary := range []string{"ul.created_at < $2", "ul.created_at >= $2"} {
+		platformQuery := findCapturedQuery(t, *captured, boundary)
+		require.Contains(t, platformQuery, "usage_logs ul")
 
-	totalRequestsExpr := columnExpr(t, platformQuery, "successful_requests", "today_actual_cost")
-	totalTokensExpr := columnExpr(t, platformQuery, "total_input_tokens", "total_requests")
-	totalActualCostExpr := columnExpr(t, platformQuery, "total_actual_cost", "total_cost")
-	todayRequestsExpr := columnExpr(t, platformQuery, "today_successful_requests", "successful_requests")
-	todayTokensExpr := columnExpr(t, platformQuery, "today_input_tokens", "today_requests")
-	todayActualCostExpr := columnExpr(t, platformQuery, "today_actual_cost", "today_cost")
+		successfulRequestsExpr := columnExpr(t, platformQuery, "successful_requests", "duration_count")
+		totalRequestsExpr := columnExpr(t, platformQuery, "total_requests", "platform")
+		totalTokensExpr := columnExpr(t, platformQuery, "total_input_tokens", "total_requests")
+		totalActualCostExpr := columnExpr(t, platformQuery, "total_actual_cost", "total_cost")
 
-	assert.Contains(t, totalRequestsExpr, "FILTER (WHERE",
-		"total_requests must gate on the success filter via FILTER (WHERE ...), not a plain COUNT(*)")
-	assert.Contains(t, totalRequestsExpr, usageLogSuccessFilterUL,
-		"total_requests must apply the exact success filter")
+		assert.Contains(t, successfulRequestsExpr, "FILTER (WHERE",
+			"successful_requests must gate on the success filter via FILTER (WHERE ...), not a plain COUNT(*)")
+		assert.Contains(t, successfulRequestsExpr, usageLogSuccessFilterUL,
+			"successful_requests must apply the exact success filter")
 
-	assert.Contains(t, todayRequestsExpr, "FILTER (WHERE",
-		"today_requests must gate on the success filter via FILTER (WHERE ...), not a plain COUNT(*)")
-	assert.Contains(t, todayRequestsExpr, usageLogSuccessFilterUL,
-		"today_requests must apply the exact success filter")
+		assert.NotContains(t, totalRequestsExpr, "billing_provenance",
+			"total_requests is the grand total: billed failure rows must stay counted")
+		assert.NotContains(t, totalTokensExpr, "billing_provenance",
+			"total_tokens is a usage aggregate: billed failure rows must stay counted")
+		assert.NotContains(t, totalActualCostExpr, "billing_provenance",
+			"total_actual_cost is a spend aggregate: billed failure rows carry real upstream cost and must stay counted")
 
-	assert.NotContains(t, totalTokensExpr, "billing_provenance",
-		"total_tokens is a usage aggregate: billed failure rows must stay counted")
-	assert.NotContains(t, totalActualCostExpr, "billing_provenance",
-		"total_actual_cost is a spend aggregate: billed failure rows carry real upstream cost and must stay counted")
-	assert.NotContains(t, todayTokensExpr, "billing_provenance",
-		"today_tokens is a usage aggregate: billed failure rows must stay counted")
-	assert.NotContains(t, todayActualCostExpr, "billing_provenance",
-		"today_actual_cost is a spend aggregate: billed failure rows carry real upstream cost and must stay counted")
-
-	assert.NotContains(t, trailingWhereClause(t, platformQuery), "billing_provenance",
-		"success filter must not be spliced into the query's WHERE clause: that would drop billed failure rows "+
-			"from total_tokens/total_actual_cost/today_tokens/today_actual_cost too, understating real spend")
+		assert.NotContains(t, trailingWhereClause(t, platformQuery), "billing_provenance",
+			"success filter must not be spliced into the query's WHERE clause: that would drop billed failure rows "+
+				"from total_tokens/total_actual_cost too, understating real spend")
+	}
 }
 
 // TestUsageLogSuccessFilter_BatchUserUsageStatsQuery_NeverApplied 校验 GetBatchUserUsageStats

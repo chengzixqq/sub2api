@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/uuid"
 )
 
-func (s *UsageLogRepoSuite) TestUserDashboardStats_SingleScanPreservesBillingAndPlatformSemantics() {
+func (s *UsageLogRepoSuite) TestUserDashboardStats_HistoryAndTodaySegmentsPreserveBillingAndPlatformSemantics() {
 	user := mustCreateUser(s.T(), s.client, &service.User{Email: "dashboard-performance@test.com"})
 	key := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-dashboard-performance", Name: "key"})
 	openai := mustCreateGroup(s.T(), s.client, &service.Group{Name: "dashboard-openai", Platform: "openai"})
@@ -61,24 +62,30 @@ func (s *UsageLogRepoSuite) TestUserDashboardStats_SingleScanPreservesBillingAnd
 			s.Require().NoError(err)
 		}
 	}
-	stats, err := s.repo.GetUserDashboardStats(s.ctx, user.ID)
-	s.Require().NoError(err)
-	s.Require().Equal(int64(1), stats.TotalAPIKeys)
-	s.Require().Equal(int64(1), stats.ActiveAPIKeys)
-	s.Require().Equal(int64(6), stats.TotalRequests)
-	s.Require().Equal(int64(5), stats.TodayRequests)
-	s.Require().Equal(int64(528), stats.TotalTokens)
-	s.Require().Equal(int64(495), stats.TodayTokens)
-	s.Require().Equal(float64(16), stats.TotalCost)
-	s.Require().Equal(float64(14), stats.TodayCost)
-	s.Require().Equal(float64(10), stats.TotalActualCost)
-	s.Require().Equal(float64(9), stats.TodayActualCost)
-	s.Require().Equal(float64(400), stats.AverageDurationMs)
-	s.Require().Equal([]PlatformDashboardStats{
-		{Platform: "gemini", TotalRequests: 1, TotalTokens: 143, TotalActualCost: 3, TodayRequests: 1, TodayTokens: 143, TodayActualCost: 3},
-		{Platform: "openai", TotalRequests: 1, TotalTokens: 165, TotalActualCost: 2.5, TodayRequests: 0, TodayTokens: 132, TodayActualCost: 1.5},
-		{Platform: "anthropic", TotalRequests: 1, TotalTokens: 99, TotalActualCost: 2, TodayRequests: 1, TodayTokens: 99, TodayActualCost: 2},
-	}, stats.ByPlatform)
+	// The first fixture is history before today's start; the rest are today. The
+	// cached repository must produce the same figures as the inline one.
+	cached := newUsageLogRepositoryWithSQL(s.client, s.tx)
+	cached.dashboardHistoryCache = usagequery.NewDetachedCache(time.Minute, time.Minute)
+	for _, repo := range []*usageLogRepository{s.repo, cached} {
+		stats, err := repo.GetUserDashboardStats(s.ctx, user.ID)
+		s.Require().NoError(err)
+		s.Require().Equal(int64(1), stats.TotalAPIKeys)
+		s.Require().Equal(int64(1), stats.ActiveAPIKeys)
+		s.Require().Equal(int64(6), stats.TotalRequests)
+		s.Require().Equal(int64(5), stats.TodayRequests)
+		s.Require().Equal(int64(528), stats.TotalTokens)
+		s.Require().Equal(int64(495), stats.TodayTokens)
+		s.Require().Equal(float64(16), stats.TotalCost)
+		s.Require().Equal(float64(14), stats.TodayCost)
+		s.Require().Equal(float64(10), stats.TotalActualCost)
+		s.Require().Equal(float64(9), stats.TodayActualCost)
+		s.Require().Equal(float64(400), stats.AverageDurationMs)
+		s.Require().Equal([]PlatformDashboardStats{
+			{Platform: "gemini", TotalRequests: 1, TotalTokens: 143, TotalActualCost: 3, TodayRequests: 1, TodayTokens: 143, TodayActualCost: 3},
+			{Platform: "openai", TotalRequests: 1, TotalTokens: 165, TotalActualCost: 2.5, TodayRequests: 0, TodayTokens: 132, TodayActualCost: 1.5},
+			{Platform: "anthropic", TotalRequests: 1, TotalTokens: 99, TotalActualCost: 2, TodayRequests: 1, TodayTokens: 99, TodayActualCost: 2},
+		}, stats.ByPlatform)
+	}
 }
 
 func (s *UsageLogRepoSuite) TestUserDashboardStats_EmptyHistory() {

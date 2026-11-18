@@ -27,18 +27,32 @@ type cacheCall struct {
 
 // Cache bounds retained results and outstanding distinct queries. Waiters share work, not cancellation.
 type Cache struct {
-	mu     sync.Mutex
-	ttl    time.Duration
-	items  map[string]CacheEntry
-	calls  map[string]*cacheCall
-	active int
+	mu          sync.Mutex
+	ttl         time.Duration
+	workTimeout time.Duration
+	detached    bool
+	items       map[string]CacheEntry
+	calls       map[string]*cacheCall
+	active      int
 }
 
 func NewCache(ttl time.Duration) *Cache {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &Cache{ttl: ttl, items: map[string]CacheEntry{}, calls: map[string]*cacheCall{}}
+	return &Cache{ttl: ttl, workTimeout: 30 * time.Second, items: map[string]CacheEntry{}, calls: map[string]*cacheCall{}}
+}
+
+// NewDetachedCache keeps shared work running after its last waiter leaves, so an
+// expensive result still reaches the cache for later callers. workTimeout bounds
+// that work; waiters still return their own cancellation immediately.
+func NewDetachedCache(ttl, workTimeout time.Duration) *Cache {
+	c := NewCache(ttl)
+	if workTimeout > 0 {
+		c.workTimeout = workTimeout
+	}
+	c.detached = true
+	return c
 }
 
 func CacheETag(payload any) string {
@@ -125,6 +139,10 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, bypass bool, load fun
 		// share the same fresh generation. Old waiters may finish but cannot publish.
 		if exists && !call.refresh {
 			delete(c.calls, key)
+			// Only detached work outlives its waiters; superseded work can never publish.
+			if call.waiters == 0 {
+				call.cancel()
+			}
 			exists = false
 		}
 	}
@@ -134,7 +152,7 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, bypass bool, load fun
 			return CacheEntry{}, false, errors.New("statistics query capacity reached")
 		}
 		// Retain identity/scope values, but only the last waiter cancels shared work.
-		work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		work, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.workTimeout)
 		call = &cacheCall{done: make(chan struct{}), cancel: cancel, refresh: bypass}
 		c.calls[key] = call
 		c.active++
@@ -166,7 +184,9 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, bypass bool, load fun
 	defer func() {
 		c.mu.Lock()
 		call.waiters--
-		if call.waiters == 0 {
+		// Detached work keeps its current generation so a later waiter can join it
+		// and its result can still be published.
+		if call.waiters == 0 && (!c.detached || c.calls[key] != call) {
 			if c.calls[key] == call {
 				delete(c.calls, key)
 			}

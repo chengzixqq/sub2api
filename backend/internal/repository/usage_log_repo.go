@@ -8,6 +8,7 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagequery"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	gocache "github.com/patrickmn/go-cache"
 )
@@ -152,10 +153,15 @@ type usageLogRepository struct {
 	bestEffortBatchOnce sync.Once
 	bestEffortBatchCh   chan usageLogBestEffortRequest
 	bestEffortRecent    *gocache.Cache
+	// dashboardHistoryCache holds dashboard history before today's start. It is
+	// enabled only by NewUsageLogRepository; nil means every call queries inline.
+	dashboardHistoryCache *usagequery.Cache
 }
 
 func NewUsageLogRepository(client *dbent.Client, sqlDB *sql.DB) service.UsageLogRepository {
-	return newUsageLogRepositoryWithSQL(client, sqlDB)
+	repo := newUsageLogRepositoryWithSQL(client, sqlDB)
+	repo.dashboardHistoryCache = usagequery.NewDetachedCache(dashboardHistoryCacheTTL, dashboardHistoryCacheWorkTimeout)
+	return repo
 }
 
 func newUsageLogRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *usageLogRepository {

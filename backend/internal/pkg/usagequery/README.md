@@ -36,6 +36,11 @@ waiter does not cancel others; cancelling the last waiter cancels database work.
 Keys include identity, workspace/account scope, timezone, complete filters and
 chart grouping. Failed queries are never cached.
 
+Detached caches (`NewDetachedCache`) keep the current shared query running
+after its last waiter leaves, bounded by their own work deadline, so a result
+that callers abandoned still reaches the cache. Superseded work is cancelled
+once nobody waits for it.
+
 Unfiltered trends reuse only complete hourly aggregates whose watermark and
 calculation timestamps are fresh within five minutes. Raw queries cover partial
 edges, missing buckets, stale buckets and unfinalized intervals in the same SQL

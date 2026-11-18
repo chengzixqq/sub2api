@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -379,11 +382,22 @@ type UserDashboardStats = usagestats.UserDashboardStats
 // PlatformDashboardStats 单平台用量明细
 type PlatformDashboardStats = usagestats.PlatformDashboardStats
 
-// userDashboardUsageQuery scans a user's history once for totals and platform rows.
+const (
+	// History before today's start barely changes within a day. The day start is
+	// part of the cache key, so entries retire at midnight.
+	dashboardHistoryCacheTTL         = 15 * time.Minute
+	dashboardHistoryCacheWorkTimeout = 2 * time.Minute
+)
+
+func dashboardHistoryCacheKey(kind string, id int64, todayStart time.Time) string {
+	return fmt.Sprintf("%s:%d:%d", kind, id, todayStart.Unix())
+}
+
+// userDashboardSegmentSelect aggregates one side of today's start per platform.
 // Grand totals are combined from every platform cohort, including unknown ones.
 // Ordinary GROUP BY retains parallel partial aggregation eligibility. Only the
 // platform request counts exclude billed failures; their costs and tokens remain.
-const userDashboardUsageQuery = `
+const userDashboardSegmentSelect = `
 	SELECT
 		` + usageLogEffectivePlatformExpr + ` as platform,
 		COUNT(*) as total_requests,
@@ -395,22 +409,200 @@ const userDashboardUsageQuery = `
 		COALESCE(SUM(ul.actual_cost), 0) as total_actual_cost,
 		COALESCE(SUM(ul.duration_ms), 0) as total_duration_ms,
 		COUNT(ul.duration_ms) as duration_count,
-		COUNT(*) FILTER (WHERE ul.created_at >= $2) as today_requests,
-		COALESCE(SUM(ul.input_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_input_tokens,
-		COALESCE(SUM(ul.output_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_output_tokens,
-		COALESCE(SUM(ul.cache_creation_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_cache_creation_tokens,
-		COALESCE(SUM(ul.cache_read_tokens) FILTER (WHERE ul.created_at >= $2), 0) as today_cache_read_tokens,
-		COALESCE(SUM(ul.total_cost) FILTER (WHERE ul.created_at >= $2 AND ul.provider_cost_recorded), 0) as today_cost,
-		COALESCE(SUM(ul.actual_cost) FILTER (WHERE ul.created_at >= $2), 0) as today_actual_cost,
-		COUNT(*) FILTER (WHERE ` + usageLogSuccessFilterUL + `) as successful_requests,
-		COUNT(*) FILTER (WHERE ul.created_at >= $2 AND ` + usageLogSuccessFilterUL + `) as today_successful_requests
+		COUNT(*) FILTER (WHERE ` + usageLogSuccessFilterUL + `) as successful_requests
 	FROM usage_logs ul
 	LEFT JOIN groups g ON g.id = ul.group_id
 	LEFT JOIN accounts a ON a.id = ul.account_id
-	WHERE ul.user_id = $1
-	GROUP BY ` + usageLogEffectivePlatformExpr + `
-	ORDER BY total_actual_cost DESC
-`
+	WHERE ul.user_id = $1 AND `
+
+const userDashboardSegmentGroupBy = `
+	GROUP BY ` + usageLogEffectivePlatformExpr
+
+const (
+	userDashboardHistoryQuery = userDashboardSegmentSelect + `ul.created_at < $2` + userDashboardSegmentGroupBy
+	userDashboardTodayQuery   = userDashboardSegmentSelect + `ul.created_at >= $2` + userDashboardSegmentGroupBy
+)
+
+// dashboardUsageTotals is one cohort's sums. Values are combined into new copies.
+type dashboardUsageTotals struct {
+	requests            int64
+	inputTokens         int64
+	outputTokens        int64
+	cacheCreationTokens int64
+	cacheReadTokens     int64
+	cost                decimal.Decimal
+	actualCost          decimal.Decimal
+	durationMs          int64
+	durationCount       int64
+}
+
+func (t dashboardUsageTotals) tokens() int64 {
+	return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens
+}
+
+func (t dashboardUsageTotals) plus(o dashboardUsageTotals) dashboardUsageTotals {
+	return dashboardUsageTotals{
+		requests:            t.requests + o.requests,
+		inputTokens:         t.inputTokens + o.inputTokens,
+		outputTokens:        t.outputTokens + o.outputTokens,
+		cacheCreationTokens: t.cacheCreationTokens + o.cacheCreationTokens,
+		cacheReadTokens:     t.cacheReadTokens + o.cacheReadTokens,
+		// Database costs are NUMERIC. Preserve exact decimal sums across cohorts
+		// before the final float conversion used by the existing response contract.
+		cost:          t.cost.Add(o.cost),
+		actualCost:    t.actualCost.Add(o.actualCost),
+		durationMs:    t.durationMs + o.durationMs,
+		durationCount: t.durationCount + o.durationCount,
+	}
+}
+
+type dashboardPlatformTotals struct {
+	platform           string
+	successfulRequests int64
+	tokens             int64
+	actualCost         decimal.Decimal
+}
+
+func (p dashboardPlatformTotals) plus(o dashboardPlatformTotals) dashboardPlatformTotals {
+	return dashboardPlatformTotals{
+		platform:           p.platform,
+		successfulRequests: p.successfulRequests + o.successfulRequests,
+		tokens:             p.tokens + o.tokens,
+		actualCost:         p.actualCost.Add(o.actualCost),
+	}
+}
+
+// dashboardUsageSegment is one side of today's start. Cached history segments
+// are shared between requests and must never be modified.
+type dashboardUsageSegment struct {
+	totals    dashboardUsageTotals
+	platforms []dashboardPlatformTotals
+}
+
+// loadDashboardHistory reads usage before todayStart through the detached cache
+// when enabled, so an abandoned scan still serves later requests that day.
+func (r *usageLogRepository) loadDashboardHistory(ctx context.Context, kind string, id int64, todayStart time.Time, load func(context.Context) (*dashboardUsageSegment, error)) (*dashboardUsageSegment, error) {
+	if r.dashboardHistoryCache == nil {
+		return load(ctx)
+	}
+	entry, _, err := r.dashboardHistoryCache.GetOrLoad(ctx, dashboardHistoryCacheKey(kind, id, todayStart), false, func(work context.Context) (any, error) {
+		return load(work)
+	})
+	if err != nil {
+		return nil, err
+	}
+	segment, ok := entry.Payload.(*dashboardUsageSegment)
+	if !ok || segment == nil {
+		return nil, errors.New("unexpected dashboard history cache payload")
+	}
+	return segment, nil
+}
+
+func (r *usageLogRepository) queryUserDashboardSegment(ctx context.Context, query string, userID int64, todayStart time.Time) (*dashboardUsageSegment, error) {
+	rows, err := r.sql.QueryContext(ctx, query, userID, todayStart)
+	if err != nil {
+		return nil, err
+	}
+	segment := &dashboardUsageSegment{}
+	for rows.Next() {
+		var row dashboardUsageTotals
+		var platform sql.NullString
+		var successfulRequests int64
+		if err := rows.Scan(
+			&platform,
+			&row.requests, &row.inputTokens, &row.outputTokens,
+			&row.cacheCreationTokens, &row.cacheReadTokens,
+			&row.cost, &row.actualCost, &row.durationMs, &row.durationCount,
+			&successfulRequests,
+		); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		segment.totals = segment.totals.plus(row)
+		if platform.Valid && platform.String != "" {
+			segment.platforms = append(segment.platforms, dashboardPlatformTotals{
+				platform: platform.String, successfulRequests: successfulRequests,
+				tokens: row.tokens(), actualCost: row.actualCost,
+			})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return segment, nil
+}
+
+// applyDashboardSegments writes history+today totals and today's figures into
+// stats without modifying either segment.
+func applyDashboardSegments(stats *UserDashboardStats, history, today *dashboardUsageSegment) {
+	total := history.totals.plus(today.totals)
+	stats.TotalRequests = total.requests
+	stats.TotalInputTokens = total.inputTokens
+	stats.TotalOutputTokens = total.outputTokens
+	stats.TotalCacheCreationTokens = total.cacheCreationTokens
+	stats.TotalCacheReadTokens = total.cacheReadTokens
+	stats.TotalTokens = total.tokens()
+	stats.TotalCost, stats.TotalActualCost = total.cost.InexactFloat64(), total.actualCost.InexactFloat64()
+	if total.durationCount > 0 {
+		stats.AverageDurationMs = float64(total.durationMs) / float64(total.durationCount)
+	}
+	stats.TodayRequests = today.totals.requests
+	stats.TodayInputTokens = today.totals.inputTokens
+	stats.TodayOutputTokens = today.totals.outputTokens
+	stats.TodayCacheCreationTokens = today.totals.cacheCreationTokens
+	stats.TodayCacheReadTokens = today.totals.cacheReadTokens
+	stats.TodayTokens = today.totals.tokens()
+	stats.TodayCost, stats.TodayActualCost = today.totals.cost.InexactFloat64(), today.totals.actualCost.InexactFloat64()
+	stats.ByPlatform = mergeDashboardPlatforms(history.platforms, today.platforms)
+}
+
+// mergeDashboardPlatforms combines both segments per platform and orders them by
+// the combined exact actual cost, highest first.
+func mergeDashboardPlatforms(history, today []dashboardPlatformTotals) []PlatformDashboardStats {
+	type platformTotals struct{ total, today dashboardPlatformTotals }
+	var order []*platformTotals
+	byName := make(map[string]*platformTotals, len(history)+len(today))
+	entry := func(name string) *platformTotals {
+		p, ok := byName[name]
+		if !ok {
+			p = &platformTotals{total: dashboardPlatformTotals{platform: name}, today: dashboardPlatformTotals{platform: name}}
+			byName[name] = p
+			order = append(order, p)
+		}
+		return p
+	}
+	for _, row := range history {
+		p := entry(row.platform)
+		p.total = p.total.plus(row)
+	}
+	for _, row := range today {
+		p := entry(row.platform)
+		p.total = p.total.plus(row)
+		p.today = p.today.plus(row)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	slices.SortStableFunc(order, func(a, b *platformTotals) int {
+		if c := b.total.actualCost.Cmp(a.total.actualCost); c != 0 {
+			return c
+		}
+		return strings.Compare(a.total.platform, b.total.platform)
+	})
+	merged := make([]PlatformDashboardStats, 0, len(order))
+	for _, p := range order {
+		merged = append(merged, PlatformDashboardStats{
+			Platform: p.total.platform, TotalRequests: p.total.successfulRequests,
+			TotalTokens: p.total.tokens, TotalActualCost: p.total.actualCost.InexactFloat64(),
+			TodayRequests: p.today.successfulRequests, TodayTokens: p.today.tokens,
+			TodayActualCost: p.today.actualCost.InexactFloat64(),
+		})
+	}
+	return merged
+}
 
 // GetUserDashboardStats 获取用户专属的仪表盘统计
 func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID int64) (*UserDashboardStats, error) {
@@ -423,76 +615,22 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 		return nil, err
 	}
 
-	rows, err := r.sql.QueryContext(ctx, userDashboardUsageQuery, userID, timezone.Today())
+	// History before today's start is cached when enabled; today's index range
+	// on (user_id, created_at) is always read live.
+	todayStart := timezone.Today()
+	history, err := r.loadDashboardHistory(ctx, "user", userID, todayStart, func(ctx context.Context) (*dashboardUsageSegment, error) {
+		return r.queryUserDashboardSegment(ctx, userDashboardHistoryQuery, userID, todayStart)
+	})
 	if err != nil {
 		return nil, err
 	}
-	var byPlatform []PlatformDashboardStats
-	var totalDuration, durationCount int64
-	var totalCost, totalActualCost, todayCost, todayActualCost decimal.Decimal
-	for rows.Next() {
-		var row UserDashboardStats
-		var platform sql.NullString
-		var successfulRequests, todaySuccessfulRequests, rowDuration, rowDurationCount int64
-		var rowTotalCost, rowActualCost, rowTodayCost, rowTodayActualCost decimal.Decimal
-		if err := rows.Scan(
-			&platform,
-			&row.TotalRequests, &row.TotalInputTokens, &row.TotalOutputTokens,
-			&row.TotalCacheCreationTokens, &row.TotalCacheReadTokens,
-			&rowTotalCost, &rowActualCost, &rowDuration, &rowDurationCount,
-			&row.TodayRequests, &row.TodayInputTokens, &row.TodayOutputTokens,
-			&row.TodayCacheCreationTokens, &row.TodayCacheReadTokens,
-			&rowTodayCost, &rowTodayActualCost,
-			&successfulRequests, &todaySuccessfulRequests,
-		); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		row.TotalTokens = row.TotalInputTokens + row.TotalOutputTokens + row.TotalCacheCreationTokens + row.TotalCacheReadTokens
-		row.TodayTokens = row.TodayInputTokens + row.TodayOutputTokens + row.TodayCacheCreationTokens + row.TodayCacheReadTokens
-		stats.TotalRequests += row.TotalRequests
-		stats.TotalInputTokens += row.TotalInputTokens
-		stats.TotalOutputTokens += row.TotalOutputTokens
-		stats.TotalCacheCreationTokens += row.TotalCacheCreationTokens
-		stats.TotalCacheReadTokens += row.TotalCacheReadTokens
-		stats.TodayRequests += row.TodayRequests
-		stats.TodayInputTokens += row.TodayInputTokens
-		stats.TodayOutputTokens += row.TodayOutputTokens
-		stats.TodayCacheCreationTokens += row.TodayCacheCreationTokens
-		stats.TodayCacheReadTokens += row.TodayCacheReadTokens
-		totalDuration += rowDuration
-		durationCount += rowDurationCount
-		// Database costs are NUMERIC. Preserve exact decimal sums across cohorts
-		// before the final float conversion used by the existing response contract.
-		totalCost = totalCost.Add(rowTotalCost)
-		totalActualCost = totalActualCost.Add(rowActualCost)
-		todayCost = todayCost.Add(rowTodayCost)
-		todayActualCost = todayActualCost.Add(rowTodayActualCost)
-		if platform.Valid && platform.String != "" {
-			byPlatform = append(byPlatform, PlatformDashboardStats{
-				Platform: platform.String, TotalRequests: successfulRequests,
-				TotalTokens: row.TotalTokens, TotalActualCost: rowActualCost.InexactFloat64(),
-				TodayRequests: todaySuccessfulRequests, TodayTokens: row.TodayTokens,
-				TodayActualCost: rowTodayActualCost.InexactFloat64(),
-			})
-		}
-	}
-	if err := rows.Close(); err != nil {
+	today, err := r.queryUserDashboardSegment(ctx, userDashboardTodayQuery, userID, todayStart)
+	if err != nil {
 		return nil, err
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	stats.ByPlatform = byPlatform
-	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
-	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
-	stats.TotalCost, stats.TotalActualCost = totalCost.InexactFloat64(), totalActualCost.InexactFloat64()
-	stats.TodayCost, stats.TodayActualCost = todayCost.InexactFloat64(), todayActualCost.InexactFloat64()
-	if durationCount > 0 {
-		stats.AverageDurationMs = float64(totalDuration) / float64(durationCount)
-	}
+	applyDashboardSegments(stats, history, today)
 
-	// Keep the recent five-minute index range independent of the all-time scan.
+	// Keep the recent five-minute index range independent of the history scan.
 	rpm, tpm, err := r.getPerformanceStats(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -520,76 +658,72 @@ func (r *usageLogRepository) getPerformanceStatsByAPIKey(ctx context.Context, ap
 	return requestCount / 5, tokenCount / 5, nil
 }
 
+// apiKeyDashboardSegmentSelect aggregates one side of today's start for an API
+// Key. Duration sums and counts combine across segments into SUM/COUNT, the
+// same value as AVG over every non-NULL duration.
+const apiKeyDashboardSegmentSelect = `
+	SELECT
+		COUNT(*) as total_requests,
+		COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+		COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+		COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
+		COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
+		COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
+		COALESCE(SUM(actual_cost), 0) as total_actual_cost,
+		COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+		COUNT(duration_ms) as duration_count
+	FROM usage_logs
+	WHERE api_key_id = $1 AND `
+
+const (
+	apiKeyDashboardHistoryQuery = apiKeyDashboardSegmentSelect + `created_at < $2`
+	apiKeyDashboardTodayQuery   = apiKeyDashboardSegmentSelect + `created_at >= $2`
+)
+
+func (r *usageLogRepository) queryAPIKeyDashboardSegment(ctx context.Context, query string, apiKeyID int64, todayStart time.Time) (*dashboardUsageSegment, error) {
+	segment := &dashboardUsageSegment{}
+	t := &segment.totals
+	if err := scanSingleRow(
+		ctx,
+		r.sql,
+		query,
+		[]any{apiKeyID, todayStart},
+		&t.requests,
+		&t.inputTokens,
+		&t.outputTokens,
+		&t.cacheCreationTokens,
+		&t.cacheReadTokens,
+		&t.cost,
+		&t.actualCost,
+		&t.durationMs,
+		&t.durationCount,
+	); err != nil {
+		return nil, err
+	}
+	return segment, nil
+}
+
 // GetAPIKeyDashboardStats 获取指定 API Key 的仪表盘统计（按 api_key_id 过滤）
 func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKeyID int64) (*UserDashboardStats, error) {
 	stats := &UserDashboardStats{}
-	today := timezone.Today()
+	todayStart := timezone.Today()
 
 	// API Key 维度不需要统计 key 数量，设为 1
 	stats.TotalAPIKeys = 1
 	stats.ActiveAPIKeys = 1
 
-	// 累计 Token 统计
-	totalStatsQuery := `
-		SELECT
-			COUNT(*) as total_requests,
-			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as total_cost,
-			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
-			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
-		FROM usage_logs
-		WHERE api_key_id = $1
-	`
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		totalStatsQuery,
-		[]any{apiKeyID},
-		&stats.TotalRequests,
-		&stats.TotalInputTokens,
-		&stats.TotalOutputTokens,
-		&stats.TotalCacheCreationTokens,
-		&stats.TotalCacheReadTokens,
-		&stats.TotalCost,
-		&stats.TotalActualCost,
-		&stats.AverageDurationMs,
-	); err != nil {
+	// 今日零点之前的累计统计可走缓存；今日统计走 (api_key_id, created_at) 索引现查
+	history, err := r.loadDashboardHistory(ctx, "api_key", apiKeyID, todayStart, func(ctx context.Context) (*dashboardUsageSegment, error) {
+		return r.queryAPIKeyDashboardSegment(ctx, apiKeyDashboardHistoryQuery, apiKeyID, todayStart)
+	})
+	if err != nil {
 		return nil, err
 	}
-	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
-
-	// 今日 Token 统计
-	todayStatsQuery := `
-		SELECT
-			COUNT(*) as today_requests,
-			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
-			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
-			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
-			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost) FILTER (WHERE provider_cost_recorded), 0) as today_cost,
-			COALESCE(SUM(actual_cost), 0) as today_actual_cost
-		FROM usage_logs
-		WHERE api_key_id = $1 AND created_at >= $2
-	`
-	if err := scanSingleRow(
-		ctx,
-		r.sql,
-		todayStatsQuery,
-		[]any{apiKeyID, today},
-		&stats.TodayRequests,
-		&stats.TodayInputTokens,
-		&stats.TodayOutputTokens,
-		&stats.TodayCacheCreationTokens,
-		&stats.TodayCacheReadTokens,
-		&stats.TodayCost,
-		&stats.TodayActualCost,
-	); err != nil {
+	today, err := r.queryAPIKeyDashboardSegment(ctx, apiKeyDashboardTodayQuery, apiKeyID, todayStart)
+	if err != nil {
 		return nil, err
 	}
-	stats.TodayTokens = stats.TodayInputTokens + stats.TodayOutputTokens + stats.TodayCacheCreationTokens + stats.TodayCacheReadTokens
+	applyDashboardSegments(stats, history, today)
 
 	// 性能指标：RPM 和 TPM（最近5分钟，按 API Key 过滤）
 	rpm, tpm, err := r.getPerformanceStatsByAPIKey(ctx, apiKeyID)

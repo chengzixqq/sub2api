@@ -18,6 +18,32 @@ import (
 
 var userUsageCache = usagequery.NewCache(30 * time.Second)
 
+// /v1/usage daily trend and model statistics are presentation-only. Pollers
+// often disconnect early, so detached caches let finished scans serve the next poll.
+var (
+	gatewayUsageDailyCache      = usagequery.NewDetachedCache(5*time.Minute, 60*time.Second)
+	gatewayUsageModelStatsCache = usagequery.NewDetachedCache(5*time.Minute, 60*time.Second)
+)
+
+// gatewayUsageCacheKey uses the raw query strings rather than resolved times, so
+// polls share entries until the TTL expires.
+func gatewayUsageCacheKey(c *gin.Context, apiKeyID, userID int64) string {
+	key, _ := json.Marshal(struct {
+		APIKeyID, UserID                   int64
+		StartDate, EndDate, Days, Timezone string
+	}{apiKeyID, userID, c.Query("start_date"), c.Query("end_date"), c.Query("days"), c.Query("timezone")})
+	return string(key)
+}
+
+// loadGatewayUsageSummary is best-effort: failures yield nil and are not cached.
+func loadGatewayUsageSummary(ctx context.Context, cache *usagequery.Cache, key string, load func(context.Context) (any, error)) any {
+	entry, _, err := cache.GetOrLoad(ctx, key, false, load)
+	if err != nil {
+		return nil
+	}
+	return entry.Payload
+}
+
 // Presentation-only summaries have a 30-second cache lifetime. The
 // server day is part of the key so yesterday's "today" never crosses midnight.
 // Ownership checks run before loading; quota/balance decisions never use this cache.
