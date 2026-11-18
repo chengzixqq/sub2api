@@ -30,7 +30,9 @@ func TestRequestLogRetention_PartitionBoundaryKeepsRecentRows(t *testing.T) {
 	repo := newDashboardAggregationRepositoryWithSQL(tx)
 	cutoff := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	for range 2 {
-		require.NoError(t, repo.cleanupUsageLogsBatches(ctx, cutoff))
+		_, backlog, err := repo.cleanupUsageLogsBatches(ctx, cutoff)
+		require.NoError(t, err)
+		require.False(t, backlog)
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM usage_logs ORDER BY id`)
 		require.NoError(t, err)
 		var ids []int64

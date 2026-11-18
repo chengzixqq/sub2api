@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
@@ -57,7 +58,7 @@ func hourlyInvalidationDB(t *testing.T, partitioned bool) *sql.DB {
 		_, err = db.ExecContext(ctx, `CREATE TABLE usage_logs_default PARTITION OF usage_logs DEFAULT`)
 		require.NoError(t, err)
 	}
-	for _, name := range []string{"034_usage_dashboard_aggregation_tables.sql", "107_add_account_cost_to_dashboard_tables.sql", "222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql", "246_dashboard_hourly_invalidation.sql", "258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql"} {
+	for _, name := range []string{"034_usage_dashboard_aggregation_tables.sql", "107_add_account_cost_to_dashboard_tables.sql", "222_group_usage_daily_rollups.sql", "223_group_usage_rollup_timezone.sql", "246_dashboard_hourly_invalidation.sql", "258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql", "263_group_usage_rollup_single_bump.sql"} {
 		raw, err := migrations.FS.ReadFile(name)
 		require.NoError(t, err)
 		_, err = db.ExecContext(ctx, string(raw))
@@ -865,7 +866,8 @@ func TestDashboardHourlyInvalidation_PartitionRetentionDefersDirtySnapshot(t *te
 	require.NoError(t, repo.AggregateRange(ctx, hour, hour.Add(time.Hour)))
 	_, err = db.ExecContext(ctx, `INSERT INTO usage_logs(id,created_at) VALUES(2,$1)`, hour.Add(2*time.Minute))
 	require.NoError(t, err)
-	require.NoError(t, repo.CleanupUsageLogs(ctx, month.AddDate(0, 1, 0)))
+	require.ErrorIs(t, repo.CleanupUsageLogs(ctx, month.AddDate(0, 1, 0)), service.ErrUsageLogsRetentionPending,
+		"a deferred run still has expired rows and must be retried on the next cycle")
 	var count int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs`).Scan(&count))
 	require.Equal(t, 2, count, "partition DROP must defer while a certified snapshot is dirty")
@@ -978,7 +980,8 @@ func TestDashboardHourlyInvalidation_RetentionBoundsProgressPerCycle(t *testing.
 	seedCertifiedRetentionHours(t, db, hour, count)
 	require.NoError(t, repo.AggregateRange(ctx, last, last.Add(time.Hour)))
 	observeRetentionLocks(t, db)
-	require.NoError(t, repo.CleanupUsageLogs(ctx, last.Add(time.Hour)))
+	require.ErrorIs(t, repo.CleanupUsageLogs(ctx, last.Add(time.Hour)), service.ErrUsageLogsRetentionPending,
+		"stopping at the prefix budget leaves expired rows for the next cycle")
 	var raw, peak, steps int
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs`).Scan(&raw))
 	require.Equal(t, 1, raw, "the 64-prefix budget must stop without crossing remaining raw")

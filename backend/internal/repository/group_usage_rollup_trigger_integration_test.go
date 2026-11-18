@@ -458,6 +458,7 @@ func createGroupUsageRollupTriggerTestSchema(t *testing.T, ctx context.Context, 
 		"222_group_usage_daily_rollups.sql",
 		"223_group_usage_rollup_timezone.sql",
 		"258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql",
+		"263_group_usage_rollup_single_bump.sql",
 	} {
 		migrationSQL, readErr := migrations.FS.ReadFile(migrationName)
 		require.NoError(t, readErr)

@@ -295,3 +295,58 @@ func TestDashboardAggregationService_TriggerBackfill_TooLarge(t *testing.T) {
 	require.ErrorIs(t, err, ErrDashboardBackfillTooLarge)
 	require.Equal(t, 0, repo.aggregateCalls)
 }
+
+// A backlog is drained over several cycles. That is progress, not a failure:
+// it must be retried on the very next cycle, must not be reported as an error,
+// and the group rollup rebuild is deferred because the next retention run
+// would only move the watermark back again.
+func TestDashboardAggregationService_RetentionPendingContinuesNextCycleWithoutGroupSync(t *testing.T) {
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
+	baseRepo := &dashboardAggregationRepoTestStub{watermark: time.Now().UTC(), cleanupUsageErr: ErrUsageLogsRetentionPending}
+	repo := &dashboardAggregationRollupRepoTestStub{dashboardAggregationRepoTestStub: baseRepo}
+	svc := &DashboardAggregationService{
+		repo: repo,
+		cfg: config.DashboardAggregationConfig{
+			Enabled:         true,
+			LookbackSeconds: 120,
+			Retention:       config.DashboardAggregationRetentionConfig{UsageLogsDays: 90, UsageBillingDedupDays: 365, HourlyDays: 180, DailyDays: 730},
+		},
+	}
+
+	svc.runScheduledAggregation()
+	svc.runScheduledAggregation()
+
+	require.Equal(t, 2, baseRepo.cleanupUsageCalls, "a pending backlog must continue on the next cycle, not after the 6h interval")
+	require.Nil(t, svc.lastRetentionCleanup.Load())
+	require.Zero(t, repo.groupRollupCalls, "rollups rebuilt between two retention runs are discarded")
+	require.False(t, logSink.ContainsMessage("保留清理失败"), "draining a backlog is not a failure")
+
+	baseRepo.cleanupUsageErr = nil
+	svc.runScheduledAggregation()
+
+	require.Equal(t, 3, baseRepo.cleanupUsageCalls)
+	require.NotNil(t, svc.lastRetentionCleanup.Load())
+	require.Equal(t, 1, repo.groupRollupCalls, "the rebuild resumes once retention has caught up")
+}
+
+func TestDashboardAggregationService_RetentionFailureIsReportedAndStillSyncsGroups(t *testing.T) {
+	logSink, restore := captureStructuredLog(t)
+	defer restore()
+	baseRepo := &dashboardAggregationRepoTestStub{watermark: time.Now().UTC(), cleanupUsageErr: errors.New("pq: canceling statement due to statement timeout")}
+	repo := &dashboardAggregationRollupRepoTestStub{dashboardAggregationRepoTestStub: baseRepo}
+	svc := &DashboardAggregationService{
+		repo: repo,
+		cfg: config.DashboardAggregationConfig{
+			Enabled:         true,
+			LookbackSeconds: 120,
+			Retention:       config.DashboardAggregationRetentionConfig{UsageLogsDays: 90, UsageBillingDedupDays: 365, HourlyDays: 180, DailyDays: 730},
+		},
+	}
+
+	svc.runScheduledAggregation()
+
+	require.True(t, logSink.ContainsMessage("usage_logs 保留清理失败"))
+	require.Nil(t, svc.lastRetentionCleanup.Load())
+	require.Equal(t, 1, repo.groupRollupCalls)
+}

@@ -498,7 +498,7 @@ type optimisticGroupRollupFixture struct {
 }
 
 func newOptimisticGroupRollupFixture(t *testing.T, ctx context.Context, partitioned bool) optimisticGroupRollupFixture {
-	return newOptimisticGroupRollupFixtureWithMigrations(t, ctx, partitioned, []string{"258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql"})
+	return newOptimisticGroupRollupFixtureWithMigrations(t, ctx, partitioned, []string{"258_group_usage_rollup_optimistic.sql", "251_group_usage_rollup_nonblocking_build.sql", "262_group_usage_rollup_protocol_compat.sql", "263_group_usage_rollup_single_bump.sql"})
 }
 
 func newOptimisticGroupRollupFixtureWithMigrations(t *testing.T, ctx context.Context, partitioned bool, protocolMigrations []string) optimisticGroupRollupFixture {

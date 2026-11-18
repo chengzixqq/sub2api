@@ -36,6 +36,9 @@ var (
 	// ErrDashboardBackfillTooLarge 当回填跨度超过限制时返回。
 	ErrDashboardBackfillTooLarge   = errors.New("回填时间跨度过大")
 	errDashboardAggregationRunning = errors.New("聚合作业正在运行")
+	// ErrUsageLogsRetentionPending 表示本轮保留清理结束时仍有过期记录待删：
+	// 时间预算用完，或某一批因锁冲突让路。这不是失败，下一个聚合周期会继续。
+	ErrUsageLogsRetentionPending = errors.New("usage_logs 保留清理本轮未完成")
 )
 
 // DashboardAggregationRepository 定义仪表盘预聚合仓储接口。
@@ -60,6 +63,8 @@ type DashboardAggregationService struct {
 	settingRepo          SettingRepository
 	running              int32
 	lastRetentionCleanup atomic.Value // time.Time
+	// retentionPending 记录本轮保留清理是否还有积压，只在持有 running 的周期内读写。
+	retentionPending atomic.Bool
 
 	lockCache  LeaderLockCache
 	db         *sql.DB
@@ -237,7 +242,16 @@ func (s *DashboardAggregationService) runScheduledAggregation() {
 		return
 	}
 	defer release()
-	defer s.runScheduledGroupUsageSync()
+	s.retentionPending.Store(false)
+	defer func() {
+		// 保留清理还有积压时，由仓储决定本轮要不要重建分组日汇总：删到了数据就
+		// 不重建（下一轮删除会把水位再退回去，中间重建的日桶都会作废），一行
+		// 没删到则照常重建。这里不再重复触发。
+		if s.retentionPending.Load() {
+			return
+		}
+		s.runScheduledGroupUsageSync()
+	}()
 
 	now := time.Now().UTC()
 	last, err := s.repo.GetAggregationWatermark(ctx)
@@ -405,7 +419,11 @@ func (s *DashboardAggregationService) maybeCleanupRetention(ctx context.Context,
 	if usageDays > 0 {
 		usageErr = s.repo.CleanupUsageLogs(ctx, usageCutoff)
 	}
-	if usageErr != nil {
+	if errors.Is(usageErr, ErrUsageLogsRetentionPending) {
+		// 积压按周期分轮删除：不记成功时间，下一个周期接着删，不按 6 小时间隔等待。
+		s.retentionPending.Store(true)
+		logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] usage_logs 保留清理仍有积压，下个周期继续")
+	} else if usageErr != nil {
 		logger.LegacyPrintf("service.dashboard_aggregation", "[DashboardAggregation] usage_logs 保留清理失败: %v", usageErr)
 	}
 	if usageDays > 0 {

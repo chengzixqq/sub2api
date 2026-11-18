@@ -11,6 +11,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
@@ -376,4 +377,167 @@ func TestDashboardAggregationRepositorySyncGroupUsageRollupsDiscardsFailedUnlock
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+func expectUsageLogsBacklogProbe(mock sqlmock.Sqlmock, cutoff time.Time, remaining bool) {
+	mock.ExpectQuery(`SELECT EXISTS\(SELECT 1 FROM usage_logs WHERE created_at <`).WithArgs(cutoff).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(remaining))
+}
+
+// expectUsageLogsRetentionBatch scripts one retention batch that selects a
+// single victim row and reports `affected` deleted rows.
+func expectUsageLogsRetentionBatch(mock sqlmock.Sqlmock, cutoff, at time.Time, affected int64) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_preserve_aggregates`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`(?s)SELECT tableoid::bigint, ctid::text, created_at.*FOR UPDATE NOWAIT`).
+		WithArgs(cutoff, usageLogsCleanupBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"tableoid", "ctid", "created_at"}).AddRow(123, "(0,1)", at))
+	expectDashboardRetentionSafety(mock)
+	mock.ExpectExec(`UPDATE usage_dashboard_source_state`).WithArgs(at.Add(time.Microsecond)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)DELETE FROM usage_logs WHERE \(tableoid,ctid\) IN.*unnest`).WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, affected))
+	mock.ExpectExec(`UPDATE usage_group_rollup_state`).WithArgs(at).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+}
+
+// expectUsageLogsRetentionBatchDeferred scripts a batch that gives up on a
+// NOWAIT conflict over its victim rows without deleting anything.
+func expectUsageLogsRetentionBatchDeferred(mock sqlmock.Sqlmock, cutoff time.Time) {
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL lock_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET LOCAL sub2api.dashboard_preserve_aggregates`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`SELECT id FROM usage_group_rollup_state.*FOR UPDATE`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectQuery(`SELECT raw_retained_from.*FOR UPDATE NOWAIT`).WillReturnRows(sqlmock.NewRows([]string{"retained_from"}).AddRow(time.Unix(0, 0).UTC()))
+	mock.ExpectQuery(`(?s)SELECT tableoid::bigint, ctid::text, created_at.*FOR UPDATE NOWAIT`).
+		WithArgs(cutoff, usageLogsCleanupBatchSize).
+		WillReturnError(&pq.Error{Code: "55P03"})
+	mock.ExpectRollback()
+}
+
+// advancingRetentionClock moves past half the run budget on every read, so
+// the second full batch of a run ends after the budget.
+func advancingRetentionClock() func() time.Time {
+	current := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	return func() time.Time {
+		now := current
+		current = current.Add(usageLogsCleanupRunBudget/2 + time.Second)
+		return now
+	}
+}
+
+// One retention run must not keep taking the ingest gate until a whole backlog
+// is gone. It stops at its time budget and reports the remainder as pending,
+// without the group rollup rebuild that the next run would invalidate again.
+func TestDashboardAggregationRepositoryCleanupUsageLogsStopsAtRunBudgetAndReportsPending(t *testing.T) {
+	setGroupUsageRollupTestTimezone(t)
+	db, mock := newSQLMock(t)
+	repo := newDashboardAggregationRepositoryWithSQL(db)
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 5, 3, 2, 0, 0, 0, time.UTC)
+	repo.clock = advancingRetentionClock()
+
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	for batch := 0; batch < 2; batch++ {
+		expectUsageLogsRetentionBatch(mock, cutoff, deletedAt.Add(time.Duration(batch)*time.Hour), usageLogsCleanupBatchSize)
+	}
+	expectUsageLogsBacklogProbe(mock, cutoff, true)
+
+	err := repo.CleanupUsageLogs(context.Background(), cutoff)
+
+	require.ErrorIs(t, err, service.ErrUsageLogsRetentionPending)
+	require.NoError(t, mock.ExpectationsWereMet(), "no third batch and no group rollup rebuild after the budget")
+}
+
+// The last full batch can end exactly at the budget with nothing left behind.
+// That run is complete: it rebuilds the group rollups and reports success.
+func TestDashboardAggregationRepositoryCleanupUsageLogsBudgetWithoutBacklogCompletes(t *testing.T) {
+	setGroupUsageRollupTestTimezone(t)
+	db, mock := newSQLMock(t)
+	repo := newDashboardAggregationRepositoryWithSQL(db)
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 5, 3, 2, 0, 0, 0, time.UTC)
+	repo.clock = advancingRetentionClock()
+
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	for batch := 0; batch < 2; batch++ {
+		expectUsageLogsRetentionBatch(mock, cutoff, deletedAt.Add(time.Duration(batch)*time.Hour), usageLogsCleanupBatchSize)
+	}
+	expectUsageLogsBacklogProbe(mock, cutoff, false)
+	// Every clock read of this run stays within the same configured day.
+	expectGroupNoop(mock, service.GroupUsageTodayStart(time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)))
+
+	require.NoError(t, repo.CleanupUsageLogs(context.Background(), cutoff))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A batch abandoned by a lock conflict deleted nothing. Reporting that as a
+// finished run would make the service wait the whole retention interval while
+// the backlog is still there, so it must surface as pending. Nothing was
+// invalidated in this run, so the group rollup rebuild still proceeds.
+func TestDashboardAggregationRepositoryCleanupUsageLogsDeferredBatchWithBacklogRebuildsAndReportsPending(t *testing.T) {
+	setGroupUsageRollupTestTimezone(t)
+	db, mock := newSQLMock(t)
+	repo := newDashboardAggregationRepositoryWithSQL(db)
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	fixedNow := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	repo.clock = func() time.Time { return fixedNow }
+
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectUsageLogsRetentionBatchDeferred(mock, cutoff)
+	expectUsageLogsBacklogProbe(mock, cutoff, true)
+	expectGroupNoop(mock, service.GroupUsageTodayStart(fixedNow))
+
+	err := repo.CleanupUsageLogs(context.Background(), cutoff)
+
+	require.ErrorIs(t, err, service.ErrUsageLogsRetentionPending)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Rows were deleted before a later batch was deferred: the next run deletes on
+// and moves the group watermark back again, so the rebuild is skipped.
+func TestDashboardAggregationRepositoryCleanupUsageLogsDeferredAfterProgressSkipsRebuild(t *testing.T) {
+	setGroupUsageRollupTestTimezone(t)
+	db, mock := newSQLMock(t)
+	repo := newDashboardAggregationRepositoryWithSQL(db)
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	fixedNow := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	repo.clock = func() time.Time { return fixedNow }
+
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectUsageLogsRetentionBatch(mock, cutoff, time.Date(2026, 5, 3, 2, 0, 0, 0, time.UTC), usageLogsCleanupBatchSize)
+	expectUsageLogsRetentionBatchDeferred(mock, cutoff)
+	expectUsageLogsBacklogProbe(mock, cutoff, true)
+
+	err := repo.CleanupUsageLogs(context.Background(), cutoff)
+
+	require.ErrorIs(t, err, service.ErrUsageLogsRetentionPending)
+	require.NoError(t, mock.ExpectationsWereMet(), "no group rollup rebuild between two deleting runs")
+}
+
+// A conflict with nothing left below the cutoff is an ordinary finished run.
+func TestDashboardAggregationRepositoryCleanupUsageLogsDeferredBatchWithoutBacklogCompletes(t *testing.T) {
+	setGroupUsageRollupTestTimezone(t)
+	db, mock := newSQLMock(t)
+	repo := newDashboardAggregationRepositoryWithSQL(db)
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	fixedNow := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	repo.clock = func() time.Time { return fixedNow }
+
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectUsageLogsRetentionBatchDeferred(mock, cutoff)
+	expectUsageLogsBacklogProbe(mock, cutoff, false)
+	expectGroupNoop(mock, service.GroupUsageTodayStart(fixedNow))
+
+	require.NoError(t, repo.CleanupUsageLogs(context.Background(), cutoff))
+	require.NoError(t, mock.ExpectationsWereMet())
 }

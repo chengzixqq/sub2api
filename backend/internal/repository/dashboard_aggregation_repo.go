@@ -20,7 +20,14 @@ type dashboardAggregationRepository struct {
 	clock func() time.Time
 }
 
-const usageLogsCleanupBatchSize = 10000
+// Every retention batch holds the group gate that all usage_logs writers pass
+// through, so a batch stays small enough to commit quickly. It still exceeds
+// dashboardRetentionHourLockLimit, so the hour-lock budget can bound a batch.
+const usageLogsCleanupBatchSize = 2000
+
+// One run drains a backlog only for this long; the remainder is reported as
+// pending and continues on the next aggregation cycle.
+const usageLogsCleanupRunBudget = 45 * time.Second
 const usageBillingDedupCleanupBatchSize = 10000
 const dashboardRetentionHourLockLimit = 1024
 const dashboardRetentionPrefixBatchLimit = 64
@@ -457,34 +464,67 @@ func (r *dashboardAggregationRepository) CleanupUsageLogs(ctx context.Context, c
 	}
 	// Remove the expired part of the boundary partition as well, so a retention
 	// window measured in days does not silently round up to a whole month.
-	if err := r.cleanupUsageLogsBatches(ctx, cutoff); err != nil {
+	deleted, backlog, err := r.cleanupUsageLogsBatches(ctx, cutoff)
+	if err != nil {
 		return err
 	}
-	return r.SyncGroupUsageRollups(ctx, service.GroupUsageTodayStart(r.now()))
+	if backlog && deleted > 0 {
+		// The next run deletes on and moves the group watermark back again, so
+		// a rebuild in between would be discarded.
+		return service.ErrUsageLogsRetentionPending
+	}
+	if err := r.SyncGroupUsageRollups(ctx, service.GroupUsageTodayStart(r.now())); err != nil {
+		return err
+	}
+	if backlog {
+		return service.ErrUsageLogsRetentionPending
+	}
+	return nil
 }
 
-func (r *dashboardAggregationRepository) cleanupUsageLogsBatches(ctx context.Context, cutoff time.Time) error {
+// cleanupUsageLogsBatches reports the rows it deleted and whether expired rows
+// are left for a later run.
+func (r *dashboardAggregationRepository) cleanupUsageLogsBatches(ctx context.Context, cutoff time.Time) (int64, bool, error) {
 	db, transactional := r.sql.(*sql.DB)
+	if !transactional {
+		deleted, err := r.cleanupUsageLogsWithoutRollupInvalidation(ctx, cutoff)
+		return deleted, false, err
+	}
+	var deleted int64
 	boundedPrefixes := 0
+	deadline := r.now().Add(usageLogsCleanupRunBudget)
 	for {
-		if transactional {
-			affected, boundedProgress, err := cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx, db, cutoff)
-			if err != nil {
-				return err
-			}
-			if boundedProgress {
-				boundedPrefixes++
-				if boundedPrefixes >= dashboardRetentionPrefixBatchLimit {
-					return nil
-				}
-				continue // Locks from the committed prefix have already released.
-			}
-			if affected < usageLogsCleanupBatchSize {
-				return nil
-			}
-			continue
+		affected, boundedProgress, err := cleanupUsageLogsBatchWithRollupInvalidationProgress(ctx, db, cutoff)
+		if err != nil {
+			return deleted, false, err
 		}
+		deleted += affected
+		if boundedProgress {
+			boundedPrefixes++
+			if boundedPrefixes >= dashboardRetentionPrefixBatchLimit {
+				break
+			}
+			continue // Locks from the committed prefix have already released.
+		}
+		if affected > 0 && affected < usageLogsCleanupBatchSize {
+			return deleted, false, nil // The batch took every remaining expired row.
+		}
+		if affected == 0 || !r.now().Before(deadline) {
+			break
+		}
+	}
+	// The run stopped without proving the range empty: a budget ran out, or a
+	// batch backed off from a lock conflict without deleting anything.
+	var backlog bool
+	if err := scanSingleRow(ctx, r.sql, `SELECT EXISTS(SELECT 1 FROM usage_logs WHERE created_at < $1)`, []any{cutoff.UTC()}, &backlog); err != nil {
+		return deleted, false, err
+	}
+	return deleted, backlog, nil
+}
 
+func (r *dashboardAggregationRepository) cleanupUsageLogsWithoutRollupInvalidation(ctx context.Context, cutoff time.Time) (int64, error) {
+	var deleted int64
+	for {
 		res, err := r.sql.ExecContext(ctx, `
 			WITH victims AS (
 				SELECT tableoid, ctid
@@ -497,14 +537,15 @@ func (r *dashboardAggregationRepository) cleanupUsageLogsBatches(ctx context.Con
 			WHERE (tableoid, ctid) IN (SELECT tableoid, ctid FROM victims)
 		`, cutoff.UTC(), usageLogsCleanupBatchSize)
 		if err != nil {
-			return err
+			return deleted, err
 		}
 		affected, err := res.RowsAffected()
 		if err != nil {
-			return err
+			return deleted, err
 		}
+		deleted += affected
 		if affected < usageLogsCleanupBatchSize {
-			return nil
+			return deleted, nil
 		}
 	}
 }

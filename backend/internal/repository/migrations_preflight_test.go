@@ -247,6 +247,9 @@ func TestCheckMigrationPreflightFS_OutOfOrderMigrationStillChecksChecksum(t *tes
 
 // 真实迁移集：已从原 main 执行到 257（含定制 246）的库还需官方 246 和新 258；
 // 生产 e5ab7e4f4 停在定制 246，官方 246 与 247-258 都是正常的后缀 pending。
+// Applied after the 251/262 pair; databases older than it report it as pending.
+const groupUsageRollupSingleBumpMigration = "263_group_usage_rollup_single_bump.sql"
+
 func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
@@ -277,7 +280,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.NoError(t, err)
 		require.True(t, report.Valid())
 		require.Empty(t, report.Missing)
-		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration}, report.Pending)
+		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}, report.Pending)
 		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration}, report.OutOfOrderPending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -319,6 +322,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"260_account_dispatch_policy.sql",
 			"261_revoke_stale_member_dispatch_grants.sql",
 			groupUsageRollupCompatibilityMigration,
+			groupUsageRollupSingleBumpMigration,
 		}, report.Pending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
@@ -338,7 +342,7 @@ func withOutOfOrderMigrations(t *testing.T, names ...string) {
 func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
-	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_add_usage_logs_api_key_cost_index_notx.sql", "249_mcp_oauth.sql", "250_openai_cache_write_ttl.sql", "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration}
+	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_add_usage_logs_api_key_cost_index_notx.sql", "249_mcp_oauth.sql", "250_openai_cache_write_ttl.sql", "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}
 	missing := map[string]bool{}
 	for _, name := range pending {
 		missing[name] = true
@@ -370,7 +374,7 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 		t.Run(pendingStateName(appliedNew), func(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"filename", "checksum"})
 			for _, item := range embedded {
-				unapplied := item.filename == "251_group_force_openai_ultrafast.sql" || item.filename == groupUsageRollupUpstreamMigration || item.filename == "260_account_dispatch_policy.sql" || item.filename == "261_revoke_stale_member_dispatch_grants.sql" || item.filename == groupUsageRollupCompatibilityMigration
+				unapplied := item.filename == "251_group_force_openai_ultrafast.sql" || item.filename == groupUsageRollupUpstreamMigration || item.filename == "260_account_dispatch_policy.sql" || item.filename == "261_revoke_stale_member_dispatch_grants.sql" || item.filename == groupUsageRollupCompatibilityMigration || item.filename == groupUsageRollupSingleBumpMigration
 				for _, name := range pending[appliedNew:] {
 					unapplied = unapplied || item.filename == name
 				}
@@ -387,7 +391,7 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 			require.True(t, report.Valid())
 			require.Empty(t, report.Missing)
 			require.Empty(t, report.ChecksumMismatches)
-			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration)
+			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration)
 			require.Equal(t, expectedPending, report.Pending)
 			require.Equal(t, append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration), report.OutOfOrderPending)
 			require.NoError(t, mock.ExpectationsWereMet())
@@ -407,8 +411,9 @@ func TestCheckMigrationPreflight_V0222RollupMigrationStates(t *testing.T) {
 		missing []string
 		valid   bool
 	}{
-		{"custom261", []string{"251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, groupUsageRollupCompatibilityMigration}, true},
-		{"official251_applied", []string{groupUsageRollupCompatibilityMigration}, true},
+		{"custom261", []string{"251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}, true},
+		{"official251_applied", []string{groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}, true},
+		{"single_bump_pending", []string{groupUsageRollupSingleBumpMigration}, true},
 		{"complete", nil, true},
 		{"compatibility_without_upstream", []string{groupUsageRollupUpstreamMigration}, false},
 	} {
