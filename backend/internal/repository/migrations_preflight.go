@@ -81,6 +81,9 @@ var outOfOrderMigrationAllowlist = map[string]struct{}{
 	"251_group_force_openai_ultrafast.sql":           {},
 	// The runner pairs this replacement atomically with 262 to retain 258.
 	"251_group_usage_rollup_nonblocking_build.sql": {},
+	// 官方 v0.2.23：channel_model_pricing 加可空 ultrafast_multiplier 列及其正数约束，
+	// 列与约束都带存在性判断；定制 253-263 不触及该表，晚于它们执行结果相同。
+	"252_channel_pricing_ultrafast_multiplier.sql": {},
 }
 
 // Valid reports whether applying the pending suffix is safe from migration

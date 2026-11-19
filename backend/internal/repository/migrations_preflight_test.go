@@ -250,6 +250,14 @@ func TestCheckMigrationPreflightFS_OutOfOrderMigrationStillChecksChecksum(t *tes
 // Applied after the 251/262 pair; databases older than it report it as pending.
 const groupUsageRollupSingleBumpMigration = "263_group_usage_rollup_single_bump.sql"
 
+// 官方 v0.2.23 的 252 按完整文件名排在定制 252_admin_access_tokens 之后、定制 253-263 之前；
+// v0.2.23 之前的库都没有执行过它，下面的旧历史 fixture 一律不把它记为已执行。
+const channelPricingUltrafastMultiplierMigration = "252_channel_pricing_ultrafast_multiplier.sql"
+
+// 官方 v0.2.23 SQL（blob ad6f4ec59a98ed5decb34435703b492579eb7f6d）去首尾空白后的 sha256，
+// 即执行器写入 schema_migrations 的 checksum。
+const channelPricingUltrafastMultiplierChecksum = "458752b3523254ee60ab4a821261ab64df9216a6f208c1960e7b816f8c7cfd1d"
+
 func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
@@ -259,7 +267,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 	appliedUpTo := func(last string, skip string) *sqlmock.Rows {
 		rows := sqlmock.NewRows([]string{"filename", "checksum"})
 		for _, item := range embedded {
-			if item.filename != skip && item.filename != "251_group_force_openai_ultrafast.sql" && item.filename != groupUsageRollupUpstreamMigration {
+			if item.filename != skip && item.filename != "251_group_force_openai_ultrafast.sql" && item.filename != groupUsageRollupUpstreamMigration && item.filename != channelPricingUltrafastMultiplierMigration {
 				rows.AddRow(item.filename, item.checksum)
 			}
 			if item.filename == last {
@@ -280,8 +288,8 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 		require.NoError(t, err)
 		require.True(t, report.Valid())
 		require.Empty(t, report.Missing)
-		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}, report.Pending)
-		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration}, report.OutOfOrderPending)
+		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, channelPricingUltrafastMultiplierMigration, "258_group_usage_rollup_optimistic.sql", "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}, report.Pending)
+		require.Equal(t, []string{upstream246, "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, channelPricingUltrafastMultiplierMigration}, report.OutOfOrderPending)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
 
@@ -312,6 +320,7 @@ func TestCheckMigrationPreflight_UpstreamGeminiImage246OnUpgradedDatabases(t *te
 			"251_group_force_openai_ultrafast.sql",
 			groupUsageRollupUpstreamMigration,
 			"252_admin_access_tokens.sql",
+			channelPricingUltrafastMultiplierMigration,
 			"253_ops_alert_event_rule_snapshot.sql",
 			"254_add_scheduled_test_result_upstream_status.sql",
 			"255_account_test_runs.sql",
@@ -342,7 +351,7 @@ func withOutOfOrderMigrations(t *testing.T, names ...string) {
 func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
 	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
 	require.NoError(t, err)
-	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_add_usage_logs_api_key_cost_index_notx.sql", "249_mcp_oauth.sql", "250_openai_cache_write_ttl.sql", "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}
+	pending := []string{"247_scoped_admin_api_keys.sql", "248_group_image_count_billing.sql", "249_add_usage_logs_api_key_cost_index_notx.sql", "249_mcp_oauth.sql", "250_openai_cache_write_ttl.sql", "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, channelPricingUltrafastMultiplierMigration, "259_usage_log_billing_details.sql", "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration}
 	missing := map[string]bool{}
 	for _, name := range pending {
 		missing[name] = true
@@ -362,7 +371,7 @@ func TestCheckMigrationPreflight_UpstreamV0220OnCustom258(t *testing.T) {
 	require.True(t, report.Valid())
 	require.Empty(t, report.Missing)
 	require.Equal(t, pending, report.Pending)
-	require.Equal(t, pending[:7], report.OutOfOrderPending)
+	require.Equal(t, pending[:8], report.OutOfOrderPending)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -374,7 +383,7 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 		t.Run(pendingStateName(appliedNew), func(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"filename", "checksum"})
 			for _, item := range embedded {
-				unapplied := item.filename == "251_group_force_openai_ultrafast.sql" || item.filename == groupUsageRollupUpstreamMigration || item.filename == "260_account_dispatch_policy.sql" || item.filename == "261_revoke_stale_member_dispatch_grants.sql" || item.filename == groupUsageRollupCompatibilityMigration || item.filename == groupUsageRollupSingleBumpMigration
+				unapplied := item.filename == "251_group_force_openai_ultrafast.sql" || item.filename == groupUsageRollupUpstreamMigration || item.filename == channelPricingUltrafastMultiplierMigration || item.filename == "260_account_dispatch_policy.sql" || item.filename == "261_revoke_stale_member_dispatch_grants.sql" || item.filename == groupUsageRollupCompatibilityMigration || item.filename == groupUsageRollupSingleBumpMigration
 				for _, name := range pending[appliedNew:] {
 					unapplied = unapplied || item.filename == name
 				}
@@ -391,9 +400,9 @@ func TestCheckMigrationPreflight_UpstreamV0221OnCustom259(t *testing.T) {
 			require.True(t, report.Valid())
 			require.Empty(t, report.Missing)
 			require.Empty(t, report.ChecksumMismatches)
-			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration)
+			expectedPending := append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, channelPricingUltrafastMultiplierMigration, "260_account_dispatch_policy.sql", "261_revoke_stale_member_dispatch_grants.sql", groupUsageRollupCompatibilityMigration, groupUsageRollupSingleBumpMigration)
 			require.Equal(t, expectedPending, report.Pending)
-			require.Equal(t, append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration), report.OutOfOrderPending)
+			require.Equal(t, append(append([]string(nil), pending[appliedNew:]...), "251_group_force_openai_ultrafast.sql", groupUsageRollupUpstreamMigration, channelPricingUltrafastMultiplierMigration), report.OutOfOrderPending)
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
@@ -420,7 +429,8 @@ func TestCheckMigrationPreflight_V0222RollupMigrationStates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rows := sqlmock.NewRows([]string{"filename", "checksum"})
 			for _, item := range embedded {
-				skip := false
+				// v0.2.22 库都早于官方 v0.2.23 的 252。
+				skip := item.filename == channelPricingUltrafastMultiplierMigration
 				for _, name := range tc.missing {
 					skip = skip || name == item.filename
 				}
@@ -435,13 +445,109 @@ func TestCheckMigrationPreflight_V0222RollupMigrationStates(t *testing.T) {
 			report, err := CheckMigrationPreflight(context.Background(), db)
 			require.NoError(t, err)
 			require.Equal(t, tc.valid, report.Valid())
+			require.Contains(t, report.OutOfOrderPending, channelPricingUltrafastMultiplierMigration)
 			if tc.valid {
-				require.ElementsMatch(t, tc.missing, report.Pending)
+				require.ElementsMatch(t, append(append([]string(nil), tc.missing...), channelPricingUltrafastMultiplierMigration), report.Pending)
 			} else {
 				require.Equal(t, tc.missing, report.Missing)
-				require.Empty(t, report.Pending)
+				require.Equal(t, []string{channelPricingUltrafastMultiplierMigration}, report.Pending)
 			}
 			require.NoError(t, mock.ExpectationsWereMet())
 		})
 	}
+}
+
+// 已执行到定制 263 的魔改库缺官方 v0.2.23 的 252：执行器按完整文件名逐个判断，启动时会补跑它；
+// 预检把它判为乱序 pending，补跑后与普通已执行迁移一样按文件名与 checksum 校验。
+// 同编号的定制 252 也缺失时属于迁移历史缺口，仍报 missing。
+func TestCheckMigrationPreflight_UpstreamV0223ChannelPricingOnCustom263(t *testing.T) {
+	embedded, err := loadEmbeddedMigrationChecksums(migrations.FS)
+	require.NoError(t, err)
+
+	preflight := func(t *testing.T, recorded func(filename, checksum string) (string, bool)) MigrationPreflightReport {
+		t.Helper()
+		rows := sqlmock.NewRows([]string{"filename", "checksum"})
+		for _, item := range embedded {
+			if checksum, ok := recorded(item.filename, item.checksum); ok {
+				rows.AddRow(item.filename, checksum)
+			}
+		}
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		mock.ExpectQuery(`SELECT filename, checksum FROM schema_migrations ORDER BY filename`).WillReturnRows(rows)
+		report, err := CheckMigrationPreflight(context.Background(), db)
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+		return report
+	}
+	without := func(names ...string) func(string, string) (string, bool) {
+		return func(filename, checksum string) (string, bool) {
+			for _, name := range names {
+				if filename == name {
+					return "", false
+				}
+			}
+			return checksum, true
+		}
+	}
+
+	t.Run("custom263_before_upgrade", func(t *testing.T) {
+		report := preflight(t, without(channelPricingUltrafastMultiplierMigration))
+		require.True(t, report.Valid())
+		require.Equal(t, report.EmbeddedCount-1, report.AppliedCount)
+		require.Contains(t, migrationChecksumFilenames(report.Checksums), groupUsageRollupSingleBumpMigration)
+		require.Empty(t, report.Missing)
+		require.Empty(t, report.ChecksumMismatches)
+		require.Equal(t, []string{channelPricingUltrafastMultiplierMigration}, report.Pending)
+		require.Equal(t, []string{channelPricingUltrafastMultiplierMigration}, report.OutOfOrderPending)
+	})
+
+	t.Run("after_upgrade", func(t *testing.T) {
+		report := preflight(t, without())
+		require.True(t, report.Valid())
+		require.Empty(t, report.Missing)
+		require.Empty(t, report.Pending)
+		require.Empty(t, report.OutOfOrderPending)
+		require.Contains(t, report.Checksums, MigrationChecksumResult{
+			Filename:         channelPricingUltrafastMultiplierMigration,
+			DatabaseChecksum: channelPricingUltrafastMultiplierChecksum,
+			FileChecksum:     channelPricingUltrafastMultiplierChecksum,
+			Status:           MigrationChecksumExact,
+		})
+	})
+
+	t.Run("recorded_with_other_checksum", func(t *testing.T) {
+		report := preflight(t, func(filename, checksum string) (string, bool) {
+			if filename == channelPricingUltrafastMultiplierMigration {
+				return "tampered", true
+			}
+			return checksum, true
+		})
+		require.False(t, report.Valid())
+		require.Empty(t, report.Pending)
+		require.Empty(t, report.OutOfOrderPending)
+		require.Equal(t, []MigrationChecksumResult{{
+			Filename:         channelPricingUltrafastMultiplierMigration,
+			DatabaseChecksum: "tampered",
+			FileChecksum:     channelPricingUltrafastMultiplierChecksum,
+			Status:           MigrationChecksumMismatch,
+		}}, report.ChecksumMismatches)
+	})
+
+	t.Run("both_252_missing", func(t *testing.T) {
+		report := preflight(t, without("252_admin_access_tokens.sql", channelPricingUltrafastMultiplierMigration))
+		require.False(t, report.Valid())
+		require.Equal(t, []string{"252_admin_access_tokens.sql", channelPricingUltrafastMultiplierMigration}, report.Missing)
+		require.Empty(t, report.Pending)
+		require.Empty(t, report.OutOfOrderPending)
+	})
+}
+
+func migrationChecksumFilenames(results []MigrationChecksumResult) []string {
+	names := make([]string, 0, len(results))
+	for _, result := range results {
+		names = append(names, result.Filename)
+	}
+	return names
 }
