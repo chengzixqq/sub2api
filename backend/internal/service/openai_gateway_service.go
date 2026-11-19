@@ -236,6 +236,8 @@ type OpenAIUsage struct {
 	IterationUsage              *ClaudeIterationUsage `json:"-"`
 	// An explicit invalid split must not inherit a previous snapshot's TTLs.
 	cacheCreationTTLDetailsPresent bool
+
+	cacheCreationInputTokensPresent bool
 }
 
 // OpenAIForwardResult represents the result of forwarding

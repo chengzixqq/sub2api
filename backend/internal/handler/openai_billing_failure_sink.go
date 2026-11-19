@@ -50,16 +50,18 @@ func cloneOpenAIFailureImageSizeBreakdown(in map[string]int) map[string]int {
 // this conversion so the OpenAI image-cache price is applied exactly once.
 func openAIFailureUsageFromDecision(d service.FailureBillingDecision) service.OpenAIUsage {
 	return service.OpenAIUsage{
-		InputTokens:              d.Usage.InputTokens,
-		ImageInputTokens:         d.Usage.ImageInputTokens,
-		ImageCacheReadTokens:     d.Usage.ImageCacheReadTokens,
-		OutputTokens:             d.Usage.OutputTokens,
-		CacheReadInputTokens:     d.Usage.CacheReadInputTokens,
-		CacheCreationInputTokens: d.Usage.CacheCreationInputTokens,
-		CacheCreation5mTokens:    d.Usage.CacheCreation5mTokens,
-		CacheCreation1hTokens:    d.Usage.CacheCreation1hTokens,
-		IterationUsage:           d.Usage.Clone().IterationUsage,
-		ImageOutputTokens:        d.Usage.ImageOutputTokens,
+		InputTokens:                 d.Usage.InputTokens,
+		ImageInputTokens:            d.Usage.ImageInputTokens,
+		ImageCacheReadTokens:        d.Usage.ImageCacheReadTokens,
+		OutputTokens:                d.Usage.OutputTokens,
+		CacheReadInputTokens:        d.Usage.CacheReadInputTokens,
+		CacheCreationInputTokens:    d.Usage.CacheCreationInputTokens,
+		CacheCreation5mTokens:       d.Usage.CacheCreation5mTokens,
+		CacheCreation1hTokens:       d.Usage.CacheCreation1hTokens,
+		CacheCreation30mInputTokens: d.Usage.CacheCreation30mTokens,
+		CacheCreation12hInputTokens: d.Usage.CacheCreation12hTokens,
+		IterationUsage:              d.Usage.Clone().IterationUsage,
+		ImageOutputTokens:           d.Usage.ImageOutputTokens,
 	}
 }
 

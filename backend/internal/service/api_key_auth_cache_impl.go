@@ -586,6 +586,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			UserGroupRPMOverrideGroupID: snapshot.User.UserGroupRPMOverrideGroupID,
 		},
 	}
+	// 修复前写入缓存的快照可能带分组不支持的 ultrafast_multiplier，ModelPricing 恢复时丢弃。
 	if snapshot.Group != nil {
 		apiKey.Group = &Group{
 			ID:                              snapshot.Group.ID,
@@ -600,7 +601,7 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			WeeklyLimitUSD:                  cloneAuthFloat64Ptr(snapshot.Group.WeeklyLimitUSD),
 			MonthlyLimitUSD:                 cloneAuthFloat64Ptr(snapshot.Group.MonthlyLimitUSD),
 			LongContextPricingEnabled:       snapshot.Group.LongContextPricingEnabled,
-			ModelPricing:                    cloneChannelModelPricing(snapshot.Group.ModelPricing),
+			ModelPricing:                    SanitizeStoredGroupModelPricing(cloneChannelModelPricing(snapshot.Group.ModelPricing)),
 			AllowImageGeneration:            snapshot.Group.AllowImageGeneration,
 			AllowBatchImageGeneration:       snapshot.Group.AllowBatchImageGeneration,
 			ImageCountBilling:               snapshot.Group.ImageCountBilling,

@@ -291,3 +291,21 @@ func TestClaudeFailureSink_NotBillableDecisionNeverReachesSink(t *testing.T) {
 	calls, _ := usageRepo.snapshot()
 	require.Equal(t, 0, calls, "request-scope 失败（未进入推理）不应计费")
 }
+
+func TestRetriedOpenAIFailureSettlesFinalCacheAndImageUsageOnce(t *testing.T) {
+	var settled []service.OpenAIUsage
+	guard := newBillingSettlementGuard(guardDeps{sink: func(d service.FailureBillingDecision, a *service.Account) {
+		require.EqualValues(t, 2, a.ID)
+		settled = append(settled, openAIFailureUsageFromDecision(d))
+	}})
+	guard.ObserveAttempt(&service.Account{ID: 1})
+	guard.ObserveOpenAIForwardResult(&service.OpenAIForwardResult{Usage: service.OpenAIUsage{InputTokens: 900, CacheCreationInputTokens: 800, CacheCreation12hInputTokens: 800}})
+	guard.ObserveForwardOutcome(&service.UpstreamFailoverError{StatusCode: 503}, false)
+	guard.ObserveAttempt(&service.Account{ID: 2})
+	final := service.OpenAIUsage{InputTokens: 50, OutputTokens: 7, CacheReadInputTokens: 8, CacheCreationInputTokens: 10, CacheCreation30mInputTokens: 3, CacheCreation12hInputTokens: 7, ImageInputTokens: 4, ImageCacheReadTokens: 2, ImageOutputTokens: 1}
+	guard.ObserveOpenAIForwardResult(&service.OpenAIForwardResult{Usage: final})
+	guard.ObserveForwardOutcome(context.DeadlineExceeded, true)
+	guard.Flush()
+	guard.Flush()
+	require.Equal(t, []service.OpenAIUsage{final}, settled)
+}

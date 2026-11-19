@@ -513,3 +513,41 @@ func TestAdvisorUsage_OptionalTopLevelTTLDoesNotDiscardCompleteIterations(t *tes
 	require.Equal(t, 0, *cost.BillingDetails.Components[0].IterationIndex)
 	require.Equal(t, 3, cost.BillingDetails.Components[0].CacheCreation1hTokens)
 }
+
+func TestAdvisorAuthoritativeCacheRemainderAtSettlement(t *testing.T) {
+	const body = `{"type":"message","stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":4},"iterations":[{"type":"message","input_tokens":2,"output_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":4}},{"type":"advisor_message","model":"advisor-test","input_tokens":5,"output_tokens":6,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":7}}]}}`
+	ctx := context.Background()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	response := &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+	svc, key := advisorTestService()
+	svc.cfg = rawChatCompletionsTestConfig()
+	svc.rateLimitService = &RateLimitService{}
+	const executor = "claude-sonnet-4"
+	price := svc.billingService.fallbackPrices[executor]
+	price.SupportsCacheBreakdown = true
+	price.CacheCreation5mPrice = .002
+	price.CacheCreation1hPrice = .004
+	usage, err := svc.handleNonStreamingResponse(ctx, response, c, &Account{ID: 42}, executor, executor)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		override string
+		cache    float64
+	}{{"", .028}, {"5m", .020}, {"1h", .040}} {
+		t.Run("ttl="+tc.override, func(t *testing.T) {
+			u := usage.Clone()
+			if tc.override != "" {
+				applyCacheTTLOverride(&u, tc.override)
+			}
+			charge := svc.calculateTokenCost(ctx, &ForwardResult{Usage: u}, key, executor, 2, time.Now())
+			require.NotNil(t, charge.BillingDetails)
+			require.Equal(t, "complete", charge.BillingDetails.Status)
+			require.Len(t, charge.BillingDetails.Components, 2)
+			require.InDelta(t, tc.cache+.000051, *charge.BillingDetails.Components[0].TotalCost, 1e-10)
+			// Advisor: 5*.01 + 6*.02 + 3*.03 + 7*.06; an executor override does not reprice it.
+			require.InDelta(t, .68, *charge.BillingDetails.Components[1].TotalCost, 1e-10)
+			require.InDelta(t, 2*(.68+.000051+tc.cache), charge.ActualCost, 1e-10)
+		})
+	}
+}

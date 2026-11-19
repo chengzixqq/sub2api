@@ -985,6 +985,9 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 			modelPricing = nil
 		}
 	}
+	// 旧备份恢复的行可能带分组不支持的渠道专属字段，读入即丢弃，
+	// 计费、复制与整卡回写都不会再看到它。
+	modelPricing = service.SanitizeStoredGroupModelPricing(modelPricing)
 	return &service.Group{
 		ID:                              g.ID,
 		Name:                            g.Name,

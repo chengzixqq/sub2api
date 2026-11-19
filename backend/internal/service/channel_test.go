@@ -3,8 +3,11 @@
 package service
 
 import (
+	"context"
+	"net/http"
 	"testing"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -809,4 +812,89 @@ func TestChannelModelPricingCloneIsolatesIntervalMultipliersAndCachePrices(t *te
 	require.Equal(t, 1.5, *original.Intervals[0].CacheReadMultiplier)
 	require.Equal(t, 1.5, *original.CacheWrite12hPrice)
 	require.Equal(t, 1.5, *original.Intervals[0].CacheWrite12hPrice)
+}
+
+func TestChannelModelPricingClone_DeepCopiesUltrafastMultiplier(t *testing.T) {
+	ultrafast := 2.5
+	original := ChannelModelPricing{Models: []string{"gpt-5.5"}, UltrafastMultiplier: &ultrafast}
+
+	cloned := original.Clone()
+
+	require.NotNil(t, cloned.UltrafastMultiplier)
+	require.NotSame(t, original.UltrafastMultiplier, cloned.UltrafastMultiplier)
+	require.Equal(t, 2.5, *cloned.UltrafastMultiplier)
+	*cloned.UltrafastMultiplier = 9
+	require.Equal(t, 2.5, *original.UltrafastMultiplier)
+	require.Equal(t, 2.5, ultrafast)
+
+	require.Nil(t, ChannelModelPricing{}.Clone().UltrafastMultiplier)
+}
+
+// 渠道价卡读出与渠道整体拷贝都走 Clone：修改快照上的倍率不能回写到
+// 缓存里的原价卡。
+func TestChannelModelPricingClone_UltrafastSnapshotsDoNotLeakIntoChannel(t *testing.T) {
+	ultrafast := 2.5
+	ch := &Channel{ModelPricing: []ChannelModelPricing{{
+		Platform:            PlatformOpenAI,
+		Models:              []string{"gpt-5.5"},
+		UltrafastMultiplier: &ultrafast,
+	}}}
+
+	snapshot := ch.GetModelPricing("GPT-5.5")
+	require.NotNil(t, snapshot)
+	require.NotNil(t, snapshot.UltrafastMultiplier)
+	*snapshot.UltrafastMultiplier = 7
+
+	cloned := ch.Clone()
+	require.NotNil(t, cloned.ModelPricing[0].UltrafastMultiplier)
+	*cloned.ModelPricing[0].UltrafastMultiplier = 8
+
+	require.Equal(t, 2.5, *ch.ModelPricing[0].UltrafastMultiplier)
+	require.Equal(t, 2.5, ultrafast)
+}
+
+// 边界只收在分组写入口：同一张带 Ultra Fast 倍率的价卡，渠道创建照常保存，
+// 分组价卡归一化则拒绝。
+func TestGroupUltrafastBoundary_ChannelCreateStillAcceptsMultiplier(t *testing.T) {
+	ultrafast := 2.5
+	card := ChannelModelPricing{
+		Platform:            PlatformOpenAI,
+		Models:              []string{"gpt-5.5"},
+		BillingMode:         BillingModeToken,
+		UltrafastMultiplier: &ultrafast,
+	}
+	var persisted *Channel
+	repo := &mockChannelRepository{
+		existsByNameFn: func(context.Context, string) (bool, error) { return false, nil },
+		createFn: func(_ context.Context, ch *Channel) error {
+			ch.ID = 77
+			persisted = ch.Clone()
+			return nil
+		},
+		getByIDFn: func(_ context.Context, id int64) (*Channel, error) {
+			require.NotNil(t, persisted)
+			return persisted.Clone(), nil
+		},
+		listAllFn: func(context.Context) ([]Channel, error) { return nil, nil },
+	}
+	svc := newTestChannelService(repo)
+
+	created, err := svc.Create(context.Background(), &CreateChannelInput{
+		Name:         "ultrafast-channel",
+		ModelPricing: []ChannelModelPricing{card},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, persisted)
+	require.Len(t, persisted.ModelPricing, 1)
+	require.NotNil(t, persisted.ModelPricing[0].UltrafastMultiplier)
+	require.Equal(t, 2.5, *persisted.ModelPricing[0].UltrafastMultiplier)
+	require.NotNil(t, created.ModelPricing[0].UltrafastMultiplier)
+	require.Equal(t, 2.5, *created.ModelPricing[0].UltrafastMultiplier)
+
+	_, err = normalizeGroupModelPricing(PlatformOpenAI, []ChannelModelPricing{card})
+	require.Error(t, err)
+	appErr := infraerrors.FromError(err)
+	require.Equal(t, int32(http.StatusBadRequest), appErr.Code)
+	require.Equal(t, "GROUP_MODEL_ULTRAFAST_MULTIPLIER_UNSUPPORTED", appErr.Reason)
 }

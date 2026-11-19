@@ -1371,6 +1371,14 @@ func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) 
 				"group model pricing does not support time pricing",
 			)
 		}
+		// Ultra Fast 倍率只在渠道价卡上配置，并沿用渠道侧的官方套餐认定；
+		// 分组价卡整张优先于渠道，带上倍率就会绕开渠道口径，故任何非 nil 值都拒绝。
+		if out[i].UltrafastMultiplier != nil {
+			return nil, infraerrors.BadRequest(
+				"GROUP_MODEL_ULTRAFAST_MULTIPLIER_UNSUPPORTED",
+				"group model pricing does not support ultrafast_multiplier; configure it on channel pricing",
+			)
+		}
 		if strings.TrimSpace(out[i].Platform) == "" {
 			out[i].Platform = platform
 		}
@@ -1385,6 +1393,29 @@ func normalizeGroupModelPricing(platform string, pricing []ChannelModelPricing) 
 		return nil, err
 	}
 	return out, nil
+}
+
+// SanitizeStoredGroupModelPricing 处理不经 normalizeGroupModelPricing 的存量分组价卡：
+// 数据库行（含旧备份恢复的 JSON）与鉴权缓存中的旧快照。分组价卡不支持只属于渠道的
+// UltrafastMultiplier，读入时直接丢弃而不报错：计费不会采用它，复制与只改其他字段的
+// 整卡回写也不会再传播它，这些合法的分组操作也不会因此被拒绝。请求显式携带的数值
+// 仍由 normalizeGroupModelPricing 以 400 拒绝。
+//
+// 不修改入参：没有需要丢弃的值时原样返回；否则返回整张价卡的深拷贝，只清空该字段，
+// 其他字段和其他条目保持原值。
+func SanitizeStoredGroupModelPricing(pricing []ChannelModelPricing) []ChannelModelPricing {
+	for i := range pricing {
+		if pricing[i].UltrafastMultiplier == nil {
+			continue
+		}
+		sanitized := make([]ChannelModelPricing, len(pricing))
+		for j := range pricing {
+			sanitized[j] = pricing[j].Clone()
+			sanitized[j].UltrafastMultiplier = nil
+		}
+		return sanitized
+	}
+	return pricing
 }
 
 func (s *adminServiceImpl) DeleteGroup(ctx context.Context, id int64) error {

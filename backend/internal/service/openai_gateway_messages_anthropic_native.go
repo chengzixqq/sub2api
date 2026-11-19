@@ -593,15 +593,20 @@ func claudeUsageToOpenAIUsage(u *ClaudeUsage) OpenAIUsage {
 	if u == nil {
 		return OpenAIUsage{}
 	}
+	creation := u.billingUsageTokens().CacheCreationTokens
 	return OpenAIUsage{
-		InputTokens:                 u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens,
-		OutputTokens:                u.OutputTokens,
-		CacheCreationInputTokens:    u.CacheCreationInputTokens,
-		CacheCreation5mTokens:       u.CacheCreation5mTokens,
-		CacheCreation1hTokens:       u.CacheCreation1hTokens,
-		CacheCreation30mInputTokens: u.CacheCreation30mTokens,
-		CacheCreation12hInputTokens: u.CacheCreation12hTokens,
-		CacheReadInputTokens:        u.CacheReadInputTokens,
-		IterationUsage:              u.Clone().IterationUsage,
+		ImageInputTokens:                u.ImageInputTokens,
+		ImageCacheReadTokens:            u.ImageCacheReadTokens,
+		ImageOutputTokens:               u.ImageOutputTokens,
+		InputTokens:                     u.InputTokens + creation + u.CacheReadInputTokens,
+		OutputTokens:                    u.OutputTokens,
+		CacheCreationInputTokens:        creation,
+		CacheCreation5mTokens:           u.CacheCreation5mTokens,
+		CacheCreation1hTokens:           u.CacheCreation1hTokens,
+		CacheCreation30mInputTokens:     u.CacheCreation30mTokens,
+		CacheCreation12hInputTokens:     u.CacheCreation12hTokens,
+		CacheReadInputTokens:            u.CacheReadInputTokens,
+		IterationUsage:                  u.Clone().IterationUsage,
+		cacheCreationInputTokensPresent: u.cacheCreationInputTokensPresent,
 	}
 }

@@ -616,7 +616,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 ) (result *OpenAIForwardResult, resultErr error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, prior, err := s.readOpenAICompatBufferedTerminal(resp, c, account, "openai messages buffered", requestID)
+	finalResponse, usage, acc, prior, err := s.readOpenAICompatBufferedTerminalWithUsage(resp, c, account, "openai messages buffered", requestID, s.observeMessagesUsage)
 	defer func() {
 		if resultErr != nil && result == nil {
 			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, originalModel, billingModel, upstreamModel, startTime)
@@ -868,6 +868,19 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	logPrefix string,
 	requestID string,
 ) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, openAICompatPriorModelAudit, error) {
+	return s.readOpenAICompatBufferedTerminalWithUsage(resp, c, account, logPrefix, requestID, func(payload []byte, event *apicompat.ResponsesStreamEvent, usage *OpenAIUsage) {
+		s.parseSSEUsageBytesWithType(payload, event.Type, usage)
+	})
+}
+
+func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
+	resp *http.Response,
+	c *gin.Context,
+	account *Account,
+	logPrefix string,
+	requestID string,
+	observeUsage func([]byte, *apicompat.ResponsesStreamEvent, *OpenAIUsage),
+) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, openAICompatPriorModelAudit, error) {
 	acc := apicompat.NewBufferedResponseAccumulator()
 	acc.XAIServerSideSearch = account != nil && account.IsGrok()
 	var usage OpenAIUsage
@@ -960,7 +973,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 					payload = string(restoreCodexToolNamesFromContext(c, []byte(payload)))
 					var event apicompat.ResponsesStreamEvent
 					if err := json.Unmarshal([]byte(payload), &event); err == nil {
-						s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
+						observeUsage([]byte(payload), &event, &usage)
 						acc.ProcessEvent(&event)
 						recordPrior(&event)
 						if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
@@ -1004,7 +1017,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 				)
 				continue
 			}
-			s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
+			observeUsage([]byte(payload), &event, &usage)
 
 			acc.ProcessEvent(&event)
 			recordPrior(&event)
@@ -1162,7 +1175,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			return false
 		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
-		s.parseSSEUsageBytesWithType([]byte(payload), event.Type, &usage)
+		s.observeMessagesUsage([]byte(payload), &event, &usage)
 
 		eventType := strings.TrimSpace(event.Type)
 		isBareErrorEvent := eventType == "error"
@@ -1532,6 +1545,193 @@ func buildAnthropicStreamErrorSSE(errType, message string) string {
 		return "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"" + errType + "\",\"message\":\"upstream error\"}}\n\n"
 	}
 	return "event: error\ndata: " + string(payload) + "\n\n"
+}
+
+// Messages clients and settlement share one terminal snapshot. Progressive
+// frames may omit totals; a meaningful terminal report replaces them as a unit.
+func (s *OpenAIGatewayService) observeMessagesUsage(payload []byte, event *apicompat.ResponsesStreamEvent, usage *OpenAIUsage) {
+	terminal := isOpenAICompatResponsesTerminalEvent(event.Type)
+	var nested *apicompat.ResponsesUsage
+	if event.Response != nil {
+		nested = event.Response.Usage
+	}
+	if !terminal && nested == nil && event.Usage == nil &&
+		!bytes.Contains(payload, []byte(`"tool_usage"`)) && !bytes.Contains(payload, []byte(`"usage"`)) {
+		return // The usual text/content delta carries no metering evidence.
+	}
+	primary := readMessagesUsageReport(payload, "response.", nested)
+	sibling := readMessagesUsageReport(payload, "", event.Usage)
+	if !terminal {
+		// Compatible upstreams may use top-level usage or a data wrapper on
+		// progressive frames. Preserve their existing lookup order.
+		primary, sibling = sibling, primary
+		if event.Usage == nil && nested == nil && bytes.Contains(payload, []byte(`"usage"`)) {
+			for _, prefix := range []string{"data.", "data.response."} {
+				var typed apicompat.ResponsesUsage
+				if node := gjson.GetBytes(payload, prefix+"usage"); node.IsObject() && json.Unmarshal([]byte(node.Raw), &typed) == nil {
+					primary = readMessagesUsageReport(payload, prefix, &typed)
+					break
+				}
+			}
+		}
+	}
+	// An image count can be billed on its own, but never outranks reported totals.
+	if !primary.hasTotals() && (sibling.hasTotals() || (!primary.hasDirectImageOutput() && sibling.hasDirectImageOutput())) {
+		primary, sibling = sibling, primary
+	}
+	*usage = primary.resolve(sibling, *usage, terminal)
+	if !terminal || (nested == nil && event.Usage == nil && !openAIUsageHasTokens(usage)) {
+		return
+	}
+	// Project only the public counters. Raw images and write TTLs stay private.
+	projection := &apicompat.ResponsesUsage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		InputTokensDetails:       &apicompat.ResponsesInputTokensDetails{CachedTokens: usage.CacheReadInputTokens},
+	}
+	if event.Response != nil {
+		event.Response.Usage = projection
+	} else {
+		event.Usage = projection
+	}
+}
+
+// Keep source totals attached to raw image fields until their parents have
+// been selected. Presence (including null or zero) blocks lower-priority data.
+type messagesImageCount struct {
+	field     gjson.Result
+	total     int
+	fromUsage bool
+}
+
+func readMessagesImageCount(node, tool gjson.Result, total int, parent, alias string) messagesImageCount {
+	path := parent + "_details.image_tokens"
+	for _, field := range []gjson.Result{node.Get(path), node.Get(alias + "_details.image_tokens")} {
+		if field.Exists() {
+			return messagesImageCount{field: field, total: total, fromUsage: true}
+		}
+	}
+	// A tool with no separate total can describe the primary usage beside it.
+	// When usage is absent only the tool's own matching total can anchor it.
+	if own := tool.Get(parent); own.Exists() {
+		total, _ = boundedJSONNonNegativeInt(own)
+	}
+	return messagesImageCount{field: tool.Get(path), total: total}
+}
+
+func (m messagesImageCount) value() int {
+	n, _ := boundedJSONNonNegativeInt(m.field)
+	if m.total > 0 && n > m.total {
+		return 0 // Not a subset of the reported parent.
+	}
+	return n
+}
+
+func resolveMessagesImageCount(total int, primary, sibling messagesImageCount, previousTotal, previousCount int, retainedTotal bool) int {
+	if primary.field.Exists() && primary.total == total && (total > 0 || primary.fromUsage) {
+		return primary.value()
+	}
+	if total > 0 && sibling.field.Exists() && sibling.total == total {
+		return sibling.value()
+	}
+	if previousTotal == total && (total > 0 || retainedTotal) {
+		return previousCount
+	}
+	return 0
+}
+
+type messagesUsageReport struct {
+	usage                                  OpenAIUsage
+	hasInput, hasOutput, hasRead, hasWrite bool
+	imageInput, imageOutput                messagesImageCount
+	cachedImage                            gjson.Result
+}
+
+func readMessagesUsageReport(payload []byte, prefix string, typed *apicompat.ResponsesUsage) messagesUsageReport {
+	var r messagesUsageReport
+	var node gjson.Result
+	if typed != nil {
+		node = gjson.GetBytes(payload, prefix+"usage")
+		r.usage, _ = openAIUsageFromGJSON(node)
+		// Every source, including sidecars and progressive frames, uses the
+		// released Responses converter's precedence before certifying a TTL split.
+		if r.usage.CacheCreationInputTokens != typed.CacheCreationInputTokens {
+			r.usage.CacheCreationInputTokens = typed.CacheCreationInputTokens
+			r.usage.CacheCreation30mInputTokens, r.usage.CacheCreation12hInputTokens, r.usage.cacheCreationTTLDetailsPresent = openAICacheCreationTTLTokensFromUsage(node, typed.CacheCreationInputTokens)
+		}
+		explicitZero := func(paths ...string) bool {
+			for _, path := range paths {
+				if n, ok := boundedJSONNonNegativeInt(node.Get(path)); ok && n == 0 {
+					return true
+				}
+			}
+			return false
+		}
+		r.hasInput = r.usage.InputTokens > 0 || explicitZero("input_tokens", "prompt_tokens")
+		// The raw parser includes independent reasoning only if total_tokens
+		// proves an output gap. Reasoning alone is not a reported output zero.
+		r.hasOutput = r.usage.OutputTokens > 0 || explicitZero("output_tokens", "completion_tokens")
+		r.hasRead = r.usage.CacheReadInputTokens > 0 || explicitZero("input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens", "cache_read_input_tokens", "cache_read_tokens", "cached_tokens", "prompt_cache_hit_tokens")
+		r.hasWrite = r.usage.CacheCreationInputTokens > 0 || explicitZero("input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens", "input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_creation_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "cache_creation_tokens", "cache_write_tokens")
+		r.cachedImage = node.Get("input_tokens_details.cached_tokens_details.image_tokens")
+		if !r.cachedImage.Exists() {
+			r.cachedImage = node.Get("prompt_tokens_details.cached_tokens_details.image_tokens")
+		}
+	}
+	tool := gjson.GetBytes(payload, prefix+"tool_usage.image_gen")
+	r.imageInput = readMessagesImageCount(node, tool, r.usage.InputTokens, "input_tokens", "prompt_tokens")
+	r.imageOutput = readMessagesImageCount(node, tool, r.usage.OutputTokens, "output_tokens", "completion_tokens")
+	return r
+}
+
+func (r messagesUsageReport) hasTotals() bool {
+	return r.hasInput || r.hasOutput || r.hasRead || r.hasWrite
+}
+
+func (r messagesUsageReport) hasDirectImageOutput() bool {
+	return r.imageOutput.fromUsage && r.imageOutput.value() > 0
+}
+
+func (r messagesUsageReport) resolve(sibling messagesUsageReport, previous OpenAIUsage, terminal bool) OpenAIUsage {
+	current := r.usage
+	keepPrevious := !r.hasTotals()
+	if keepPrevious {
+		// A detail-only report cannot replace the observed totals. Resolve its
+		// image count below against the output it actually describes.
+		current = previous
+	} else if !terminal {
+		if !r.hasInput {
+			current.InputTokens = previous.InputTokens
+		}
+		if !r.hasOutput {
+			current.OutputTokens = previous.OutputTokens
+		}
+		if !r.hasRead {
+			current.CacheReadInputTokens = previous.CacheReadInputTokens
+		}
+		if !r.hasWrite {
+			current.CacheCreationInputTokens = previous.CacheCreationInputTokens
+		}
+	}
+	inheritOpenAICacheCreationTTL(&current, sibling.usage)
+	inheritOpenAICacheCreationTTL(&current, previous)
+	current.ImageInputTokens = resolveMessagesImageCount(current.InputTokens, r.imageInput, sibling.imageInput, previous.InputTokens, previous.ImageInputTokens, keepPrevious || (!terminal && !r.hasInput))
+	current.ImageOutputTokens = resolveMessagesImageCount(current.OutputTokens, r.imageOutput, sibling.imageOutput, previous.OutputTokens, previous.ImageOutputTokens, keepPrevious || (!terminal && !r.hasOutput))
+	// Cached image tokens must be a subset of both resolved parent counts.
+	current.ImageCacheReadTokens = 0
+	for _, source := range []messagesUsageReport{r, sibling} {
+		if source.cachedImage.Exists() && current.InputTokens > 0 && current.InputTokens == source.usage.InputTokens &&
+			current.CacheReadInputTokens > 0 && current.CacheReadInputTokens == source.usage.CacheReadInputTokens &&
+			(!source.imageInput.field.Exists() || source.imageInput.total != current.InputTokens || source.imageInput.value() == current.ImageInputTokens) {
+			n, _ := boundedJSONNonNegativeInt(source.cachedImage)
+			current.ImageCacheReadTokens = min(n, current.ImageInputTokens, current.CacheReadInputTokens)
+			return current
+		}
+	}
+	if current.InputTokens > 0 && current.InputTokens == previous.InputTokens && current.CacheReadInputTokens == previous.CacheReadInputTokens && current.ImageInputTokens == previous.ImageInputTokens {
+		current.ImageCacheReadTokens = previous.ImageCacheReadTokens
+	}
+	return current
 }
 
 func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUsage {

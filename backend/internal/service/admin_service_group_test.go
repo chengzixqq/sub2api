@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -398,6 +399,135 @@ func TestNormalizeGroupModelPricing_NormalizesEmptyTimePricing(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pricing, 1)
 	require.Nil(t, pricing[0].TimePricing)
+}
+
+// Ultra Fast 倍率只允许在渠道价卡上配置：分组价卡整张优先于渠道价卡，
+// 若分组也能带倍率，就会绕开渠道侧的官方套餐认定口径。任何非 nil 值
+// （含 0 与 1）都必须在分组写入口以明确的 400 拒绝，且不得落库。
+func requireGroupUltrafastRejected(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	appErr := infraerrors.FromError(err)
+	require.Equal(t, int32(http.StatusBadRequest), appErr.Code)
+	require.Equal(t, "GROUP_MODEL_ULTRAFAST_MULTIPLIER_UNSUPPORTED", appErr.Reason)
+}
+
+func groupPricingWithUltrafastForTest(multiplier float64) []ChannelModelPricing {
+	input := 0.000002
+	return []ChannelModelPricing{
+		{Platform: PlatformOpenAI, Models: []string{"gpt-5"}, BillingMode: BillingModeToken, InputPrice: &input},
+		{Platform: PlatformOpenAI, Models: []string{"gpt-5.5"}, BillingMode: BillingModeToken, UltrafastMultiplier: &multiplier},
+	}
+}
+
+func TestAdminService_CreateGroup_RejectsGroupUltrafastMultiplier(t *testing.T) {
+	for _, multiplier := range []float64{0, 1, 2.5} {
+		repo := &groupRepoStubForAdmin{createID: 61}
+		svc := &adminServiceImpl{groupRepo: repo}
+
+		_, err := svc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
+			Name:           "ultrafast-group",
+			Platform:       PlatformOpenAI,
+			RateMultiplier: 1,
+			ModelPricing:   groupPricingWithUltrafastForTest(multiplier),
+		})
+
+		requireGroupUltrafastRejected(t, err)
+		require.Nil(t, repo.created, "multiplier %v must not be persisted", multiplier)
+	}
+}
+
+func TestAdminService_UpdateGroup_RejectsGroupUltrafastMultiplier(t *testing.T) {
+	for _, multiplier := range []float64{0, 1, 2.5} {
+		existing := &Group{ID: 1, Name: "existing", Platform: PlatformOpenAI, Status: StatusActive}
+		repo := &groupRepoStubForAdmin{getByID: existing}
+		svc := &adminServiceImpl{groupRepo: repo}
+		pricing := groupPricingWithUltrafastForTest(multiplier)
+
+		_, err := svc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{ModelPricing: &pricing})
+
+		requireGroupUltrafastRejected(t, err)
+		require.Nil(t, repo.updated, "multiplier %v must not be persisted", multiplier)
+	}
+}
+
+// 持 GroupBilling 的供应商可以改自己独占分组的价卡；Ultra Fast 倍率
+// 不能借这条路写进分组。
+func TestAdminService_UpdateGroup_VendorBillingCannotWriteGroupUltrafast(t *testing.T) {
+	existing := &Group{ID: 3, Name: "vendor-owned", Platform: PlatformOpenAI, Status: StatusActive}
+	repo := &groupRepoStubForAdmin{getByID: existing}
+	cache := &stubGroupScopeCache{granted: []int64{existing.ID}}
+	svc := &adminServiceImpl{groupRepo: repo, workspaceScopeCache: cache}
+	pricing := groupPricingWithUltrafastForTest(2.5)
+	input := &UpdateGroupInput{ModelPricing: &pricing}
+
+	_, err := svc.UpdateGroup(vendorGroupCtx(7), existing.ID, input)
+
+	requireGroupUltrafastRejected(t, err)
+	require.NotNil(t, input.ModelPricing, "unshared billing vendor keeps model_pricing in the update mask")
+	require.Nil(t, repo.updated)
+}
+
+func TestAdminService_GroupPricingWithoutUltrafast_CreateAndUpdateSucceed(t *testing.T) {
+	input := 0.000002
+	output := 0.000008
+	card := func() []ChannelModelPricing {
+		return []ChannelModelPricing{{
+			Models:      []string{" gpt-5 "},
+			BillingMode: BillingModeToken,
+			InputPrice:  &input,
+			OutputPrice: &output,
+		}}
+	}
+	requireStoredCard := func(t *testing.T, stored []ChannelModelPricing) {
+		t.Helper()
+		require.Len(t, stored, 1)
+		require.Equal(t, PlatformOpenAI, stored[0].Platform)
+		require.Equal(t, []string{"gpt-5"}, stored[0].Models)
+		require.Nil(t, stored[0].UltrafastMultiplier)
+		require.NotNil(t, stored[0].InputPrice)
+		require.Equal(t, input, *stored[0].InputPrice)
+		require.NotNil(t, stored[0].OutputPrice)
+		require.Equal(t, output, *stored[0].OutputPrice)
+	}
+
+	createRepo := &groupRepoStubForAdmin{createID: 62}
+	createSvc := &adminServiceImpl{groupRepo: createRepo}
+	_, err := createSvc.CreateGroup(WithScope(context.Background(), AdminScope()), &CreateGroupInput{
+		Name:           "plain-pricing",
+		Platform:       PlatformOpenAI,
+		RateMultiplier: 1,
+		ModelPricing:   card(),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, createRepo.created)
+	requireStoredCard(t, createRepo.created.ModelPricing)
+
+	existing := &Group{ID: 1, Name: "existing", Platform: PlatformOpenAI, Status: StatusActive}
+	updateRepo := &groupRepoStubForAdmin{getByID: existing}
+	updateSvc := &adminServiceImpl{groupRepo: updateRepo}
+	pricing := card()
+	_, err = updateSvc.UpdateGroup(WithScope(context.Background(), AdminScope()), existing.ID, &UpdateGroupInput{ModelPricing: &pricing})
+	require.NoError(t, err)
+	require.NotNil(t, updateRepo.updated)
+	requireStoredCard(t, updateRepo.updated.ModelPricing)
+}
+
+// 分组接口直接把请求体解码成 ChannelModelPricing：显式 null 与缺省等价放行，
+// 任何数值都拒绝。
+func TestNormalizeGroupModelPricing_UltrafastJSONNullAcceptedNumberRejected(t *testing.T) {
+	var withNull []ChannelModelPricing
+	require.NoError(t, json.Unmarshal([]byte(`[{"models":["gpt-5"],"billing_mode":"token","ultrafast_multiplier":null}]`), &withNull))
+	normalized, err := normalizeGroupModelPricing(PlatformOpenAI, withNull)
+	require.NoError(t, err)
+	require.Len(t, normalized, 1)
+	require.Nil(t, normalized[0].UltrafastMultiplier)
+
+	var withNumber []ChannelModelPricing
+	require.NoError(t, json.Unmarshal([]byte(`[{"models":["gpt-5"],"billing_mode":"token","ultrafast_multiplier":1.5}]`), &withNumber))
+	require.NotNil(t, withNumber[0].UltrafastMultiplier)
+	_, err = normalizeGroupModelPricing(PlatformOpenAI, withNumber)
+	requireGroupUltrafastRejected(t, err)
 }
 
 type compositeRouteRepoStubForAdmin struct {

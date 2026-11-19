@@ -29,9 +29,12 @@ func (u OpenAIUsage) ToClaudeUsage() ClaudeUsage {
 }
 
 func openAIUsageToClaudeUsage(u OpenAIUsage) ClaudeUsage {
+	tokens := u.billingUsageTokens()
 	return ClaudeUsage{
-		InputTokens:  max(u.InputTokens-u.CacheCreationInputTokens-u.CacheReadInputTokens, 0),
-		OutputTokens: u.OutputTokens, CacheCreationInputTokens: u.CacheCreationInputTokens,
+		ImageInputTokens: u.ImageInputTokens, ImageCacheReadTokens: u.ImageCacheReadTokens, ImageOutputTokens: u.ImageOutputTokens,
+		cacheCreationInputTokensPresent: u.cacheCreationInputTokensPresent,
+		InputTokens:                     tokens.InputTokens,
+		OutputTokens:                    u.OutputTokens, CacheCreationInputTokens: tokens.CacheCreationTokens,
 		CacheReadInputTokens: u.CacheReadInputTokens, CacheCreation5mTokens: u.CacheCreation5mTokens,
 		CacheCreation1hTokens: u.CacheCreation1hTokens, IterationUsage: u.IterationUsage,
 		CacheCreation30mTokens: u.CacheCreation30mInputTokens, CacheCreation12hTokens: u.CacheCreation12hInputTokens,

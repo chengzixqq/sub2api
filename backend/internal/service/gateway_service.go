@@ -675,6 +675,11 @@ type ClaudeUsage struct {
 	// price while being bridged to OpenAIRecordUsageInput.
 	ImageCacheReadTokens int `json:"image_cache_read_tokens,omitempty"`
 	ImageOutputTokens    int `json:"image_output_tokens,omitempty"`
+
+	cacheCreationInputTokensPresent     bool
+	cacheCreationInputTokensFromDetails bool
+	promptTotalTokens                   int
+	promptTotalPresent                  bool
 }
 
 // ForwardResult 转发结果

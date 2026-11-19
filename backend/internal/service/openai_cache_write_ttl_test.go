@@ -33,7 +33,7 @@ func TestOpenAICacheWriteTTLRecordUsage(t *testing.T) {
 		{"12h", 0, 2399, 0.00391658, 0.00195829},
 		{"mixed", 9, 2390, 0.00390926, 0.00195463},
 	} {
-		for _, route := range []string{"json", "sse", "passthrough_json", "passthrough_sse"} {
+		for _, route := range []string{"json", "sse", "passthrough_json", "passthrough_sse", "messages_sse", "messages_buffered_sse"} {
 			t.Run(tc.name+"/"+route, func(t *testing.T) {
 				const groupID int64 = 777
 				usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
@@ -59,6 +59,15 @@ func TestOpenAICacheWriteTTLRecordUsage(t *testing.T) {
 				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 				var usage *OpenAIUsage
 				switch route {
+				case "messages_sse", "messages_buffered_sse":
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+					forward := svc.handleAnthropicStreamingResponse
+					if route == "messages_buffered_sse" {
+						forward = svc.handleAnthropicBufferedStreamingResponse
+					}
+					result, err := forward(resp, c, account, "gpt-6-luna", "gpt-6-luna", "gpt-6-luna", time.Now())
+					require.NoError(t, err)
+					usage = &result.Usage
 				case "json":
 					result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "gpt-6-luna", "gpt-6-luna")
 					require.NoError(t, err)
@@ -102,6 +111,72 @@ func TestOpenAICacheWriteTTLRecordUsage(t *testing.T) {
 				assert.InDelta(t, tc.ledgerTotal, *log.AccountStatsCost, 1e-12)
 			})
 		}
+	}
+}
+
+func TestCacheWriteTTLProjectionAndPricingCoexist(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		usage     OpenAIUsage
+		tokens    UsageTokens
+		cost      float64
+		statsCost float64
+	}{
+		{
+			name:      "OpenAI 30m and 12h",
+			usage:     OpenAIUsage{CacheCreationInputTokens: 50, CacheCreation30mInputTokens: 20, CacheCreation12hInputTokens: 30},
+			tokens:    UsageTokens{CacheCreationTokens: 50, CacheCreation30mTokens: 20, CacheCreation12hTokens: 30},
+			cost:      270,
+			statsCost: 250,
+		},
+		{
+			name:      "Anthropic partial details with 5m remainder",
+			usage:     OpenAIUsage{CacheCreationInputTokens: 100, CacheCreation5mTokens: 20, CacheCreation1hTokens: 30, cacheCreationInputTokensPresent: true},
+			tokens:    UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: 20, CacheCreation1hTokens: 30},
+			cost:      260,
+			statsCost: 260,
+		},
+		{
+			name:      "Anthropic explicit zero falls back to details",
+			usage:     OpenAIUsage{CacheCreation5mTokens: 20, CacheCreation1hTokens: 30, cacheCreationInputTokensPresent: true},
+			tokens:    UsageTokens{CacheCreationTokens: 50, CacheCreation5mTokens: 20, CacheCreation1hTokens: 30},
+			cost:      160,
+			statsCost: 160,
+		},
+		{
+			name:      "Anthropic contradictory details capped at aggregate",
+			usage:     OpenAIUsage{CacheCreationInputTokens: 100, CacheCreation5mTokens: 50, CacheCreation1hTokens: 200, cacheCreationInputTokensPresent: true},
+			tokens:    UsageTokens{CacheCreationTokens: 100, CacheCreation5mTokens: 50, CacheCreation1hTokens: 200},
+			cost:      360,
+			statsCost: 360,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			test.usage.InputTokens = 200
+			test.usage.CacheReadInputTokens = 10
+			test.usage.OutputTokens = 2
+			test.tokens.InputTokens = 190 - test.tokens.CacheCreationTokens
+			test.tokens.CacheReadTokens = 10
+			test.tokens.OutputTokens = 2
+			tokens := test.usage.billingUsageTokens()
+			require.Equal(t, test.tokens, tokens)
+
+			pricing := &ModelPricing{
+				SupportsCacheBreakdown:        true,
+				CacheCreation5mPrice:          2,
+				CacheCreation1hPrice:          4,
+				CacheCreation12hPricePerToken: float64Ptr(7),
+			}
+			service := &BillingService{}
+			require.Equal(t, test.cost*2, service.computeCacheCreationCost(pricing, tokens, 3, 2))
+			statsCost := calculateTokenStatsCost(&ChannelModelPricing{
+				CacheWritePrice:    float64Ptr(2),
+				CacheWrite1hPrice:  float64Ptr(4),
+				CacheWrite12hPrice: float64Ptr(7),
+			}, tokens)
+			require.NotNil(t, statsCost)
+			require.Equal(t, test.statsCost, *statsCost)
+		})
 	}
 }
 
@@ -199,4 +274,52 @@ func TestOpenAICacheWriteTTLPrices(t *testing.T) {
 		require.NotNil(t, cost)
 		require.InDelta(t, 9e-6+2390*2e-6, *cost, 1e-12)
 	})
+}
+
+func TestBufferedResponsesReprojectionRetainsVerifiedCacheTTL(t *testing.T) {
+	const stream = "data: " + `{"type":"response.created","response":{"id":"r","usage":{"input_tokens":30,"input_tokens_details":{"cache_write_tokens":10,"cache_write_tokens_details":{"ttl_30m_tokens":3,"ttl_12h_tokens":7}}}}}` + "\n\ndata: " + `{"type":"response.completed","response":{"id":"r","status":"completed","output":[],"usage":{"input_tokens":20,"output_tokens":4,"cache_creation_input_tokens":10}}}` + "\n\n"
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	for _, route := range []string{"standard", "passthrough"} {
+		t.Run(route, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream))}
+			var usage *OpenAIUsage
+			if route == "passthrough" {
+				result, err := svc.handleNonStreamingResponsePassthrough(context.Background(), resp, c, rawChatCompletionsTestAccount(), "gpt-6-luna", "gpt-6-luna")
+				require.NoError(t, err)
+				usage = result.usage
+			} else {
+				result, err := svc.handleNonStreamingResponse(context.Background(), resp, c, rawChatCompletionsTestAccount(), "gpt-6-luna", "gpt-6-luna")
+				require.NoError(t, err)
+				usage = result.usage
+			}
+			require.Equal(t, UsageTokens{InputTokens: 10, OutputTokens: 4, CacheCreationTokens: 10, CacheCreation30mTokens: 3, CacheCreation12hTokens: 7}, usage.billingUsageTokens())
+		})
+	}
+}
+
+func TestOpenAIProbeSnapshotKeepsMediaAndCachePrices(t *testing.T) {
+	// A coalesced probe crosses the Claude-shaped snapshot boundary. Compare the
+	// persisted user debit and model-file account cost to disjoint token buckets.
+	raw := OpenAIUsage{InputTokens: 30, OutputTokens: 10, ImageInputTokens: 7, ImageCacheReadTokens: 2, ImageOutputTokens: 4, CacheReadInputTokens: 6, CacheCreationInputTokens: 10, CacheCreation30mInputTokens: 3, CacheCreation12hInputTokens: 7}
+	usage := raw.ToClaudeUsage()
+	require.Equal(t, raw, claudeUsageToOpenAIUsage(&usage))
+	logs := &openAIRecordUsageLogRepoStub{inserted: true}
+	billing := &openAIRecordUsageBillingRepoStub{}
+	svc := newGatewayRecordUsageServiceWithBillingRepoForTest(logs, billing, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+	const model = "claude-sonnet-4"
+	svc.billingService = newTestBillingServiceWithPrices(map[string]*ModelPricing{model: {InputPricePerToken: .001, ImageInputPricePerToken: .003, OutputPricePerToken: .002, ImageOutputPricePerToken: .004, CacheReadPricePerToken: .005, ImageCacheReadPricePerToken: .006, CacheCreationPricePerToken: .007, CacheCreation12hPricePerToken: float64Ptr(.011)}})
+	gid := int64(17)
+	svc.channelService = newTestChannelServiceForStats(t, &Channel{ID: 1, Status: StatusActive}, gid, PlatformAnthropic)
+	svc.resolver = NewModelPricingResolver(svc.channelService, svc.billingService)
+	require.NoError(t, svc.RecordUsage(context.Background(), &RecordUsageInput{Result: &ForwardResult{RequestID: "probe-ttl-image", Model: model, Usage: usage}, APIKey: &APIKey{ID: 1, GroupID: &gid, Group: &Group{ID: gid, Platform: PlatformAnthropic, RateMultiplier: .5}}, User: &User{ID: 2}, Account: &Account{ID: 3, Platform: PlatformAnthropic}}))
+	require.Equal(t, 1, billing.calls)
+	require.Equal(t, 7, logs.lastLog.ImageInputTokens)
+	require.InDelta(t, .015, logs.lastLog.ImageInputCost, 1e-10)
+	require.InDelta(t, .098, logs.lastLog.CacheCreationCost, 1e-10)
+	require.InDelta(t, .182, logs.lastLog.TotalCost, 1e-10)
+	require.InDelta(t, .091, billing.lastCmd.BalanceCost, 1e-10)
+	require.NotNil(t, logs.lastLog.AccountStatsCost)
+	require.InDelta(t, .182, *logs.lastLog.AccountStatsCost, 1e-10)
 }
