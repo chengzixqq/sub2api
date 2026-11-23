@@ -209,14 +209,14 @@ func (batch *cacheControlBatch) apply(body []byte) []byte {
 }
 
 // Tools have no thinking-block restriction. System thinking is always stripped.
-// Preserved message thinking fields do not participate in the limit or TTL order.
-func (b *cacheControlBlock) participates(section cacheControlSection, preserveThinking bool) bool {
+// Message thinking fields outside the trim or TTL pool are excluded.
+func (b *cacheControlBlock) participates(section cacheControlSection, excludeRedactedThinking bool) bool {
 	switch section {
 	case cacheSystem:
 		return b.block.Get("type").String() != "thinking"
 	case cacheMessages:
 		kind := b.block.Get("type").String()
-		return kind != "thinking" && (!preserveThinking || !isThinkingCacheControlBlock(kind))
+		return kind != "thinking" && (!excludeRedactedThinking || !isThinkingCacheControlBlock(kind))
 	default:
 		return true
 	}

@@ -140,7 +140,8 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if shouldMimicClaudeCode {
 		// 与 /v1/messages 相同：在注入 tools[-1] / messages 断点之前按客户端原始
 		// 断点数决定 4 块上限的处理方式（见 planCacheControlLimit）。
-		cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, true)
+		nativeManaged := IsAnthropicMessagesRequest(c) && isNativeCacheControlAccount(account)
+		cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, true, nativeManaged)
 		if marked {
 			if err := replaceBody(plannedBody); err != nil {
 				return err
@@ -173,7 +174,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			return err
 		}
 	} else if limitMode == ClaudeCacheControlLimitTrim && isNativeCacheControlAccount(account) {
-		if err := replaceBody(trimRealCacheControlSlots(body, thinkingMode != ClaudeAlignStrip, true)); err != nil {
+		plan := cacheControlLimitPlan{
+			preserveThinking: thinkingMode != ClaudeAlignStrip,
+			nativeManaged:    IsAnthropicMessagesRequest(c),
+		}
+		if err := replaceBody(trimRealCacheControlSlots(body, plan, true)); err != nil {
 			return err
 		}
 	}

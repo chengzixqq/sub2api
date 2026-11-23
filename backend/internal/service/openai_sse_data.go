@@ -34,12 +34,35 @@ func (a *openAISSEDataAccumulator) Flush(fn func([]byte)) {
 }
 
 func forEachOpenAISSEDataPayload(body string, fn func([]byte)) {
+	visitOpenAISSEDataPayloads(body, false, fn)
+}
+
+// A truncated body cannot dispatch an unfinished frame at EOF.
+func visitOpenAISSEDataPayloads(body string, truncated bool, fn func([]byte)) {
 	if fn == nil || strings.TrimSpace(body) == "" {
 		return
 	}
 	var acc openAISSEDataAccumulator
-	for _, line := range strings.Split(body, "\n") {
+	completeLines := 0
+	for len(body) > 0 {
+		if truncated && body[0] == '\r' {
+			// A standalone CR can dispatch the preceding data before the
+			// cutoff. Defer it so a complete multiline frame still joins
+			// exactly as it would on an ordinary read.
+			completeLines = len(acc.lines)
+		}
+		line, rest, ended := strings.Cut(body, "\n")
+		if truncated && !ended {
+			break
+		}
 		acc.AddLine(line, fn)
+		if len(acc.lines) == 0 {
+			completeLines = 0
+		}
+		body = rest
+	}
+	if truncated {
+		acc.lines = acc.lines[:completeLines]
 	}
 	acc.Flush(fn)
 }

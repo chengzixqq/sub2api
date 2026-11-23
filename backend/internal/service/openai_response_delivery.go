@@ -37,8 +37,14 @@ func (w *openAIBufferedDeliveryWriter) Write(body []byte) (int, error) {
 	return n, err
 }
 
+// NeedsContentEstimate gates successful delivery accounting on the upstream
+// counters before the handler reads any billing policy or request body.
+func (r *OpenAIForwardResult) NeedsContentEstimate() bool {
+	return r.ClientContentDelivered && r.ImageCount <= 0 && openAIUsageNeedsDelivery(&r.Usage)
+}
+
 func openAIUsageNeedsDelivery(u *OpenAIUsage) bool {
-	return u == nil || (u.ReportedOutputFloor <= 0 && !openAIUsageHasTokens(u) && u.CacheCreation5mTokens <= 0 &&
+	return u == nil || u.RetainedAfterZero || (u.ReportedOutputFloor <= 0 && !openAIUsageHasTokens(u) && u.CacheCreation5mTokens <= 0 &&
 		u.CacheCreation30mInputTokens <= 0 && u.CacheCreation12hInputTokens <= 0 &&
 		u.CacheCreation1hTokens <= 0 && !u.HasAdvisorUsage() && !u.HasCompactionUsage())
 }
@@ -115,6 +121,28 @@ func openAIClientEventHasContent(payload string) bool {
 		_, client := openAIResponsesStreamContent(payload, eventType)
 		return client || openAIFinalEventHasContent(payload, eventType)
 	}
+}
+
+// The relay supplies the event type it already decoded. Use borrowed JSON
+// for deltas so escaped or large strings need no decoding or copying.
+func openAIWSFrameHasContent(eventType string, message []byte) bool {
+	data := openAIWSPayloadStringView(message)
+	return gjson.Valid(data) && openAIWSValidatedFrameHasContent(eventType, data)
+}
+
+func openAIWSValidatedFrameHasContent(eventType, data string) bool {
+	body := rawJSONView(strings.TrimSpace(data))
+	if strings.Contains(eventType, ".delta") {
+		return body.field("delta").hasString()
+	}
+	switch eventType {
+	case "response.output_item.done":
+		return openAIOutputItemHasContent(body.field("item"))
+	case "response.done", "response.completed":
+		return openAIResponseObjectHasContent(body.field("response"))
+	}
+	_, client := openAIResponsesStreamContent(data, eventType)
+	return client
 }
 
 func openAIResponseBodyHasContent(payload string) bool {

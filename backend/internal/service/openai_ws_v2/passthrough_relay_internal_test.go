@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -813,4 +814,57 @@ func TestObserveUpstreamMessage_ResponseServiceTierOnlyFromTerminalEvents(t *tes
 		nil,
 	)
 	require.Equal(t, "", second.responseServiceTier)
+}
+
+func TestRelayTurnWriteReceipt(t *testing.T) {
+	terminal := passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"r","output":[{"content":[{"text":"terminal"}]}],"usage":{"input_tokens":0,"output_tokens":0}}}`)}
+	delta := passthroughTestFrame{msgType: coderws.MessageText, payload: []byte(`{"type":"response.output_text.delta","delta":"text"}`)}
+	for _, tc := range []struct {
+		name      string
+		frames    []passthroughTestFrame
+		fail      int
+		dropAfter int
+		want      bool
+	}{
+		{"terminal write failure", []passthroughTestFrame{terminal}, 1, 0, false},
+		{"previous write then failure", []passthroughTestFrame{delta, terminal}, 2, 0, true},
+		{"previous write then drain", []passthroughTestFrame{delta, terminal}, 0, 1, true},
+		{"terminal accepted", []passthroughTestFrame{terminal}, 0, 0, true},
+		{"opaque binary", []passthroughTestFrame{{msgType: coderws.MessageBinary, payload: delta.payload}, {msgType: coderws.MessageText, payload: []byte(`{"type":"response.completed","response":{"id":"r"}}`)}}, 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &relayState{prepareClientText: func(p []byte, inspect bool) ([]byte, bool) {
+				return p, inspect && (strings.Contains(string(p), `"delta"`) || strings.Contains(string(p), `"content"`))
+			}}
+			state.beginResponseCreate("m")
+			drop := &atomic.Bool{}
+			writes := 0
+			var turns []RelayTurnResult
+			exits := make(chan relayExitSignal, 1)
+			runUpstreamToClient(t.Context(), newPassthroughTestFrameConn(tc.frames, true), func(_ coderws.MessageType, _ []byte) error {
+				writes++
+				if writes == tc.fail {
+					return io.EOF
+				}
+				if writes == tc.dropAfter {
+					drop.Store(true)
+				}
+				return nil
+			}, time.Now(), time.Now, state, nil, func(r RelayTurnResult) { turns = append(turns, r) }, nil, nil, nil, nil, drop, nil, nil, func() {}, nil, exits)
+			require.Len(t, turns, 1)
+			require.Equal(t, tc.want, turns[0].ClientContentDelivered)
+		})
+	}
+}
+
+func TestRelayIgnoresLateContentOfCompletedTurn(t *testing.T) {
+	state := &relayState{}
+	state.beginResponseCreate("first")
+	require.True(t, state.isActiveContentTurn("r1"))
+	_, disposition := state.claimTurnCompletion("r1")
+	require.Equal(t, turnCompletionAccepted, disposition)
+	require.False(t, state.isActiveContentTurn(""))
+	state.beginResponseCreate("second")
+	require.False(t, state.isActiveContentTurn("r1"))
+	require.True(t, state.isActiveContentTurn(""))
 }

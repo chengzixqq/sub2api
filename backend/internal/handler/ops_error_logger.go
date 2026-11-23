@@ -1270,6 +1270,11 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			}
 		}
 		suppressOpsUpstreamAttributionForLocalModelConfiguration(c, entry)
+		if status == http.StatusBadGateway && c.GetBool(service.OpsOpenAIMessagesPreWriteReadErrorKey) &&
+			entry.UpstreamErrorMessage == nil && entry.UpstreamErrorDetail == nil && entry.UpstreamStatusCode == nil && len(entry.UpstreamErrors) == 0 {
+			reason := "stream_read_error"
+			entry.UpstreamErrorMessage = &reason
+		}
 
 		if apiKey != nil {
 			entry.APIKeyID = &apiKey.ID

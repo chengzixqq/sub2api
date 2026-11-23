@@ -100,13 +100,18 @@ func TestOpenAIChatCompletions_RawStreamCancelBilling(t *testing.T) {
 
 func serveOpenAIChatUpstreamStreamBilling(t *testing.T, ctx context.Context, path, body string, upstreamBody io.Reader, ledger service.UsageBillingRepository, queuePing bool) (*httptest.ResponseRecorder, *preContentFailoverUpstream) {
 	t.Helper()
+	return serveOpenAIUpstreamBilling(t, ctx, path, body, preContentSSEResponse(io.NopCloser(upstreamBody)), ledger, queuePing, "force_chat_completions", nil)
+}
+
+func serveOpenAIUpstreamBilling(t *testing.T, ctx context.Context, path, body string, upstreamResponse *http.Response, ledger service.UsageBillingRepository, queuePing bool, protocol string, searchPrice *float64) (*httptest.ResponseRecorder, *preContentFailoverUpstream) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	groupID := int64(9101)
 	accounts := preContentAccounts(1)
-	accounts[0].Extra = map[string]any{"openai_responses_mode": "force_chat_completions"}
+	accounts[0].Extra = map[string]any{"openai_responses_mode": protocol}
 	repo := &grokCredentialHandlerRepo{accounts: accounts, missingOnGet: map[int64]bool{}}
 	upstream := &preContentFailoverUpstream{respond: func(int) (*http.Response, error) {
-		return preContentSSEResponse(io.NopCloser(upstreamBody)), nil
+		return upstreamResponse, nil
 	}}
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1
@@ -126,7 +131,7 @@ func serveOpenAIChatUpstreamStreamBilling(t *testing.T, ctx context.Context, pat
 	apiKey := &service.APIKey{
 		ID: 9102, UserID: 9103, GroupID: &groupID,
 		User:  &service.User{ID: 9103, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, RateMultiplier: 1, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true},
+		Group: &service.Group{SearchPricePer1k: searchPrice, ID: groupID, RateMultiplier: 1, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true},
 	}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -154,17 +159,22 @@ func serveOpenAIChatUpstreamStreamBilling(t *testing.T, ctx context.Context, pat
 	return rec, upstream
 }
 
-func TestOpenAIChatUpstreamConversionStreamBillsLastPositiveUsage(t *testing.T) {
-	for _, route := range []struct{ path, body string }{
-		{"/v1/messages", openAIChatStreamBillingRequest},
-		{"/v1/responses", `{"model":"gpt-5.4","input":"hello","stream":true}`},
+func TestOpenAIChatUpstreamStreamBillsUsageAfterZeroReport(t *testing.T) {
+	for _, route := range []struct {
+		path, body string
+		zeroInput  int
+		zeroCost   float64
+	}{
+		{"/v1/chat/completions", openAIChatStreamBillingRequest, 6, 0.00006000},
+		{"/v1/messages", openAIChatStreamBillingRequest, 6, 0.00006000},
+		{"/v1/responses", `{"model":"gpt-5.4","input":"hello","stream":true}`, 5, 0.00005750},
 	} {
 		for _, tc := range []struct {
 			name, finishUsage     string
 			wantInput, wantOutput int
 			wantCost              float64
 		}{
-			{"zero finish", `{"prompt_tokens":0,"completion_tokens":0}`, 5, 3, 0.00005750},
+			{"zero finish", `{"prompt_tokens":0,"completion_tokens":0}`, route.zeroInput, 3, route.zeroCost},
 			{"positive finish", `{"prompt_tokens":9,"completion_tokens":4}`, 9, 4, 0.00008250},
 		} {
 			t.Run(route.path+"/"+tc.name, func(t *testing.T) {
@@ -218,5 +228,39 @@ func TestOpenAIChatCompletions_StreamBillsDeliveredContentBlocks(t *testing.T) {
 			require.Equal(t, tc.wantOutput, cmd.OutputTokens)
 			require.InDelta(t, tc.wantCost, cmd.BalanceCost, 1e-12)
 		})
+	}
+}
+
+func TestMessagesResponsesLastPositiveUsage(t *testing.T) {
+	const sse = "data: " + `{"type":"response.in_progress","response":{"usage":{"input_tokens":5,"output_tokens":3}}}` + "\n\n" +
+		"data: " + `{"type":"response.in_progress","response":{"usage":{"output_tokens":0}}}` + "\n\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"resp_20","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n"
+	for _, stream := range []string{"true", "false"} {
+		t.Run(stream, func(t *testing.T) {
+			ledger := &chatCancelBillingRepo{}
+			rec, up := serveOpenAIUpstreamBilling(t, t.Context(), "/v1/messages", strings.Replace(openAIChatStreamBillingRequest, "true", stream, 1), preContentSSEResponse(io.NopCloser(strings.NewReader(sse))), ledger, false, "force_responses", nil)
+			require.Equal(t, 200, rec.Code)
+			require.Equal(t, 1, up.calls())
+			require.Len(t, ledger.commands, 1)
+			require.InDelta(t, 0.00006000, ledger.commands[0].BalanceCost, 1e-12)
+			require.Contains(t, rec.Body.String(), `"output_tokens":3`)
+		})
+	}
+}
+
+func TestRetainedChatInputAndOutputFloorsAreIndependent(t *testing.T) {
+	const progress = "data: " + `{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":0}}` + "\n\n"
+	const finish = "data: " + `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0}}` + "\n\ndata: [DONE]\n\n"
+	for _, tc := range []struct {
+		content    string
+		wantOutput int
+	}{{"hello", 1}, {"", 0}} {
+		sse := "data: " + `{"choices":[{"index":0,"delta":{"content":"` + tc.content + `"}}]}` + "\n\n" + progress + finish
+		ledger := &chatCancelBillingRepo{}
+		rec, _ := serveOpenAIChatUpstreamStreamBilling(t, t.Context(), "/v1/chat/completions", openAIChatStreamBillingRequest, strings.NewReader(sse), ledger, false)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Len(t, ledger.commands, 1)
+		require.Equal(t, 12, ledger.commands[0].InputTokens)
+		require.Equal(t, tc.wantOutput, ledger.commands[0].OutputTokens)
 	}
 }

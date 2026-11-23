@@ -854,3 +854,54 @@ func TestOpenAIImageCountSkipsTokenEstimate(t *testing.T) {
 	require.Same(t, raw, billed)
 	require.Nil(t, provenance)
 }
+
+func TestRetainedOpenAIUsagePreservesDetailsAndGatesEstimation(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		delivered, only bool
+		input, output   int
+	}{{"delivered", true, false, 236, 25}, {"not delivered", false, false, 75, 13}, {"upstream only", true, true, 75, 13}} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newBillingSettlementGuard(guardDeps{upstreamUsageOnly: tc.only,
+				estimatedPromptTokens: func() int { require.True(t, tc.delivered && !tc.only); return 205 },
+				observedEvents:        func() int { require.True(t, tc.delivered && !tc.only); return 21 },
+			})
+			g.ObserveAttempt(&service.Account{Platform: service.PlatformOpenAI})
+			raw := service.OpenAIUsage{InputTokens: 75, OutputTokens: 13, CacheReadInputTokens: 11, CacheCreationInputTokens: 15, CacheCreation30mInputTokens: 6, CacheCreation12hInputTokens: 9, ImageInputTokens: 8, ImageCacheReadTokens: 3, ImageOutputTokens: 4, RetainedAfterZero: true}
+			result := &service.OpenAIForwardResult{Usage: raw, ClientContentDelivered: tc.delivered}
+			g.ObserveOpenAIForwardResult(result)
+			got, _ := g.openAISettlementResult(result)
+			want := raw
+			want.InputTokens, want.OutputTokens = tc.input, tc.output
+			require.Equal(t, want, got.Usage)
+			require.Equal(t, raw, result.Usage)
+		})
+	}
+}
+
+func TestRetainedOutputFloorWithoutClientContent(t *testing.T) {
+	g := newBillingSettlementGuard(guardDeps{
+		estimatedPromptTokens: func() int { t.Fatal("empty delivery must keep the upstream report"); return 0 },
+	})
+	g.ObserveAttempt(&service.Account{Platform: service.PlatformOpenAI})
+	result := &service.OpenAIForwardResult{Usage: service.OpenAIUsage{
+		OutputTokens: 7, ReportedOutputFloor: 7, OutputFromUnclassifiedUsage: true, RetainedAfterZero: true,
+	}}
+	g.ObserveOpenAIForwardResult(result)
+	got, provenance := g.openAISettlementResult(result)
+	require.Same(t, result, got)
+	require.Nil(t, provenance)
+}
+
+func TestWSImageTurnUsesRequestedImageTariff(t *testing.T) {
+	account := &service.Account{Platform: service.PlatformOpenAI}
+	result := &service.OpenAIForwardResult{Model: "gpt-5.4", ImageCount: 1, ImageOutputSizes: []string{"1024x1024"}, Usage: service.OpenAIUsage{InputTokens: 40, OutputTokens: 10}}
+	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation","model":"gpt-image-1","size":"1024x1024"}]}`)
+	turn := result.WithWSImageBillingConfig(body, account)
+	turn.BillingModel = openAIWSTurnBillingModel(turn, service.ChannelMappingResult{}, result.Model, result.Model)
+	billed, provenance := openAIWSSettlementResult(t.Context(), account, turn, body)
+	require.Nil(t, provenance)
+	require.Equal(t, "gpt-image-1", billed.BillingModel)
+	require.Equal(t, "1024x1024", billed.ImageInputSize)
+	require.Equal(t, result.Usage, billed.Usage)
+}

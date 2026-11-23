@@ -323,6 +323,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
 		h.recordAccountRPM(c.Request.Context(), account, result, err)
 		if result != nil {
+			result.NativeSearchCount = searchSnapshot.CumulativeNativeSearchCount
 			result.SearchCount = searchSnapshot.CumulativeSearchCount
 		}
 		var cyberBlockBodyChat []byte
@@ -334,8 +335,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		// error（非 *UpstreamFailoverError），Flush 的 `ferr == nil && !outputStarted` 早退不成立，
 		// 不 MarkSettled 就会在 cyber 那笔之外再按整份估算 prompt 记第二笔 = 多算。
 		if h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body), cyberUsageObservation{
-			SearchCount: searchSnapshot.CumulativeSearchCount,
-			Result:      result,
+			SearchCount:       searchSnapshot.CumulativeSearchCount,
+			NativeSearchCount: searchSnapshot.CumulativeNativeSearchCount,
+			Result:            result,
 		}) {
 			guard.MarkSettled()
 		}

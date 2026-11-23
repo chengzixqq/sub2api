@@ -993,16 +993,22 @@ type cacheControlPath struct {
 	log  string
 }
 
-func collectCacheControlPaths(body []byte, preserveThinking bool) (invalidThinking []cacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {
-	return scanCacheControlPaths(body, preserveThinking, true)
+func collectCacheControlPaths(body []byte, plan cacheControlLimitPlan) (invalidThinking []cacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {
+	return scanBlockCacheControls(body, plan, true, false)
 }
 
-func scanCacheControlPaths(body []byte, preserveThinking, includeNull bool) (invalidThinking []cacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {
-	return scanBlockCacheControls(body, preserveThinking, includeNull, false)
-}
-
-func scanBlockCacheControls(body []byte, preserveThinking, includeNull, wireSlots bool) (invalidThinking []cacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {
-	counts := func(cc gjson.Result) bool { return cc.Type != gjson.Null || (includeNull && cc.Exists()) }
+func scanBlockCacheControls(body []byte, plan cacheControlLimitPlan, includeNull, wireSlots bool) (invalidThinking []cacheControlPath, messagePaths []string, toolPaths []string, systemPaths []string) {
+	stripRedacted := plan.stripRedactedThinking()
+	counts := func(block gjson.Result) bool {
+		cc := block.Get("cache_control")
+		if cc.Type != gjson.Null || (includeNull && cc.Exists()) {
+			return true
+		}
+		// Get stops at the first matching member. Only the real wire slots
+		// may use a later non-null member of the same object.
+		return wireSlots && plan.nativeManaged && cc.Exists() &&
+			rawJSONView(block.Raw).hasNonNullFieldAfter(cc.Index-block.Index+len(cc.Raw), "cache_control")
+	}
 	// Borrow only during this synchronous scan. Returned paths/logs own their
 	// strings; no result may retain the request body after this function returns.
 	view := openAIWSPayloadStringView(body)
@@ -1010,7 +1016,7 @@ func scanBlockCacheControls(body []byte, preserveThinking, includeNull, wireSlot
 	if system.IsArray() {
 		sysIndex := 0
 		system.ForEach(func(_, item gjson.Result) bool {
-			if counts(item.Get("cache_control")) {
+			if counts(item) {
 				path := fmt.Sprintf("system.%d.cache_control", sysIndex)
 				if !wireSlots && item.Get("type").String() == "thinking" {
 					invalidThinking = append(invalidThinking, cacheControlPath{
@@ -1033,16 +1039,15 @@ func scanBlockCacheControls(body []byte, preserveThinking, includeNull, wireSlot
 			content := msg.Get("content")
 			if content.IsArray() {
 				content.ForEach(func(j, item gjson.Result) bool {
-					if counts(item.Get("cache_control")) {
+					if counts(item) {
 						kind := item.Get("type").String()
 						// Preserved fields are neither cleanup nor breakpoint candidates.
-						// Strip keeps the historical handling of redacted_thinking.
-						if preserveThinking && isThinkingCacheControlBlock(kind) {
+						if plan.preserveThinking && isThinkingCacheControlBlock(kind) {
 							return true
 						}
 						contentIndex := j.Int()
 						path := fmt.Sprintf("messages.%d.content.%d.cache_control", msgIndex, contentIndex)
-						if !wireSlots && kind == "thinking" {
+						if !wireSlots && (kind == "thinking" || stripRedacted && isThinkingCacheControlBlock(kind)) {
 							invalidThinking = append(invalidThinking, cacheControlPath{
 								path: path,
 								log:  fmt.Sprintf("[Warning] Removed illegal cache_control from thinking block in messages[%d].content[%d]", msgIndex, contentIndex),
@@ -1063,7 +1068,7 @@ func scanBlockCacheControls(body []byte, preserveThinking, includeNull, wireSlot
 	if tools.IsArray() {
 		toolIndex := 0
 		tools.ForEach(func(_, tool gjson.Result) bool {
-			if counts(tool.Get("cache_control")) && (!wireSlots || !isDeferredLoadingTool(tool)) {
+			if counts(tool) && (!wireSlots || !isDeferredLoadingTool(tool)) {
 				toolPaths = append(toolPaths, fmt.Sprintf("tools.%d.cache_control", toolIndex))
 			}
 			toolIndex++
@@ -1114,7 +1119,7 @@ func enforceCacheControlBlockLimitScoped(body []byte, plan cacheControlLimitPlan
 	if plan.scope == cacheControlTrimInjectedOnly {
 		return trimInjectedCacheControlBreakpoints(body, plan)
 	}
-	invalidThinking, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, plan.preserveThinking)
+	invalidThinking, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, plan)
 	out := body
 	if len(invalidThinking) > 0 {
 		paths := make([]string, 0, len(invalidThinking))
@@ -1135,21 +1140,21 @@ func enforceCacheControlBlockLimitScoped(body []byte, plan cacheControlLimitPlan
 		out, _, _ = trimCacheControlPaths(out, count-maxCacheControlBlocks, toolPaths, messagePaths, systemPaths)
 	}
 	if count >= maxCacheControlBlocks && gjson.GetBytes(out, "cache_control").Type != gjson.Null {
-		out = trimRealCacheControlSlots(out, plan.preserveThinking, false)
+		out = trimRealCacheControlSlots(out, plan, false)
 	}
 	return out
 }
 
 // Trim only fields that would actually reach the upstream. This pass must
 // leave under-limit bytes alone, including nulls and their surrounding whitespace.
-func trimRealCacheControlSlots(body []byte, preserveThinking, onlyTopLevelOverflow bool) []byte {
+func trimRealCacheControlSlots(body []byte, plan cacheControlLimitPlan, onlyTopLevelOverflow bool) []byte {
 	if !bytes.Contains(body, jsonUnicodeEscapeBytes) && bytes.Count(body, cacheControlKeyBytes) <= maxCacheControlBlocks {
 		return body
 	}
 	if gjson.Get(openAIWSPayloadStringView(body), "cache_control").Type == gjson.Null {
 		return body
 	}
-	_, messages, tools, system := scanBlockCacheControls(body, preserveThinking, false, true)
+	_, messages, tools, system := scanBlockCacheControls(body, plan, false, true)
 	blocks := len(tools) + len(messages) + len(system)
 	// A non-mimic count_tokens request delegates client block overflow to
 	// upstream. Only the extra slot for automatic caching can trigger a trim.

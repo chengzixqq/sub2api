@@ -22,7 +22,7 @@ func legacyEnforceCacheControlLimit(body []byte) []byte {
 }
 
 func legacyNormalizeCacheControlTTLOrder(body []byte) []byte {
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, false)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, cacheControlLimitPlan{})
 	paths := make([]string, 0, len(toolPaths)+len(systemPaths)+len(messagePaths)+1)
 	paths = append(paths, toolPaths...)
 	paths = append(paths, systemPaths...)

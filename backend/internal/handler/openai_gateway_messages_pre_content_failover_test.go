@@ -80,6 +80,7 @@ type unexpectedEOFReader struct{}
 func (unexpectedEOFReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 type preContentFailoverScenario struct {
+	ops             *service.OpsService
 	accounts        []service.Account
 	respond         func(call int) (*http.Response, error)
 	passthrough     *service.ErrorPassthroughService
@@ -140,6 +141,9 @@ func serveMessagesScenario(t *testing.T, sc preContentFailoverScenario) (*httpte
 		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true},
 	}
 	router := gin.New()
+	if sc.ops != nil {
+		router.Use(OpsErrorLoggerMiddleware(sc.ops))
+	}
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.User.ID, Concurrency: 1})
@@ -338,4 +342,44 @@ func TestOpenAIMessagesHTTPStatusFailoverExhaustedIgnoresPassthroughRule(t *test
 	require.Equal(t, 1, upstream.calls(), "body: %q", body)
 	require.NotEqual(t, http.StatusTeapot, rec.Code, "body: %q", body)
 	require.Equal(t, "Upstream service temporarily unavailable", gjson.Get(body, "error.message").String(), "body: %q", body)
+}
+
+func TestOpenAIMessagesPreWriteReadErrorOps(t *testing.T) {
+	for _, protocol := range []string{"force_responses", "force_chat_completions"} {
+		for _, heartbeat := range []bool{false, true} {
+			name := protocol
+			if heartbeat {
+				name += "/upstream_heartbeat"
+			}
+			t.Run(name, func(t *testing.T) {
+				setupOpsErrorLogTestQueue(t, 4)
+				ops := service.NewOpsService(&ingressRejectOpsRepo{}, &opsAdvancedSettingsRepoStub{advanced: "{}"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+				accounts := preContentAccounts(2)
+				for i := range accounts {
+					accounts[i].Extra = map[string]any{"openai_responses_mode": protocol}
+				}
+				rec, up := serveMessagesScenario(t, preContentFailoverScenario{accounts: accounts, ops: ops, respond: func(int) (*http.Response, error) {
+					var reader io.Reader = unexpectedEOFReader{}
+					if heartbeat {
+						reader = io.MultiReader(strings.NewReader(": heartbeat\n\n"), reader)
+					}
+					return preContentSSEResponse(io.NopCloser(reader)), nil
+				}})
+				require.Equal(t, 1, up.calls())
+				require.Equal(t, 502, rec.Code)
+				require.Equal(t, `{"type":"error","error":{"type":"api_error","message":"Upstream request failed"}}`, rec.Body.String())
+				require.Len(t, opsErrorLogQueue, 1)
+				row := (<-opsErrorLogQueue).entry
+				require.Equal(t, "internal", row.ErrorPhase)
+				require.Equal(t, "platform", row.ErrorOwner)
+				require.Nil(t, row.UpstreamStatusCode)
+				if heartbeat {
+					require.Nil(t, row.UpstreamErrorMessage)
+					return
+				}
+				require.NotNil(t, row.UpstreamErrorMessage)
+				require.Equal(t, "stream_read_error", *row.UpstreamErrorMessage)
+			})
+		}
+	}
 }

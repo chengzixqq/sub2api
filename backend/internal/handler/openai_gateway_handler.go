@@ -32,6 +32,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -899,6 +900,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
 		if result != nil {
+			result.NativeSearchCount = searchSnapshot.CumulativeNativeSearchCount
 			result.SearchCount = searchSnapshot.CumulativeSearchCount
 		}
 		if h.handleForwardRequestBodyMemoryOverload(c, err, streamStarted) {
@@ -911,8 +913,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// cyber 已按上游真实 usage 记账 ⇒ 这次请求已结算，请求级失败兜底让路（详见
 		// openai_chat_completions.go 同一处的说明与 recordCyberPolicyIfMarked 的返回值语义）。
 		if h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body), cyberUsageObservation{
-			SearchCount: searchSnapshot.CumulativeSearchCount,
-			Result:      result,
+			SearchCount:       searchSnapshot.CumulativeSearchCount,
+			NativeSearchCount: searchSnapshot.CumulativeNativeSearchCount,
+			Result:            result,
 		}) {
 			guard.MarkSettled()
 		}
@@ -1609,11 +1612,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		searchSnapshot := guard.ObserveOpenAIForwardResult(result)
 		logBillingSearchAttempt(reqLog, account.ID, searchSnapshot, err)
 		if result != nil {
+			result.NativeSearchCount = searchSnapshot.CumulativeNativeSearchCount
 			result.SearchCount = searchSnapshot.CumulativeSearchCount
 		}
 		if h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body), cyberUsageObservation{
-			SearchCount: searchSnapshot.CumulativeSearchCount,
-			Result:      result,
+			SearchCount:       searchSnapshot.CumulativeSearchCount,
+			NativeSearchCount: searchSnapshot.CumulativeNativeSearchCount,
+			Result:            result,
 		}) {
 			guard.MarkSettled()
 		}
@@ -2412,9 +2417,11 @@ func (p *openAIWSTurnPayloadFingerprint) current() string {
 
 type openAIWSSearchTurnState struct {
 	attemptCounts   map[int]int
+	nativeAttempts  map[int]int
+	nativeTotal     int
 	cumulative      int
 	failureBillable bool
-	settleFailure   func(int)
+	settleFailure   func(int, int)
 }
 
 type openAIWSSearchLedger struct {
@@ -2423,14 +2430,15 @@ type openAIWSSearchLedger struct {
 }
 
 type openAIWSSearchSnapshot struct {
-	Turn                  int
-	Attempt               int
-	AttemptSearchCount    int
-	CumulativeSearchCount int
-	Saturated             bool
+	Turn                        int
+	Attempt                     int
+	AttemptSearchCount          int
+	CumulativeSearchCount       int
+	CumulativeNativeSearchCount int
+	Saturated                   bool
 }
 
-func (l *openAIWSSearchLedger) observe(turn, attempt, searchCount int, failureBillable bool, settleFailure func(int)) openAIWSSearchSnapshot {
+func (l *openAIWSSearchLedger) observe(turn, attempt, searchCount, nativeCount int, failureBillable bool, settleFailure func(int, int)) openAIWSSearchSnapshot {
 	if turn <= 0 {
 		turn = 1
 	}
@@ -2456,16 +2464,24 @@ func (l *openAIWSSearchLedger) observe(turn, attempt, searchCount int, failureBi
 		state.attemptCounts[attempt] = searchCount
 		state.cumulative, saturated = service.SaturatingSearchCountAdd(state.cumulative, delta)
 	}
+	if nativeCount > state.nativeAttempts[attempt] {
+		if state.nativeAttempts == nil {
+			state.nativeAttempts = make(map[int]int)
+		}
+		state.nativeTotal, _ = service.SaturatingSearchCountAdd(state.nativeTotal, nativeCount-state.nativeAttempts[attempt])
+		state.nativeAttempts[attempt] = nativeCount
+	}
 	if settleFailure != nil {
 		state.settleFailure = settleFailure
 	}
 	state.failureBillable = state.failureBillable || failureBillable
 	return openAIWSSearchSnapshot{
-		Turn:                  turn,
-		Attempt:               attempt,
-		AttemptSearchCount:    state.attemptCounts[attempt],
-		CumulativeSearchCount: state.cumulative,
-		Saturated:             saturated,
+		Turn:                        turn,
+		Attempt:                     attempt,
+		AttemptSearchCount:          state.attemptCounts[attempt],
+		CumulativeSearchCount:       state.cumulative,
+		CumulativeNativeSearchCount: state.nativeTotal,
+		Saturated:                   saturated,
 	}
 }
 
@@ -2487,10 +2503,10 @@ func (l *openAIWSSearchLedger) settleFailure(turn int) bool {
 		delete(l.turns, turn)
 	}
 	l.mu.Unlock()
-	if state == nil || (state.cumulative <= 0 && !state.failureBillable) || state.settleFailure == nil {
+	if state == nil || (state.cumulative <= 0 && state.nativeTotal <= 0 && !state.failureBillable) || state.settleFailure == nil {
 		return false
 	}
-	state.settleFailure(state.cumulative)
+	state.settleFailure(state.cumulative, state.nativeTotal)
 	return true
 }
 
@@ -2503,8 +2519,8 @@ func (l *openAIWSSearchLedger) flush() {
 	}
 	l.mu.Unlock()
 	for _, state := range states {
-		if state != nil && (state.cumulative > 0 || state.failureBillable) && state.settleFailure != nil {
-			state.settleFailure(state.cumulative)
+		if state != nil && (state.cumulative > 0 || state.nativeTotal > 0 || state.failureBillable) && state.settleFailure != nil {
+			state.settleFailure(state.cumulative, state.nativeTotal)
 		}
 	}
 }
@@ -2518,7 +2534,22 @@ func openAIForwardResultHasActualBillableUsage(result *service.OpenAIForwardResu
 		u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 ||
 		u.ImageInputTokens > 0 || u.ImageOutputTokens > 0 ||
 		result.ImageCount > 0 || result.VideoCount > 0 ||
-		result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil
+		result.NativeSearchCount > 0 || result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil
+}
+
+func openAIWSSettlementResult(ctx context.Context, account *service.Account, result *service.OpenAIForwardResult, body []byte) (*service.OpenAIForwardResult, *string) {
+	if !account.IsOpenAI() || !result.NeedsContentEstimate() ||
+		(result.UpstreamTerminalEvent != "response.completed" && result.UpstreamTerminalEvent != "response.done") ||
+		failureBillingUpstreamUsageOnlySnapshot(ctx, nil) {
+		return result, nil
+	}
+	// The response.create fields match the HTTP request apart from its discriminator.
+	request, err := sjson.DeleteBytes(body, "type")
+	if err != nil {
+		request = body
+	}
+	estimate := service.FailureBillingInput{OutputStarted: true, EstimatedPromptTokens: service.EstimateFailurePromptTokens(service.PlatformOpenAI, request)}
+	return estimatedOpenAISettlementResult(result, estimate, 0, nil)
 }
 
 func openAIWSTurnRequestID(base string, turn int) string {
@@ -3425,6 +3456,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			MaxReasoningEffortOverLimit: maxReasoningEffortOverLimit,
 			ReasoningEffortMappings:     reasoningEffortMappings,
 			TurnStarted:                 recordTurnStart,
+			NativeSearchPrice: func(turn int) *float64 {
+				key := turnBillingAPIKeys.forTurn(turn, apiKey)
+				return key.Group.GetSearchPricePer1k()
+			},
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
 				c.Set(securityAuditWSTurnContextKey, turn)
 				service.BeginOpsStreamTurn(c, turn)
@@ -3576,6 +3611,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
 				if result != nil {
+					if account.IsOpenAI() && result.ImageCount > 0 {
+						result = result.WithWSImageBillingConfig(cyberBlockBody, account)
+					}
 					result.BillingModel = openAIWSTurnBillingModel(result, turnMapping, turnRequestedModel, turnUpstreamModel)
 				}
 				inboundEndpoint := GetInboundEndpoint(c)
@@ -3612,9 +3650,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					failureResult.UpstreamModel = turnUpstreamModel
 				}
 				failureResult.BillingModel = openAIWSTurnBillingModel(failureResult, turnMapping, turnRequestedModel, turnUpstreamModel)
-				settleFailure := func(totalSearchCount int) {
+				settleFailure := func(totalSearchCount, nativeCount int) {
 					failedResult := *failureResult
 					failedResult.SearchCount = totalSearchCount
+					failedResult.NativeSearchCount = nativeCount
 					if !openAIForwardResultHasActualBillableUsage(&failedResult) {
 						return
 					}
@@ -3648,9 +3687,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					})
 				}
 
-				attemptSearchCount := 0
+				attemptSearchCount, nativeCount := 0, 0
 				if result != nil {
 					attemptSearchCount = result.SearchCount
+					nativeCount = result.NativeSearchCount
 				}
 				if attemptSearchCount < 0 {
 					reqLog.Warn("openai.websocket_search_count_negative_clamped",
@@ -3659,7 +3699,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						zap.Int("search_count", attemptSearchCount),
 					)
 				}
-				searchSnapshot := wsSearchLedger.observe(turn, currentWSAttemptNo, attemptSearchCount, openAIForwardResultHasActualBillableUsage(result), settleFailure)
+				searchSnapshot := wsSearchLedger.observe(turn, currentWSAttemptNo, attemptSearchCount, nativeCount, openAIForwardResultHasActualBillableUsage(result), settleFailure)
 				if searchSnapshot.AttemptSearchCount > 0 {
 					reqLog.Info("openai.websocket_search_attempt_observed",
 						zap.Int("turn", searchSnapshot.Turn),
@@ -3677,6 +3717,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					)
 				}
 				if result != nil {
+					result.NativeSearchCount = searchSnapshot.CumulativeNativeSearchCount
 					result.SearchCount = searchSnapshot.CumulativeSearchCount
 					if strings.TrimSpace(result.RequestID) == "" {
 						// Some successful upstream turns do not expose a response id;
@@ -3685,7 +3726,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					}
 				}
 
-				cyberRecorded := h.recordCyberPolicyIfMarkedWithRequestID(c, turnBillingAPIKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestID, searchSnapshot.CumulativeSearchCount)
+				cyberRecorded := h.recordCyberPolicyIfMarkedWithRequestID(c, turnBillingAPIKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, turnRequestPayloadHash, turnRequestID, searchSnapshot.CumulativeSearchCount, searchSnapshot.CumulativeNativeSearchCount)
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
@@ -3726,9 +3767,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account, scheduleModel, openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
 				cyberBlocked := service.GetOpsCyberPolicy(c) != nil
-				h.submitOpenAIUsageRecordTask(ctx, result, func(taskCtx context.Context) {
+				billed, provenance := openAIWSSettlementResult(ctx, account, result, cyberBlockBody)
+				h.submitOpenAIUsageRecordTask(ctx, billed, func(taskCtx context.Context) {
 					if err := h.gatewayService.RecordUsage(taskCtx, &service.OpenAIRecordUsageInput{
-						Result:             result,
+						BillingProvenance:  provenance,
+						Result:             billed,
 						APIKey:             turnBillingAPIKey,
 						User:               apiKey.User,
 						Account:            account,
@@ -4043,7 +4086,7 @@ func (h *OpenAIGatewayHandler) submitUsageRecordTask(parent context.Context, tas
 func (h *OpenAIGatewayHandler) submitOpenAIUsageRecordTask(parent context.Context, result *service.OpenAIForwardResult, task service.UsageRecordTask) {
 	// Money-critical bills never drop on pool overflow: media, search surcharge, voice.
 	if result != nil && (result.ImageCount > 0 || result.VideoCount > 0 ||
-		result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil) {
+		result.NativeSearchCount > 0 || result.SearchCount > 0 || result.WebSearchCalls > 0 || result.AudioUsage != nil) {
 		h.submitMandatoryUsageRecordTask(parent, task)
 		return
 	}
@@ -4976,8 +5019,9 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 // 若在「没打 cyber 标记」「forward 没报错」「服务/入参不全」等未提交计费行的情况下也返回 true，
 // 调用方会把本该兜底计费的普通失败请求错误标成已结算，那是少算方向的新漏洞。
 type cyberUsageObservation struct {
-	SearchCount int
-	Result      *service.OpenAIForwardResult
+	NativeSearchCount int
+	SearchCount       int
+	Result            *service.OpenAIForwardResult
 }
 
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockValue any, channelFields service.ChannelUsageFields, requestPayloadHash string, observations ...cyberUsageObservation) bool {
@@ -4992,6 +5036,9 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarkedWithRequestID(c *gin.Con
 	observation := cyberUsageObservation{}
 	if len(searchCounts) > 0 {
 		observation.SearchCount = searchCounts[0]
+		if len(searchCounts) > 1 {
+			observation.NativeSearchCount = searchCounts[1]
+		}
 	}
 	return h.recordCyberPolicyIfMarkedObserved(c, apiKey, account, subscription, model, forwardErrored, cyberBlockValue, channelFields, requestPayloadHash, requestIDOverride, observation)
 }
@@ -5101,6 +5148,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarkedObserved(c *gin.Context,
 		InputTokens:        mark.UpstreamInTok,
 		OutputTokens:       mark.UpstreamOutTok,
 		SearchCount:        searchCount,
+		NativeSearchCount:  observation.NativeSearchCount,
 		InboundEndpoint:    inboundEndpoint,
 		UpstreamEndpoint:   upstreamEndpoint,
 		UserAgent:          userAgent,

@@ -68,28 +68,70 @@ func (c *openAIImageOutputCounter) AddJSONResponse(body []byte) {
 }
 
 func (c *openAIImageOutputCounter) AddSSEData(data []byte) {
+	c.addResponsesEvent(data, nil)
+}
+
+func (c *openAIImageOutputCounter) addResponsesEvent(data []byte, searches *openAINativeSearchCounter) {
+	c.observeResponsesEvent(data, searches, "", false)
+}
+
+// A WS client already decoded the envelope. Use its event type and the
+// validated item used for image/search accounting to classify the same frame.
+func (c *openAIImageOutputCounter) observeResponsesEvent(data []byte, searches *openAINativeSearchCounter, eventType string, inspectContent bool) bool {
 	if c == nil || len(data) == 0 || strings.TrimSpace(string(data)) == "[DONE]" || !gjson.ValidBytes(data) {
-		return
+		return false
 	}
-	root := gjson.ParseBytes(data)
-	c.addDataArray(root.Get("data"))
-	eventType := strings.TrimSpace(root.Get("type").String())
+	return c.observeParsedResponsesEvent(gjson.ParseBytes(data), data, searches, eventType, inspectContent)
+}
+
+func (c *openAIImageOutputCounter) observeParsedResponsesEvent(root gjson.Result, data []byte, searches *openAINativeSearchCounter, eventType string, inspectContent bool) bool {
+	wrapped := root.Get("data")
+	c.addDataArray(wrapped)
+	if eventType == "" {
+		eventType = strings.TrimSpace(root.Get("type").String())
+	}
+	var clientContent bool
 	switch eventType {
+	case "response.output_item.added":
+		if searches != nil && !searches.seenNative && mayContainNativeSearch(data) {
+			searches.seenNative = root.Get("item.type").Str == "web_search_call"
+		}
 	case "response.output_item.done":
-		c.addImageOutputItem(root.Get("item"))
+		item := root.Get("item")
+		if inspectContent {
+			clientContent = openAIOutputItemHasContent(rawJSONView(item.Raw))
+		}
+		if c.addImageOutputItem(item) && searches != nil {
+			searches.observeItem(item, root.Get("output_index"), -1, true)
+		}
 	case "response.completed", "response.done":
-		c.addOutputArray(root.Get("response.output"))
+		c.addResponseOutput(root.Get("response.output"), searches, root, "response.")
+		if inspectContent && c.Count() == 0 {
+			clientContent = openAIResponseObjectHasContent(rawJSONView(root.Get("response").Raw))
+		}
+		if searches != nil {
+			if mayContainNativeSearch(data) {
+				searches.observeOutput(root)
+				searches.observeDataOutput(wrapped)
+			}
+			searches.observeTerminalReport(root)
+		}
 	case "image_generation.completed", "image_edit.completed":
 		if item := root.Get("item"); item.Exists() {
 			c.addImageOutputItem(item)
-			return
+			return false
 		}
 		if output := root.Get("output"); output.Exists() {
 			c.addImageOutputItem(output)
-			return
+			return false
 		}
 		c.addImageOutputItem(root)
+	default:
+		if inspectContent {
+			clientContent = openAIWSValidatedFrameHasContent(eventType, root.Raw)
+		}
 	}
+	return clientContent
 }
 
 func (c *openAIImageOutputCounter) AddSSEBody(body string) {
@@ -133,25 +175,38 @@ func (c *openAIImageOutputCounter) addDataArray(data gjson.Result) {
 }
 
 func (c *openAIImageOutputCounter) addOutputArray(output gjson.Result) {
+	c.addResponseOutput(output, nil, gjson.Result{}, "")
+}
+
+func (c *openAIImageOutputCounter) addResponseOutput(output gjson.Result, searches *openAINativeSearchCounter, root gjson.Result, prefix string) {
 	if !output.IsArray() {
 		return
 	}
-	output.ForEach(func(_, item gjson.Result) bool {
-		c.addImageOutputItem(item)
+	output.ForEach(func(index, item gjson.Result) bool {
+		if c.addImageOutputItem(item) && searches != nil {
+			status := root.Get(prefix + "status")
+			e := root.Get(prefix + "error")
+			if (!status.Exists() || status.Str == "completed") && e.Type == gjson.Null {
+				searches.observeItem(item, gjson.Result{}, int(index.Int()), false)
+			}
+		}
 		return true
 	})
 }
 
-func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
+func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) bool {
 	if !item.Exists() || !item.IsObject() {
-		return
+		return false
 	}
 	itemType := strings.TrimSpace(item.Get("type").String())
+	if itemType == "web_search_call" {
+		return true
+	}
 	if itemType != "" && itemType != "image_generation_call" && itemType != "image_generation.completed" && itemType != "image_edit.completed" {
-		return
+		return false
 	}
 	if strings.Contains(strings.ToLower(item.Raw), "partial_image") {
-		return
+		return false
 	}
 	result := strings.TrimSpace(item.Get("result").String())
 	resultIsEncoded := result != ""
@@ -164,10 +219,10 @@ func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
 		resultIsEncoded = false
 	}
 	if result == "" {
-		return
+		return false
 	}
 	if c.requireValidImageData && resultIsEncoded && !isValidOpenAIImageResult(result) {
-		return
+		return false
 	}
 	key := strings.TrimSpace(item.Get("id").String())
 	if key == "" {
@@ -177,14 +232,18 @@ func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
 		key = hashOpenAIImageOutputResult(result)
 	}
 	if key == "" {
-		return
+		return false
 	}
 	size := strings.TrimSpace(item.Get("size").String())
 	if _, exists := c.seen[key]; exists {
 		if size != "" && strings.TrimSpace(c.seenSizes[key]) == "" {
 			c.seenSizes[key] = size
 		}
-		return
+		return false
+	}
+	if c.seen == nil {
+		c.seen = make(map[string]struct{})
+		c.seenSizes = make(map[string]string)
 	}
 	c.seen[key] = struct{}{}
 	c.seenOrder = append(c.seenOrder, key)
@@ -192,6 +251,7 @@ func (c *openAIImageOutputCounter) addImageOutputItem(item gjson.Result) {
 		c.seenSizes[key] = size
 	}
 	c.count++
+	return false
 }
 
 func hashOpenAIImageOutputResult(result string) string {
@@ -225,4 +285,31 @@ func collectOpenAIImageOutputSizesFromSSEBody(body string) []string {
 	counter := newOpenAIImageOutputCounter()
 	counter.AddSSEBody(body)
 	return counter.Sizes()
+}
+
+func responseImageAndSearchCounts(body []byte) (int, int) {
+	counter := newOpenAIImageOutputCounter()
+	var searches openAINativeSearchCounter
+	if gjson.ValidBytes(body) {
+		root := gjson.Parse(openAIWSPayloadStringView(body))
+		wrapped := root.Get("data")
+		counter.addDataArray(wrapped)
+		counter.addResponseOutput(root.Get("output"), &searches, root, "")
+		counter.addResponseOutput(root.Get("response.output"), &searches, root, "response.")
+		if wrapped.IsObject() && mayContainNativeSearch(body) {
+			searches.observeDataOutput(wrapped)
+		}
+		searches.observeTerminalReport(root)
+	}
+	return counter.Count(), searches.count()
+}
+
+func bufferedImageAndSearchCounts(body string, priced bool) (int, int) {
+	if !priced {
+		return countOpenAIImageOutputsFromSSEBody(body), 0
+	}
+	counter := newOpenAIImageOutputCounter()
+	var searches openAINativeSearchCounter
+	forEachOpenAISSEDataPayload(body, func(data []byte) { counter.addResponsesEvent(data, &searches) })
+	return counter.Count(), searches.count()
 }

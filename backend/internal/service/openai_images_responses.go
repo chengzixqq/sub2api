@@ -1188,11 +1188,11 @@ func (s *OpenAIGatewayService) tryWriteOpenAIImagesStreamLimitError(c *gin.Conte
 }
 
 func (s *OpenAIGatewayService) parseOpenAIImagesSSEUsageBytes(data []byte, usage *OpenAIUsage) {
-	s.parseSSEUsageBytes(data, usage)
+	observeOpenAIStreamUsage(data, "", usage, trackExplicitOpenAIUsageZero)
 	if usage == nil || !gjson.ValidBytes(data) || gjson.GetBytes(data, "type").String() != "response.completed" {
 		return
 	}
-	if toolUsage, ok := openAIImagesToolUsageFromGJSON(gjson.GetBytes(data, "response.tool_usage.image_gen")); ok {
+	if toolUsage, ok := openAIImagesToolUsageFromGJSON(gjson.GetBytes(data, "response.tool_usage.image_gen")); ok && !retainOpenAIUsageAfterZero(usage, &toolUsage) {
 		*usage = toolUsage
 	}
 }
@@ -1353,6 +1353,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 	c *gin.Context,
 	responseFormat string,
 	fallbackModel string,
+	delivered *bool,
 ) (OpenAIUsage, int, []string, error) {
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
@@ -1407,7 +1408,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 		return OpenAIUsage{}, 0, nil, err
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	before := max(c.Writer.Size(), 0)
 	c.Data(resp.StatusCode, "application/json; charset=utf-8", responseBody)
+	*delivered = c.Writer.Status() < 300 && c.Writer.Size()-before == len(responseBody)
 	return usage, len(results), openAIResponsesImageResultSizes(results), nil
 }
 
@@ -1418,6 +1421,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 	responseFormat string,
 	streamPrefix string,
 	fallbackModel string,
+	delivered *bool,
 ) (OpenAIUsage, int, []string, *int, error) {
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Header("Content-Type", "text/event-stream")
@@ -1508,7 +1512,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				createdAt,
 				partialMeta,
 			)
-			s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload)
+			*delivered = s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload) || *delivered
 		case "response.output_item.done":
 			img, itemID, ok, extractErr := extractOpenAIImageFromResponsesOutputItemDone(dataBytes)
 			if extractErr != nil {
@@ -1581,7 +1585,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				}
 				payload := buildOpenAIImagesStreamCompletedPayload(eventName, img, format, createdAt, usageRaw)
 				emitted[key] = struct{}{}
-				s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload)
+				*delivered = s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload) || *delivered
 			}
 			imageCount = len(emitted)
 			imageOutputSizes = openAIResponsesImageResultSizes(finalResults)
@@ -1637,7 +1641,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 				}
 				payload := buildOpenAIImagesStreamCompletedPayload(eventName, img, format, createdAt, nil)
 				emitted[key] = struct{}{}
-				s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload)
+				*delivered = s.tryWriteOpenAIImagesStreamEvent(c, flusher, &clientDisconnected, &lastDownstreamWriteAt, eventName, payload) || *delivered
 			}
 			imageCount = len(emitted)
 			imageOutputSizes = openAIResponsesImageResultSizes(finalResults)
@@ -1972,6 +1976,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	defer func() { _ = resp.Body.Close() }()
 
 	var (
+		delivered        bool
 		usage            OpenAIUsage
 		imageCount       int
 		imageOutputSizes []string
@@ -1984,7 +1989,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		if direct {
 			usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesStreamingResponse(resp, c, startTime, parsed)
 		} else {
-			usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), upstreamModel)
+			usage, imageCount, imageOutputSizes, firstTokenMs, err = s.handleOpenAIImagesOAuthStreamingResponse(resp, c, startTime, parsed.ResponseFormat, openAIImagesStreamPrefix(parsed), upstreamModel, &delivered)
 		}
 		if err != nil {
 			if imageCount > 0 {
@@ -1992,6 +1997,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 					RequestID:                     resp.Header.Get("x-request-id"),
 					UpstreamHeaders:               resp.Header,
 					Usage:                         usage,
+					ClientContentDelivered:        usage.RetainedAfterZero && delivered,
 					Model:                         requestModel,
 					UpstreamModel:                 upstreamModel,
 					UpstreamEndpoint:              upstreamReq.URL.Path,
@@ -2023,7 +2029,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		if direct {
 			usage, imageCount, imageOutputSizes, err = s.handleCodexDirectImagesNonStreamingResponse(resp, c, parsed)
 		} else {
-			usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel)
+			usage, imageCount, imageOutputSizes, err = s.handleOpenAIImagesOAuthNonStreamingResponse(resp, c, parsed.ResponseFormat, requestModel, &delivered)
 		}
 		if err != nil {
 			return nil, s.handleOpenAIImagesOAuthResponseError(
@@ -2043,6 +2049,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
+		ClientContentDelivered:        usage.RetainedAfterZero && delivered,
 		Model:                         requestModel,
 		UpstreamModel:                 upstreamModel,
 		UpstreamEndpoint:              upstreamReq.URL.Path,

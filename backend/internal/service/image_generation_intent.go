@@ -464,6 +464,22 @@ func resolveOpenAIResponsesImageBillingConfigDetailed(reqBody map[string]any, fa
 	}, nil
 }
 
+// WithWSImageBillingConfig resolves the tariff for passthrough results after
+// counting a real image. Pooled and bridged results already carry this config.
+func (r *OpenAIForwardResult) WithWSImageBillingConfig(body []byte, account *Account) *OpenAIForwardResult {
+	if r == nil || r.ImageCount == 0 || r.BillingModel != "" || account == nil ||
+		!IsImageGenerationIntentForPlatform(openAIResponsesEndpoint, r.Model, body, account.Platform) {
+		return r
+	}
+	cfg, err := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, r.Model)
+	if err != nil {
+		return r
+	}
+	billed := *r
+	billed.BillingModel, billed.ImageSize, billed.ImageInputSize = cfg.Model, cfg.SizeTier, cfg.InputSize
+	return &billed
+}
+
 func resolveOpenAIResponsesImageBillingConfigFromBody(body []byte, fallbackModel string) (string, string, error) {
 	cfg, err := resolveOpenAIResponsesImageBillingConfigDetailedFromBody(body, fallbackModel)
 	if err != nil {

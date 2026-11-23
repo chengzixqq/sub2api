@@ -58,16 +58,17 @@ type RelayResult struct {
 }
 
 type RelayTurnResult struct {
-	RequestModel          string
-	ResponseModel         string
-	ResponseModelConflict bool
-	ResponseServiceTier   string
-	Usage                 Usage
-	RequestID             string
-	TerminalEventType     string
-	StartedAt             time.Time
-	Duration              time.Duration
-	FirstTokenMs          *int
+	ClientContentDelivered bool
+	RequestModel           string
+	ResponseModel          string
+	ResponseModelConflict  bool
+	ResponseServiceTier    string
+	Usage                  Usage
+	RequestID              string
+	TerminalEventType      string
+	StartedAt              time.Time
+	Duration               time.Duration
+	FirstTokenMs           *int
 }
 
 type RelayExit struct {
@@ -88,7 +89,9 @@ type RelayOptions struct {
 	StartClientAfterFirstDownstream bool
 	OnUsageParseFailure             func(eventType string, usageRaw string)
 	OnTurnComplete                  func(turn RelayTurnResult)
+	ObserveTurnOutput               func(eventType string, payload []byte)
 	BeforeWriteClient               func(msgType coderws.MessageType, payload []byte, wroteDownstream bool) error
+	PrepareClientText               func(payload []byte, inspectContent bool) ([]byte, bool)
 	BeforeClientWrite               func(msgType coderws.MessageType, payload []byte)
 	AfterClientWrite                func(msgType coderws.MessageType, payload []byte, writeErr error)
 	BeforeRelayCancel               func(exit RelayExit)
@@ -111,6 +114,9 @@ type RelayTraceEvent struct {
 }
 
 type relayState struct {
+	prepareClientText       func([]byte, bool) ([]byte, bool)
+	observeTurnOutput       func(string, []byte)
+	clientContentDelivered  bool // upstream reader only; cleared on accepted completion
 	usage                   Usage
 	turnUsage               Usage
 	turnWroteDownstream     atomic.Bool
@@ -207,7 +213,12 @@ func Relay(
 		firstMessageType = coderws.MessageText
 	}
 	startAt := nowFn()
-	state := &relayState{requestModel: result.RequestModel, isFirstTokenEvent: options.IsFirstTokenEvent}
+	state := &relayState{
+		requestModel:      result.RequestModel,
+		isFirstTokenEvent: options.IsFirstTokenEvent,
+		prepareClientText: options.PrepareClientText,
+		observeTurnOutput: options.ObserveTurnOutput,
+	}
 	firstIsResponseCreate := isClientResponseCreateFrame(firstMessageType, firstClientMessage)
 	if isClientResponseCreateFrame(firstMessageType, firstClientMessage) {
 		firstTurnStartedAt := options.FirstTurnStartedAt
@@ -646,8 +657,28 @@ func runUpstreamToClient(
 				openAIWSRelayDiscardActiveTurnTiming(state)
 			}
 		}
-		ambiguousTerminal := emitTurnComplete(onTurnComplete, state, observedEvent)
+		// Claim identity before writing. Complete the snapshot before the
+		// adapter releases the next response.create at AfterClientWrite.
+		turn, disposition := claimObservedTurn(state, observedEvent)
+		accepted := disposition == turnCompletionAccepted
+		if msgType == coderws.MessageText && state.observeTurnOutput != nil {
+			// Account only output belonging to the accepted turn, including a terminal
+			// received while draining after the client disconnected.
+			switch observedEvent.eventType {
+			case "response.completed", "response.done":
+				if accepted {
+					state.observeTurnOutput(observedEvent.eventType, payload)
+				}
+			case "response.output_item.done", "image_generation.completed", "image_edit.completed":
+				if state.isActiveContentTurn(observedEvent.responseID) {
+					state.observeTurnOutput(observedEvent.eventType, payload)
+				}
+			}
+		}
 		if dropDownstreamWrites != nil && dropDownstreamWrites.Load() {
+			if accepted {
+				finishRelayTurn(onTurnComplete, state, turn)
+			}
 			if droppedFrames != nil {
 				droppedFrames.Add(1)
 			}
@@ -672,7 +703,22 @@ func runUpstreamToClient(
 		if beforeClientWrite != nil {
 			beforeClientWrite(msgType, payload)
 		}
-		writeErr := writeClient(msgType, payload)
+		clientPayload := payload
+		hasContent := false
+		if msgType == coderws.MessageText && state.prepareClientText != nil {
+			inspectContent := !state.clientContentDelivered
+			if observedEvent.terminal {
+				inspectContent = inspectContent && accepted && !relayUsageHasTokens(turn.Usage) && turn.Usage.CacheCreation30mInputTokens <= 0 && turn.Usage.CacheCreation12hInputTokens <= 0
+			} else {
+				inspectContent = inspectContent && state.isActiveContentTurn(observedEvent.responseID)
+			}
+			clientPayload, hasContent = state.prepareClientText(payload, inspectContent)
+		}
+		writeErr := writeClient(msgType, clientPayload)
+		state.clientContentDelivered = state.clientContentDelivered || (writeErr == nil && hasContent)
+		if accepted {
+			finishRelayTurn(onTurnComplete, state, turn)
+		}
 		if afterClientWrite != nil {
 			afterClientWrite(msgType, payload, writeErr)
 		}
@@ -699,7 +745,7 @@ func runUpstreamToClient(
 			forwardedFrames.Add(1)
 		}
 		markActivity()
-		if ambiguousTerminal {
+		if disposition == turnCompletionAmbiguous {
 			exitCh <- relayExitSignal{
 				stage:           "ambiguous_terminal_identity",
 				err:             ErrAmbiguousTerminalIdentity,
@@ -924,8 +970,26 @@ func emitTurnComplete(
 	state *relayState,
 	observed observedUpstreamEvent,
 ) bool {
+	turn, disposition := claimObservedTurn(state, observed)
+	if disposition == turnCompletionAccepted {
+		finishRelayTurn(onTurnComplete, state, turn)
+	}
+	return disposition == turnCompletionAmbiguous
+}
+
+func finishRelayTurn(onTurnComplete func(RelayTurnResult), state *relayState, turn RelayTurnResult) {
+	if state != nil {
+		turn.ClientContentDelivered = state.clientContentDelivered
+		state.clientContentDelivered = false
+	}
+	if onTurnComplete != nil {
+		onTurnComplete(turn)
+	}
+}
+
+func claimObservedTurn(state *relayState, observed observedUpstreamEvent) (RelayTurnResult, turnCompletionDisposition) {
 	if !observed.terminal {
-		return false
+		return RelayTurnResult{}, turnCompletionIgnored
 	}
 	responseID := strings.TrimSpace(observed.responseID)
 	if responseID == "" && strings.TrimSpace(observed.eventType) != "error" {
@@ -933,8 +997,8 @@ func emitTurnComplete(
 		// unidentifiable terminal and ignored. The live relay initializes its
 		// turn before forwarding, allowing the custom ambiguity guard to handle
 		// a later duplicate after the first turn.
-		if state == nil || !state.turnLifecycleInit {
-			return false
+		if state == nil || !state.lifecycleInitialized() {
+			return RelayTurnResult{}, turnCompletionIgnored
 		}
 	}
 	requestModel := ""
@@ -943,16 +1007,13 @@ func emitTurnComplete(
 		requestModel, disposition = state.claimTurnCompletion(responseID)
 		switch disposition {
 		case turnCompletionAmbiguous:
-			return true
+			return RelayTurnResult{}, turnCompletionAmbiguous
 		case turnCompletionAccepted:
 		default:
-			return false
+			return RelayTurnResult{}, turnCompletionIgnored
 		}
 	}
-	if onTurnComplete == nil {
-		return false
-	}
-	onTurnComplete(RelayTurnResult{
+	return RelayTurnResult{
 		RequestModel:          requestModel,
 		ResponseModel:         observed.responseModel,
 		ResponseModelConflict: observed.responseConflict,
@@ -963,8 +1024,7 @@ func emitTurnComplete(
 		StartedAt:             observed.startedAt,
 		Duration:              observed.duration,
 		FirstTokenMs:          openAIWSRelayCloneIntPtr(observed.firstToken),
-	})
-	return false
+	}, turnCompletionAccepted
 }
 
 func firstRelayResponseModel(message []byte) string {
@@ -1421,6 +1481,21 @@ func (s *relayState) rollbackResponseCreate(sequence uint64) {
 		s.turnRolledBack = true
 	}
 	s.requestModelMu.Unlock()
+}
+
+// Inter-turn metadata or late output for a completed ID cannot establish a
+// receipt for the next request. The upstream reader owns the receipt itself.
+func (s *relayState) isActiveContentTurn(responseID string) bool {
+	s.requestModelMu.RLock()
+	defer s.requestModelMu.RUnlock()
+	_, completed := s.completedIDs[responseID]
+	return s.turnOpen && !completed
+}
+
+func (s *relayState) lifecycleInitialized() bool {
+	s.requestModelMu.RLock()
+	defer s.requestModelMu.RUnlock()
+	return s.turnLifecycleInit
 }
 
 func (s *relayState) claimTurnCompletion(responseID string) (string, turnCompletionDisposition) {

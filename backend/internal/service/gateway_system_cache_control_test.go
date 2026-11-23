@@ -62,7 +62,7 @@ func TestNormalizeClaudeOAuthRequestBody_KeepsInjectedSystemBreakpoint(t *testin
 
 	// 只断言「注入后的 system 仍带着锚点」，不写死是第几块：
 	// 块数与布局由 blocks 配置决定，焊进断言会让配置一改就误报。
-	_, _, _, systemPaths := collectCacheControlPaths(out, false)
+	_, _, _, systemPaths := collectCacheControlPaths(out, cacheControlLimitPlan{})
 	require.NotEmpty(t, systemPaths, "注入路径自带的稳定锚点不该在 normalize 里掉")
 }
 
@@ -117,7 +117,7 @@ func TestForwardCountTokens_EnforcesCacheControlLimitOnMimicPath(t *testing.T) {
 
 	require.NoError(t, svc.ForwardCountTokens(context.Background(), c, account, parsed))
 
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(upstream.lastBody, false)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(upstream.lastBody, cacheControlLimitPlan{})
 	total := len(messagePaths) + len(toolPaths) + len(systemPaths)
 	require.LessOrEqual(t, total, maxCacheControlBlocks,
 		"出站 body 的 cache_control 块数必须被砍到上限内，实测 %d 块", total)

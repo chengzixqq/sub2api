@@ -1513,6 +1513,19 @@
               }}
             </div>
           </div>
+          <div class="mt-3">
+            <label for="create-openai-search-price" class="input-label">{{ t("admin.groups.explicitPricing.nativeSearchPrice") }}</label>
+            <input
+              id="create-openai-search-price"
+              v-model.number="createForm.search_price_per_1k"
+              type="number"
+              step="0.000001"
+              min="0"
+              class="input"
+              data-testid="create-openai-search-price"
+            />
+            <p class="input-hint">{{ t("admin.groups.explicitPricing.nativeSearchHint") }}</p>
+          </div>
         </div>
 
 
@@ -3182,6 +3195,19 @@
                 })
               }}
             </div>
+          </div>
+          <div class="mt-3">
+            <label for="edit-openai-search-price" class="input-label">{{ t("admin.groups.explicitPricing.nativeSearchPrice") }}</label>
+            <input
+              id="edit-openai-search-price"
+              v-model.number="editForm.search_price_per_1k"
+              type="number"
+              step="0.000001"
+              min="0"
+              class="input"
+              data-testid="edit-openai-search-price"
+            />
+            <p class="input-hint">{{ t("admin.groups.explicitPricing.nativeSearchHint") }}</p>
           </div>
         </div>
 

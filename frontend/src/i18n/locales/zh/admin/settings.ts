@@ -1590,7 +1590,7 @@ export default {
           },
           thinking_cache_control: {
             label: '思考块上的 cache_control 处理',
-            hint: '官方不允许在历史消息的思考块（thinking / redacted_thinking）上加 cache_control，会返回 400。默认模式只删除 thinking 块上的 cache_control（redacted_thinking 块保持原样，与当前生产一致）；API Key 直通与 count_tokens 的非伪装路径不做此清理，原样转发。',
+            hint: '官方不允许在历史消息的思考块（thinking / redacted_thinking）上加 cache_control，会返回 400。默认模式在原生托管 Messages 和实际进行 Claude Code 伪装的 count_tokens 中删除这两种消息块上的 cache_control。API Key 直通与非伪装的 count_tokens 路径保留这些字段，已有的独立裁剪规则仍适用。',
             options: { strip: '自动删除', passthrough: '不删除，交给上游处理', reject: '按官方返回 400' },
             impact: [
               '成功率：选后两项后，带这种断点的请求会失败。常见来源：客户端统一给“最后一个内容块”加缓存断点，而这个块恰好是思考块；或者跨客户端回放历史。Claude Code 正常不会这样发。',

@@ -695,7 +695,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				currentBridgePayload.imageInputSize,
 				grokCacheIdentity,
 				turn,
-				writeClientMessage,
+				writeClientMessage, hooks,
 			)
 			if hooks != nil && hooks.ObserveMonitorAttempt != nil {
 				hooks.ObserveMonitorAttempt(turn, result, bridgeErr)
@@ -974,6 +974,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		wroteDownstream := false
 		usage := OpenAIUsage{}
 		var firstTokenMs *int
+		var clientContentDelivered bool
 		clientDisconnected := false
 		if hooks != nil && hooks.ObserveTurnStart != nil {
 			hooks.ObserveTurnStart(turn, turnStart, originalModel)
@@ -1007,6 +1008,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 
 		responseID := ""
 		imageCounter := newOpenAIImageOutputCounter()
+		var searches openAINativeSearchCounter
+		defer func() {
+			if count := searches.count(); count > 0 {
+				if forwardResult == nil {
+					forwardResult = &OpenAIForwardResult{Model: originalModel, Stream: true, OpenAIWSMode: true}
+				}
+				forwardResult.NativeSearchCount = count
+			}
+		}()
+		var searchObserver *openAINativeSearchCounter
+		if hooks.nativeSearchPriced(c, account, turn) {
+			searchObserver = &searches
+		}
 		reqStream := openAIWSPayloadBoolFromRaw(payload, "stream", true)
 		turnPreviousResponseID := openAIWSPayloadStringFromRaw(payload, "previous_response_id")
 		turnPreviousResponseIDKind := ClassifyOpenAIPreviousResponseIDKind(turnPreviousResponseID)
@@ -1184,7 +1198,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if openAIWSMessageShouldParseUsage(eventType, upstreamMessage) {
 				parseOpenAIWSResponseUsageFromCompletedEvent(upstreamMessage, &usage)
 			}
-			imageCounter.AddSSEData(upstreamMessage)
+			inspectContent := !clientDisconnected && !clientContentDelivered && account.IsOpenAI() && openAIUsageNeedsDelivery(&usage) && imageCounter.Count() == 0
+			originalFrame := upstreamMessage
+			hasContent := imageCounter.observeResponsesEvent(upstreamMessage, searchObserver, eventType, inspectContent)
 
 			if !clientDisconnected {
 				if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && bytes.Contains(upstreamMessage, mappedModelBytes) {
@@ -1234,6 +1250,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					}
 				} else {
 					wroteDownstream = true
+					if inspectContent && !bytes.Equal(originalFrame, clientMessage) {
+						hasContent = openAIWSFrameHasContent(eventType, clientMessage)
+					}
+					clientContentDelivered = clientContentDelivered || hasContent
 					markOpenAIWSClientVisibleFailure(c, eventType, upstreamMessage)
 				}
 			}
@@ -1266,6 +1286,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				}
 				imageCount := imageCounter.Count()
 				result := &OpenAIForwardResult{
+					ClientContentDelivered:        clientContentDelivered,
 					RequestID:                     responseID,
 					Usage:                         usage,
 					Model:                         originalModel,
@@ -1381,6 +1402,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}()
 	rejectedFieldRetryState = newOpenAIResponsesRejectedFieldRetryState(currentPayload)
 	turnRetry := 0
+	turnNativeSearchCount := 0
 	turnPrevRecoveryTried := false
 	lastTurnFinishedAt := time.Time{}
 	lastTurnResponseID := ""
@@ -1879,6 +1901,15 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 
 		result, relayErr := sendAndRelay(turn, sessionLease, currentPayload, currentPayloadBytes, currentOriginalModel, currentImageBillingModel, currentImageSizeTier, currentImageInputSize, currentRequestedReasoningEffort)
+		if result != nil {
+			turnNativeSearchCount = AccumulateSearchCount(turnNativeSearchCount, result.NativeSearchCount, "pooled_ws_retry")
+		}
+		if turnNativeSearchCount > 0 {
+			if result == nil {
+				result = &OpenAIForwardResult{Model: currentOriginalModel, Stream: true, OpenAIWSMode: true}
+			}
+			result.NativeSearchCount = turnNativeSearchCount
+		}
 		if relayErr != nil {
 			lastTurnClean = false
 			if isOpenAIWSSessionPreempted(ctx) {
@@ -1903,12 +1934,13 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				finalErr = unwrapped
 			}
 			if hooks != nil && hooks.AfterTurn != nil {
-				hooks.AfterTurn(turn, nil, finalErr)
+				hooks.AfterTurn(turn, result, finalErr)
 			}
 			sessionLease.MarkBroken()
 			return finalErr
 		}
 		turnRetry = 0
+		turnNativeSearchCount = 0
 		turnPrevRecoveryTried = false
 		lastTurnFinishedAt = time.Now()
 		lastTurnClean = true

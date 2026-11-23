@@ -19,11 +19,12 @@ func TestAlignmentDefaultWireBytes(t *testing.T) {
 	const plain = model + `"messages":[{"role":"user","content":"hello"}]}`
 	const stripped = `{"type":"thinking","thinking":"h"}`
 	thinking := thinkingTestBody(thinkingTestMessage("assistant", thinkingTestBlock, redactedTestBlock))
+	thinkingStripped := thinkingTestBody(thinkingTestMessage("assistant", stripped, `{"type":"redacted_thinking","data":"x"}`))
 	for _, tc := range []struct {
 		name, body, want, beta string
 	}{
 		{"context_strip", model + `"context_management":{},` + plain[len(model):], plain, ""},
-		{"thinking_strip", thinking, strings.Replace(thinking, thinkingTestBlock, stripped, 1), ""},
+		{"thinking_strip", thinking, thinkingStripped, ""},
 		{"limit_trim", cacheControlFiveClientBreakpoints, strings.Replace(cacheControlFiveClientBreakpoints, `"input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}`, `"input_schema":{"type":"object"}`, 1), ""},
 		{"unknown_beta", plain, plain, "client-unknown"},
 	} {

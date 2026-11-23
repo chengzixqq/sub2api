@@ -20,7 +20,7 @@ import (
 // such requests with HTTP 400.
 func requireCacheTTLOrderAccepted(t *testing.T, body []byte) {
 	t.Helper()
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, false)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, cacheControlLimitPlan{})
 	var paths []string
 	paths = append(paths, toolPaths...)
 	paths = append(paths, systemPaths...)

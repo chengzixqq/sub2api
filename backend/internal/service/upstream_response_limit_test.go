@@ -103,3 +103,46 @@ func TestChatCompletionsBridgeResponseLimitErrorType(t *testing.T) {
 		})
 	}
 }
+
+func TestOversizeResponsesBillsOnlyCompleteSearchFrames(t *testing.T) {
+	const data = "data: " + `{"type":"response.output_item.done","item":{"id":"ws1","type":"web_search_call","status":"completed"}}`
+	for _, tc := range []struct {
+		name, ending string
+		cut, want    int
+	}{
+		{"complete CRLF", "\r\n\r\n", 0, 1},
+		{"partial CRLF", "\r\n\r\n", 1, 0},
+		{"LF followed by CR", "\n\r", 0, 1},
+		{"missing blank line", "\n\r", 1, 0},
+		{"blank line with whitespace", "\n \t\n", 0, 1},
+		{"pure CR with trailing comment", "\r\r", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := data + tc.ending
+			full := frame + ":" + strings.Repeat("x", 256)
+			svc := &OpenAIGatewayService{cfg: &config.Config{}}
+			svc.cfg.Gateway.UpstreamResponseReadMaxBytes = int64(len(frame) - tc.cut)
+			price := 10.0
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Set("api_key", &APIKey{Group: &Group{SearchPricePer1k: &price}})
+			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(full))}
+			result, err := svc.handleNonStreamingResponse(t.Context(), resp, c, &Account{Platform: PlatformOpenAI}, "m", "m")
+			require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
+			require.Equal(t, http.StatusBadGateway, c.Writer.Status())
+			if tc.want == 0 {
+				require.Nil(t, result)
+			} else {
+				require.NotNil(t, result)
+				require.Equal(t, tc.want, result.searchCount)
+			}
+		})
+	}
+}
+
+func TestBufferedSearchPreservesMultilineFrameAcrossComment(t *testing.T) {
+	const frame = "data: {\"type\":\"response.output_item.done\",\n\r: comment\n" +
+		"data: \"item\":{\"id\":\"ws1\",\"type\":\"web_search_call\",\"status\":\"completed\"}}\n\n"
+	require.Equal(t, 1, countOpenAINativeSearchSSE(frame))
+	require.Equal(t, 1, countBufferedOpenAISearch(frame+": truncated comment", true))
+}

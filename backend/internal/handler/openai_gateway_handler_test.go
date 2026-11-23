@@ -1956,6 +1956,7 @@ type openAIResponsesWSUsageLogCase struct {
 	firstPayload           string
 	// midPayload 在首个 turn 完成后发送（如 session.update），上游桩会为它
 	// 回一个 response.completed，客户端按普通事件读取。
+	upstreamFrames            [][]string
 	midPayload                string
 	secondPayload             string
 	secondTurnFailed          bool
@@ -3083,7 +3084,16 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				response = fmt.Sprintf(`{"type":"response.failed","response":{%s"model":%q,"error":{"code":"invalid_request_error","message":"test failure"},"usage":{"input_tokens":2,"output_tokens":1}}}`, responseIDField, gjson.GetBytes(payload, "model").String())
 			}
 			writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
-			writeErr := conn.Write(writeCtx, coderws.MessageText, []byte(response))
+			frames := []string{response}
+			if tc.upstreamFrames != nil {
+				frames = tc.upstreamFrames[turn-1]
+			}
+			var writeErr error
+			for _, frame := range frames {
+				if writeErr = conn.Write(writeCtx, coderws.MessageText, []byte(frame)); writeErr != nil {
+					break
+				}
+			}
 			cancelWrite()
 			if writeErr != nil {
 				upstreamErrCh <- writeErr
@@ -3287,7 +3297,20 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 
 	clientEvents := make([][]byte, 0, turnCount)
+	readTurn := 0
 	readCompleted := func() {
+		if tc.upstreamFrames != nil {
+			for _, frame := range tc.upstreamFrames[readTurn] {
+				readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+				_, event, err := clientConn.Read(readCtx)
+				cancelRead()
+				require.NoError(t, err)
+				require.Equal(t, frame, string(event))
+				clientEvents = append(clientEvents, event)
+			}
+			readTurn++
+			return
+		}
 		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 		_, event, readErr := clientConn.Read(readCtx)
 		cancelRead()
@@ -3481,5 +3504,53 @@ func TestOpenAIResponsesWebSocketSimpleModeRechecksKeyWindows(t *testing.T) {
 				ingressMode:   mode, simpleModeRejectAtRead: 3, secondTurnCloseExpected: true, closeReason: "billing check failed",
 			})
 		})
+	}
+}
+
+func TestResponsesWSDeliveredTurnBilling(t *testing.T) {
+	terminal := func(id string, input, output int, items string) string {
+		return fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"output":%s,"usage":{"input_tokens":%d,"output_tokens":%d}}}`, id, items, input, output)
+	}
+	text := `[{"type":"message","content":[{"type":"output_text","text":"WS16"}]}]`
+	delta := `{"type":"response.output_text.delta","delta":"text"}`
+	done := `{"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done"}]}}`
+	for _, ingress := range []string{service.OpenAIWSIngressModePassthrough, "ctx_pool"} {
+		for _, tc := range []struct {
+			name      string
+			first     []string
+			delivered bool
+		}{
+			{"terminal", []string{terminal("r1", 0, 0, text)}, true},
+			{"delta", []string{delta, terminal("r1", 0, 0, "[]")}, true},
+			{"item_done", []string{done, terminal("r1", 0, 0, "[]")}, true},
+			{"empty", []string{`{"type":"response.output_text.delta","delta":""}`, terminal("r1", 0, 0, "[]")}, false},
+		} {
+			t.Run(ingress+"/"+tc.name, func(t *testing.T) {
+				got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+					ingressMode:    ingress,
+					firstPayload:   `{"type":"response.create","model":"gpt-5.4","input":"first"}`,
+					midPayload:     `{"type":"response.create","model":"gpt-5.2","input":"second"}`,
+					secondPayload:  `{"type":"response.create","model":"gpt-5.4","input":"third different prompt"}`,
+					upstreamFrames: [][]string{tc.first, {terminal("r2", 2, 1, text)}, {terminal("r3", 0, 0, "[]")}},
+				})
+				require.Len(t, got.logs, 3)
+				for i, l := range got.logs {
+					require.Equal(t, fmt.Sprintf("r%d", i+1), l.RequestID)
+				}
+				t.Logf("turns=%d billed=(%d/%d, %d/%d, %d/%d) costs=(%.8f, %.8f, %.8f)", len(got.logs), got.logs[0].InputTokens, got.logs[0].OutputTokens, got.logs[1].InputTokens, got.logs[1].OutputTokens, got.logs[2].InputTokens, got.logs[2].OutputTokens, got.logs[0].ActualCost, got.logs[1].ActualCost, got.logs[2].ActualCost)
+				if tc.delivered {
+					require.NotNil(t, got.logs[0].BillingProvenance)
+					require.Equal(t, "estimated", *got.logs[0].BillingProvenance)
+					require.Positive(t, got.logs[0].InputTokens)
+					require.Equal(t, 1, got.logs[0].OutputTokens)
+				} else {
+					require.Zero(t, got.logs[0].OutputTokens)
+				}
+				require.Equal(t, 2, got.logs[1].InputTokens)
+				require.Equal(t, 1, got.logs[1].OutputTokens)
+				require.Zero(t, got.logs[2].InputTokens)
+				require.Zero(t, got.logs[2].OutputTokens)
+			})
+		}
 	}
 }

@@ -199,19 +199,15 @@ func openAIWSMessageLikelyContainsToolCalls(message []byte) bool {
 }
 
 func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIUsage) {
-	if usage == nil || len(message) == 0 || !bytes.Contains(message, []byte(`"usage"`)) {
-		return
+	observeOpenAIWSResponseUsage(message, usage, false)
+}
+
+func observeOpenAIWSResponseUsage(message []byte, usage *OpenAIUsage, trackConflict bool) {
+	policy := ignoreOpenAIUsageConflict
+	if trackConflict {
+		policy = trackEmptyOpenAIUsageSnapshot
 	}
-	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(message); ok {
-		if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(message, "")) {
-			if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
-				return
-			}
-			replaceOpenAIUsageSnapshot(usage, parsedUsage)
-		} else {
-			mergeOpenAIUsageNonZero(usage, parsedUsage)
-		}
-	}
+	observeOpenAIStreamUsage(message, "", usage, policy)
 }
 
 func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {

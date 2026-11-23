@@ -34,7 +34,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	attempt int,
 	lastFailureReason string,
 	agentTaskRecoveryTried *bool,
-) (*OpenAIForwardResult, error) {
+) (forwardResult *OpenAIForwardResult, forwardErr error) {
 	if s == nil || account == nil {
 		return nil, wrapOpenAIWSFallback("invalid_state", errors.New("service or account is nil"))
 	}
@@ -366,6 +366,19 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
+	var searches openAINativeSearchCounter
+	defer func() {
+		if count := searches.count(); count > 0 {
+			if forwardResult == nil {
+				forwardResult = &OpenAIForwardResult{Model: originalModel, Stream: reqStream, OpenAIWSMode: true}
+			}
+			forwardResult.NativeSearchCount = count
+		}
+	}()
+	var searchObserver *openAINativeSearchCounter
+	if openAINativeSearchPriced(c, account) {
+		searchObserver = &searches
+	}
 	var firstTokenMs *int
 	responseID := ""
 	var finalResponse []byte
@@ -673,9 +686,9 @@ readLoop:
 			message = restoreCodexToolNamesFromContext(c, message)
 		}
 		if openAIWSMessageShouldParseUsage(eventType, message) {
-			parseOpenAIWSResponseUsageFromCompletedEvent(message, usage)
+			observeOpenAIWSResponseUsage(message, usage, !reqStream)
 		}
-		imageCounter.AddSSEData(message)
+		imageCounter.addResponsesEvent(message, searchObserver)
 
 		if eventType == "error" || eventType == "response.failed" {
 			markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage)

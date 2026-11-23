@@ -45,6 +45,7 @@ type FailureBillingInput struct {
 	UpstreamModel          string
 	Usage                  ClaudeUsage
 	SearchCount            int
+	NativeSearchCount      int
 	ImageCount             int
 	ImageSize              string
 	ImageInputSize         string
@@ -72,6 +73,7 @@ type FailureBillingDecision struct {
 	UpstreamModel      string
 	Usage              ClaudeUsage
 	SearchCount        int
+	NativeSearchCount  int
 	ImageCount         int
 	ImageSize          string
 	ImageInputSize     string
@@ -127,7 +129,7 @@ func DecideFailureBilling(in FailureBillingInput) FailureBillingDecision {
 	// terminal response contains no token usage. If content was delivered (or
 	// the client disconnected mid-stream), keep the existing conservative token
 	// estimate and add the real search surcharge to the same settlement row.
-	if searchCount > 0 && (in.OutputStarted || in.ClientDisconnect) {
+	if (searchCount > 0 || in.NativeSearchCount > 0) && (in.OutputStarted || in.ClientDisconnect) {
 		if in.UpstreamUsageOnly {
 			// The search itself is an explicit upstream billable action, but the
 			// token portion would be locally estimated. Keep the action for the
@@ -153,7 +155,7 @@ func DecideFailureBilling(in FailureBillingInput) FailureBillingDecision {
 		return baseDecision
 	}
 
-	if searchCount > 0 {
+	if searchCount > 0 || in.NativeSearchCount > 0 {
 		baseDecision.Billable = true
 		baseDecision.Provenance = BillingProvenanceFailedUpstream
 		baseDecision.Reason = "upstream_search"
@@ -214,6 +216,7 @@ func failureBillingDecisionBase(in FailureBillingInput, searchCount, imageCount 
 		BillingModel:           in.BillingModel,
 		UpstreamModel:          in.UpstreamModel,
 		SearchCount:            searchCount,
+		NativeSearchCount:      in.NativeSearchCount,
 		ImageCount:             imageCount,
 		ImageSize:              in.ImageSize,
 		ImageInputSize:         in.ImageInputSize,

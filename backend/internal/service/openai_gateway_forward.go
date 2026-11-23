@@ -911,6 +911,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		retryBudget := s.openAIWSRetryTotalBudget()
 		retryStartedAt := time.Now()
+		nativeSearchCount := 0
 	wsRetryLoop:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			wsAttempts = attempt
@@ -932,6 +933,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				wsLastFailureReason,
 				&agentTaskRecoveryTried,
 			)
+			if wsResult != nil {
+				nativeSearchCount = AccumulateSearchCount(nativeSearchCount, wsResult.NativeSearchCount, "ws_retry")
+			}
 			if wsErr == nil {
 				break
 			}
@@ -1032,6 +1036,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				firstTokenMs,
 				wsAttempts,
 			)
+			wsResult.NativeSearchCount = nativeSearchCount
 			wsResult.UpstreamModel = upstreamModel
 			if wsResult.BillingModel == "" {
 				wsResult.BillingModel = billingModel
@@ -1044,6 +1049,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return wsResult, nil
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
+		if nativeSearchCount > 0 {
+			if wsResult == nil {
+				wsResult = &OpenAIForwardResult{Model: originalModel, Stream: reqStream, OpenAIWSMode: true}
+			}
+			wsResult.NativeSearchCount = nativeSearchCount
+			return wsResult, wsErr
+		}
 		return nil, wsErr
 	}
 
@@ -1323,7 +1335,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 						continue
 					}
 				}
-				return nil, err
+				if nonStreamResult == nil || nonStreamResult.searchCount == 0 {
+					return nil, err
+				}
+				responseErr = err
 			}
 			delivered = nonStreamResult.delivered
 			usage = nonStreamResult.usage
@@ -1376,11 +1391,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			forwardResult.ImageOutputSizes = imageOutputSizes
 			forwardResult.BillingModel = imageBillingModel
 		}
-		// Grok-native web_search / x_search / tool_search tool invocations (per-1k pricing).
-		// Token cost still applies separately when usage is present; search is additive only
-		// when search_price_per_1k is configured (nil price → $0 from CalculateSearchCost).
-		if searchCount > 0 && account != nil && account.IsGrok() {
-			forwardResult.SearchCount = searchCount
+		// Preserve the source so native searches use only an explicit group price.
+		if searchCount > 0 && account != nil {
+			if account.IsGrok() {
+				forwardResult.SearchCount = searchCount
+			} else if openAINativeSearchPriced(c, account) {
+				forwardResult.NativeSearchCount = searchCount
+			}
 		}
 		stampOpenAIResponsesUpstreamEndpoint(c, forwardResult)
 		return forwardResult, responseErr

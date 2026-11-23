@@ -29,6 +29,11 @@ type cacheControlLimitPlan struct {
 	scope            cacheControlTrimScope
 	markerKey        string
 	preserveThinking bool
+	nativeManaged    bool
+}
+
+func (p cacheControlLimitPlan) stripRedactedThinking() bool {
+	return p.nativeManaged && !p.preserveThinking
 }
 
 // planCacheControlLimit decides how a native Claude /v1/messages or
@@ -50,7 +55,8 @@ type cacheControlLimitPlan struct {
 //     the passthrough rules using the upstream's client breakpoint count.
 //
 // The returned body is the input body unless marked is true.
-func planCacheControlLimit(body []byte, mode, thinkingMode string, mayInject bool) (plan cacheControlLimitPlan, out []byte, marked bool) {
+func planCacheControlLimit(body []byte, mode, thinkingMode string, mayInject, nativeManaged bool) (plan cacheControlLimitPlan, out []byte, marked bool) {
+	plan.nativeManaged = nativeManaged
 	plan.preserveThinking = thinkingMode == ClaudeAlignPassthrough || thinkingMode == ClaudeAlignReject
 	if mode != ClaudeCacheControlLimitPassthrough && mode != ClaudeAlignReject {
 		return plan, body, false
@@ -63,7 +69,7 @@ func planCacheControlLimit(body []byte, mode, thinkingMode string, mayInject boo
 	if mode == ClaudeAlignReject {
 		count = countClientCacheControlBreakpoints(body)
 	} else {
-		count = countLegacyCacheControlBreakpoints(body, plan.preserveThinking)
+		count = countLegacyCacheControlBreakpoints(body, plan)
 	}
 	if count > maxCacheControlBlocks {
 		plan.scope = cacheControlTrimNone
@@ -75,7 +81,7 @@ func planCacheControlLimit(body []byte, mode, thinkingMode string, mayInject boo
 	if bytes.Contains(body, cacheControlClientMarkerJSONKey) || bytes.Contains(body, jsonUnicodeEscapeBytes) {
 		plan.markerKey += uuid.NewString()
 	}
-	out, marked, ok := markClientCacheControlBreakpoints(body, plan.preserveThinking, plan.markerKey)
+	out, marked, ok := markClientCacheControlBreakpoints(body, plan)
 	if !ok {
 		return plan, body, false
 	}
@@ -83,16 +89,15 @@ func planCacheControlLimit(body []byte, mode, thinkingMode string, mayInject boo
 	return plan, out, marked
 }
 
-// Passthrough is based on block-level breakpoints. In strip mode it also
-// retains the historical treatment of redacted thinking.
-func countLegacyCacheControlBreakpoints(body []byte, preserveThinking bool) int {
+// Passthrough is based on block-level breakpoints that survive thinking cleanup.
+func countLegacyCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan) int {
 	if len(body) == 0 {
 		return 0
 	}
 	if !bytes.Contains(body, cacheControlKeyBytes) && !bytes.Contains(body, jsonUnicodeEscapeBytes) {
 		return 0
 	}
-	_, messagePaths, toolPaths, systemPaths := scanCacheControlPaths(stripDeferredToolCacheControl(body), preserveThinking, false)
+	_, messagePaths, toolPaths, systemPaths := scanBlockCacheControls(stripDeferredToolCacheControl(body), plan, false, false)
 	return len(messagePaths) + len(toolPaths) + len(systemPaths)
 }
 
@@ -174,17 +179,19 @@ func parsedClientCacheControlOverflow(body []byte, header http.Header) int {
 // ok is false when the markers cannot be placed reliably: a body that already
 // contains the marker key in a cache_control object, or a cache_control key written with JSON escapes
 // that sjson would duplicate instead of update. The input body is returned.
-func markClientCacheControlBreakpoints(body []byte, preserveThinking bool, markerKey string) (out []byte, marked bool, ok bool) {
+func markClientCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan) (out []byte, marked bool, ok bool) {
 	if !bytes.Contains(body, cacheControlKeyBytes) && !bytes.Contains(body, jsonUnicodeEscapeBytes) {
 		return body, false, true
 	}
 	batch := readCacheControlBatch(body, "")
+	markerKey := plan.markerKey
+	excludeRedacted := plan.preserveThinking || plan.stripRedactedThinking()
 	expected := 0
 	for section := cacheTools; section < cacheTop; section++ {
 		blocks := batch[section]
 		for i := range blocks {
 			b := &blocks[i]
-			if !b.cc.IsObject() || !b.participates(section, preserveThinking) {
+			if !b.cc.IsObject() || !b.participates(section, excludeRedacted) {
 				continue
 			}
 			if b.cc.Get(markerKey).Exists() || !b.setField(body, markerKey, true) {
@@ -212,6 +219,8 @@ func markClientCacheControlBreakpoints(body []byte, preserveThinking bool, marke
 // injected breakpoint more than needed is removed, which cannot cause a 400.
 func trimInjectedCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan) []byte {
 	batch := readCacheControlBatch(body, plan.markerKey)
+	stripRedacted := plan.stripRedactedThinking()
+	excludeRedacted := plan.preserveThinking || stripRedacted
 	remaining := -maxCacheControlBlocks
 	if top := batch[cacheTop]; len(top) > 0 && top[0].cc.Type != gjson.Null {
 		remaining++
@@ -223,7 +232,7 @@ func trimInjectedCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan
 			if b.cc.Type == gjson.Null {
 				continue
 			}
-			if b.participates(section, plan.preserveThinking) {
+			if b.participates(section, excludeRedacted) {
 				remaining++
 				continue
 			}
@@ -232,7 +241,12 @@ func trimInjectedCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan
 				b.deleteField(body, "cache_control")
 			} else if !plan.preserveThinking {
 				logger.LegacyPrintf("service.gateway", "[Warning] Removed illegal cache_control from thinking block in messages[%d].content[%d]", b.index, b.content)
-				b.deleteField(body, "cache_control")
+				if stripRedacted {
+					block := body[b.block.Index : b.block.Index+len(b.block.Raw)]
+					b.replacement = deleteCacheControlMembers(block, "cache_control")
+				} else {
+					b.deleteField(body, "cache_control")
+				}
 			}
 		}
 	}
@@ -245,7 +259,7 @@ func trimInjectedCacheControlBreakpoints(body []byte, plan cacheControlLimitPlan
 				i = len(blocks) - 1 - j
 			}
 			b := &blocks[i]
-			if b.cc.Type == gjson.Null || !b.participates(section, plan.preserveThinking) {
+			if b.cc.Type == gjson.Null || !b.participates(section, excludeRedacted) {
 				continue
 			}
 			if b.leaf.Exists() {
@@ -285,11 +299,21 @@ func stripRemainingCacheControlClientMarkers(body []byte, markerKey string) []by
 // markers. Escaped keys and marked bodies need the full path scan.
 func (p cacheControlLimitPlan) apply(body []byte) []byte {
 	if !bytes.Contains(body, jsonUnicodeEscapeBytes) {
-		if !bytes.Contains(body, cacheControlKeyBytes) {
+		var count int
+		var redacted bool
+		switch {
+		case p.scope != cacheControlTrimInjectedOnly && p.stripRedactedThinking():
+			count, redacted = scanCacheControlCandidates(body)
+		case p.scope == cacheControlTrimAny:
+			count = bytes.Count(body, cacheControlKeyBytes)
+		case bytes.Contains(body, cacheControlKeyBytes):
+			count = 1
+		}
+		if count == 0 {
 			return body
 		}
-		noTrim := p.scope == cacheControlTrimNone || (p.scope == cacheControlTrimAny && bytes.Count(body, cacheControlKeyBytes) <= maxCacheControlBlocks)
-		if noTrim && !bytes.Contains(body, thinkingBlockTypeBytes) {
+		noTrim := p.scope == cacheControlTrimNone || (p.scope == cacheControlTrimAny && count <= maxCacheControlBlocks)
+		if noTrim && !redacted && !bytes.Contains(body, thinkingBlockTypeBytes) {
 			if !bytes.Contains(body, cacheTTL1hJSONBytes) {
 				return body
 			}
@@ -301,6 +325,53 @@ func (p cacheControlLimitPlan) apply(body []byte) []byte {
 		out = stripRemainingCacheControlClientMarkers(out, p.markerKey)
 	}
 	return out
+}
+
+// scanCacheControlCandidates counts quoted cache keys and checks for redacted
+// thinking types in one pass. Both literals have a single underscore.
+func scanCacheControlCandidates(body []byte) (count int, redacted bool) {
+	const cachePrefix, cacheSuffix = `"cache`, `_control"`
+	const redactedPrefix, redactedSuffix = `"redacted`, `_thinking"`
+	for start := 0; start < len(body); {
+		offset := bytes.IndexByte(body[start:], '_')
+		if offset < 0 {
+			break
+		}
+		i := start + offset
+		start = i + 1
+		if i >= len(cachePrefix) && len(body)-i >= len(cacheSuffix) &&
+			string(body[i-len(cachePrefix):i+len(cacheSuffix)]) == cachePrefix+cacheSuffix {
+			count++
+			start = i + len(cacheSuffix)
+		} else if !redacted && i >= len(redactedPrefix) && len(body)-i >= len(redactedSuffix) &&
+			string(body[i-len(redactedPrefix):i+len(redactedSuffix)]) == redactedPrefix+redactedSuffix {
+			redacted = hasTypeKeyBefore(body[:i-len(redactedPrefix)])
+		}
+	}
+	return count, redacted
+}
+
+func hasTypeKeyBefore(prefix []byte) bool {
+	prefix = trimTrailingJSONSpace(prefix)
+	if len(prefix) == 0 || prefix[len(prefix)-1] != ':' {
+		return false
+	}
+	prefix = trimTrailingJSONSpace(prefix[:len(prefix)-1])
+	const key = `"type"`
+	i := len(prefix) - len(key)
+	return i > 0 && prefix[i-1] != '\\' && string(prefix[i:]) == key
+}
+
+func trimTrailingJSONSpace(body []byte) []byte {
+	for len(body) > 0 {
+		switch body[len(body)-1] {
+		case ' ', '\t', '\r', '\n':
+			body = body[:len(body)-1]
+		default:
+			return body
+		}
+	}
+	return body
 }
 
 // cacheControlLimitMode defaults missing and unrecognized policies to trim.

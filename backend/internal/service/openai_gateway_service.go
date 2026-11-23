@@ -240,6 +240,8 @@ type OpenAIUsage struct {
 	// OutputTokens was inferred solely from total and reasoning. Keep that
 	// legacy count for upstream-only billing and protocol conversion.
 	OutputFromUnclassifiedUsage bool `json:"-"`
+	// The settlement snapshot kept earlier metering after an explicit zero report.
+	RetainedAfterZero bool `json:"-"`
 	// An explicit invalid split must not inherit a previous snapshot's TTLs.
 	cacheCreationTTLDetailsPresent bool
 
@@ -286,6 +288,7 @@ type OpenAIForwardResult struct {
 	RequestedReasoningEffort *string
 	Stream                   bool
 	OpenAIWSMode             bool
+	wsReplayInputExists      bool // Keep the WS flags together within the existing allocation size.
 	// UpstreamTerminalEvent is the normalized terminal event observed on an
 	// upstream Responses WebSocket turn. Empty preserves legacy/non-WS success.
 	UpstreamTerminalEvent string
@@ -315,11 +318,12 @@ type OpenAIForwardResult struct {
 	WebSearchCalls int
 	// SearchCount is Grok-native web_search / tool search call count (per 1k pricing).
 	SearchCount int
+	// NativeSearchCount is the billable OpenAI native search count, priced separately from Grok and Codex search.
+	NativeSearchCount int
 	// AudioUsage carries Voice billing units when present.
 	AudioUsage *AudioUsage
 
 	wsReplayInput                []json.RawMessage
-	wsReplayInputExists          bool
 	wsAccountFailoverReplayInput []json.RawMessage
 }
 

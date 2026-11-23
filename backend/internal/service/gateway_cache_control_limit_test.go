@@ -43,7 +43,7 @@ const cacheControlFourClientBreakpoints = `{"model":"claude-sonnet-4-5","max_tok
 	`]}`
 
 func cacheControlBreakpointCount(body []byte) int {
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, false)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, cacheControlLimitPlan{})
 	return len(messagePaths) + len(toolPaths) + len(systemPaths)
 }
 
@@ -82,7 +82,7 @@ func TestCacheControlLimitPlan_TrimIsLegacyEnforcement(t *testing.T) {
 		for _, mode := range []string{ClaudeCacheControlLimitTrim, "", "unknown"} {
 			for _, mayInject := range []bool{false, true} {
 				body := []byte(raw)
-				plan, planned, marked := planCacheControlLimit(body, mode, ClaudeAlignStrip, mayInject)
+				plan, planned, marked := planCacheControlLimit(body, mode, ClaudeAlignStrip, mayInject, false)
 				require.False(t, marked, name)
 				require.Equal(t, body, planned, name)
 				require.Equal(t, enforceCacheControlLimit([]byte(raw)), plan.apply(planned), "%s mode=%q inject=%v", name, mode, mayInject)
@@ -96,14 +96,14 @@ func TestCacheControlLimitPlan_TrimIsLegacyEnforcement(t *testing.T) {
 func TestCacheControlLimitPlan_PassthroughForwardsClientOverLimit(t *testing.T) {
 	body := []byte(cacheControlFiveClientBreakpoints)
 	for _, mayInject := range []bool{false, true} {
-		plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, mayInject)
+		plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, mayInject, false)
 		require.False(t, marked, "a client over the limit is never marked")
 		require.Equal(t, body, planned)
 		require.Equal(t, body, plan.apply(planned), "five client breakpoints must be forwarded unchanged (inject=%v)", mayInject)
 	}
 
 	// Injection after the decision does not change it: nothing is removed.
-	plan, planned, _ := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true)
+	plan, planned, _ := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true, false)
 	injected := applyToolsLastCacheBreakpoint(addMessageCacheBreakpoints(planned, false))
 	out := plan.apply(injected)
 	require.GreaterOrEqual(t, cacheControlBreakpointCount(out), 5)
@@ -120,7 +120,7 @@ func TestCacheControlLimitPlan_PassthroughKeepsThinkingCleanupAndTTLOrder(t *tes
 		`{"role":"user","content":[{"type":"text","text":"c","cache_control":{"type":"ephemeral","ttl":"1h"}}]}` +
 		`]}`)
 	for _, mayInject := range []bool{false, true} {
-		plan, planned, _ := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, mayInject)
+		plan, planned, _ := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, mayInject, false)
 		out := plan.apply(planned)
 		require.False(t, gjson.GetBytes(out, "messages.1.content.0.cache_control").Exists(), "thinking cache_control is still removed")
 		require.Equal(t, 5, cacheControlBreakpointCount(out), "the five valid client breakpoints stay")
@@ -135,7 +135,7 @@ func TestCacheControlLimitPlan_PassthroughKeepsThinkingCleanupAndTTLOrder(t *tes
 // breakpoints are removed. The historical trim removes a client breakpoint.
 func TestCacheControlLimitPlan_PassthroughTrimsOnlyInjectedBreakpoints(t *testing.T) {
 	client := []byte(cacheControlFourClientBreakpoints)
-	plan, planned, marked := planCacheControlLimit(client, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true)
+	plan, planned, marked := planCacheControlLimit(client, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	require.Equal(t, cacheControlBreakpointCount(client), bytes.Count(planned, cacheControlClientMarkerJSONKey))
 
@@ -154,7 +154,7 @@ func TestCacheControlLimitPlan_PassthroughTrimsOnlyInjectedBreakpoints(t *testin
 	require.Equal(t, []string{"[System Instructions]\nclient system instructions", "one", "two", "three"}, cacheControlBreakpointTexts(out),
 		"every client breakpoint survives, including the relocated system breakpoint")
 	require.False(t, gjson.GetBytes(out, "tools.0.cache_control").Exists(), "the injected tools[-1] breakpoint is removed")
-	_, _, _, systemPaths := collectCacheControlPaths(out, false)
+	_, _, _, systemPaths := collectCacheControlPaths(out, cacheControlLimitPlan{})
 	require.Empty(t, systemPaths, "the injected system anchor is removed")
 
 	legacy := enforceCacheControlLimit(mimic(client))
@@ -165,7 +165,7 @@ func TestCacheControlLimitPlan_PassthroughTrimsOnlyInjectedBreakpoints(t *testin
 
 func TestCacheControlLimitPlan_PassthroughWithoutOverflowOnlyRemovesMarkers(t *testing.T) {
 	client := []byte(`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"5m"}}],"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}}]}]}`)
-	plan, planned, marked := planCacheControlLimit(client, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true)
+	plan, planned, marked := planCacheControlLimit(client, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	require.Equal(t, client, plan.apply(planned), "markers are removed exactly, leaving the client body byte-identical")
 }
@@ -176,8 +176,8 @@ func TestCacheControlLimitPlan_DeferredToolBreakpointIsNotCounted(t *testing.T) 
 		`"messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"1","cache_control":{"type":"ephemeral"}},{"type":"text","text":"2","cache_control":{"type":"ephemeral"}},` +
 		`{"type":"text","text":"3","cache_control":{"type":"ephemeral"}},{"type":"text","text":"4","cache_control":{"type":"ephemeral"}}]}]}`)
-	require.Equal(t, 4, countLegacyCacheControlBreakpoints(body, false))
-	plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true)
+	require.Equal(t, 4, countLegacyCacheControlBreakpoints(body, cacheControlLimitPlan{}))
+	plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	require.Equal(t, cacheControlTrimInjectedOnly, plan.scope)
 
@@ -190,7 +190,7 @@ func TestCacheControlLimitPlan_DeferredToolBreakpointIsNotCounted(t *testing.T) 
 // A client-owned marker name survives the mark/unmark round trip verbatim.
 func TestCacheControlLimitPlan_ClientMarkerNameRoundTrip(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","` + cacheControlClientMarkerKey + `":true}}]}]}`)
-	plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true)
+	plan, planned, marked := planCacheControlLimit(body, ClaudeCacheControlLimitPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	require.NotEqual(t, cacheControlClientMarkerKey, plan.markerKey)
 	require.Equal(t, cacheControlTrimInjectedOnly, plan.scope)
@@ -606,7 +606,7 @@ func TestMimicPreservesClientCacheSlots(t *testing.T) {
 
 func TestCacheControlNullIsNeverMarked(t *testing.T) {
 	body := []byte(`{"messages":[{"content":[{"type":"text","cache_control":null},{"type":"text","cache_control":{"type":"ephemeral"}}]}]}`)
-	_, planned, marked := planCacheControlLimit(body, ClaudeAlignPassthrough, ClaudeAlignStrip, true)
+	_, planned, marked := planCacheControlLimit(body, ClaudeAlignPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	require.Equal(t, "null", gjson.GetBytes(planned, "messages.0.content.0.cache_control").Raw)
 }
@@ -619,8 +619,122 @@ func TestTrimInjectedRemovesClientMarkerDirectly(t *testing.T) {
 
 func TestCacheControlPlanCleansRelocatedMarker(t *testing.T) {
 	body := []byte(`{"tools":[{"cache_control":{"type":"ephemeral"}}]}`)
-	plan, planned, marked := planCacheControlLimit(body, ClaudeAlignPassthrough, ClaudeAlignStrip, true)
+	plan, planned, marked := planCacheControlLimit(body, ClaudeAlignPassthrough, ClaudeAlignStrip, true, false)
 	require.True(t, marked)
 	relocated := bytes.Replace(planned, []byte(`"tools"`), []byte(`"extension"`), 1)
 	require.Equal(t, `{"extension":[{"cache_control":{"type":"ephemeral"}}]}`, string(plan.apply(relocated)))
+}
+
+func TestForwardCountTokens_CacheControlLimitWireDuplicates(t *testing.T) {
+	const regular = `{"type":"text","text":"prefix","cache_control":{"type":"ephemeral"}}`
+	const duplicate = `{"type":"text","text":"tail","cache_control": null ,"cache_\u0063ontrol":null,"cache_control":true}`
+	const stripped = `{"type":"text","text":"tail" }` // Batch 18 retains the trailing space.
+	const top = `,"cache_control":{"type":"ephemeral"}`
+	base := `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"system":[` + regular + "," + regular + "," + regular
+	tools := `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}],"tools":[` +
+		`{"name":"first","input_schema":{"type":"object"},"cache_control":{}},` +
+		`{"name":"second","input_schema":{"type":"object"},"cache_control":{}},` +
+		`{"name":"third","input_schema":{"type":"object"},"cache_control":{}},`
+	const tool = `{"name":"last","input_schema":{"type":"object"}`
+	const duplicateMembers = `,"cache_control":null,"cache_control":{"type":"ephemeral"}`
+	fourTools := tools + tool + duplicateMembers + `}]}`
+	fourTools = strings.TrimSuffix(fourTools, "}") + top + "}"
+	for _, tc := range []struct{ name, body, want string }{
+		{"tools", fourTools, strings.Replace(fourTools, tool+duplicateMembers, tool, 1)},
+		{"system", base + "," + duplicate + "]" + top + "}", base + "," + stripped + "]" + top + "}"},
+		{"messages", strings.Replace(base, `"content":"hi"`, `"content":[`+duplicate+`]`, 1) + "]" + top + "}",
+			strings.Replace(base, `"content":"hi"`, `"content":[`+stripped+`]`, 1) + "]" + top + "}"},
+		{"escaped first", strings.Replace(fourTools, tool+duplicateMembers, tool+`,"cache\u005fcontrol":null,"cache_control":false`, 1),
+			strings.Replace(fourTools, tool+duplicateMembers, tool, 1)},
+		{"five wire blocks", base + "," + regular + "," + duplicate + "]" + top + "}", ""},
+		{"top absent", base + "," + duplicate + "]}", ""},
+		{"top null", base + "," + duplicate + `],"cache_control":null}`, ""},
+		{"end null", base + `,{"type":"text","text":"null","cache_control":null}]` + top + "}", ""},
+		{"all null", base + "," + strings.Replace(duplicate, ":true", ":null", 1) + "]" + top + "}", ""},
+		{"nested only", base + `,{"type":"text","cache_control":null,"text":"\"cache_control\":true","extra":{"cache_control":true},"another":[[{}]]}]` + top + "}", ""},
+		{"first real", base + "," + strings.Replace(duplicate, ": null ", ":1", 1) + "]" + top + "}", base + "," + strings.Replace(stripped, " }", "}", 1) + "]" + top + "}"},
+		{"deferred", strings.Replace(fourTools, tool, tool+`,"defer_loading":true`, 1), strings.Replace(fourTools, tool+duplicateMembers, tool+`,"defer_loading":true,"cache_control":{"type":"ephemeral"}`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := forwardThinkingTest(t, "/v1/messages/count_tokens", fallbackNativeAccountForTest(false), tc.body, ClaudeAlignStrip, ClaudeCacheControlLimitTrim, false)
+			want := tc.want
+			if want == "" {
+				want = tc.body
+			}
+			require.Equal(t, want, string(r.requireSent(t)))
+			require.Equal(t, `{"input_tokens":3}`, r.Body.String())
+		})
+	}
+
+	t.Run("passthrough", func(t *testing.T) {
+		r := forwardThinkingTest(t, "/v1/messages/count_tokens", fallbackNativeAccountForTest(true), fourTools, ClaudeAlignStrip, ClaudeCacheControlLimitTrim, false)
+		require.Equal(t, fourTools, string(r.requireSent(t)))
+	})
+	t.Run("client reject counts first value", func(t *testing.T) {
+		r := forwardThinkingTest(t, "/v1/messages/count_tokens", fallbackNativeAccountForTest(false), fourTools, ClaudeAlignStrip, ClaudeAlignReject, false)
+		require.Equal(t, fourTools, string(r.requireSent(t)))
+	})
+}
+
+func TestCacheControlLimit_WireDuplicatesUseMessageOrder(t *testing.T) {
+	const duplicate = `{"type":"text","text":"first","cache_control":null,"cache_control":{}}`
+	const regular = `{"type":"text","text":"other","cache_control":{}}`
+	const stripped = `{"type":"text","text":"first"}`
+	body := `{"model":"claude-sonnet-4-5","cache_control":{},"messages":[` +
+		thinkingTestMessage("user", duplicate, regular, regular, regular) + `]}`
+	for _, tc := range []struct {
+		path    string
+		account *Account
+	}{
+		{"/v1/messages", fallbackNativeAccountForTest(false)},
+		{"/v1/messages/count_tokens", cacheControlLimitMimicAccount()},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			r := forwardThinkingTest(t, tc.path, tc.account, body, ClaudeAlignStrip, ClaudeCacheControlLimitTrim, false)
+			sent := r.requireSent(t)
+			require.Equal(t, stripped, gjson.GetBytes(sent, "messages.0.content.0").Raw)
+			for i := 1; i <= 3; i++ {
+				require.Equal(t, regular, gjson.GetBytes(sent, fmt.Sprintf("messages.0.content.%d", i)).Raw)
+			}
+		})
+	}
+}
+
+func TestCacheControlLimitPlan_RedactedThinkingTextDoesNotAllocate(t *testing.T) {
+	plan := cacheControlLimitPlan{nativeManaged: true}
+	for _, tc := range []struct{ name, block string }{
+		{"text value", `{"type":"text","text":"redacted_thinking"}`},
+		{"quoted text", `{"type":"text","text":"a \"redacted_thinking\" block"}`},
+		{"escaped quote in key", `{"type":"text","custom\"type":"redacted_thinking"}`},
+		{"array element", `{"type":"text","extra":["type","redacted_thinking"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"cache_control":{"type":"ephemeral"},"messages":[{"content":[` + tc.block + `]}]}`)
+			var out []byte
+			allocs := testing.AllocsPerRun(100, func() { out = plan.apply(body) })
+			require.Equal(t, body, out)
+			require.Zero(t, allocs)
+		})
+	}
+}
+
+func TestCacheControlLimitPlan_StripsRedactedThinkingBelowLimit(t *testing.T) {
+	const thinking = `{"type":"thinking","thinking":"work"}`
+	const redacted = `{"type":"redacted_thinking","data":"opaque"}`
+	const breakpoint = `,"cache_control":{"type":"ephemeral"}`
+	const text = `{"type":"text","text":"redacted_thinking"}`
+	plan := cacheControlLimitPlan{nativeManaged: true}
+	for _, tc := range []struct{ name, blocks, want string }{
+		{"type first", `{"type" ` + "\t:\r\n " + `"redacted_thinking","data":"opaque"` + breakpoint + `}`,
+			`{"type" ` + "\t:\r\n " + `"redacted_thinking","data":"opaque"}`},
+		{"cache control first after text", text + `,{"cache_control":{"type":"ephemeral"},"type":"redacted_thinking","data":"opaque"}`, text + "," + redacted},
+		{"both thinking types", strings.TrimSuffix(thinking, "}") + breakpoint + `},` + strings.TrimSuffix(redacted, "}") + breakpoint + `}`, thinking + "," + redacted},
+		{"escaped type", `{"typ\u0065":"redacted_thinking","data":"opaque"` + breakpoint + `}`, `{"typ\u0065":"redacted_thinking","data":"opaque"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const prefix = `{"messages":[{"content":[`
+			const suffix = `]}]}`
+			require.Equal(t, prefix+tc.want+suffix, string(plan.apply([]byte(prefix+tc.blocks+suffix))))
+		})
+	}
 }

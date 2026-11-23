@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -543,6 +544,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		if handleErr == nil {
 			handleErr = errOpenAICyberPolicyForwarded
 		}
+		if result != nil && result.NativeSearchCount > 0 {
+			return &OpenAIForwardResult{NativeSearchCount: result.NativeSearchCount}, handleErr
+		}
 		return nil, handleErr
 	}
 
@@ -623,7 +627,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	finalResponse, usage, acc, prior, err := s.readOpenAICompatBufferedTerminalWithUsage(resp, c, account, "openai messages buffered", requestID, s.observeMessagesUsage)
 	defer func() {
 		if resultErr != nil && result == nil {
-			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, originalModel, billingModel, upstreamModel, startTime)
+			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, prior.nativeSearchCount, originalModel, billingModel, upstreamModel, startTime)
 		}
 	}()
 	if err != nil {
@@ -700,6 +704,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	delivered := writeOpenAIConvertedJSON(c, &usage, anthropicResp)
 
 	result = &OpenAIForwardResult{
+		NativeSearchCount:             prior.nativeSearchCount,
 		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
@@ -728,11 +733,12 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 // Preserve observed usage on failed buffered attempts. The handler decides
 // whether to retry and replaces this snapshot before the next attempt; only
 // the final attempt can reach failure settlement.
-func openAICompatBufferedPartialUsageResult(c *gin.Context, resp *http.Response, response *apicompat.ResponsesResponse, usage OpenAIUsage, originalModel, billingModel, upstreamModel string, startTime time.Time) *OpenAIForwardResult {
-	if !hasOpenAIPartialUsage(&usage) {
+func openAICompatBufferedPartialUsageResult(c *gin.Context, resp *http.Response, response *apicompat.ResponsesResponse, usage OpenAIUsage, nativeSearchCount int, originalModel, billingModel, upstreamModel string, startTime time.Time) *OpenAIForwardResult {
+	if !hasOpenAIPartialUsage(&usage) && nativeSearchCount == 0 {
 		return nil
 	}
 	result := &OpenAIForwardResult{
+		NativeSearchCount:             nativeSearchCount,
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
@@ -834,8 +840,9 @@ func openAICompatBufferedPriorModel(event *apicompat.ResponsesStreamEvent) (stri
 // 只有 Grok 折叠非终止 model：保留一条按既有上限截断的声明和冲突位。
 // 后面的不同声明只置冲突，不按事件数量或原文长度继续保存。
 type openAICompatPriorModelAudit struct {
-	enabled  bool
-	observer upstreamResponseModelObserver
+	nativeSearchCount int
+	enabled           bool
+	observer          upstreamResponseModelObserver
 }
 
 func newOpenAICompatPriorModelAudit(account *Account) openAICompatPriorModelAudit {
@@ -891,8 +898,14 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 	if resp == nil || resp.Body == nil {
 		return nil, usage, acc, openAICompatPriorModelAudit{}, errors.New("upstream response body is nil")
 	}
+	var searches openAINativeSearchCounter
+	countNative := openAINativeSearchPriced(c, account)
 	prior := newOpenAICompatPriorModelAudit(account)
-	recordPrior := func(event *apicompat.ResponsesStreamEvent) {
+	recordPrior := func(payload string, event *apicompat.ResponsesStreamEvent) {
+		if countNative {
+			searches.observeConverted(payload, event)
+			prior.nativeSearchCount = searches.count()
+		}
 		prior.record(event)
 	}
 
@@ -979,7 +992,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 					if err := json.Unmarshal([]byte(payload), &event); err == nil {
 						observeUsage([]byte(payload), &event, &usage)
 						acc.ProcessEvent(&event)
-						recordPrior(&event)
+						recordPrior(payload, &event)
 						if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 							if event.Usage != nil {
 								if response.Usage == nil {
@@ -1024,7 +1037,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 			observeUsage([]byte(payload), &event, &usage)
 
 			acc.ProcessEvent(&event)
-			recordPrior(&event)
+			recordPrior(payload, &event)
 
 			if response := openAICompatTerminalResponse(&event, []byte(payload)); isOpenAICompatResponsesTerminalEvent(event.Type) && response != nil {
 				if event.Usage != nil {
@@ -1072,10 +1085,13 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	firstChunk := true
 	clientDisconnected := false
 	clientOutputStarted := false
+	sawUpstreamLine := false
 	var streamFailoverErr error
 	var streamNonFailoverErr error
 	terminalEventType := ""
 	searchCount := 0
+	var nativeSearch openAINativeSearchCounter
+	countNative := openAINativeSearchPriced(c, account)
 	streamSearchSeen := make(map[string]struct{})
 	countSearch := account != nil && account.IsGrok()
 
@@ -1119,6 +1135,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			FirstTokenMs:                  firstTokenMs,
 			ClientDisconnect:              clientDisconnected,
 		}
+		out.NativeSearchCount = nativeSearch.count()
 		if searchCount > 0 {
 			out.SearchCount = searchCount
 		}
@@ -1181,6 +1198,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 			return false
+		}
+		if countNative {
+			nativeSearch.observeConverted(payload, &event)
 		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
 		s.observeMessagesUsage([]byte(payload), &event, &usage)
@@ -1335,7 +1355,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
-		writeOpenAIMessagesStreamReadError(c, err, clientDisconnected)
+		writeOpenAIMessagesStreamReadError(c, err, clientDisconnected, sawUpstreamLine)
 		return resultWithUsage(), fmt.Errorf("stream usage incomplete: %w", err)
 	}
 	missingTerminalErr := func() (*OpenAIForwardResult, error) {
@@ -1368,6 +1388,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	if streamInterval <= 0 && keepaliveInterval <= 0 {
 		var parser openAICompatSSEFrameParser
 		for scanner.Scan() {
+			sawUpstreamLine = true
 			line := scanner.Text()
 			if isOpenAICompatDoneSentinelLine(line) {
 				return missingTerminalErr()
@@ -1463,6 +1484,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			if ev.err != nil {
 				return finishReadError(ev.err)
 			}
+			sawUpstreamLine = true
 			lastDataAt = time.Now()
 			line := ev.line
 			if isOpenAICompatDoneSentinelLine(line) {
@@ -1524,12 +1546,24 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	}
 }
 
+const OpsOpenAIMessagesPreWriteReadErrorKey = "ops_openai_messages_pre_write_read_error"
+
 // Both OpenAI upstream protocols use the native Messages read-error frame once
 // SSE has started. The handler owns unwritten responses and tracked keepalives.
-func writeOpenAIMessagesStreamReadError(c *gin.Context, err error, clientDisconnected bool) {
+func writeOpenAIMessagesStreamReadError(c *gin.Context, err error, clientDisconnected, sawUpstreamLine bool) {
 	if clientDisconnected || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, bufio.ErrTooLong) || !IsAnthropicMessagesRequest(c) || c.Request.Context().Err() != nil ||
-		!gatewaySSEStarted(c) || OpenAICompactKeepaliveAdjustedWrittenSize(c) < 0 {
+		errors.Is(err, bufio.ErrTooLong) || !IsAnthropicMessagesRequest(c) || c.Request.Context().Err() != nil {
+		return
+	}
+	if !c.Writer.Written() {
+		var timeout net.Error
+		if sawUpstreamLine || err == nil || errors.Is(err, io.EOF) || (errors.As(err, &timeout) && timeout.Timeout()) {
+			return
+		}
+		c.Set(OpsOpenAIMessagesPreWriteReadErrorKey, true)
+		return
+	}
+	if !gatewaySSEStarted(c) || OpenAICompactKeepaliveAdjustedWrittenSize(c) < 0 {
 		return
 	}
 
@@ -1668,6 +1702,7 @@ func resolveMessagesImageCount(total int, primary, sibling messagesImageCount, p
 }
 
 type messagesUsageReport struct {
+	node                                   gjson.Result
 	usage                                  OpenAIUsage
 	hasInput, hasOutput, hasRead, hasWrite bool
 	imageInput, imageOutput                messagesImageCount
@@ -1679,6 +1714,7 @@ func readMessagesUsageReport(payload []byte, prefix string, typed *apicompat.Res
 	var node gjson.Result
 	if typed != nil {
 		node = gjson.GetBytes(payload, prefix+"usage")
+		r.node = node
 		r.usage, _ = openAIUsageFromGJSON(node)
 		// Every source, including sidecars and progressive frames, uses the
 		// released Responses converter's precedence before certifying a TTL split.
@@ -1721,6 +1757,11 @@ func (r messagesUsageReport) hasDirectImageOutput() bool {
 
 func (r messagesUsageReport) resolve(sibling messagesUsageReport, previous OpenAIUsage, terminal bool) OpenAIUsage {
 	current := r.usage
+	if !r.hasDirectImageOutput() && preservesEarlierOpenAIUsage(&previous, &current) && reportsOnlyZeroOpenAITokens(r.node) {
+		previous.RetainedAfterZero = true
+		previous.ReportedOutputFloor = max(previous.ReportedOutputFloor, sibling.usage.ReportedOutputFloor)
+		return previous
+	}
 	keepPrevious := !r.hasTotals()
 	if keepPrevious {
 		// A detail-only report cannot replace the observed totals. Resolve its

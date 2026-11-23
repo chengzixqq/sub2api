@@ -275,7 +275,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// cache_control 4 块上限的处理方式在任何注入之前决定：passthrough 以客户端
 	// 原始断点数为准。只有 mimic 分支会注入断点（system blocks 锚点、tools[-1]、
 	// 可选的 messages 断点改写），这时先给客户端断点打标，enforce 时只删未打标的。
-	cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, shouldMimicClaudeCode)
+	nativeManaged := IsAnthropicMessagesRequest(c) && isNativeCacheControlAccount(account)
+	cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, shouldMimicClaudeCode, nativeManaged)
 	if marked {
 		if err := replaceBody(plannedBody); err != nil {
 			return nil, err

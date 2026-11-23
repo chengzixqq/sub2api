@@ -422,7 +422,7 @@ func runOpenAIDeliveredImagesOAuthStream(sse string) *gin.Context {
 	}
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
 	_, _, _, _, _ = svc.handleOpenAIImagesOAuthStreamingResponse(
-		resp, c, time.Now(), "b64_json", "image_generation", "gpt-image-1",
+		resp, c, time.Now(), "b64_json", "image_generation", "gpt-image-1", new(bool),
 	)
 	return c
 }
@@ -531,6 +531,42 @@ func TestScanCCStreamPreservesLastPositiveUsage(t *testing.T) {
 			require.True(t, state.SawDone)
 			require.Equal(t, tc.wantInput, state.Usage.InputTokens)
 			require.Equal(t, tc.wantOutput, state.Usage.OutputTokens)
+		})
+	}
+}
+
+func TestWSBridgeSuccessfulContentReceipt(t *testing.T) {
+	const delta = `{"type":"response.output_text.delta","delta":"hello"}`
+	const item = `{"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"hello"}]}}`
+	const final = `{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":0,"output_tokens":0}}}`
+	const empty = `{"type":"response.completed","response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}`
+	for _, tc := range []struct {
+		name      string
+		frames    []string
+		fail      int
+		delivered bool
+	}{
+		{"terminal", []string{final}, 0, true}, {"delta", []string{delta, empty}, 0, true}, {"done", []string{item, empty}, 0, true},
+		{"failed_terminal_write", []string{final}, 1, false}, {"previous_write", []string{delta, empty}, 2, true},
+		{"empty", []string{`{"type":"response.output_text.delta","delta":""}`, empty}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sse := "data: " + strings.Join(tc.frames, "\n\ndata: ") + "\n\n"
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sse))}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("GET", "/v1/responses", nil)
+			payload := []byte(`{"type":"response.create","model":"gpt-5","input":"hi"}`)
+			writes := 0
+			res, err := svc.proxyOpenAIWSHTTPBridgeTurn(context.Background(), c, &Account{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, "sk-test", payload, len(payload), "gpt-5", "", "", "", "", 1, func([]byte) error {
+				writes++
+				if writes == tc.fail {
+					return io.EOF
+				}
+				return nil
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.delivered, res.ClientContentDelivered)
 		})
 	}
 }

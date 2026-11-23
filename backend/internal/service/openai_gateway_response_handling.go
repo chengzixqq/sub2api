@@ -364,6 +364,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	streamImageOutputs := make([]json.RawMessage, 0, 1)
 	streamSeenImages := make(map[string]struct{})
 	searchCounter := 0
+	countNative := openAINativeSearchPriced(c, account)
+	var nativeSearch openAINativeSearchCounter
 	// Dedup search tool calls across SSE events (item.done + response.completed
 	// both list the same call_id — counting both would ~2× the surcharge).
 	streamSearchSeen := make(map[string]struct{})
@@ -675,7 +677,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = "data: " + data
 			}
 			imageCounter.AddSSEData(dataBytes)
-			searchCounter = AccumulateSearchCount(searchCounter, countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen), "responses_stream")
+			if countNative {
+				nativeSearch.observeRaw(dataBytes, eventType)
+				searchCounter = nativeSearch.count()
+			} else {
+				searchCounter = AccumulateSearchCount(searchCounter, countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen), "responses_stream")
+			}
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
 			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
@@ -1331,6 +1338,18 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 }
 
 func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType string, usage *OpenAIUsage) {
+	observeOpenAIStreamUsage(data, eventType, usage, ignoreOpenAIUsageConflict)
+}
+
+type openAIUsageConflictPolicy uint8
+
+const (
+	ignoreOpenAIUsageConflict     openAIUsageConflictPolicy = iota
+	trackEmptyOpenAIUsageSnapshot                           // Buffered Responses treat any usage object as a snapshot.
+	trackExplicitOpenAIUsageZero                            // OAuth image streams need a recognized zero counter.
+)
+
+func observeOpenAIStreamUsage(data []byte, eventType string, usage *OpenAIUsage, policy openAIUsageConflictPolicy) {
 	if usage == nil || len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
 		return
 	}
@@ -1340,11 +1359,25 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 	if !bytes.Contains(data, []byte(`"usage"`)) {
 		return
 	}
-	parsedUsage, ok := extractOpenAIUsageFromJSONBytes(data)
+	var previous *OpenAIUsage
+	if policy == trackExplicitOpenAIUsageZero {
+		previous = usage
+	}
+	parsedUsage, ok := extractOpenAIUsageSnapshot(data, previous)
 	if !ok {
 		return
 	}
-	if openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(data, eventType)) {
+	applyOpenAIStreamUsage(usage, parsedUsage, openAIStreamEventTypeIsTerminal(effectiveOpenAISSEEventType(data, eventType)), policy != ignoreOpenAIUsageConflict)
+}
+
+func applyOpenAIStreamUsage(usage *OpenAIUsage, parsedUsage OpenAIUsage, terminal, trackConflict bool) {
+	if trackConflict {
+		if retainOpenAIUsageAfterZero(usage, &parsedUsage) {
+			return
+		}
+		usage.RetainedAfterZero = false
+	}
+	if terminal {
 		if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
 			return
 		}
@@ -1354,7 +1387,26 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 	mergeOpenAIUsageNonZero(usage, parsedUsage)
 }
 
+// A later empty report cannot invalidate metering already observed for this turn.
+func preservesEarlierOpenAIUsage(previous, current *OpenAIUsage) bool {
+	return !openAIUsageHasTokens(current) && current.ReportedOutputFloor == 0 &&
+		(openAIUsageHasTokens(previous) || previous.ReportedOutputFloor > 0)
+}
+
+// Record the conflict on the retained snapshot, without projecting estimates
+// into the client protocol. A later authoritative snapshot replaces the flag.
+func retainOpenAIUsageAfterZero(previous, current *OpenAIUsage) bool {
+	if !preservesEarlierOpenAIUsage(previous, current) {
+		return false
+	}
+	previous.RetainedAfterZero = true
+	return true
+}
+
 func replaceOpenAIUsageSnapshot(dst *OpenAIUsage, current OpenAIUsage) {
+	if preservesEarlierOpenAIUsage(dst, &current) {
+		return
+	}
 	current.ReportedOutputFloor = max(current.ReportedOutputFloor, dst.ReportedOutputFloor)
 	inheritOpenAICacheCreationTTL(&current, *dst)
 	*dst = current
@@ -1480,6 +1532,10 @@ func logOpenAISuccessMissingUsage(ctx context.Context, c *gin.Context, account *
 }
 
 func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
+	return extractOpenAIUsageSnapshot(body, nil)
+}
+
+func extractOpenAIUsageSnapshot(body []byte, previous *OpenAIUsage) (OpenAIUsage, bool) {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
@@ -1497,8 +1553,12 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		{usagePath: "data.response.usage", imageUsagePath: "data.response.tool_usage.image_gen"},
 	}
 	for _, candidate := range candidates {
-		if usage, ok := openAIUsageFromGJSON(gjson.GetBytes(body, candidate.usagePath)); ok {
+		node := gjson.GetBytes(body, candidate.usagePath)
+		if usage, ok := openAIUsageFromGJSON(node); ok {
 			mergeHostedImageGenToolUsage(gjson.GetBytes(body, candidate.imageUsagePath), &usage)
+			if previous != nil && preservesEarlierOpenAIUsage(previous, &usage) && !reportsOnlyZeroOpenAITokens(node) {
+				continue
+			}
 			return usage, true
 		}
 	}
@@ -1707,6 +1767,35 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	return usage, true
 }
 
+// Only inspect raw fields when an otherwise empty snapshot might supersede
+// positive metering. Missing and null counters carry no evidence of zero.
+func reportsOnlyZeroOpenAITokens(node gjson.Result) bool {
+	found := false
+	for _, path := range []string{
+		"input_tokens", "prompt_tokens", "output_tokens", "completion_tokens", "total_tokens",
+		"input_tokens_details.cached_tokens", "prompt_tokens_details.cached_tokens",
+		"cache_read_input_tokens", "cache_read_tokens", "cached_tokens", "prompt_cache_hit_tokens",
+		"input_tokens_details.cache_write_tokens", "prompt_tokens_details.cache_write_tokens",
+		"input_tokens_details.cache_creation_tokens", "prompt_tokens_details.cache_creation_tokens",
+		"cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens", "cache_creation_tokens",
+		"input_tokens_details.cache_write_tokens_details.ttl_30m_tokens", "prompt_tokens_details.cache_write_tokens_details.ttl_30m_tokens",
+		"input_tokens_details.cache_write_tokens_details.ttl_12h_tokens", "prompt_tokens_details.cache_write_tokens_details.ttl_12h_tokens",
+		"input_tokens_details.image_tokens", "prompt_tokens_details.image_tokens",
+		"input_tokens_details.cached_tokens_details.image_tokens", "prompt_tokens_details.cached_tokens_details.image_tokens",
+		"output_tokens_details.image_tokens", "completion_tokens_details.image_tokens",
+		"output_tokens_details.reasoning_tokens", "completion_tokens_details.reasoning_tokens",
+	} {
+		field := node.Get(path)
+		if field.Type == gjson.Number {
+			if field.Num != 0 {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
 	for _, nested := range []gjson.Result{
 		value.Get("input_tokens_details.cached_tokens"),
@@ -1764,8 +1853,11 @@ func openAICacheCreationTTLTokensFromUsage(value gjson.Result, aggregate int) (i
 }
 
 func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
-	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	body, partialSearchCount, err := s.readBufferedOpenAIResponse(resp.Body, c, account)
 	if err != nil {
+		if partialSearchCount > 0 {
+			return &openaiNonStreamingResult{searchCount: partialSearchCount}, err
+		}
 		return nil, err
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
@@ -1812,11 +1904,18 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		if bodyLooksLikeSSE {
 			return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 		}
-		return nil, fmt.Errorf("parse response: invalid json response")
+		if !completedResponsesWithoutUsage(body) {
+			return nil, fmt.Errorf("parse response: invalid json response")
+		}
 	}
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
+	countNative := openAINativeSearchPriced(c, account)
+	searchCount := 0
+	if countNative {
+		searchCount = countOpenAINativeSearchJSON(body)
+	}
 	// Replace model in response if needed
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
@@ -1853,6 +1952,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
+	if !countNative {
+		searchCount = countGrokNativeSearchCallsFromJSONBytes(body)
+	}
 	return &openaiNonStreamingResult{
 		delivered:        delivered,
 		OpenAIUsage:      usage,
@@ -1860,13 +1962,41 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
 		imageCount:       countOpenAIResponseImageOutputsFromJSONBytes(body),
 		imageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
-		searchCount:      countGrokNativeSearchCallsFromJSONBytes(body),
+		searchCount:      searchCount,
 	}, nil
 }
 
 func isEventStreamResponse(header http.Header) bool {
 	contentType := strings.ToLower(header.Get("Content-Type"))
 	return strings.Contains(contentType, "text/event-stream")
+}
+
+// Only a complete Responses result can use the successful delivery path
+// without usage. Keep malformed counters and upstream errors on the error path.
+func completedResponsesWithoutUsage(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.Parse(openAIWSPayloadStringView(body))
+	if !root.IsObject() || !root.Get("output").IsArray() || root.Get("usage").Exists() || root.Get("error").Type != gjson.Null {
+		return false
+	}
+	switch root.Get("type").Str {
+	case "", "response", "response.done", "response.completed":
+	default:
+		return false
+	}
+	if root.Get("incomplete_details").Type != gjson.Null {
+		return false
+	}
+	if root.Get("success").Type == gjson.False {
+		return false
+	}
+	object, status := root.Get("object"), root.Get("status")
+	if object.Exists() && object.Str != "response" || status.Exists() && status.Str != "completed" {
+		return false
+	}
+	return object.Str == "response" || status.Str == "completed"
 }
 
 // bodyHasSSEFraming reports whether body contains genuine SSE framing by
@@ -1885,8 +2015,15 @@ func bodyHasSSEFraming(body []byte) bool {
 	return false
 }
 
-func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (*openaiNonStreamingResult, error) {
+func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (out *openaiNonStreamingResult, outErr error) {
 	bodyText := string(body)
+	defer func() {
+		if outErr != nil && out == nil && openAINativeSearchPriced(c, account) {
+			if count := countOpenAINativeSearchSSE(bodyText); count > 0 {
+				out = &openaiNonStreamingResult{searchCount: count}
+			}
+		}
+	}()
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -1906,9 +2043,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		finalResponse, ok = extractOpenAINonCompletedTerminalResponse(terminalType, terminalPayload)
 	}
 
+	countNative := openAINativeSearchPriced(c, account)
+	searchCount := 0
+	if countNative {
+		searchCount = countOpenAINativeSearchSSE(bodyText)
+	}
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed && !retainOpenAIUsageAfterZero(usage, &parsedUsage) {
 			replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		}
 		// When the terminal event has an empty output array, reconstruct
@@ -1970,6 +2112,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
+	if !countNative {
+		searchCount = countGrokNativeSearchCallsFromSSEBody(bodyText)
+	}
 	return &openaiNonStreamingResult{
 		delivered:        delivered,
 		OpenAIUsage:      usage,
@@ -1977,7 +2122,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
 		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
 		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
-		searchCount:      countGrokNativeSearchCallsFromSSEBody(bodyText),
+		searchCount:      searchCount,
 	}, nil
 }
 
@@ -2191,6 +2336,12 @@ func extractCodexFinalResponse(body string) ([]byte, bool) {
 }
 
 func normalizeCompletedImageGenerationStatus(data []byte) ([]byte, bool) {
+	return normalizeCompletedImageEvent(data, nil)
+}
+
+// A WS writer can reuse validation and the completed item being inspected.
+// The caller commits the candidate only after the frame write succeeds.
+func normalizeCompletedImageEvent(data []byte, content *bool) ([]byte, bool) {
 	if len(data) == 0 || !gjson.ValidBytes(data) {
 		return data, false
 	}
@@ -2209,9 +2360,16 @@ func normalizeCompletedImageGenerationStatus(data []byte) ([]byte, bool) {
 	}
 
 	eventType := strings.TrimSpace(gjson.GetBytes(data, "type").String())
+	if content != nil && eventType != "response.output_item.done" {
+		*content = openAIWSValidatedFrameHasContent(eventType, openAIWSPayloadStringView(data))
+	}
 	switch eventType {
 	case "response.output_item.done":
-		if !shouldNormalize(gjson.GetBytes(data, "item")) {
+		item := gjson.GetBytes(data, "item")
+		if content != nil {
+			*content = openAIOutputItemHasContent(rawJSONView(item.Raw))
+		}
+		if !shouldNormalize(item) {
 			return data, false
 		}
 		updated, err := sjson.SetBytes(data, "item.status", "completed")
@@ -2585,7 +2743,7 @@ func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct
 func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {
 	usage := &OpenAIUsage{}
 	forEachOpenAISSEFrame(body, func(eventType string, data []byte) {
-		s.parseSSEUsageBytesWithType(data, eventType, usage)
+		observeOpenAIStreamUsage(data, eventType, usage, trackEmptyOpenAIUsageSnapshot)
 	})
 	return usage
 }

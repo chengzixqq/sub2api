@@ -74,7 +74,7 @@ func TestBatchFiveNullInjectionIsReclaimable(t *testing.T) {
 							blocks--
 						}
 						body, path := batchFiveSetTarget(t, batchFiveCacheBody(top, blocks), target, raw)
-						plan, planned, _ := planCacheControlLimit(body, mode, "strip", true)
+						plan, planned, _ := planCacheControlLimit(body, mode, "strip", true, false)
 						if mode != "trim" {
 							require.Equal(t, cacheControlTrimInjectedOnly, plan.scope)
 						}

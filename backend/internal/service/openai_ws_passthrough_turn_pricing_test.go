@@ -90,7 +90,7 @@ func TestPassthroughIngressFollowUpCallsBeforeTurnAfterBeforeRequest(t *testing.
 		},
 	}
 
-	server, _ := startPassthroughHookRecordingServer(
+	server, ended := startPassthroughHookRecordingServer(
 		t,
 		controlCtx,
 		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
@@ -116,6 +116,14 @@ func TestPassthroughIngressFollowUpCallsBeforeTurnAfterBeforeRequest(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
 
+	// A frame can arrive at the client before the server completes its write
+	// receipt. Join the relay before counting the final settlement hook.
+	require.NoError(t, clientConn.CloseNow())
+	select {
+	case <-ended:
+	case <-time.After(3 * time.Second):
+		t.Fatal("relay did not finish after both completed turns")
+	}
 	hooksMu.Lock()
 	gotCallbacks := append([]string(nil), callbacks...)
 	gotAfter := afterTurnCalls

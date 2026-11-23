@@ -1168,6 +1168,8 @@ export default {
       explicitPricing: {
         title: 'Grok Search & Voice Pricing',
         description: 'Optional per-group prices for web_search (per 1k calls) and Voice realtime / TTS / STT (USD). Leave empty if unused.',
+        nativeSearchPrice: 'Native web search per 1,000 calls (USD)',
+        nativeSearchHint: 'Leave blank or set to 0 for free native web search. Charges use the billable search count reported by the upstream. If omitted, completed search actions count. Opening a page and finding text on a page are free.',
         searchPricePer1k: 'Search price per 1k calls (USD)',
         pricePlaceholder: 'optional'
       },

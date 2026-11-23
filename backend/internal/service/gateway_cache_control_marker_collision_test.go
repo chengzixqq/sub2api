@@ -16,7 +16,7 @@ func TestClientMarkerCollisionPreservesBreakpoints(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/mimic=%t", mode, mimic), func(t *testing.T) {
 				body := batchFiveCacheBody("missing", 3)
 				body = []byte(strings.Replace(string(body), `"cache_control":{`, `"cache_control":{"__sub2api_client_cache_control__":"client",`, 1))
-				plan, _, _ := planCacheControlLimit(body, mode, "strip", mimic)
+				plan, _, _ := planCacheControlLimit(body, mode, "strip", mimic, false)
 				if mimic {
 					require.Equal(t, cacheControlTrimInjectedOnly, plan.scope)
 				}

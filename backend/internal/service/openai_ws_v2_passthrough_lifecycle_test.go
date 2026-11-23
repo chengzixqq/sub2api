@@ -904,3 +904,116 @@ func TestPassthroughLifecycle_SecondTurnTimeoutIsNotFailoverSafe(t *testing.T) {
 		t.Fatal("second turn first semantic output was left unbounded")
 	}
 }
+
+func TestPassthroughTurnSnapshotPrecedesNextCreate(t *testing.T) {
+	up := newStagedPassthroughConn()
+	svc := newPassthroughLifecycleService(passthroughLifecycleConfig(), up)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	settled := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	results := make(chan *OpenAIForwardResult, 2)
+	nextBody := make(chan string, 1)
+	server, _ := startPassthroughLifecycleServerWithHooks(t, t.Context(), svc, passthroughLifecycleAccount(), func(*gin.Context) *OpenAIWSIngressHooks {
+		return &OpenAIWSIngressHooks{
+			BeforeRequest: func(turn int, payload []byte, model string) error {
+				if turn == 2 {
+					select {
+					case <-settled:
+					default:
+						return errors.New("second request replaced unsettled first turn")
+					}
+					nextBody <- gjson.GetBytes(payload, "input").String()
+				}
+				return nil
+			},
+			AfterTurn: func(turn int, result *OpenAIForwardResult, err error) {
+				if err != nil {
+					return
+				}
+				if turn == 1 {
+					close(entered)
+					<-release
+					close(settled)
+				}
+				results <- result
+			},
+		}
+	})
+	defer server.Close()
+	client := dialPassthroughLifecycleClientWithPayload(t, server, `{"type":"response.create","model":"gpt-5.1","input":"first"}`)
+	defer func() { unblock(); _ = client.CloseNow(); _ = up.Close() }()
+	requirePassthroughUpstreamWrite(t, up, time.Second)
+	up.Send(`{"type":"response.completed","response":{"id":"r_first","output":[{"type":"message","content":[{"type":"output_text","text":"first answer"}]}],"usage":{"input_tokens":0,"output_tokens":0}}}`)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("missing first completion")
+	}
+	_, err := readPassthroughLifecycleFrame(t, client, time.Second)
+	require.NoError(t, err, "terminal must reach client before accounting can block")
+	require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.2","input":"second distinct prompt"}`)))
+	unblock()
+	requirePassthroughUpstreamWrite(t, up, time.Second)
+	require.Equal(t, "second distinct prompt", <-nextBody)
+	first := <-results
+	require.Equal(t, "gpt-5.1", first.Model)
+	require.Equal(t, "r_first", first.RequestID)
+	require.True(t, first.ClientContentDelivered)
+	up.Send(`{"type":"response.completed","response":{"id":"r_second","output":[],"usage":{"input_tokens":2,"output_tokens":1}}}`)
+	_, err = readPassthroughLifecycleFrame(t, client, time.Second)
+	require.NoError(t, err)
+	second := <-results
+	require.Equal(t, "gpt-5.2", second.Model)
+	require.Equal(t, "r_second", second.RequestID)
+	require.False(t, second.ClientContentDelivered)
+	require.Equal(t, 2, second.Usage.InputTokens)
+}
+
+func TestPassthroughImageCountBelongsToAcceptedTurn(t *testing.T) {
+	up := newStagedPassthroughConn()
+	svc := newPassthroughLifecycleService(passthroughLifecycleConfig(), up)
+	results := make(chan *OpenAIForwardResult, 2)
+	server, _ := startPassthroughLifecycleServerWithHooks(t, t.Context(), svc, passthroughLifecycleAccount(), func(*gin.Context) *OpenAIWSIngressHooks {
+		return &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
+			if err == nil {
+				results <- result
+			}
+		}}
+	})
+	defer server.Close()
+	const request = `{"type":"response.create","model":"gpt-5.4","input":"hi"}`
+	client := dialPassthroughLifecycleClientWithPayload(t, server, request)
+	defer func() { _ = client.CloseNow() }()
+	defer func() { _ = up.Close() }()
+	requirePassthroughUpstreamWrite(t, up, time.Second)
+	const item = `{"type":"image_generation_call","id":"im1","result":"ok","size":"1024x1024"}`
+	send := func(frame string) {
+		up.Send(frame)
+		_, err := readPassthroughLifecycleFrame(t, client, time.Second)
+		require.NoError(t, err)
+	}
+	send(`{"type":"response.output_item.done","item":` + item + `}`)
+	terminal := `{"type":"response.completed","response":{"id":"r1","output":[` + item + `],"usage":{"input_tokens":0,"output_tokens":0}}}`
+	send(terminal)
+	select {
+	case r := <-results:
+		require.Equal(t, 1, r.ImageCount)
+		require.Equal(t, []string{"1024x1024"}, r.ImageOutputSizes)
+	case <-time.After(time.Second):
+		t.Fatal("first turn did not settle")
+	}
+	require.NoError(t, client.Write(t.Context(), coderws.MessageText, []byte(request)))
+	requirePassthroughUpstreamWrite(t, up, time.Second)
+	send(terminal)
+	send(`{"type":"response.output_item.done","response_id":"r1","item":` + item + `}`)
+	send(`{"type":"response.completed","response":{"id":"r2","output":[],"usage":{"input_tokens":2,"output_tokens":1}}}`)
+	select {
+	case r := <-results:
+		require.Equal(t, "r2", r.RequestID)
+		require.Zero(t, r.ImageCount)
+	case <-time.After(time.Second):
+		t.Fatal("second turn did not settle")
+	}
+}

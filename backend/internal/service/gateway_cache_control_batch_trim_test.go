@@ -20,7 +20,7 @@ func TestBatchTrimMatchesSequentialDeletes(t *testing.T) {
 	 { "cache_control":{} }, { "type":"text","cache_control":{} }
 	]}], "system":[{"type":"text", "cache_control":{}}],
 	"tools":[{"name":"a","cache_control":true},{"cache_control":{},"name":"b"}] }`)
-	_, messages, tools, system := collectCacheControlPaths(body, false)
+	_, messages, tools, system := collectCacheControlPaths(body, cacheControlLimitPlan{})
 	for remove := 1; remove <= len(messages)+len(tools)+len(system); remove++ {
 		want := body
 		priority := []string{tools[1], tools[0]}

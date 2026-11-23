@@ -379,9 +379,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
-				if u := extractCCStreamUsage(payload); u != nil {
+				if u := extractCCStreamUsage(payload, &usage); u != nil {
 					// Some finish frames carry an empty usage after the real snapshot.
-					if openAIUsageHasTokens(u) || u.ReportedOutputFloor > 0 || !openAIUsageHasTokens(&usage) {
+					if !retainOpenAIUsageAfterZero(&usage, u) {
 						u.ReportedOutputFloor = max(u.ReportedOutputFloor, usage.ReportedOutputFloor)
 						usage = *u
 					}
@@ -539,13 +539,13 @@ func isOpenAIChatUsageOnlyStreamChunk(payload string) bool {
 // extractCCStreamUsage 从单个 CC 流式 chunk 的 payload 中提取 usage 字段。
 // CC 协议中 usage 仅出现在末尾 chunk（且仅当 include_usage 生效时），
 // 但上游可能在多个 chunk 中重复——总是用最新值。
-func extractCCStreamUsage(payload string) *OpenAIUsage {
+func extractCCStreamUsage(payload string, previous *OpenAIUsage) *OpenAIUsage {
 	usageResult := gjson.Get(payload, "usage")
 	if !usageResult.Exists() || !usageResult.IsObject() {
 		return nil
 	}
 	u, ok := openAIUsageFromGJSON(usageResult)
-	if !ok {
+	if !ok || (preservesEarlierOpenAIUsage(previous, &u) && !reportsOnlyZeroOpenAITokens(usageResult)) {
 		return nil
 	}
 	return &u

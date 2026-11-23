@@ -319,7 +319,7 @@ func TestMessagesTerminalUsageEvidence(t *testing.T) {
 	}{
 		{"matching sibling split", "", rich, `{"input_tokens":40,"output_tokens":2,"cache_creation_input_tokens":10,"cache_read_input_tokens":2}`, 40, 2, 10, 4, 6, 2},
 		{"top only", "", rich, "", 100, 4, 10, 4, 6, 2},
-		{"explicit zero wins", rich, rich, `{"input_tokens":0,"output_tokens":0}`, 0, 0, 0, 0, 0, 0},
+		{"selected zero keeps progress", rich, rich, `{"input_tokens":0,"output_tokens":0}`, 100, 4, 10, 4, 6, 2},
 		{"missing terminal usage", rich, "", "", 100, 4, 10, 4, 6, 2},
 	} {
 		for _, stream := range []bool{false, true} {
@@ -422,8 +422,8 @@ func TestMessagesTerminalUninformativeUsage(t *testing.T) {
 		{"uninformative nested keeps progress", progress, `{"input_tokens":null,"total_tokens":null,"input_tokens_details":{},"output_tokens_details":null,"model":"x"}`, "", observed},
 		{"empty nested uses reported top", progress, `{}`, top, topOnly},
 		{"uninformative nested uses reported top", "", `{"input_tokens_details":{"cached_tokens_details":{}}}`, top, topOnly},
-		{"explicit nested zero beats progress", progress, `{"input_tokens":0,"output_tokens":0}`, "", UsageTokens{}},
-		{"explicit top zero beats progress when nested is empty", progress, `{}`, `{"input_tokens":0,"output_tokens":0}`, UsageTokens{}},
+		{"explicit nested zero keeps progress", progress, `{"input_tokens":0,"output_tokens":0}`, "", observed},
+		{"explicit top zero keeps progress when nested is empty", progress, `{}`, `{"input_tokens":0,"output_tokens":0}`, observed},
 	} {
 		for _, mode := range messagesTerminalUsageModes {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
@@ -552,5 +552,51 @@ func TestMessagesTerminalMeteringEvidence(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBufferedResponsesFinalZeroKeepsProgress(t *testing.T) {
+	testBufferedResponsesFinalUsageConflict(t, "", `{"input_tokens":0,"output_tokens":0}`)
+}
+
+func TestBufferedResponsesFinalEmptyUsageAfterPositiveEnvelope(t *testing.T) {
+	// The frame reader sees the positive envelope first. The buffered response
+	// reader must independently recognize the nested empty usage snapshot.
+	testBufferedResponsesFinalUsageConflict(t, `"usage":{"input_tokens":5,"output_tokens":3},`, `{}`)
+}
+
+func testBufferedResponsesFinalUsageConflict(t *testing.T, envelopeUsage, finalUsage string) {
+	t.Helper()
+	const progress = "data: " + `{"type":"response.in_progress","response":{"usage":{"input_tokens":5,"output_tokens":3}}}` + "\n\n"
+	final := `{"id":"resp_final","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],"usage":` + finalUsage + `}`
+	body := []byte(progress + "data: " + `{"type":"response.completed",` + envelopeUsage + `"response":` + final + "}\n\n")
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+	for _, route := range []string{"SSE", "passthrough", "WS"} {
+		t.Run(route, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			resp := &http.Response{StatusCode: 200, Header: make(http.Header)}
+			var got *OpenAIUsage
+			switch route {
+			case "SSE":
+				r, err := svc.handleSSEToJSON(resp, c, rawChatCompletionsTestAccount(), body, "m", "m")
+				require.NoError(t, err)
+				require.True(t, r.delivered)
+				got = r.usage
+			case "passthrough":
+				r, err := svc.handlePassthroughSSEToJSON(resp, c, rawChatCompletionsTestAccount(), body, "m", "m")
+				require.NoError(t, err)
+				require.True(t, r.delivered)
+				got = r.usage
+			case "WS":
+				got = &OpenAIUsage{InputTokens: 5, OutputTokens: 3}
+				populateOpenAIUsageFromResponseJSON([]byte(final), got)
+			}
+			require.Equal(t, OpenAIUsage{InputTokens: 5, OutputTokens: 3, RetainedAfterZero: true}, *got)
+			if route != "WS" {
+				require.JSONEq(t, finalUsage, gjson.Get(rec.Body.String(), "usage").Raw)
+			}
+		})
 	}
 }

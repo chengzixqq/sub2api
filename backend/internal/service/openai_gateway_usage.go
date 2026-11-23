@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,6 +80,7 @@ type CyberPolicyUsageInput struct {
 	ImageInputTokens         int
 	ImageOutputTokens        int
 	SearchCount              int
+	NativeSearchCount        int
 	ImageCount               int
 	ImageSize                string
 	ImageInputSize           string
@@ -135,6 +137,7 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 			ImageOutputTokens:        in.ImageOutputTokens,
 		},
 		SearchCount:        in.SearchCount,
+		NativeSearchCount:  in.NativeSearchCount,
 		ImageCount:         max(in.ImageCount, 0),
 		ImageSize:          in.ImageSize,
 		ImageInputSize:     in.ImageInputSize,
@@ -235,6 +238,22 @@ func (usage OpenAIUsage) billingUsageTokens() UsageTokens {
 		ImageOutputTokens:      usage.ImageOutputTokens,
 	}
 	return tokens
+}
+
+// WithOrdinaryTokenFloor retains upstream detail buckets and ensures that
+// the estimated text counts survive the tariff's cache and image splits.
+func (usage OpenAIUsage) WithOrdinaryTokenFloor(input, output int) OpenAIUsage {
+	tokens := usage.billingUsageTokens()
+	addDetails := func(ordinary int, details ...int) int {
+		total := max(ordinary, 0)
+		for _, detail := range details {
+			total += min(max(detail, 0), math.MaxInt-total)
+		}
+		return total
+	}
+	usage.InputTokens = max(usage.InputTokens, addDetails(input, tokens.CacheReadTokens, tokens.CacheCreationTokens, tokens.ImageInputTokens))
+	usage.OutputTokens = max(usage.OutputTokens, addDetails(output, tokens.ImageOutputTokens))
+	return usage
 }
 
 // RecordUsage records usage and deducts balance
@@ -430,6 +449,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		// usage row instead of dropping it on the Standard re-evaluation.
 		if standardErr == nil && cost != nil && standardCost != nil {
 			applyOpenAIStandardActualCost(cost, standardCost)
+		}
+	}
+
+	if result.NativeSearchCount > 0 {
+		if price := groupSearchPricePer1kFromAPIKey(apiKey); price != nil && *price > 0 {
+			cost = addOpenAICostBreakdown(cost, s.billingService.CalculateSearchCost(result.NativeSearchCount, price, baseMultiplier))
 		}
 	}
 

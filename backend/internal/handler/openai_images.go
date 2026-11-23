@@ -439,11 +439,22 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			upstreamModel = result.UpstreamModel
 		}
 		sessionID := service.ExtractClientSessionID(c)
+		billingResult := result
+		var provenance *string
+		if result != nil && result.Usage.RetainedAfterZero && result.ClientContentDelivered {
+			// Use the decoded prompt for both JSON and multipart image requests.
+			// Uploaded image bytes never enter the text estimator.
+			guard.deps.estimatedPromptTokens = func() int {
+				return service.EstimateFailurePromptTokens(service.PlatformOpenAI, []byte(parsed.Prompt))
+			}
+			billingResult, provenance = guard.openAISettlementResult(result)
+		}
 		guard.MarkSettled()
 		channelUsageFields := clientRequestedUsageFields(c, channelMapping, requestModel, upstreamModel)
 		h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-				Result:             result,
+				Result:             billingResult,
+				BillingProvenance:  provenance,
 				APIKey:             apiKey,
 				User:               apiKey.User,
 				Account:            account,

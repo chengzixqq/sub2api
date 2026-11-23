@@ -430,6 +430,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		if handleErr == nil {
 			handleErr = errOpenAICyberPolicyForwarded
 		}
+		if result != nil && result.NativeSearchCount > 0 {
+			return &OpenAIForwardResult{NativeSearchCount: result.NativeSearchCount}, handleErr
+		}
 		return nil, handleErr
 	}
 
@@ -679,7 +682,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	finalResponse, usage, acc, priorModels, err := s.readOpenAICompatBufferedTerminal(resp, c, account, "openai chat_completions buffered", requestID)
 	defer func() {
 		if resultErr != nil && result == nil {
-			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, originalModel, billingModel, upstreamModel, startTime)
+			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, priorModels.nativeSearchCount, originalModel, billingModel, upstreamModel, startTime)
 		}
 	}()
 	if err != nil {
@@ -763,6 +766,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	delivered := writeOpenAIConvertedJSON(c, &usage, chatResp)
 
 	result = &OpenAIForwardResult{
+		NativeSearchCount:             priorModels.nativeSearchCount,
 		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
@@ -864,6 +868,8 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	terminalEventType := ""
 	// Grok chat bridge reuses Responses SSE; count native search tools for surcharge.
 	searchCount := 0
+	var nativeSearch openAINativeSearchCounter
+	countNative := openAINativeSearchPriced(c, account)
 	streamSearchSeen := make(map[string]struct{})
 	countSearch := account != nil && account.IsGrok()
 	observer := upstreamResponseModelObserverFromContext(c)
@@ -903,6 +909,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			Duration:                      time.Since(startTime),
 			FirstTokenMs:                  firstTokenMs,
 		}
+		out.NativeSearchCount = nativeSearch.count()
 		if searchCount > 0 {
 			out.SearchCount = searchCount
 		}
@@ -935,6 +942,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 			return false
+		}
+		if countNative {
+			nativeSearch.observeConverted(payload, &event)
 		}
 		observer.ObserveOpenAI([]byte(payload), event.Type)
 		refusalDetector.ObservePayload([]byte(payload))
@@ -1080,7 +1090,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	finalizeStream := func() (*OpenAIForwardResult, error) {
 		if streamFailoverErr != nil {
-			if c == nil || c.Writer == nil || !c.Writer.Written() {
+			if nativeSearch.count() == 0 && (c == nil || c.Writer == nil || !c.Writer.Written()) {
 				return nil, streamFailoverErr
 			}
 			return resultWithUsage(), streamFailoverErr

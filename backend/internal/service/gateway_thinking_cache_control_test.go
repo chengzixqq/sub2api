@@ -138,10 +138,9 @@ func TestThinkingCacheControl_IndependentOfLimitMode(t *testing.T) {
 }
 
 func TestThinkingCacheControl_StripBaselineBytes(t *testing.T) {
-	// Previously only literal thinking was stripped. Under the limit
-	// redacted_thinking retained its cache_control and its wire spelling.
 	body := thinkingTestBody(thinkingTestMessage("assistant", redactedTestBlock, thinkingTestBlock))
 	want := strings.Replace(body, thinkingTestBlock, `{"type":"thinking","thinking":"h"}`, 1)
+	want = strings.Replace(want, redactedTestBlock, `{"type":"redacted_thinking","data":"x"}`, 1)
 	for _, limit := range []string{ClaudeCacheControlLimitTrim, ClaudeAlignPassthrough, ClaudeAlignReject} {
 		r := forwardThinkingTest(t, "/v1/messages", fallbackNativeAccountForTest(false), body, ClaudeAlignStrip, limit, false)
 		require.Equal(t, want, string(r.requireSent(t)))
@@ -244,4 +243,84 @@ func TestThinkingCacheControl_QueuePing(t *testing.T) {
 	require.False(t, check(strings.Replace(body, `{"type":"ephemeral"}`, "null", 1)))
 	require.False(t, check(strings.Replace(body, "{", `{"unknown":true,`, 1)))
 	require.False(t, check(`{"system":[`+thinkingTestBlock+`]}`))
+}
+
+func TestThinkingCacheControl_StripRedactedScope(t *testing.T) {
+	body := thinkingTestBody(plainTestMessage, thinkingTestMessage("assistant", redactedTestBlock), plainTestMessage)
+	for _, tc := range []struct {
+		name, path string
+		account    *Account
+		strip      bool
+	}{
+		{"managed messages", "/v1/messages", fallbackNativeAccountForTest(false), true},
+		{"mimic count tokens", "/v1/messages/count_tokens", cacheControlLimitMimicAccount(), true},
+		{"non-mimic count tokens", "/v1/messages/count_tokens", fallbackNativeAccountForTest(false), false},
+		{"passthrough messages", "/v1/messages", fallbackNativeAccountForTest(true), false},
+		{"passthrough count tokens", "/v1/messages/count_tokens", fallbackNativeAccountForTest(true), false},
+		{"other protocol", "/v1/chat/completions", fallbackNativeAccountForTest(false), false},
+	} {
+		for _, limit := range []string{ClaudeCacheControlLimitTrim, ClaudeAlignPassthrough, ClaudeAlignReject} {
+			t.Run(tc.name+"/"+limit, func(t *testing.T) {
+				r := forwardThinkingTest(t, tc.path, tc.account, body, ClaudeAlignStrip, limit, false)
+				want := redactedTestBlock
+				if tc.strip {
+					want = `{"type":"redacted_thinking","data":"x"}`
+				}
+				require.Equal(t, want, gjson.GetBytes(r.requireSent(t), "messages.1.content.0").Raw)
+			})
+		}
+	}
+}
+
+func TestThinkingCacheControl_StripRedactedSlotsAndTTL(t *testing.T) {
+	const ordinary = `{"type":"text","text":"ordinary","cache_control":{"type":"ephemeral"}}`
+	const redacted = `{"type":"redacted_thinking","data":"x","cache_control":{"type":"ephemeral","ttl":"1h"}}`
+	body := thinkingTestBody(thinkingTestMessage("assistant", ordinary, ordinary, ordinary, ordinary, redacted))
+	body = strings.Replace(body, "{", `{"cache_control":{"type":"ephemeral"},`, 1)
+	want := strings.Replace(body, redacted, `{"type":"redacted_thinking","data":"x"}`, 1)
+	for _, limit := range []string{ClaudeCacheControlLimitTrim, ClaudeAlignPassthrough} {
+		t.Run(limit, func(t *testing.T) {
+			expected := want
+			if limit == ClaudeCacheControlLimitTrim {
+				expected = strings.Replace(expected, ordinary, `{"type":"text","text":"ordinary"}`, 1)
+			}
+			r := forwardThinkingTest(t, "/v1/messages", fallbackNativeAccountForTest(false), body, ClaudeAlignStrip, limit, false)
+			require.Equal(t, expected, string(r.requireSent(t)))
+		})
+	}
+}
+
+func TestThinkingCacheControl_StripDuplicateMembers(t *testing.T) {
+	const redacted = `{"type":"redacted_thin\u006bing","data":"cipher\u0074ext", "cache_control":{},"cache_\u0063ontrol":{},"cache_control":null}`
+	const stripped = `{"type":"redacted_thin\u006bing","data":"cipher\u0074ext"}`
+	body := thinkingTestBody(plainTestMessage, thinkingTestMessage("assistant", redacted), plainTestMessage)
+	for _, limit := range []string{ClaudeCacheControlLimitTrim, ClaudeAlignPassthrough, ClaudeAlignReject} {
+		t.Run(limit, func(t *testing.T) {
+			r := forwardThinkingTest(t, "/v1/messages", fallbackNativeAccountForTest(false), body, ClaudeAlignStrip, limit, false)
+			require.Equal(t, strings.Replace(body, redacted, stripped, 1), string(r.requireSent(t)))
+			r = forwardThinkingTest(t, "/v1/messages/count_tokens", cacheControlLimitMimicAccount(), body, ClaudeAlignStrip, limit, false)
+			require.Equal(t, stripped, gjson.GetBytes(r.requireSent(t), "messages.1.content.0").Raw)
+		})
+	}
+
+	// The injection-only pass retains the historical first-null gate.
+	nullFirst := strings.Replace(redacted, `"cache_control":{}`, `"cache_control":null`, 1)
+	r := forwardThinkingTest(t, "/v1/messages/count_tokens", cacheControlLimitMimicAccount(), strings.Replace(body, redacted, nullFirst, 1), ClaudeAlignStrip, ClaudeAlignPassthrough, false)
+	require.Equal(t, nullFirst, gjson.GetBytes(r.requireSent(t), "messages.1.content.0").Raw)
+}
+
+func TestThinkingCacheControl_StripMimicReinjection(t *testing.T) {
+	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+		rewriteMessageCacheControl: true, expiresAt: time.Now().Add(time.Minute).UnixNano(),
+	})
+	t.Cleanup(func() { gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{}) })
+	body := thinkingTestBody(thinkingTestMessage("assistant", `{"type":"redacted_thinking","data":"x"}`))
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		for _, limit := range []string{ClaudeCacheControlLimitTrim, ClaudeAlignPassthrough, ClaudeAlignReject} {
+			t.Run(path+"/"+limit, func(t *testing.T) {
+				r := forwardThinkingTest(t, path, cacheControlLimitMimicAccount(), body, ClaudeAlignStrip, limit, false)
+				require.Equal(t, `{"type":"redacted_thinking","data":"x"}`, gjson.GetBytes(r.requireSent(t), "messages.0.content.0").Raw)
+			})
+		}
+	}
 }

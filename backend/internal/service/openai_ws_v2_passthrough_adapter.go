@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,10 +26,6 @@ type openAIWSClientFrameConn struct {
 	interTurnIdleTimeout time.Duration
 	interTurnStarted     chan struct{}
 	waitingForNextTurn   atomic.Bool
-	// The relay observes upstream payloads, while clients must keep seeing the
-	// model identifier they supplied for the current turn.
-	restoreResponseModel func([]byte) []byte
-	restoreToolNames     func([]byte) []byte
 }
 
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
@@ -133,6 +130,8 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 }
 
 type openAIWSPassthroughUsageMeta struct {
+	images                   *openAIImageOutputCounter // upstream reader and its synchronous turn callback
+	nativeSearch             atomic.Pointer[openAIPassthroughTurnSearch]
 	serviceTier              atomic.Pointer[string]
 	reasoningEffort          atomic.Pointer[string]
 	requestedReasoningEffort atomic.Pointer[string]
@@ -141,6 +140,29 @@ type openAIWSPassthroughUsageMeta struct {
 
 	// 仅在 client->upstream filter goroutine 中读写；Load 侧通过上方原子指针同步。
 	sessionRequestModel string
+}
+
+func (m *openAIWSPassthroughUsageMeta) observeTurnOutput(eventType string, payload []byte) {
+	// A Responses image has a result, b64_json or URL. Escaped JSON keys
+	// still go through the shared output parser.
+	if !bytes.Contains(payload, []byte(`"result"`)) && !bytes.Contains(payload, []byte(`"b64_json"`)) &&
+		!bytes.Contains(payload, []byte(`"url"`)) && !bytes.Contains(payload, []byte(`\u`)) {
+		return
+	}
+	if !gjson.ValidBytes(payload) {
+		return
+	}
+	root := gjson.Parse(openAIWSPayloadStringView(payload))
+	if m.images != nil {
+		m.images.observeParsedResponsesEvent(root, payload, nil, eventType, false)
+		return
+	}
+	var first openAIImageOutputCounter
+	first.observeParsedResponsesEvent(root, payload, nil, eventType, false)
+	if first.Count() > 0 {
+		m.images = new(openAIImageOutputCounter)
+		*m.images = first
+	}
 }
 
 func newOpenAIWSPassthroughUsageMeta(initialRequestModel string, firstFrame []byte) *openAIWSPassthroughUsageMeta {
@@ -640,17 +662,6 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if msgType == coderws.MessageText {
-		if normalized, changed := normalizeCompletedImageGenerationStatus(payload); changed {
-			payload = normalized
-		}
-		if c.restoreResponseModel != nil {
-			payload = c.restoreResponseModel(payload)
-		}
-		if c.restoreToolNames != nil {
-			payload = c.restoreToolNames(payload)
-		}
-	}
 	return c.conn.Write(ctx, msgType, payload)
 }
 
@@ -958,17 +969,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		controlCtx:           ctx,
 		interTurnIdleTimeout: s.openAIWSIngressInterTurnIdleTimeout(),
 		interTurnStarted:     make(chan struct{}, 1),
-		restoreResponseModel: func(payload []byte) []byte {
-			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-			if !openAIWSEventMayContainModel(eventType) {
-				return payload
-			}
-			requestModel, upstreamModel := usageMeta.turnModels("")
-			return replaceOpenAIWSMessageModel(payload, upstreamModel, requestModel)
-		},
-		restoreToolNames: func(payload []byte) []byte {
-			return restoreCodexToolNamesFromContext(c, payload)
-		},
 	}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
 		inner: clientFrameConn,
@@ -1176,6 +1176,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		firstTurnStartedAt = hooks.InitialTurnStartedAt
 	}
 	failureAccountSideEffectsApplied := false
+	var turnsBeforeTerminalWrite int32 // upstream reader, while holding the terminal-write lock
 	relayResult, relayExit := openaiwsv2.RunEntry(openaiwsv2.EntryInput{
 		Ctx:                ctx,
 		ClientConn:         policyClientConn,
@@ -1184,7 +1185,26 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		Options: openaiwsv2.RelayOptions{
 			WriteTimeout:       s.openAIWSWriteTimeout(),
 			FirstTurnStartedAt: firstTurnStartedAt,
-			IsFirstTokenEvent:  openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx)),
+			PrepareClientText: func(payload []byte, inspectContent bool) ([]byte, bool) {
+				var hasContent bool
+				var content *bool
+				if inspectContent {
+					content = &hasContent
+				}
+				original, _ := normalizeCompletedImageEvent(payload, content)
+				payload = original
+				eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+				if openAIWSEventMayContainModel(eventType) {
+					requestModel, upstreamModel := usageMeta.turnModels("")
+					payload = replaceOpenAIWSMessageModel(payload, upstreamModel, requestModel)
+				}
+				payload = restoreCodexToolNamesFromContext(c, payload)
+				if inspectContent && !bytes.Equal(original, payload) {
+					hasContent = openAIWSFrameHasContent(eventType, payload)
+				}
+				return payload, hasContent
+			},
+			IsFirstTokenEvent: openAIWSFirstTokenEventFunc(s.openAITTFTMode(ctx)),
 			TakeNextTurnStartedAt: func() time.Time {
 				startedAt := acceptedTurnStartedAt.Swap(nil)
 				if startedAt == nil {
@@ -1207,14 +1227,22 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(usageRaw, openAIWSLogValueMaxLen),
 				)
 			},
+			ObserveTurnOutput: usageMeta.observeTurnOutput,
 			OnTurnComplete: func(turn openaiwsv2.RelayTurnResult) {
 				turnNo := int(completedTurns.Add(1))
 				if hooks != nil && hooks.TurnStarted != nil && !turn.StartedAt.IsZero() {
 					hooks.TurnStarted(turnNo, turn.StartedAt)
 				}
 				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
+				searchCount := usageMeta.nativeSearch.Swap(nil).take(turn.TerminalEventType, turn.RequestID)
+				images := usageMeta.images
+				usageMeta.images = nil
 				turnResult := &OpenAIForwardResult{
-					RequestID: turn.RequestID,
+					ImageCount:             images.Count(),
+					ImageOutputSizes:       images.Sizes(),
+					NativeSearchCount:      searchCount,
+					ClientContentDelivered: turn.ClientContentDelivered,
+					RequestID:              turn.RequestID,
 					Usage: OpenAIUsage{
 						InputTokens:                 turn.Usage.InputTokens,
 						ImageInputTokens:            turn.Usage.ImageInputTokens,
@@ -1264,6 +1292,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			BeforeClientWrite: func(msgType coderws.MessageType, payload []byte) {
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
 					turnLifecycle.beginTerminalWrite()
+					turnsBeforeTerminalWrite = completedTurns.Load()
 				}
 			},
 			AfterClientWrite: func(msgType coderws.MessageType, payload []byte, writeErr error) {
@@ -1272,7 +1301,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					markOpenAIWSClientVisibleFailure(c, eventType, payload)
 				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
-					turnLifecycle.finishTerminalWrite(writeErr == nil, clientFrameConn.markTurnCompleted)
+					turnLifecycle.finishTerminalWrite(writeErr == nil && completedTurns.Load() != turnsBeforeTerminalWrite, clientFrameConn.markTurnCompleted)
 				}
 			},
 			BeforeRelayCancel: func(exit openaiwsv2.RelayExit) {
@@ -1294,7 +1323,17 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				if msgType != coderws.MessageText {
 					return nil
 				}
-				eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
+				eventType, responseID, _ := parseOpenAIWSEventEnvelope(payload)
+				// Only the upstream reader and its synchronous accepted-turn
+				// callback access this evidence during the relay.
+				nativeSearch := usageMeta.nativeSearch.Load()
+				if nativeSearch != nil || (eventType == "response.output_item.added" || eventType == "response.output_item.done" || eventType == "response.completed" || eventType == "response.done") &&
+					mayContainNativeSearch(payload) &&
+					hooks.nativeSearchPriced(c, account, int(completedTurns.Load())+1) {
+					if observed := nativeSearch.observe(eventType, responseID, payload); observed != nativeSearch {
+						usageMeta.nativeSearch.Store(observed)
+					}
+				}
 				if eventType == "response.created" {
 					failureAccountSideEffectsApplied = false
 				}
@@ -1361,7 +1400,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		hooks.ObserveMonitorAttempt(int(completedTurns.Load())+1, observed, observedErr)
 	}
+	remainingSearches := usageMeta.nativeSearch.Swap(nil).take("", "")
+	resultRequestModel, resultUpstreamModel := usageMeta.turnModels(relayResult.RequestModel)
+	settlePartialSearch := func(err error) {
+		if remainingSearches > 0 && hooks != nil && hooks.AfterTurn != nil {
+			hooks.AfterTurn(int(completedTurns.Load())+1, &OpenAIForwardResult{Model: resultRequestModel, UpstreamModel: resultUpstreamModel, NativeSearchCount: remainingSearches, Stream: true, OpenAIWSMode: true}, err)
+		}
+	}
 	if cause := context.Cause(ctx); cause != nil {
+		settlePartialSearch(cause)
 		if isOpenAIWSSessionPreempted(ctx) {
 			return errOpenAIWSSessionPreempted
 		}
@@ -1376,9 +1423,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		return NewOpenAIWSClientCloseError(status, reason, cause)
 	}
 
-	resultRequestModel, resultUpstreamModel := usageMeta.turnModels(relayResult.RequestModel)
 	result := &OpenAIForwardResult{
-		RequestID: relayResult.RequestID,
+		NativeSearchCount: remainingSearches,
+		RequestID:         relayResult.RequestID,
 		Usage: OpenAIUsage{
 			InputTokens:                 relayResult.Usage.InputTokens,
 			ImageInputTokens:            relayResult.Usage.ImageInputTokens,
@@ -1424,6 +1471,8 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				hooks.TurnStarted(1, time.Now().Add(-result.Duration))
 			}
 			hooks.AfterTurn(1, result, nil)
+		} else if remainingSearches > 0 {
+			settlePartialSearch(errors.New("upstream websocket ended before terminal event"))
 		}
 		return nil
 	}
@@ -1504,7 +1553,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		if hooks.TurnStarted != nil {
 			hooks.TurnStarted(turnCount+1, time.Now().Add(-result.Duration))
 		}
-		hooks.AfterTurn(turnCount+1, nil, turnErr)
+		if remainingSearches > 0 {
+			settlePartialSearch(turnErr)
+		} else {
+			hooks.AfterTurn(turnCount+1, nil, turnErr)
+		}
 	}
 	return turnErr
 }
@@ -1641,4 +1694,55 @@ func logOpenAIWSV2Passthrough(format string, args ...any) {
 		"[OpenAI WS v2 passthrough] %s "+format,
 		append([]any{openaiWSV2PassthroughModeFields}, args...)...,
 	)
+}
+
+// The relay accepts or ignores a terminal event after the upstream callback.
+// Claim its output only in the matching, accepted turn.
+type openAIPassthroughTurnSearch struct {
+	mu              sync.Mutex
+	counter         openAINativeSearchCounter
+	terminalPayload []byte
+	terminalID      string
+}
+
+func (s *openAIPassthroughTurnSearch) observe(typ, id string, payload []byte) *openAIPassthroughTurnSearch {
+	switch typ {
+	case "response.output_item.added", "response.output_item.done", "response.completed", "response.done":
+	default:
+		return s
+	}
+	first := s == nil
+	if first {
+		if !openAIFrameHasNativeSearchItem(payload, typ) {
+			return nil
+		}
+		s = &openAIPassthroughTurnSearch{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if typ == "response.output_item.added" || typ == "response.output_item.done" {
+		s.counter.observeRaw(payload, typ)
+		return s
+	}
+	s.terminalPayload = nil
+	if first || s.counter.seenNative || (mayContainNativeSearch(payload) && openAIFrameHasNativeSearchItem(payload, typ)) {
+		s.terminalPayload = payload
+		s.terminalID = id
+	}
+	return s
+}
+
+func (s *openAIPassthroughTurnSearch) take(typ, id string) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalPayload != nil && s.terminalID == id && (typ == "response.completed" || typ == "response.done") {
+		s.counter.observeRaw(s.terminalPayload, typ)
+	}
+	count := s.counter.count()
+	s.counter = openAINativeSearchCounter{}
+	s.terminalPayload = nil
+	return count
 }

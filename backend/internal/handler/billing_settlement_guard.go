@@ -87,15 +87,18 @@ type billingSettlementGuard struct {
 	// Search calls are real upstream work and may be charged on every retry.
 	// Token usage intentionally remains attempt-scoped, while search calls are
 	// accumulated for the whole downstream request and settled exactly once.
-	attemptNo             int
-	attemptSearchCount    int
-	cumulativeSearchCount int
+	attemptNo                   int
+	attemptSearchCount          int
+	cumulativeSearchCount       int
+	attemptNativeSearchCount    int
+	cumulativeNativeSearchCount int
 }
 
 type billingSearchAttemptSnapshot struct {
-	Attempt               int
-	AttemptSearchCount    int
-	CumulativeSearchCount int
+	Attempt                     int
+	AttemptSearchCount          int
+	CumulativeSearchCount       int
+	CumulativeNativeSearchCount int
 }
 
 func newBillingSettlementGuard(deps guardDeps) *billingSettlementGuard {
@@ -129,6 +132,7 @@ func (g *billingSettlementGuard) ObserveAttempt(account *service.Account) {
 		g.billingMetadata = service.FailureBillingMetadata{}
 		g.attemptNo++
 		g.attemptSearchCount = 0
+		g.attemptNativeSearchCount = 0
 	}
 }
 
@@ -226,7 +230,8 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 	})
 	g.responseDelivered = false
 	g.reportedOutputFloor = 0
-	if (result.ClientContentDelivered || result.Usage.ReportedOutputFloor > 0) &&
+	floorWithoutDelivery := result.Usage.ReportedOutputFloor > 0 && !result.Usage.RetainedAfterZero
+	if (result.ClientContentDelivered || floorWithoutDelivery) &&
 		!g.deps.upstreamUsageOnly && g.account != nil && !g.account.IsAnthropic() && result.ImageCount <= 0 {
 		observed := g.usage
 		if result.Usage.OutputFromUnclassifiedUsage {
@@ -261,6 +266,10 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 		UpstreamResponseServiceTier:   result.UpstreamResponseServiceTier,
 	}
 
+	if count := result.NativeSearchCount; count > g.attemptNativeSearchCount {
+		g.cumulativeNativeSearchCount, _ = service.SaturatingSearchCountAdd(g.cumulativeNativeSearchCount, count-g.attemptNativeSearchCount)
+		g.attemptNativeSearchCount = count
+	}
 	searchCount := service.NormalizeSearchCount(result.SearchCount)
 	if result.SearchCount < 0 {
 		logger.L().Warn("openai.search_count_negative_clamped",
@@ -288,9 +297,10 @@ func (g *billingSettlementGuard) searchAttemptSnapshot() billingSearchAttemptSna
 		return billingSearchAttemptSnapshot{}
 	}
 	return billingSearchAttemptSnapshot{
-		Attempt:               g.attemptNo,
-		AttemptSearchCount:    g.attemptSearchCount,
-		CumulativeSearchCount: g.cumulativeSearchCount,
+		Attempt:                     g.attemptNo,
+		AttemptSearchCount:          g.attemptSearchCount,
+		CumulativeSearchCount:       g.cumulativeSearchCount,
+		CumulativeNativeSearchCount: g.cumulativeNativeSearchCount,
 	}
 }
 
@@ -336,17 +346,32 @@ func forwardDeliveredStreamContent(c *gin.Context) bool {
 // snapshot. Scheduling, probe observation and client bytes use the upstream
 // result. The caller submits the same single usage record as before.
 func (g *billingSettlementGuard) openAISettlementResult(result *service.OpenAIForwardResult) (*service.OpenAIForwardResult, *string) {
-	if (!g.responseDelivered && g.reportedOutputFloor <= 0) || g.deps.upstreamUsageOnly || hasFailureBillingUsage(g.usage) {
+	if result == nil || g.deps.upstreamUsageOnly {
+		return result, nil
+	}
+	retained := result.Usage.RetainedAfterZero && result.ClientContentDelivered && g.account != nil && !g.account.IsAnthropic()
+	if !retained && ((!g.responseDelivered && g.reportedOutputFloor <= 0) || hasFailureBillingUsage(g.usage)) {
 		return result, nil
 	}
 	in := service.FailureBillingInput{OutputStarted: true}
 	g.addEstimateInputs(&in)
+	return estimatedOpenAISettlementResult(result, in, g.reportedOutputFloor, g.forwardErr)
+}
+
+func estimatedOpenAISettlementResult(result *service.OpenAIForwardResult, in service.FailureBillingInput, reportedOutputFloor int, forwardErr error) (*service.OpenAIForwardResult, *string) {
 	estimate := service.DecideFailureBilling(in)
 	billed := *result
 	billed.Usage.InputTokens = estimate.Usage.InputTokens
-	billed.Usage.OutputTokens = max(estimate.Usage.OutputTokens, g.reportedOutputFloor)
+	billed.Usage.OutputTokens = max(estimate.Usage.OutputTokens, reportedOutputFloor)
+	if result.Usage.RetainedAfterZero {
+		billed.Usage = result.Usage.WithOrdinaryTokenFloor(estimate.Usage.InputTokens, estimate.Usage.OutputTokens)
+		billed.Usage.OutputTokens = max(billed.Usage.OutputTokens, reportedOutputFloor, result.Usage.ReportedOutputFloor)
+		if billed.Usage.InputTokens == result.Usage.InputTokens && billed.Usage.OutputTokens == result.Usage.OutputTokens {
+			return result, nil
+		}
+	}
 	provenance := string(service.BillingProvenanceEstimated)
-	if g.forwardErr != nil {
+	if forwardErr != nil {
 		provenance = string(estimate.Provenance)
 	}
 	return &billed, &provenance
@@ -386,7 +411,7 @@ func (g *billingSettlementGuard) Flush() {
 	// 反过来不能简化成「ferr == nil 一律不计费」：gateway_forward.go:846
 	// 是流式已开始后中断的路径，ferr 为 nil 但上游已经投递过 token，
 	// 那是本特性最该计费的场景，由 outputStarted 兜住。
-	if g.ferr == nil && !g.outputStarted && !g.clientDisconnect && !hasFailureBillingUsage(g.usage) && g.imageCount == 0 && g.cumulativeSearchCount == 0 && g.reportedOutputFloor <= 0 {
+	if g.ferr == nil && !g.outputStarted && !g.clientDisconnect && !hasFailureBillingUsage(g.usage) && g.imageCount == 0 && g.cumulativeSearchCount == 0 && g.cumulativeNativeSearchCount == 0 && g.reportedOutputFloor <= 0 {
 		return
 	}
 
@@ -397,6 +422,7 @@ func (g *billingSettlementGuard) Flush() {
 		UpstreamModel:          g.upstreamModel,
 		Usage:                  g.usage,
 		SearchCount:            g.cumulativeSearchCount,
+		NativeSearchCount:      g.cumulativeNativeSearchCount,
 		ImageCount:             g.imageCount,
 		ImageSize:              g.imageSize,
 		ImageInputSize:         g.imageInputSize,

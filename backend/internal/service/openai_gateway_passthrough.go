@@ -357,6 +357,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	var firstTokenMs *int
 	responseID := ""
 	imageCount := 0
+	nativeSearchCount := 0
 	var imageOutputSizes []string
 	var responseErr error
 	for {
@@ -453,6 +454,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				responseID = strings.TrimSpace(result.responseID)
 				imageCount = result.imageCount
 				imageOutputSizes = result.imageOutputSizes
+				nativeSearchCount = result.nativeSearchCount
 			}
 			if handleErr != nil {
 				if retryBody, fallbackModel, retry := s.applyOpenAIPassthroughCompactFallbackFromSignal(
@@ -472,7 +474,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					return nil, s.handleErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
 				}
 				_ = resp.Body.Close()
-				if !hasOpenAIPartialUsage(usage) && imageCount == 0 {
+				if !hasOpenAIPartialUsage(usage) && imageCount == 0 && nativeSearchCount == 0 {
 					return nil, handleErr
 				}
 				responseErr = handleErr
@@ -497,13 +499,17 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 					return nil, s.handleErrorResponsePassthrough(ctx, compactResp, c, account, body, compactBody)
 				}
 				_ = resp.Body.Close()
-				return nil, handleErr
+				if result == nil || result.nativeSearchCount == 0 {
+					return nil, handleErr
+				}
+				responseErr = handleErr
 			}
 			delivered = result.delivered
 			usage = result.usage
 			responseID = strings.TrimSpace(result.responseID)
 			imageCount = result.imageCount
 			imageOutputSizes = result.imageOutputSizes
+			nativeSearchCount = result.nativeSearchCount
 		}
 		break
 	}
@@ -527,6 +533,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	forwardResult := &OpenAIForwardResult{
+		NativeSearchCount:             nativeSearchCount,
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		ResponseID:                    responseID,
@@ -1018,16 +1025,18 @@ func collectOpenAIPassthroughTimeoutHeaders(h http.Header) []string {
 }
 
 type openaiStreamingResultPassthrough struct {
-	delivered        bool
-	usage            *OpenAIUsage
-	firstTokenMs     *int
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
+	nativeSearchCount int
+	delivered         bool
+	usage             *OpenAIUsage
+	firstTokenMs      *int
+	responseID        string
+	imageCount        int
+	imageOutputSizes  []string
 }
 
 type openaiNonStreamingResultPassthrough struct {
-	delivered bool
+	nativeSearchCount int
+	delivered         bool
 	*OpenAIUsage
 	usage            *OpenAIUsage
 	responseID       string
@@ -1937,6 +1946,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
+	var searches openAINativeSearchCounter
+	var searchObserver *openAINativeSearchCounter
+	if openAINativeSearchPriced(c, account) {
+		searchObserver = &searches
+	}
 	var firstTokenMs *int
 	responseID := ""
 	ttftMode := s.openAITTFTMode(ctx)
@@ -2059,12 +2073,13 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	var delivered bool
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
-			delivered:        delivered,
-			usage:            usage,
-			firstTokenMs:     firstTokenMs,
-			responseID:       responseID,
-			imageCount:       imageCounter.Count(),
-			imageOutputSizes: imageCounter.Sizes(),
+			nativeSearchCount: searches.count(),
+			delivered:         delivered,
+			usage:             usage,
+			firstTokenMs:      firstTokenMs,
+			responseID:        responseID,
+			imageCount:        imageCounter.Count(),
+			imageOutputSizes:  imageCounter.Sizes(),
 		}
 	}
 
@@ -2221,7 +2236,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
-			imageCounter.AddSSEData(dataBytes)
+			imageCounter.addResponsesEvent(dataBytes, searchObserver)
 			if sanitizedData, sanitized := sanitizeOpenAIResponseFailedEventForClient(
 				dataBytes,
 				eventType,
@@ -2378,8 +2393,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiNonStreamingResultPassthrough, error) {
-	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+	body, partialSearchCount, err := s.readBufferedOpenAIResponse(resp.Body, c, account)
 	if err != nil {
+		if partialSearchCount > 0 {
+			return &openaiNonStreamingResultPassthrough{nativeSearchCount: partialSearchCount}, err
+		}
 		return nil, err
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
@@ -2404,6 +2422,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 
 	usage := &OpenAIUsage{}
+	pricedNativeSearch := openAINativeSearchPriced(c, account)
+	var images, nativeSearchCount int
+	if pricedNativeSearch {
+		images, nativeSearchCount = responseImageAndSearchCounts(body)
+	}
 	usageParsed := false
 	if len(body) > 0 {
 		if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(body); ok {
@@ -2440,13 +2463,17 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if !bridged {
 		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
+	if !pricedNativeSearch {
+		images = countOpenAIResponseImageOutputsFromJSONBytes(body)
+	}
 	return &openaiNonStreamingResultPassthrough{
-		delivered:        delivered,
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIResponseImageOutputsFromJSONBytes(body),
-		imageOutputSizes: collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
+		nativeSearchCount: nativeSearchCount,
+		delivered:         delivered,
+		OpenAIUsage:       usage,
+		usage:             usage,
+		responseID:        extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:        images,
+		imageOutputSizes:  collectOpenAIResponseImageOutputSizesFromJSONBytes(body),
 	}, nil
 }
 
@@ -2454,8 +2481,15 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 // response for the passthrough path. It mirrors handleSSEToJSON while
 // preserving passthrough payloads, except compact-only model remapping may
 // rewrite model fields back to the original requested model.
-func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (*openaiNonStreamingResultPassthrough, error) {
+func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel string, mappedModel string) (out *openaiNonStreamingResultPassthrough, outErr error) {
 	bodyText := string(body)
+	defer func() {
+		if outErr != nil && out == nil && openAINativeSearchPriced(c, account) {
+			if count := countOpenAINativeSearchSSE(bodyText); count > 0 {
+				out = &openaiNonStreamingResultPassthrough{nativeSearchCount: count}
+			}
+		}
+	}()
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
@@ -2475,9 +2509,10 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		finalResponse, ok = extractOpenAINonCompletedTerminalResponse(terminalType, terminalPayload)
 	}
 
+	images, nativeSearchCount := bufferedImageAndSearchCounts(bodyText, openAINativeSearchPriced(c, account))
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
-		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
+		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed && !retainOpenAIUsageAfterZero(usage, &parsedUsage) {
 			replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		}
 		// When the terminal event has an empty output array, reconstruct
@@ -2529,12 +2564,13 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	}
 
 	return &openaiNonStreamingResultPassthrough{
-		delivered:        delivered,
-		OpenAIUsage:      usage,
-		usage:            usage,
-		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
-		imageCount:       countOpenAIImageOutputsFromSSEBody(bodyText),
-		imageOutputSizes: collectOpenAIImageOutputSizesFromSSEBody(bodyText),
+		nativeSearchCount: nativeSearchCount,
+		delivered:         delivered,
+		OpenAIUsage:       usage,
+		usage:             usage,
+		responseID:        extractOpenAIResponseIDFromJSONBytes(body),
+		imageCount:        images,
+		imageOutputSizes:  collectOpenAIImageOutputSizesFromSSEBody(bodyText),
 	}, nil
 }
 

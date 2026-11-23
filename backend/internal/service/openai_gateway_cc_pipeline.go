@@ -282,6 +282,8 @@ type ccStreamScanState struct {
 	Usage OpenAIUsage
 	// FirstTokenMs 为首个实际输出 chunk（排除 usage-only chunk）的到达时延。
 	FirstTokenMs *int
+	// SawUpstreamLine includes SSE comments and blank lines before a read error.
+	SawUpstreamLine bool
 	// SawDone 表示上游发出了 [DONE] 哨兵。
 	SawDone bool
 	// Err 为 scanner 读错误（客户端 context 取消不属于此类，会原样带出）。
@@ -307,6 +309,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
+		st.SawUpstreamLine = true
 		line := scanner.Text()
 		payload, ok := extractOpenAISSEDataLine(line)
 		if !ok {
@@ -327,9 +330,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 			observer.ObserveOpenAI([]byte(payload), "")
 		}
 
-		if u := extractCCStreamUsage(payload); u != nil {
+		if u := extractCCStreamUsage(payload, &st.Usage); u != nil {
 			// Some finish frames carry an empty usage after the real snapshot.
-			if openAIUsageHasTokens(u) || u.ReportedOutputFloor > 0 || !openAIUsageHasTokens(&st.Usage) {
+			if !retainOpenAIUsageAfterZero(&st.Usage, u) {
 				u.ReportedOutputFloor = max(u.ReportedOutputFloor, st.Usage.ReportedOutputFloor)
 				st.Usage = *u
 			}

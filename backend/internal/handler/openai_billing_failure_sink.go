@@ -121,6 +121,7 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 			UpstreamResponseModelConflict: d.UpstreamResponseModelConflict,
 			UpstreamResponseServiceTier:   d.UpstreamResponseServiceTier,
 			SearchCount:                   d.SearchCount,
+			NativeSearchCount:             d.NativeSearchCount,
 			ImageCount:                    d.ImageCount,
 			ImageSize:                     d.ImageSize,
 			ImageInputSize:                d.ImageInputSize,

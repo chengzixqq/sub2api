@@ -246,6 +246,13 @@ describe("GroupsView OpenAI forced service tier", () => {
     updateGroup.mockResolvedValue({});
   });
 
+  it("saves an explicit native web search price on an OpenAI group", async () => {
+    const wrapper = await openEditDialog(sourceGroup);
+    await wrapper.get('[data-testid="edit-openai-search-price"]').setValue("10");
+    expect(await submit(wrapper)).toMatchObject({ search_price_per_1k: 10 });
+    wrapper.unmount();
+  });
+
   it("shows both switches off for a group that follows the client", async () => {
     const wrapper = await openEditDialog(sourceGroup);
 

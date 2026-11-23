@@ -1164,6 +1164,8 @@ export default {
       explicitPricing: {
         title: 'Grok 搜索与 Voice 定价',
         description: '分组级 web_search（每千次）与 Voice realtime / TTS / STT 单价（USD）。留空表示未配置。',
+        nativeSearchPrice: '原生网页搜索每千次价格（USD）',
+        nativeSearchHint: '留空或 0 表示不收原生网页搜索费。按上游报告的可计费搜索次数计。上游未报告时按完成的搜索动作计，打开页面与页内查找不计。',
         searchPricePer1k: '搜索每千次价格（USD）',
         pricePlaceholder: '可选'
       },

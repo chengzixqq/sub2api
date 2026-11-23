@@ -1596,7 +1596,7 @@ export default {
           },
           thinking_cache_control: {
             label: 'cache_control on thinking blocks',
-            hint: 'The official API returns 400 for cache_control on historical thinking or redacted_thinking blocks. The default mode removes cache_control only from thinking blocks and leaves redacted_thinking unchanged, matching current production behavior. API key passthrough and non-mimic count_tokens paths forward the request unchanged without this cleanup.',
+            hint: 'The official API returns 400 for cache_control on historical thinking or redacted_thinking blocks. The default mode removes cache_control from both message block types in managed native Messages and count_tokens requests using Claude Code mimicry. API key passthrough and non-mimic count_tokens retain these fields subject to their existing forwarding and trim rules.',
             options: { strip: 'Remove automatically', passthrough: 'Leave it to the upstream', reject: 'Return the official 400' },
             impact: [
               'Success rate: With either of the last two options, requests with these breakpoints fail. Common sources: A client may always add a breakpoint to the last content block, which happens to be a thinking block, or replay history from another client. Claude Code does not normally send these breakpoints.',

@@ -85,6 +85,27 @@ func (v rawJSONView) field(path string) rawJSONView {
 	return ""
 }
 
+// hasNonNullFieldAfter looks for a matching same-level member after a known
+// value in this object. Offset is relative to this view and points just past
+// that value. The shortest possible suffix is ,"key":0}.
+func (v rawJSONView) hasNonNullFieldAfter(offset int, key string) bool {
+	if len(v)-offset < len(key)+6 {
+		return false
+	}
+	var scratch [32]byte
+	for i := skipOpenAIWSJSONSpace([]byte(v), offset); v[i] == ','; {
+		name := skipOpenAIWSJSONSpace([]byte(v), i+1)
+		end := scanOpenAIWSJSONString([]byte(v), name)
+		colon := skipOpenAIWSJSONSpace([]byte(v), end)
+		start := skipOpenAIWSJSONSpace([]byte(v), colon+1)
+		if v[start] != 'n' && v[name:end].identifier(&scratch) == key {
+			return true
+		}
+		i = skipOpenAIWSJSONSpace([]byte(v), v.valueEnd(start))
+	}
+	return false
+}
+
 // Compatible upstreams sometimes supply one object in an array field.
 func (v rawJSONView) any(hasContent func(rawJSONView) bool) bool {
 	if len(v) == 0 || v[0] != '[' {

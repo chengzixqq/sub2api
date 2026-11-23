@@ -24,6 +24,14 @@ func resolveUpstreamResponseReadLimit(cfg *config.Config) int64 {
 }
 
 func readUpstreamResponseBodyLimited(reader io.Reader, maxBytes int64) ([]byte, error) {
+	body, err := readUpstreamResponseBodyPartial(reader, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+func readUpstreamResponseBodyPartial(reader io.Reader, maxBytes int64) ([]byte, error) {
 	if reader == nil {
 		return nil, errors.New("response body is nil")
 	}
@@ -33,10 +41,16 @@ func readUpstreamResponseBodyLimited(reader io.Reader, maxBytes int64) ([]byte, 
 
 	body, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
 	if err != nil {
-		return nil, err
+		return body[:min(int64(len(body)), maxBytes)], err
 	}
 	if int64(len(body)) > maxBytes {
-		return nil, fmt.Errorf("%w: limit=%d", ErrUpstreamResponseBodyTooLarge, maxBytes)
+		prefix := body[:maxBytes]
+		// The lookahead distinguishes a complete standalone CR from a CRLF
+		// whose LF falls beyond the limit. Expose only complete line endings.
+		if prefix[len(prefix)-1] == '\r' && body[maxBytes] == '\n' {
+			prefix = prefix[:len(prefix)-1]
+		}
+		return prefix, fmt.Errorf("%w: limit=%d", ErrUpstreamResponseBodyTooLarge, maxBytes)
 	}
 	return body, nil
 }
@@ -47,18 +61,38 @@ type TooLargeWriter func(c *gin.Context)
 // ReadUpstreamResponseBody 读取上游非流式响应体。
 // 超限时自动记录 ops error 并调用 onTooLarge 向客户端写错误。
 func ReadUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter) ([]byte, error) {
-	maxBytes := resolveUpstreamResponseReadLimit(cfg)
-	body, err := readUpstreamResponseBodyLimited(reader, maxBytes)
-	if err != nil {
-		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
-			setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
-			if onTooLarge != nil {
-				onTooLarge(c)
-			}
-		}
-		return nil, err
+	return readUpstreamResponseBody(reader, cfg, c, onTooLarge, nil)
+}
+
+// Inspect the bounded prefix synchronously on error and release it before
+// returning. Ordinary readers receive only the existing error response.
+func readUpstreamResponseBody(reader io.Reader, cfg *config.Config, c *gin.Context, onTooLarge TooLargeWriter, onReadError func([]byte, error)) ([]byte, error) {
+	body, err := readUpstreamResponseBodyPartial(reader, resolveUpstreamResponseReadLimit(cfg))
+	if err == nil {
+		return body, nil
 	}
-	return body, nil
+	if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+		setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
+		if onTooLarge != nil {
+			onTooLarge(c)
+		}
+	}
+	if onReadError != nil {
+		onReadError(body, err)
+	}
+	return nil, err
+}
+
+func (s *OpenAIGatewayService) readBufferedOpenAIResponse(reader io.Reader, c *gin.Context, account *Account) ([]byte, int, error) {
+	count := 0
+	body, err := readUpstreamResponseBody(reader, s.cfg, c, openAITooLargeError, func(prefix []byte, err error) {
+		if len(prefix) == 0 || !openAINativeSearchPriced(c, account) || !mayContainNativeSearch(prefix) {
+			return
+		}
+		payload := openAIWSPayloadStringView(prefix)
+		count = countBufferedOpenAISearch(payload, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
+	})
+	return body, count, err
 }
 
 // anthropicTooLargeError 以 Anthropic Messages API 格式写入超限错误。

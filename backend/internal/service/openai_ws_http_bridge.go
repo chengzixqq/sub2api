@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -430,6 +431,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	grokCacheIdentity string,
 	turn int,
 	writeClientMessage func([]byte) error,
+	turnHooks ...*OpenAIWSIngressHooks,
 ) (*OpenAIForwardResult, error) {
 	if s == nil {
 		return nil, errors.New("service is nil")
@@ -656,6 +658,15 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	searchCount := 0
 	searchSeen := make(map[string]struct{})
 	imageCounter := newOpenAIImageOutputCounter()
+	var searches openAINativeSearchCounter
+	var searchObserver *openAINativeSearchCounter
+	var hooks *OpenAIWSIngressHooks
+	if len(turnHooks) > 0 {
+		hooks = turnHooks[0]
+	}
+	if hooks.nativeSearchPriced(c, account, turn) {
+		searchObserver = &searches
+	}
 	var firstTokenMs *int
 	reqStream := openAIWSPayloadBoolFromRaw(body, "stream", true)
 	eventCount := 0
@@ -667,6 +678,8 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	upstreamTerminalEvent := ""
 	sawDone := false
 	wroteDownstream := false
+	clientContentDelivered := false
+	pendingContentIndex := -1 // first staged frame carrying actual output
 	pendingClientMessages := make([][]byte, 0, 4)
 	pendingClientMessageBytes := int64(0)
 	capacityFailoverSuppressedLogged := false
@@ -690,6 +703,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	resultWithUsage := func() *OpenAIForwardResult {
 		imageCount := imageCounter.Count()
 		result := &OpenAIForwardResult{
+			ClientContentDelivered:        clientContentDelivered,
 			RequestID:                     responseID,
 			Usage:                         usage,
 			Model:                         originalModel,
@@ -703,6 +717,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			Stream:                        reqStream,
 			OpenAIWSMode:                  true,
 			SearchCount:                   searchCount,
+			NativeSearchCount:             searches.count(),
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
 			Duration:                      time.Since(turnStart),
@@ -755,7 +770,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		messages := append(pendingClientMessages, clientMessage)
 		pendingClientMessages = nil
 		pendingClientMessageBytes = 0
-		for _, message := range messages {
+		for i, message := range messages {
 			if err := writeClientMessage(message); err != nil {
 				if isOpenAIWSClientDisconnectError(err) {
 					clientDisconnected = true
@@ -764,6 +779,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				return fmt.Errorf("write synthesized websocket response.failed: %w", err)
 			}
 			wroteDownstream = true
+			clientContentDelivered = clientContentDelivered || i == pendingContentIndex
 		}
 		markOpenAIWSClientVisibleFailure(c, "response.failed", clientMessage)
 		return nil
@@ -833,7 +849,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		if eventType == "error" || eventType == "response.failed" {
 			markOpenAICyberPolicyEvent(c, upstreamMessage, http.StatusOK, &usage)
 		}
-		imageCounter.AddSSEData(upstreamMessage)
+		inspectContent := !clientDisconnected && !clientContentDelivered && pendingContentIndex < 0 && officialOpenAIResponses && openAIUsageNeedsDelivery(&usage) && imageCounter.Count() == 0
+		originalFrame := upstreamMessage
+		hasContent := imageCounter.observeResponsesEvent(upstreamMessage, searchObserver, eventType, inspectContent)
 
 		if needModelReplace && len(mappedModelBytes) > 0 && openAIWSEventMayContainModel(eventType) && strings.Contains(trimmedData, mappedModel) {
 			upstreamMessage = replaceOpenAIWSMessageModel(upstreamMessage, mappedModel, originalModel)
@@ -898,7 +916,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				} else {
 					failoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, true, resp.Header.Get("x-request-id"), upstreamMessage, errMessage, mappedModel, resp.Header)
 				}
-				if searchCount > 0 {
+				if searchCount > 0 || searches.count() > 0 {
 					return resultWithUsage(), failoverErr
 				}
 				return nil, failoverErr
@@ -940,7 +958,13 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			commitStagedMessages := !stageBeforeSemanticOutput ||
 				openAIStreamDataStartsClientOutput(string(clientMessage), eventType) ||
 				isOpenAIWSTerminalEvent(eventType)
+			if inspectContent && !bytes.Equal(originalFrame, clientMessage) {
+				hasContent = openAIWSFrameHasContent(eventType, clientMessage)
+			}
 			if stageBeforeSemanticOutput && !commitStagedMessages && !isKeepalive {
+				if hasContent {
+					pendingContentIndex = len(pendingClientMessages)
+				}
 				if pendingClientMessageBytes+int64(len(clientMessage)) > openAIFirstOutputStageMaxBytes {
 					return nil, s.newOpenAIStreamFailoverError(
 						c,
@@ -964,7 +988,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 					pendingClientMessageBytes = 0
 				}
 				messages = append(messages, clientMessage)
-				for _, message := range messages {
+				for i, message := range messages {
 					if err := writeClientMessage(message); err != nil {
 						if isOpenAIWSClientDisconnectError(err) {
 							clientDisconnected = true
@@ -985,6 +1009,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 						)
 					}
 					if !isKeepalive {
+						clientContentDelivered = clientContentDelivered || i == pendingContentIndex || (i == len(messages)-1 && hasContent)
 						wroteDownstream = true
 					}
 				}
@@ -1039,7 +1064,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		streamErr := fmt.Errorf("read upstream http bridge stream: %w", err)
 		if turn == 1 && !clientDisconnected && !wroteDownstream {
 			failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, streamErr, true)
-			if searchCount > 0 {
+			if searchCount > 0 || searches.count() > 0 {
 				return resultWithUsage(), failoverErr
 			}
 			return nil, failoverErr
@@ -1052,7 +1077,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 	if turn == 1 && !clientDisconnected && !wroteDownstream {
 		failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, terminalErr, true)
-		if searchCount > 0 {
+		if searchCount > 0 || searches.count() > 0 {
 			return resultWithUsage(), failoverErr
 		}
 		return nil, failoverErr
