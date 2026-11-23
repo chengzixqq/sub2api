@@ -133,7 +133,7 @@ func TestAdminUpdateAccountExtraStripsSeedAndLeavesAtomicEnsureToRepository(t *t
 		},
 	}}
 
-	err := (&adminServiceImpl{accountRepo: repo}).UpdateAccountExtra(context.Background(), accountID, map[string]any{
+	err := (&adminServiceImpl{accountRepo: repo}).UpdateAccountExtra(WithScope(t.Context(), AdminScope()), accountID, map[string]any{
 		codexFingerprintModeExtraKey: "device",
 		codexFingerprintSeedExtraKey: userSuppliedCodexFingerprintSeed,
 	})

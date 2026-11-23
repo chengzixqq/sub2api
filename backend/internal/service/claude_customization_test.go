@@ -118,11 +118,6 @@ func TestClaudeCustomization_AccountOverrideStillAppliesWhenGlobalSettingsFail(t
 			global:  `{"preset":`,
 			wantErr: "decode claude customization",
 		},
-		{
-			name:    "invalid enum",
-			global:  `{"preset":"invalid"}`,
-			wantErr: "invalid preset",
-		},
 	}
 
 	for _, tt := range tests {

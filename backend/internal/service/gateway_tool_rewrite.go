@@ -288,7 +288,7 @@ func applyToolsLastCacheBreakpoint(body []byte) []byte {
 		return body
 	}
 
-	if existingCC.Exists() {
+	if existingCC.Exists() && existingCC.Type != gjson.Null {
 		if next, err := sjson.SetBytes(body, fmt.Sprintf("tools.%d.cache_control.ttl", lastIdx), claude.DefaultCacheControlTTL); err == nil {
 			body = next
 		}
@@ -310,21 +310,20 @@ func isDeferredLoadingTool(tool gjson.Result) bool {
 // stripDeferredToolCacheControl removes the cache marker Anthropic rejects on
 // deferred tools. Only the literal JSON boolean true enables deferred loading.
 func stripDeferredToolCacheControl(body []byte) []byte {
-	tools := gjson.GetBytes(body, "tools")
+	tools := gjson.Get(openAIWSPayloadStringView(body), "tools")
 	if !tools.IsArray() {
 		return body
 	}
-	idx := 0
+	var batch cacheControlBatch
 	tools.ForEach(func(_, tool gjson.Result) bool {
 		if isDeferredLoadingTool(tool) && tool.Get("cache_control").Exists() {
-			if next, err := sjson.DeleteBytes(body, fmt.Sprintf("tools.%d.cache_control", idx)); err == nil {
-				body = next
-			}
+			b := cacheControlBlock{block: tool}
+			b.deleteField(body, "cache_control")
+			batch[cacheTools] = append(batch[cacheTools], b)
 		}
-		idx++
 		return true
 	})
-	return body
+	return batch.apply(body)
 }
 
 // restoreToolNamesInBytes 对 bytes chunk 做逆向还原：假名 → 真名。

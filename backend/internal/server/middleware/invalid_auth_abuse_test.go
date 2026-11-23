@@ -5,6 +5,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,17 +45,28 @@ func TestAPIKeyAuthInvalidAbuseReturns429BeforeRepository(t *testing.T) {
 		httpRequest(t, "/v1/messages", "Basic malformed", ""),
 		httpRequest(t, "/v1/messages", "", "random-invalid-key"),
 	}
-	for _, req := range requests {
+	for i, req := range requests {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		require.NotEqual(t, http.StatusTooManyRequests, w.Code)
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+		message := "invalid x-api-key"
+		if i < 2 {
+			message = "x-api-key header is required"
+		}
+		require.JSONEq(t, fmt.Sprintf(`{"type":"error","error":{"type":"authentication_error","message":%q}}`, message), w.Body.String())
+		wantReason := IngressRejectInvalidAPIKey
+		if i == 0 {
+			wantReason = IngressRejectAPIKeyRequired
+		}
+		require.Equal(t, wantReason, reason)
 	}
 
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httpRequest(t, "/v1/messages", "", "another-random-key"))
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
 	require.Equal(t, "60", w.Header().Get("Retry-After"))
-	require.Contains(t, w.Body.String(), "INVALID_AUTH_RATE_LIMITED")
+	require.JSONEq(t, `{"type":"error","error":{"type":"rate_limit_error","message":"Too many invalid authentication attempts; retry later"}}`, w.Body.String())
+	require.Equal(t, uint64(3), svc.InvalidAuthAbuseHealth().Recorded)
 	require.Equal(t, IngressRejectInvalidAuthRateLimited, reason)
 	require.Equal(t, 1, repoCalls, "rate-limited request must not reach the repository")
 }

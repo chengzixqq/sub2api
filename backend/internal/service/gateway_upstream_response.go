@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/tidwall/gjson"
@@ -509,10 +510,12 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		}
 	}
 	if shouldDisable {
-		return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}
+		return nil, (&UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: body}).withOfficialHeaders(c, resp.Header)
 	}
 
 	MarkResponseCommitted(c)
+	policy := cachedClaudeResponsePolicy(c)
+	applyOfficialResponseHeaders(c, policy, resp.Header)
 
 	// 记录上游错误响应体摘要便于排障（可选：由配置控制；不回显到客户端）
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -536,7 +539,9 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		writeGatewayErrorResponse(c, status, errType, errMsg)
+		selectResponseRequestID(c, policy, resp.Header, nil)
+		preserveGatewayErrorFrame(c, errType, errMsg)
+		WriteAnthropicError(c, status, errType, errType, "", errMsg, FilledAnthropicRequestID(c), false)
 
 		summary := safeUpstreamMsg
 		if summary == "" {
@@ -570,7 +575,8 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 			}
 			writeGatewayErrorResponse(c, http.StatusBadRequest, errType, message)
 		} else {
-			c.Data(http.StatusBadRequest, "application/json", redactUpstreamResponseBodyForClient(c, body))
+			clientBody := redactUpstreamResponseBodyForClient(c, body)
+			c.Data(http.StatusBadRequest, "application/json", fillRequestID(c, policy, resp.Header, clientBody))
 		}
 		summary := safeUpstreamMsg
 		if summary == "" {
@@ -614,6 +620,7 @@ func (s *GatewayService) handleErrorResponse(ctx context.Context, resp *http.Res
 	}
 
 	// 返回自定义错误响应
+	selectResponseRequestID(c, policy, resp.Header, nil)
 	writeGatewayErrorResponse(c, statusCode, errType, errMsg)
 
 	if safeUpstreamMsg == "" {
@@ -662,6 +669,7 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 	s.handleRetryExhaustedSideEffects(ctx, resp, account, requestedModel...)
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), resp.Header, nil)
 
 	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -719,7 +727,8 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		"upstream_error",
 		"Upstream request failed after retries",
 	); matched {
-		writeGatewayErrorResponse(c, status, errType, errMsg)
+		preserveGatewayErrorFrame(c, errType, errMsg)
+		WriteAnthropicError(c, status, errType, errType, "", errMsg, FilledAnthropicRequestID(c), false)
 
 		summary := safeUpstreamMsg
 		if summary == "" {
@@ -744,23 +753,17 @@ func gatewaySSEStarted(c *gin.Context) bool {
 	return c.Writer.Written() && strings.HasPrefix(strings.ToLower(c.Writer.Header().Get("Content-Type")), "text/event-stream")
 }
 
+func preserveGatewayErrorFrame(c *gin.Context, errType, message string) {
+	if IsAnthropicMessagesRequest(c) && gatewaySSEStarted(c) {
+		PreserveOpsErrorResponse(c, AnthropicErrorWithCodeAndRequestID(errType, "", message, ""), "event:error\ndata:")
+	}
+}
+
 // A concurrency or user-message queue may have already flushed a keepalive.
 // In that case the HTTP status is fixed, and a JSON body would be lost by SSE clients.
 func writeGatewayErrorResponse(c *gin.Context, status int, errType, message string) {
-	payload := gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	}
-	if gatewaySSEStarted(c) {
-		MarkOpsStreamError(c, errType, message, status)
-		c.SSEvent("error", payload)
-		c.Writer.Flush()
-		return
-	}
-	c.JSON(status, payload)
+	preserveGatewayErrorFrame(c, errType, message)
+	writeAnthropicError(c, status, errType, message)
 }
 
 // streamingResult 流式响应结果
@@ -778,7 +781,7 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 ||
 		u.CacheCreationInputTokens > 0 || u.CacheReadInputTokens > 0 ||
 		u.CacheCreation5mTokens > 0 || u.CacheCreation1hTokens > 0 ||
-		u.ImageInputTokens > 0 || u.ImageCacheReadTokens > 0 || u.ImageOutputTokens > 0 || u.HasAdvisorUsage()
+		u.ImageInputTokens > 0 || u.ImageCacheReadTokens > 0 || u.ImageOutputTokens > 0 || u.HasAdvisorUsage() || u.HasCompactionUsage()
 }
 
 // partialStreamUsageResult 在流式转发中途出错时，把已观测到 usage 的部分结果包装为
@@ -847,19 +850,32 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	// 更新5h窗口状态
 	s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 
-	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	policy := cachedClaudeResponsePolicy(c)
+	prepared := false
+	prepareHeaders := func() {
+		if prepared {
+			return
+		}
+		prepared = true
+		if s.responseHeaderFilter != nil {
+			responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		}
+
+		// 设置SSE响应头
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+
+		// 透传其他响应头
+		if v := resp.Header.Get("x-request-id"); v != "" {
+			c.Header("x-request-id", v)
+		}
+		prepareOfficialResponse(c, policy, resp.Header, nil)
 	}
-
-	// 设置SSE响应头
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	// 透传其他响应头
-	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
+	// A legacy allowlist may include the same headers as the switches.
+	if !officialResponseEnabled(policy) || c.Writer.Written() {
+		prepareHeaders()
 	}
 
 	w := c.Writer
@@ -958,11 +974,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	}
 
 	// 仅发送一次错误事件，避免多次写入导致协议混乱（写失败时尽力通知客户端）。
-	// 事件格式遵循 Anthropic SSE 标准：{"type":"error","error":{"type":<reason>,"message":<message>}}
-	// 这样 Anthropic SDK / Claude Code 等客户端能按标准 error 类型解析，UI 能显示具体错误文案，
-	// 服务端 ExtractUpstreamErrorMessage 也能从透传的 body 中提取 message。
+	// 客户端使用官方错误类型；Ops 单独记录终止原因。
 	errorEventSent := false
-	sendErrorEvent := func(reason, message string) {
+	sendErrorEvent := func(status int, reason, message string) {
 		if errorEventSent {
 			return
 		}
@@ -970,19 +984,14 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		if message == "" {
 			message = reason
 		}
-		body, err := json.Marshal(map[string]any{
-			"type": "error",
-			"error": map[string]string{
-				"type":    reason,
-				"message": message,
-			},
-		})
-		if err != nil {
-			// json.Marshal 不可能在已知 string-only 输入上失败，保守 fallback
-			body = []byte(fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":%q}}`, reason, message))
-		}
-		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", body)
+		// The handler used to record a 502 upstream_error in a second frame.
+		// Keep that Ops classification and the terminal cause with the first frame.
+		markOpsAnthropicTerminalError(c, reason, AnthropicErrorWithCodeAndRequestID(reason, "", message, ""))
+		wireType := MessagesErrorType(c, status, "upstream_error")
+		prepareHeaders()
+		_, _ = fmt.Fprint(w, buildAnthropicStreamErrorSSEWithID(wireType, message, FilledAnthropicRequestID(c)))
 		flusher.Flush()
+		MarkResponseCommitted(c)
 	}
 
 	needModelReplace := originalModel != mappedModel
@@ -993,6 +1002,12 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 	noopDeltaKeepaliveBlockIndex := -1
 	noopDeltaKeepaliveDeltaType := ""
 
+	// An early TTL rewrite is already visible when message_delta first reports
+	// compaction. Keep the upstream counters for settlement in that case.
+	var pendingRawUsage *ClaudeUsage
+	if _, override := s.resolveCacheTTLUsageOverrideTarget(ctx, account); override || responseUsesCompactionBeta(c, resp) {
+		pendingRawUsage = &ClaudeUsage{}
+	}
 	pendingEventLines := make([]string, 0, 4)
 
 	processSSEEvent := func(lines []string) ([]string, string, *sseUsagePatch, error) {
@@ -1124,17 +1139,27 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 
 		// Cache TTL Override: 重写 SSE 事件中的 cache_creation 分类。
 		// 账号级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
+		hasCompaction := usage.HasCompactionUsage()
+		usagePatch := s.extractSSEUsagePatch(event)
+		if pendingRawUsage != nil && (eventType == "message_start" || eventType == "message_delta") {
+			mergeSSEUsagePatch(pendingRawUsage, usagePatch)
+			if hasCompaction {
+				pendingRawUsage.IterationUsage = usage.IterationUsage
+				*usage = *pendingRawUsage
+				pendingRawUsage = nil
+			}
+		}
 		if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
 			if eventType == "message_start" {
 				if msg, ok := event["message"].(map[string]any); ok {
 					if u, ok := msg["usage"].(map[string]any); ok {
-						eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
+						eventChanged = rewriteWireCacheCreationJSON(u, overrideTarget, hasCompaction) || eventChanged
 					}
 				}
 			}
 			if eventType == "message_delta" {
 				if u, ok := event["usage"].(map[string]any); ok {
-					eventChanged = rewriteCacheCreationJSON(u, overrideTarget) || eventChanged
+					eventChanged = rewriteWireCacheCreationJSON(u, overrideTarget, hasCompaction) || eventChanged
 				}
 			}
 		}
@@ -1156,7 +1181,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			}
 		}
 
-		usagePatch := s.extractSSEUsagePatch(event)
+		if eventChanged && !hasCompaction {
+			usagePatch = s.extractSSEUsagePatch(event)
+		}
 		if anthropicStreamEventIsTerminal(eventName, dataLine) {
 			sawTerminalEvent = true
 		}
@@ -1216,7 +1243,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				// 客户端未断开，正常的错误处理
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.gateway", "SSE line too long: account=%d max_size=%d error=%v", account.ID, maxLineSize, ev.err)
-					sendErrorEvent("response_too_large", fmt.Sprintf("upstream SSE line exceeded %d bytes", maxLineSize))
+					sendErrorEvent(http.StatusBadGateway, "response_too_large", fmt.Sprintf("upstream SSE line exceeded %d bytes", maxLineSize))
 					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, ev.err
 				}
 				// 上游中途读错误（unexpected EOF / connection reset 等，常见于 HTTP/2 GOAWAY）：
@@ -1235,20 +1262,20 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 							"message": disconnectMsg,
 						},
 					})
-					return nil, &UpstreamFailoverError{
+					return nil, (&UpstreamFailoverError{
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           body,
 						RetryableOnSameAccount: true,
 						Reason:                 GatewayFailureReasonStreamReadError,
-					}
+					}).withOfficialHeaders(c, resp.Header)
 				}
-				sendErrorEvent("stream_read_error", disconnectMsg)
+				sendErrorEvent(http.StatusBadGateway, "stream_read_error", disconnectMsg)
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 			line := ev.line
 			if err := guard.observeLine(line, maxFrameBytes); err != nil {
 				if !clientDisconnected {
-					sendErrorEvent("invalid_upstream_sse", "upstream returned an invalid Anthropic SSE sequence")
+					sendErrorEvent(http.StatusBadGateway, "invalid_upstream_sse", "upstream returned an invalid Anthropic SSE sequence")
 				}
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
 			}
@@ -1272,6 +1299,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				for _, block := range outputBlocks {
 					if !clientDisconnected {
 						restored := reverseToolNamesIfPresentString(c, block)
+						prepareHeaders()
 						if _, werr := io.WriteString(w, restored); werr != nil {
 							clientDisconnected = true
 							logger.LegacyPrintf("service.gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
@@ -1315,7 +1343,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
-			sendErrorEvent("stream_timeout", fmt.Sprintf("upstream stream idle for %s", streamInterval))
+			sendErrorEvent(http.StatusGatewayTimeout, "stream_timeout", fmt.Sprintf("upstream stream idle for %s", streamInterval))
 			return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout: %w (interval=%s)", ErrUpstreamIdleTimeout, streamInterval)
 
 		case <-keepaliveCh:
@@ -1332,6 +1360,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					keepaliveBlock = block
 				}
 			}
+			prepareHeaders()
 			if _, werr := fmt.Fprint(w, keepaliveBlock); werr != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.gateway", "Client disconnected during keepalive ping, continuing to drain upstream for billing")
@@ -1542,7 +1571,7 @@ func parseSSEUsageInt(value any) (int, bool) {
 // applyCacheTTLOverride 将所有 cache creation tokens 归入指定的 TTL 类型。
 // target 为 "5m" 或 "1h"。返回 true 表示发生了变更。
 func applyCacheTTLOverride(usage *ClaudeUsage, target string) bool {
-	transformExecutorIterations(usage, func(u *ClaudeUsage) { applyCacheTTLOverride(u, target) })
+	transformExecutorIterations(usage, func(_ string, u *ClaudeUsage) { applyCacheTTLOverride(u, target) })
 	total := max(usage.CacheCreationInputTokens, 0)
 	if total == 0 {
 		total = max(usage.CacheCreation5mTokens, 0) + max(usage.CacheCreation1hTokens, 0)
@@ -1562,6 +1591,18 @@ func applyCacheTTLOverride(usage *ClaudeUsage, target string) bool {
 		usage.CacheCreation1hTokens = 0
 	}
 	return true
+}
+
+func rewriteWireCacheCreationJSON(usageObj map[string]any, target string, hasCompaction bool) bool {
+	changed := rewriteCacheCreationJSON(usageObj, target)
+	if hasCompaction {
+		entries, _ := usageObj["iterations"].([]any)
+		for _, entry := range entries {
+			row, _ := entry.(map[string]any)
+			changed = rewriteCacheCreationJSON(row, target) || changed
+		}
+	}
+	return changed
 }
 
 // rewriteCacheCreationJSON 在 JSON usage 对象中重写 cache_creation 嵌套对象的 TTL 分类。
@@ -1588,6 +1629,14 @@ func rewriteCacheCreationJSON(usageObj map[string]any, target string) bool {
 	return true
 }
 
+func rewriteResponseCacheTTL(body []byte, path string, usage *ClaudeUsage, target string) []byte {
+	if applyCacheTTLOverride(usage, target) && gjson.GetBytes(body, path).IsObject() {
+		body, _ = sjson.SetBytes(body, path+".ephemeral_5m_input_tokens", usage.CacheCreation5mTokens)
+		body, _ = sjson.SetBytes(body, path+".ephemeral_1h_input_tokens", usage.CacheCreation1hTokens)
+	}
+	return body
+}
+
 func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context, account *Account) (string, bool) {
 	if account == nil {
 		return "", false
@@ -1599,6 +1648,26 @@ func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context,
 		return cacheTTLTarget5m, true
 	}
 	return "", false
+}
+
+func responseUsesCompactionBeta(c *gin.Context, resp *http.Response) bool {
+	req := resp.Request
+	if req == nil && c != nil {
+		req = c.Request
+	}
+	if req == nil {
+		return false
+	}
+	for name, values := range req.Header {
+		if strings.EqualFold(name, "anthropic-beta") {
+			for _, value := range values {
+				if containsBetaToken(value, claude.BetaCompact) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
@@ -1621,7 +1690,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
-			return nil, invalidNonStreamingJSONFailoverError(ctx, s.rateLimitService, resp, account, body, err, mappedModel)
+			return nil, invalidNonStreamingJSONFailoverError(ctx, s.rateLimitService, resp, account, body, err, mappedModel).withOfficialHeaders(c, resp.Header)
 		}
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
@@ -1643,15 +1712,22 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 
 	// Cache TTL Override: 重写 non-streaming 响应中的 cache_creation 分类。
 	// 账号级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
-	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
-		if changed := applyCacheTTLOverride(&response.Usage, overrideTarget); changed && gjson.GetBytes(body, "usage.cache_creation").IsObject() {
-			// 同步更新 body JSON 中的嵌套 cache_creation 对象
-			if newBody, err := sjson.SetBytes(body, "usage.cache_creation.ephemeral_5m_input_tokens", response.Usage.CacheCreation5mTokens); err == nil {
-				body = newBody
+	if target, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
+		wire := response.Usage
+		if response.Usage.HasCompactionUsage() {
+			for i, row := range gjson.GetBytes(body, "usage.iterations").Array() {
+				if !row.Get("cache_creation").IsObject() {
+					continue
+				}
+				entry := ClaudeUsage{CacheCreationInputTokens: int(row.Get("cache_creation_input_tokens").Int()),
+					CacheCreation5mTokens: int(row.Get("cache_creation.ephemeral_5m_input_tokens").Int()),
+					CacheCreation1hTokens: int(row.Get("cache_creation.ephemeral_1h_input_tokens").Int())}
+				body = rewriteResponseCacheTTL(body, fmt.Sprintf("usage.iterations.%d.cache_creation", i), &entry, target)
 			}
-			if newBody, err := sjson.SetBytes(body, "usage.cache_creation.ephemeral_1h_input_tokens", response.Usage.CacheCreation1hTokens); err == nil {
-				body = newBody
-			}
+		}
+		body = rewriteResponseCacheTTL(body, "usage.cache_creation", &wire, target)
+		if !response.Usage.HasCompactionUsage() {
+			response.Usage = wire
 		}
 	}
 
@@ -1662,6 +1738,7 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	body = restoreCompositeClientModel(ctx, body)
 
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), resp.Header, nil)
 
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {

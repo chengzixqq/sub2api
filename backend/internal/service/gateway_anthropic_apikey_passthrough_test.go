@@ -343,7 +343,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BearerAuthScheme(t *testing.T
 	require.Empty(t, getHeaderRaw(msgReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(msgReq.Header, "cookie"))
 
-	countReq, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
+	countReq, _, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		context.Background(), c, account, []byte(`{"model":"gpt-oss:20b","messages":[]}`), "ollama-key",
 	)
 	require.NoError(t, err)
@@ -820,7 +820,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StripsDeferredToolCacheContro
 	require.True(t, gjson.GetBytes(wireBody, "tools.2.cache_control").Exists())
 	require.True(t, gjson.GetBytes(wireBody, "tools.3.cache_control").Exists())
 
-	countReq, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "k")
+	countReq, _, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "k")
 	require.NoError(t, err)
 	countBody, err := io.ReadAll(countReq.Body)
 	require.NoError(t, err)

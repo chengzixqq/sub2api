@@ -1003,23 +1003,13 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	subscription := input.Subscription
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
+	result = result.withCompactionUsage(ctx)
 
-	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
-	// 用于粘性会话切换时的特殊计费处理
-	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
+	inputBeforeCachePolicy := result.Usage.InputTokens
+	cacheTTLOverridden := s.applyBillingCachePolicy(ctx, &result.Usage, account, input.ForceCacheBilling)
+	if moved := inputBeforeCachePolicy - result.Usage.InputTokens; moved > 0 {
 		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (account=%d)",
-			result.Usage.InputTokens, account.ID)
-		transformExecutorIterations(&result.Usage, func(u *ClaudeUsage) { u.CacheReadInputTokens += u.InputTokens; u.InputTokens = 0 })
-		result.Usage.CacheReadInputTokens += result.Usage.InputTokens
-		result.Usage.InputTokens = 0
-	}
-
-	// Cache TTL Override: 确保计费时 token 分类与账号设置一致。
-	// 账号级设置优先；全局 1h 请求注入开启时，默认把 usage 计费归回 5m。
-	cacheTTLOverridden := false
-	if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
-		applyCacheTTLOverride(&result.Usage, overrideTarget)
-		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
+			moved, account.ID)
 	}
 
 	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, apiKey, user, input.PricingAt)
@@ -1251,6 +1241,79 @@ func (s *GatewayService) CacheStoragePriced(ctx context.Context, input *RecordUs
 	return s.cacheStoragePrice(input.Result, billingModel) > 0
 }
 
+// Sticky-session subsidies cover message input only; compactions retain their
+// upstream input and cache buckets and are billed at their ordinary rates.
+func moveExecutorInputToCache(usage *ClaudeUsage) {
+	toCache := usage.InputTokens
+	transformExecutorIterations(usage, func(typ string, u *ClaudeUsage) {
+		if typ == "compaction" {
+			toCache -= u.InputTokens
+			return
+		}
+		u.CacheReadInputTokens += u.InputTokens
+		u.InputTokens = 0
+	})
+	usage.InputTokens -= toCache
+	usage.CacheReadInputTokens += toCache
+}
+
+// The settlement aggregate already includes compactions. Override only
+// message cache writes for a 5m target. A 1h target upgrades every write.
+func applyBillingCacheTTLOverride(usage *ClaudeUsage, target string) {
+	if target == "1h" || !usage.HasCompactionUsage() {
+		applyCacheTTLOverride(usage, target)
+		return
+	}
+	var compact UsageTokens
+	transformExecutorIterations(usage, func(typ string, entry *ClaudeUsage) {
+		if typ == "message" {
+			applyCacheTTLOverride(entry, target)
+			return
+		}
+		compact.CacheCreationTokens += entry.CacheCreationInputTokens
+		compact.CacheCreation5mTokens += entry.CacheCreation5mTokens
+		compact.CacheCreation1hTokens += entry.CacheCreation1hTokens
+	})
+	message := ClaudeUsage{
+		CacheCreationInputTokens: usage.CacheCreationInputTokens - compact.CacheCreationTokens,
+		CacheCreation5mTokens:    usage.CacheCreation5mTokens - compact.CacheCreation5mTokens,
+		CacheCreation1hTokens:    usage.CacheCreation1hTokens - compact.CacheCreation1hTokens,
+	}
+	applyCacheTTLOverride(&message, target)
+	usage.CacheCreation5mTokens = message.CacheCreation5mTokens + compact.CacheCreation5mTokens
+	usage.CacheCreation1hTokens = message.CacheCreation1hTokens + compact.CacheCreation1hTokens
+}
+
+// Apply executor cache policies to both the billable aggregate and its iterations.
+func (s *GatewayService) applyBillingCachePolicy(ctx context.Context, usage *ClaudeUsage, account *Account, forceCache bool) bool {
+	if forceCache && usage.InputTokens > 0 {
+		moveExecutorInputToCache(usage)
+	}
+	target, override := s.resolveCacheTTLUsageOverrideTarget(ctx, account)
+	if state := usage.IterationUsage; state != nil && state.originalExecutor != nil && (forceCache || override) {
+		// Compare both interpretations after the same account policies.
+		original := *state.originalExecutor
+		if forceCache {
+			original.CacheReadTokens += original.InputTokens
+			original.InputTokens = 0
+		}
+		if override {
+			scalar := claudeUsageFromTokens(original)
+			applyCacheTTLOverride(&scalar, target)
+			original.CacheCreation5mTokens = scalar.CacheCreation5mTokens
+			original.CacheCreation1hTokens = scalar.CacheCreation1hTokens
+		}
+		updated := *state
+		updated.originalExecutor = &original
+		usage.IterationUsage = &updated
+	}
+	if override {
+		applyBillingCacheTTLOverride(usage, target)
+		return usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0
+	}
+	return false
+}
+
 // QuoteUsageCost 按与 RecordUsage 相同的倍率、计费模型与定价计算 input.Result 的应付金额（倍率后 USD），不记录也不扣费。
 func (s *GatewayService) QuoteUsageCost(ctx context.Context, input *RecordUsageInput) float64 {
 	user := input.User
@@ -1259,7 +1322,11 @@ func (s *GatewayService) QuoteUsageCost(ctx context.Context, input *RecordUsageI
 	}
 	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, input.APIKey, user, input.PricingAt)
 	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, input.Result, input.ChannelUsageFields)
-	cost := s.calculateRecordUsageCost(ctx, input.Result, input.APIKey, billingModel, multiplier, imageMultiplier, pricingAt)
+	result := input.Result.withCompactionUsage(ctx)
+	if result != input.Result {
+		s.applyBillingCachePolicy(ctx, &result.Usage, input.Account, input.ForceCacheBilling)
+	}
+	cost := s.calculateRecordUsageCost(ctx, result, input.APIKey, billingModel, multiplier, imageMultiplier, pricingAt)
 	if cost == nil {
 		return 0
 	}
@@ -1548,39 +1615,20 @@ func (usage ClaudeUsage) billingUsageTokens() UsageTokens {
 	return tokens
 }
 
-// calculateTokenCost 计算 Token 计费：路径选择（分组/渠道定价 → 内置定价）
-// 统一交给 BillingService.CalculateTokenCostForRequest，与模型广场的阶梯表查询同源。
-func (s *GatewayService) calculateExecutorTokenCost(
-	ctx context.Context,
-	result *ForwardResult,
-	apiKey *APIKey,
-	billingModel string,
-	multiplier float64,
-	pricingAt time.Time,
-) *CostBreakdown {
-	tokens := result.Usage.billingUsageTokens()
-
-	var resolved *ResolvedPricing
-	if s.resolver != nil && apiKey.Group != nil {
-		gid := apiKey.Group.ID
-		resolved = s.resolver.Resolve(ctx, PricingInput{Model: billingModel, GroupID: &gid, Group: apiKey.Group})
+// Build the executor request once so compacted components share the same policy.
+func (s *GatewayService) executorTokenCostRequest(ctx context.Context, result *ForwardResult, key *APIKey, model string, multiplier float64, at time.Time) TokenCostRequest {
+	return TokenCostRequest{
+		Ctx: ctx, Model: model, Group: key.Group, Tokens: result.Usage.billingUsageTokens(),
+		RateMultiplier: multiplier, PricingAt: at, ServiceTier: optionalStringValue(result.ServiceTier),
+		ReasoningEffort: optionalStringValue(result.ReasoningEffort), Resolver: s.resolver,
 	}
+}
 
-	cost, err := s.billingService.CalculateTokenCostForRequest(TokenCostRequest{
-		Ctx:             ctx,
-		Model:           billingModel,
-		Group:           apiKey.Group,
-		Tokens:          tokens,
-		RateMultiplier:  multiplier,
-		PricingAt:       pricingAt,
-		ServiceTier:     optionalStringValue(result.ServiceTier),
-		ReasoningEffort: optionalStringValue(result.ReasoningEffort),
-		Resolver:        s.resolver,
-		Resolved:        resolved,
-	})
+func (s *GatewayService) executorTokenCost(request TokenCostRequest) *CostBreakdown {
+	cost, err := s.billingService.CalculateTokenCostForRequest(request)
 	if err != nil {
 		logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
-		return &CostBreakdown{ActualCost: 0}
+		return &CostBreakdown{}
 	}
 	return cost
 }

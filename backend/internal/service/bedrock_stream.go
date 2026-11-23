@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	startTime time.Time,
 	model string,
 ) (*streamingResult, error) {
+	beforeWrite := pendingOfficialStreamHeaders(c, resp.Header)
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -45,6 +47,15 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 	}
 
 	usage := &ClaudeUsage{}
+	var totals bedrockInvocationUsage
+	// Reconcile every exit, including an interrupted stream with observed usage.
+	var native *ClaudeUsage
+	defer func() {
+		if native != nil && native.HasCompactionUsage() {
+			*usage = *native
+		}
+		totals.reconcile(usage)
+	}()
 	var firstTokenMs *int
 	clientDisconnected := false
 
@@ -117,6 +128,7 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 			}
 			if !ok {
 				if !clientDisconnected {
+					beforeWrite()
 					flusher.Flush()
 				}
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, nil
@@ -145,16 +157,31 @@ func (s *GatewayService) handleBedrockStreamingResponse(
 
 			// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式
 			// 同时移除该字段避免透传给客户端
-			sseData = transformBedrockInvocationMetrics(sseData)
-
-			// 解析 SSE 事件数据提取 usage
+			raw := sseData
+			sseData, metrics := transformBedrockInvocationMetrics(raw)
+			event := gjson.ParseBytes(sseData)
+			eventType := event.Get("type").String()
+			// Only synthesized message_delta counters can contaminate the
+			// scalar message usage. From that frame on, keep the native snapshot
+			// for compaction and the production wire-derived snapshot otherwise.
+			if native == nil && eventType == "message_delta" && metrics.IsObject() && !gjson.GetBytes(raw, "usage").Exists() {
+				snapshot := *usage
+				native = &snapshot
+			}
+			if native != nil {
+				parseSSEUsagePassthrough(string(raw), native)
+			}
 			parseSSEUsagePassthrough(string(sseData), usage)
-
-			// 确定 SSE event type
-			eventType := gjson.GetBytes(sseData, "type").String()
+			totals.observe(metrics)
+			if eventType == "message_stop" {
+				stopUsage := gjson.GetBytes(raw, "usage")
+				totals.stopInput = max(totals.stopInput, int(stopUsage.Get("input_tokens").Int()))
+				totals.stopOutput = max(totals.stopOutput, int(stopUsage.Get("output_tokens").Int()))
+			}
 
 			// 写入标准 SSE 格式
 			if !clientDisconnected {
+				beforeWrite()
 				var writeErr error
 				if eventType != "" {
 					_, writeErr = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, sseData)
@@ -211,18 +238,19 @@ func extractBedrockChunkData(payload []byte) []byte {
 // 转换为：
 //
 //	{"type":"message_delta","delta":{...},"usage":{"input_tokens":150,"output_tokens":42}}
-func transformBedrockInvocationMetrics(data []byte) []byte {
+func transformBedrockInvocationMetrics(data []byte) ([]byte, gjson.Result) {
 	metrics := gjson.GetBytes(data, "amazon-bedrock-invocationMetrics")
 	if !metrics.Exists() || !metrics.IsObject() {
-		return data
+		return data, gjson.Result{}
 	}
 
 	// 移除 Bedrock 特有字段
 	data, _ = sjson.DeleteBytes(data, "amazon-bedrock-invocationMetrics")
 
 	// 如果已有标准 usage 字段，不覆盖
-	if gjson.GetBytes(data, "usage").Exists() {
-		return data
+	event := gjson.ParseBytes(data)
+	if event.Get("usage").Exists() {
+		return data, metrics
 	}
 
 	// 转换 camelCase → snake_case 写入 usage
@@ -235,7 +263,64 @@ func transformBedrockInvocationMetrics(data []byte) []byte {
 		data, _ = sjson.SetBytes(data, "usage.output_tokens", outputTokens.Int())
 	}
 
-	return data
+	return data, metrics
+}
+
+// Bedrock invocation counts cover the entire request. Retain the highest
+// reported value per counter independently of the Anthropic wire conversion.
+type bedrockInvocationUsage struct {
+	input, output         int
+	stopInput, stopOutput int
+	present               bool
+}
+
+func (m *bedrockInvocationUsage) observe(metrics gjson.Result) {
+	if !metrics.IsObject() {
+		return
+	}
+	m.present = true
+	m.input = max(m.input, int(metrics.Get("inputTokenCount").Int()))
+	m.output = max(m.output, int(metrics.Get("outputTokenCount").Int()))
+}
+
+func (m *bedrockInvocationUsage) reconcile(u *ClaudeUsage) {
+	if !u.HasCompactionUsage() {
+		return
+	}
+	var message, compact UsageTokens
+	hasMessage := false
+	for _, entry := range u.IterationUsage.Iterations {
+		if entry.Invalid {
+			continue
+		}
+		var sum *UsageTokens
+		switch entry.Type {
+		case "message":
+			sum = &message
+			hasMessage = true
+		case "compaction":
+			sum = &compact
+		default:
+			continue
+		}
+		if entry.Usage.InputTokens > math.MaxInt-sum.InputTokens || entry.Usage.OutputTokens > math.MaxInt-sum.OutputTokens {
+			return
+		}
+		sum.InputTokens += entry.Usage.InputTokens
+		sum.OutputTokens += entry.Usage.OutputTokens
+	}
+	// Leave only the message portion in the scalar counters. Settlement
+	// adds valid compaction entries once, preserving their input/cache prices.
+	// A native counter can repeat an earlier invocation total. When message
+	// iterations independently confirm the split, do not add that total twice.
+	executor := func(scalar, messages, compactions, metric int) int {
+		if m.present && hasMessage && scalar == metric && messages <= metric-compactions {
+			scalar = messages
+		}
+		return max(max(scalar, messages), metric-compactions)
+	}
+	u.InputTokens = executor(max(u.InputTokens, m.stopInput), message.InputTokens, compact.InputTokens, m.input)
+	u.OutputTokens = executor(max(u.OutputTokens, m.stopOutput), message.OutputTokens, compact.OutputTokens, m.output)
 }
 
 // bedrockEventStreamDecoder 解码 AWS EventStream 二进制帧

@@ -208,6 +208,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	stateCtx := withGrokTeamRateLimitModel(ctx, upstreamModel)
 	s.updateGrokUsageFromResponse(stateCtx, account, resp.Header, resp.StatusCode)
 
+	var delivered bool
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	responseID := ""
@@ -226,6 +227,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		}
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, upstreamModel)
 		if streamResult != nil {
+			delivered = streamResult.delivered
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
 			responseID = strings.TrimSpace(streamResult.responseID)
@@ -244,6 +246,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		if err != nil {
 			return nil, err
 		}
+		delivered = nonStreamResult.delivered
 		usage = nonStreamResult.usage
 		responseID = strings.TrimSpace(nonStreamResult.responseID)
 		searchCount = nonStreamResult.searchCount
@@ -259,6 +262,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 		RequestID:                     firstNonEmpty(resp.Header.Get("x-request-id"), resp.Header.Get("xai-request-id")),
 		UpstreamHeaders:               resp.Header,
 		ResponseID:                    responseID,
+		ClientContentDelivered:        delivered,
 		Usage:                         *usage,
 		Model:                         originalModel,
 		UpstreamModel:                 upstreamModel,

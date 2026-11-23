@@ -1989,7 +1989,7 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx, flushSnapshot := service.WithDeferredAccountErrorSnapshot(c.Request.Context())
 
 	const maxConcurrency = 10
 	g, gctx := errgroup.WithContext(ctx)
@@ -2035,7 +2035,9 @@ func (h *AccountHandler) BatchClearError(c *gin.Context) {
 		})
 	}
 
-	if err := g.Wait(); err != nil {
+	err := g.Wait()
+	flushSnapshot()
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

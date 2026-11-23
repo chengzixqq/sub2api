@@ -70,7 +70,7 @@ func TestResolveBedrockBetaTokensForRequest_BlocksOnOriginalAnthropicToken(t *te
 	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock}
 
 	_, err = svc.resolveBedrockBetaTokensForRequest(
-		context.Background(),
+		context.Background(), nil,
 		account,
 		"advanced-tool-use-2025-11-20",
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
@@ -110,7 +110,7 @@ func TestResolveBedrockBetaTokensForRequest_FiltersAfterBedrockTransform(t *test
 	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock}
 
 	betaTokens, err := svc.resolveBedrockBetaTokensForRequest(
-		context.Background(),
+		context.Background(), nil,
 		account,
 		"advanced-tool-use-2025-11-20",
 		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
@@ -157,7 +157,7 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedComputerUse(t 
 
 	// header 中不带 beta token，但 body 中有 computer_use 工具
 	_, err = svc.resolveBedrockBetaTokensForRequest(
-		context.Background(),
+		context.Background(), nil,
 		account,
 		"", // 空 header
 		[]byte(`{"tools":[{"type":"computer_20250124","name":"computer"}],"messages":[{"role":"user","content":"hi"}]}`),
@@ -202,7 +202,7 @@ func TestResolveBedrockBetaTokensForRequest_BlocksBodyAutoInjectedToolSearch(t *
 
 	// header 中不带 beta token，但 body 中有 tool_search_tool 工具
 	_, err = svc.resolveBedrockBetaTokensForRequest(
-		context.Background(),
+		context.Background(), nil,
 		account,
 		"",
 		[]byte(`{"tools":[{"type":"tool_search_tool_regex_20251119","name":"search"}],"messages":[{"role":"user","content":"hi"}]}`),
@@ -246,7 +246,7 @@ func TestResolveBedrockBetaTokensForRequest_PassesWhenNoBlockRuleMatches(t *test
 
 	// body 中有 computer_use 工具（会注入 computer-use token），但 block 规则只针对 context-1m
 	tokens, err := svc.resolveBedrockBetaTokensForRequest(
-		context.Background(),
+		context.Background(), nil,
 		account,
 		"",
 		[]byte(`{"tools":[{"type":"computer_20250124","name":"computer"}],"messages":[{"role":"user","content":"hi"}]}`),

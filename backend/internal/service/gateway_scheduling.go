@@ -900,6 +900,9 @@ func (s *GatewayService) resolveGroupByID(ctx context.Context, groupID int64) (*
 	if group := s.groupFromContext(ctx, groupID); group != nil {
 		return group, nil
 	}
+	if s.groupRepo == nil {
+		return nil, errors.New("gateway group repository unavailable")
+	}
 	group, err := s.groupRepo.GetByIDLite(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("get group failed: %w", err)
@@ -966,6 +969,10 @@ func (s *GatewayService) routingAccountIDsForRequest(ctx context.Context, groupI
 }
 
 func (s *GatewayService) resolveGatewayGroup(ctx context.Context, groupID *int64) (*Group, *int64, error) {
+	return resolveGatewayGroupWith(ctx, groupID, s.resolveGroupByID)
+}
+
+func resolveGatewayGroupWith(ctx context.Context, groupID *int64, lookup func(context.Context, int64) (*Group, error)) (*Group, *int64, error) {
 	if groupID == nil {
 		return nil, nil, nil
 	}
@@ -978,7 +985,7 @@ func (s *GatewayService) resolveGatewayGroup(ctx context.Context, groupID *int64
 		}
 		visited[currentID] = struct{}{}
 
-		group, err := s.resolveGroupByID(ctx, currentID)
+		group, err := lookup(ctx, currentID)
 		if err != nil {
 			return nil, nil, err
 		}

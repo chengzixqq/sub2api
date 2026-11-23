@@ -17,6 +17,10 @@ import (
 )
 
 func newGatewayRoutesTestRouterWithGroup(group *service.Group) *gin.Engine {
+	return newGatewayRoutesTestRouterWithGroupSettings(group, nil)
+}
+
+func newGatewayRoutesTestRouterWithGroupSettings(group *service.Group, settings *service.SettingService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	RegisterGatewayRoutes(
@@ -37,7 +41,7 @@ func newGatewayRoutesTestRouterWithGroup(group *service.Group) *gin.Engine {
 		nil,
 		nil,
 		nil,
-		nil,
+		settings,
 		nil,
 		&config.Config{
 			Gateway: config.GatewayConfig{

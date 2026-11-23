@@ -78,6 +78,12 @@
             <span class="mt-0.5 block text-xs text-gray-500">{{ t(`admin.customization.fields.${key}.hint`) }}</span>
           </label>
         </div>
+        <OfficialAlignmentCard
+          v-if="alignmentFields.length && claudeCustomizationState === 'ready'" mode="account"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+          :fields="alignmentFields" :account-type="account.type" :ignored-overrides="ignoredOverrides" :model-value="alignmentOverrides" :global-values="alignmentGlobal"
+          :hits="alignmentHits" :disabled="submitting" @update:model-value="Object.assign(claudeOverrides, $event)"
+        />
       </fieldset>
 
       <!-- API Key fields (only for apikey type) -->
@@ -3472,6 +3478,8 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 
 import { adminAPI } from '@/api/admin'
+import type { AlignmentHitCounts, ClaudeCustomizationField } from '@/api/admin/settings'
+import OfficialAlignmentCard from '@/components/admin/customization/OfficialAlignmentCard.vue'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import { useWorkspacePerms } from '@/composables/useWorkspacePerms'
 import type {
@@ -4621,15 +4629,45 @@ const claudeOverrides = reactive<Record<string, boolean | string | null>>({
   url_redaction_enabled: null
 })
 const claudeCustomizationState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+const claudeCustomizationSchema = ref<ClaudeCustomizationField[]>([])
+const alignmentFields = computed(() => claudeCustomizationSchema.value.filter(field => field.group === 'official_alignment'))
+const alignmentHits = ref<Record<string, AlignmentHitCounts> | null>()
+const ignoredOverrides = ref<string[]>([])
+let savedAccountVersion: { id: number; etag: string } | null = null
+const alignmentGlobal = ref<Record<string, string>>({})
+const alignmentOverrides = computed<Record<string, string | null>>(() => Object.fromEntries(
+  alignmentFields.value.map(({ key }) => {
+    const value = claudeOverrides[key]
+    return [key, typeof value === 'string' ? value : null]
+  })
+))
+
+watch([() => props.show, () => props.account?.platform === 'anthropic'], async ([show, anthropic], _, onCleanup) => {
+  claudeCustomizationSchema.value = []
+  if (!show || !anthropic) return
+  let current = true
+  onCleanup(() => { current = false })
+  try {
+    const schema = await adminAPI.settings.getClaudeCustomizationSchema()
+    if (current) claudeCustomizationSchema.value = schema
+  } catch {
+    // Schema failure only hides this card. The other sparse overrides remain editable.
+  }
+}, { immediate: true })
+
 let claudeCustomizationSequence = 0
 let claudeCustomizationAccountID: number | null = null
-let initialClaudeOverrides = ''
+let initialClaudeOverrides: Record<string, boolean | string | null> = {}
 
 const resetClaudeCustomization = () => {
   claudeCustomizationSequence++
   claudeCustomizationAccountID = null
   claudeCustomizationState.value = 'idle'
-  initialClaudeOverrides = ''
+  ignoredOverrides.value = []
+  savedAccountVersion = null
+  alignmentGlobal.value = {}
+  alignmentHits.value = null
+  initialClaudeOverrides = {}
   for (const key of Object.keys(claudeOverrides)) claudeOverrides[key] = null
 }
 
@@ -4642,12 +4680,17 @@ const loadClaudeCustomization = async (accountID: number) => {
     const response = await adminAPI.accounts.getClaudeCustomization(accountID)
     if (sequence !== claudeCustomizationSequence || !props.show || props.account?.id !== accountID) return
     const overrides = response.overrides || {}
-    for (const key of Object.keys(claudeOverrides)) {
+    for (const key of new Set([...Object.keys(claudeOverrides), ...Object.keys(overrides), ...alignmentFields.value.map(field => field.key)])) {
       claudeOverrides[key] = Object.prototype.hasOwnProperty.call(overrides, key)
         ? (overrides[key] as boolean | string | null)
         : null
     }
-    initialClaudeOverrides = JSON.stringify(claudeOverrides)
+    alignmentGlobal.value = Object.fromEntries(
+      Object.entries(response.global ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    )
+    ignoredOverrides.value = response.ignored_overrides ?? []
+    alignmentHits.value = response.hits
+    initialClaudeOverrides = { ...claudeOverrides }
     claudeCustomizationAccountID = accountID
     claudeCustomizationState.value = 'ready'
   } catch {
@@ -4657,10 +4700,15 @@ const loadClaudeCustomization = async (accountID: number) => {
 }
 
 const pendingClaudeCustomization = (accountID: number) => {
-  if (claudeCustomizationState.value !== 'ready' || claudeCustomizationAccountID !== accountID || JSON.stringify(claudeOverrides) === initialClaudeOverrides) return null
-  // The endpoint replaces the sparse override map. Omit inherited values;
-  // enum fields reject null, while an absent key restores global inheritance.
-  return Object.fromEntries(Object.entries(claudeOverrides).filter(([, value]) => value !== null))
+  if (claudeCustomizationState.value !== 'ready' || claudeCustomizationAccountID !== accountID) return null
+  const changes = Object.entries(claudeOverrides).filter(([key, value]) => {
+    const field = claudeCustomizationSchema.value.find(field => field.key === key)
+    if (value === (initialClaudeOverrides[key] ?? null)) return false
+    if (value === null && ignoredOverrides.value.includes(key)) return true
+    return field?.account_overridable !== false && field?.global_only !== true &&
+      (!field?.account_types?.length || (props.account && field.account_types.includes(props.account.type)))
+  })
+  return changes.length ? Object.fromEntries(changes.map(([key, value]) => [key, value ?? null])) : null
 }
 
 const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
@@ -5779,7 +5827,7 @@ const submitUpdateAccount = async (
   // Freeze the policy for this account before the main save yields. Switching
   // accounts or a late policy response must not change the pending payload.
   const customization = pendingClaudeCustomization(accountID)
-  const accountETag = props.accountEtag
+  const accountETag = savedAccountVersion?.id === accountID ? savedAccountVersion.etag : props.accountEtag
   const account = props.account
   const patchPayload = { ...updatePayload }
   const credentialsPatch = buildAccountMapPatch(
@@ -5803,6 +5851,10 @@ const submitUpdateAccount = async (
       withAntigravityConfirmFlag(patchPayload),
       accountETag
     )
+    // Retain the version committed by this PATCH if the override write fails.
+    if (props.account?.id === accountID && updatedAccount.config_version != null) {
+      savedAccountVersion = { id: accountID, etag: `"cv-${updatedAccount.config_version}"` }
+    }
     if (customization) await adminAPI.accounts.updateClaudeCustomization(accountID, customization)
     updatedAccount = await persistGrokMediaEligibility(accountID, updatedAccount)
     appStore.showSuccess(t('admin.accounts.accountUpdated'))

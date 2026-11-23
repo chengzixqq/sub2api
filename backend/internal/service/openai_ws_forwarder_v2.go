@@ -369,6 +369,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	var firstTokenMs *int
 	responseID := ""
 	var finalResponse []byte
+	var delivered bool
 	wroteDownstream := false
 	needModelReplace := originalModel != mappedModel
 	var mappedModelBytes []byte
@@ -421,6 +422,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			RequestID:                     responseID,
 			ResponseID:                    responseID,
 			Usage:                         *usage,
+			ClientContentDelivered:        delivered,
 			Model:                         originalModel,
 			UpstreamModel:                 mappedModel,
 			UpstreamResponseModel:         responseModelObserver.Model(),
@@ -472,7 +474,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		pendingFlushEvents = 0
 		lastFlushAt = time.Now()
 	}
-	emitStreamMessage := func(message []byte, forceFlush bool) {
+	emitStreamMessage := func(message []byte, eventType string, forceFlush bool) {
 		if clientDisconnected {
 			return
 		}
@@ -483,6 +485,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		_, wErr := c.Writer.Write(frame)
 		if wErr == nil {
 			wroteDownstream = true
+			if !delivered && openAIUsageNeedsDelivery(usage) {
+				data := openAIWSPayloadStringView(message)
+				if eventType == "" { // A pre-token frame held until the first downstream write.
+					eventType = gjson.Get(data, "type").Str
+				}
+				_, delivered = openAIResponsesStreamContent(data, eventType)
+				delivered = delivered || openAIFinalEventHasContent(data, eventType)
+			}
 			pendingFlushEvents++
 			flushStreamWriter(forceFlush)
 			return
@@ -496,7 +506,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		flushed := len(bufferedStreamEvents)
 		for _, buffered := range bufferedStreamEvents {
-			emitStreamMessage(buffered, false)
+			emitStreamMessage(buffered, "", false)
 		}
 		bufferedStreamEvents = bufferedStreamEvents[:0]
 		flushStreamWriter(true)
@@ -727,7 +737,7 @@ readLoop:
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
-				emitStreamMessage(message, true)
+				emitStreamMessage(message, eventType, true)
 			}
 			if !reqStream {
 				c.JSON(statusCode, gin.H{
@@ -762,7 +772,7 @@ readLoop:
 				}
 			} else {
 				flushBufferedStreamEvents(eventType)
-				emitStreamMessage(message, isTerminalEvent)
+				emitStreamMessage(message, eventType, isTerminalEvent)
 			}
 		} else {
 			if responseField.Exists() && responseField.Type == gjson.JSON {
@@ -815,7 +825,7 @@ readLoop:
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
 		}
 
-		c.Data(http.StatusOK, "application/json", finalResponse)
+		delivered = writeOpenAIResponseData(c, http.StatusOK, "application/json", finalResponse, usage)
 	} else {
 		flushStreamWriter(true)
 	}

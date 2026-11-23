@@ -111,9 +111,10 @@ func IsAntigravityAccountSwitchError(err error) (*AntigravityAccountSwitchError,
 
 // PromptTooLongError 表示上游明确返回 prompt too long
 type PromptTooLongError struct {
-	StatusCode int
-	RequestID  string
-	Body       []byte
+	StatusCode      int
+	RequestID       string
+	ResponseHeaders http.Header
+	Body            []byte
 }
 
 func (e *PromptTooLongError) Error() string {

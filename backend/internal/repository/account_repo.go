@@ -1425,6 +1425,28 @@ func (r *accountRepository) ListByGroup(ctx context.Context, groupID int64) ([]s
 	return accounts, nil
 }
 
+// HasGroupAlignmentCandidate checks current group membership without loading
+// account rows or credentials. Explicit grants are evaluated by the gateway.
+func (r *accountRepository) HasGroupAlignmentCandidate(ctx context.Context, accountTypes []string, ids []int64, groupID *int64, allGroups bool, platform string, mixedOnly bool) (bool, error) {
+	query := r.client.Account.Query().Where(dbaccount.IDIn(ids...), dbaccount.DeletedAtIsNil(),
+		dbaccount.PlatformEQ(platform), dbaccount.TypeIn(accountTypes...),
+		dbaccount.StatusEQ(service.StatusActive), dbaccount.SchedulableEQ(true),
+		dbaccount.DispatchScopeNEQ(service.DispatchScopeAuthorizedOnly))
+	if mixedOnly {
+		query.Where(func(s *entsql.Selector) {
+			s.Where(sqljson.ValueContains(dbaccount.FieldExtra, map[string]bool{"mixed_scheduling": true}))
+		})
+	}
+	if !allGroups {
+		if groupID == nil {
+			query.Where(dbaccount.Not(dbaccount.HasAccountGroups()))
+		} else {
+			query.Where(dbaccount.HasAccountGroupsWith(dbaccountgroup.GroupIDEQ(*groupID)))
+		}
+	}
+	return query.Exist(ctx)
+}
+
 func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, error) {
 	accounts, err := r.client.Account.Query().
 		Where(dbaccount.StatusEQ(service.StatusActive)).
@@ -3116,17 +3138,31 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if _, patch := updates[service.AccountClaudeCustomizationExtraKey].(map[string]any); patch {
+		// Merge against the locked row version so concurrent sparse edits compose.
+		const key = "'claude_customization_overrides'"
+		current := "CASE WHEN jsonb_typeof(extra -> " + key + ") = 'object' THEN extra -> " + key + " ELSE '{}'::jsonb END"
+		patchObject := "($1::jsonb -> " + key + ")"
+		removedKeys := "ARRAY(SELECT key FROM jsonb_each(" + patchObject + ") WHERE value = 'null'::jsonb)"
+		merged := "((" + current + ") || " + patchObject + ") - " + removedKeys
+		extraExpression = "(" + extraExpression + ") || jsonb_build_object(" + key + ", " + merged + ")"
+	}
 	if clearProbeSnapshot {
 		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 	}
 	if service.ShouldEnsureCodexFingerprintSeedForExtraUpdates(updates) {
 		extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)
 	}
-	result, err := client.ExecContext(
-		ctx,
-		"UPDATE accounts SET extra = "+extraExpression+", updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL",
-		string(payload), id,
-	)
+	where := " WHERE id = $2 AND deleted_at IS NULL"
+	args := []any{string(payload), id}
+	if scope, ok := service.ScopeFromContext(ctx); ok && !scope.Unrestricted {
+		if scope.WorkspaceID <= 0 {
+			return service.ErrAccountNotFound
+		}
+		where += " AND workspace_id = $3"
+		args = append(args, scope.WorkspaceID)
+	}
+	result, err := client.ExecContext(ctx, "UPDATE accounts SET extra = "+extraExpression+", updated_at = NOW()"+where, args...)
 
 	if err != nil {
 		return err

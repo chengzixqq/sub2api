@@ -163,6 +163,14 @@ type SettingService struct {
 	openAIQuotaAutoPauseSettingsSF    singleflight.Group
 	openAIAPIKeyHealthBreakerCache    atomic.Value // *cachedOpenAIAPIKeyHealthBreakerSettings
 	claudeCustomizationErrorLogAt     atomic.Int64
+	alignmentOverrideErrorLogAt       atomic.Int64
+	alignmentPanicLogAt               atomic.Int64
+	alignmentHits                     *AlignmentHitRecorder
+	unknownBetaRuleErrorLogAt         atomic.Int64
+	alignmentCandidateErrorLogAt      atomic.Int64
+	alignmentGroupErrorLogAt          atomic.Int64
+	alignmentRejectCache              atomic.Pointer[alignmentRejectSnapshot]
+	alignmentRejectMu                 sync.Mutex
 
 	// failureBillingUpstreamUsageOnlyCache keeps the failure settlement policy
 	// available to gateway guards without a database read on every request.

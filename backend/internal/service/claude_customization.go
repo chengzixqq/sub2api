@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -16,6 +18,8 @@ import (
 // SettingKeyClaudeCustomization stores the global Claude compatibility policy.
 // The value is JSON so new policy fields can be added without a schema migration.
 const SettingKeyClaudeCustomization = "claude_customization_settings"
+
+var ErrClaudeCustomizationCorrupt = errors.New("stored Claude customization is not a JSON object")
 
 // AccountClaudeCustomizationExtraKey stores sparse per-account overrides in
 // accounts.extra. A missing key (or a null field) means inherit from global.
@@ -42,6 +46,13 @@ const (
 	ClaudeUnknownBetaFilter         = "filter"
 	ClaudeUnknownBetaNativeOnly     = "pass_on_native_only"
 	ClaudeUnknownBetaPass           = "pass"
+
+	// ClaudeCacheControlLimitTrim keeps the historical behavior: requests with
+	// more than four cache_control breakpoints are trimmed before forwarding.
+	ClaudeCacheControlLimitTrim = "trim"
+	// ClaudeCacheControlLimitPassthrough forwards a client request that already
+	// exceeds four breakpoints unchanged, so the upstream returns its own 400.
+	ClaudeCacheControlLimitPassthrough = "passthrough"
 )
 
 // ClaudeCustomizationSettings is the fully materialized policy used by the
@@ -57,40 +68,38 @@ type ClaudeCustomizationSettings struct {
 	FingerprintUnification            bool   `json:"fingerprint_unification"`
 	MetadataPassthrough               bool   `json:"metadata_passthrough"`
 	URLRedactionEnabled               bool   `json:"url_redaction_enabled"`
+	// CacheControlLimitMode controls what the native Claude /v1/messages and
+	// count_tokens paths do when the client sends more than four cache_control
+	// breakpoints. Protocol conversion paths always trim.
+	CacheControlLimitMode        string `json:"cache_control_limit_mode"`
+	ContextManagementMissingBeta string `json:"context_management_missing_beta"`
+	RequestIDMode                string `json:"request_id_mode"`
+	UnknownBetaHeader            string `json:"unknown_beta_header"`
+	ModelsCatalog                string `json:"models_catalog"`
+	UpstreamHeaderPassthrough    string `json:"upstream_header_passthrough"`
+	ThinkingCacheControl         string `json:"thinking_cache_control"`
+	BedrockCCContextManagement   string `json:"bedrock_cc_context_management"`
 }
 
 // ClaudeCustomizationResponse includes the global policy, the sparse account
 // override map, and the effective policy for an account-scoped read.
 type ClaudeCustomizationResponse struct {
-	Global    ClaudeCustomizationSettings `json:"global"`
-	Overrides map[string]any              `json:"overrides,omitempty"`
-	Effective ClaudeCustomizationSettings `json:"effective"`
+	Global           ClaudeCustomizationSettings `json:"global"`
+	Overrides        map[string]any              `json:"overrides,omitempty"`
+	IgnoredOverrides []string                    `json:"ignored_overrides,omitempty"`
+	Effective        ClaudeCustomizationSettings `json:"effective"`
 }
+
+var defaultClaudeCustomization = func() ClaudeCustomizationSettings {
+	cfg := ClaudeCustomizationSettings{Preset: ClaudePresetMagic}
+	for _, f := range claudeCustomizationRegistry {
+		f.set(&cfg, f.Default)
+	}
+	return cfg
+}()
 
 func DefaultClaudeCustomizationSettings() ClaudeCustomizationSettings {
-	return ClaudeCustomizationSettings{
-		Preset:                            ClaudePresetMagic,
-		FallbackPolicy:                    ClaudeFallbackNativePassthrough,
-		ThinkingPrefilterEnabled:          false,
-		ThinkingSignatureRetryEnabled:     false,
-		ThinkingToolDowngradeRetryEnabled: false,
-		BetaPolicyMode:                    ClaudeBetaCapabilityAware,
-		UnknownBetaAction:                 ClaudeUnknownBetaNativeOnly,
-		FingerprintUnification:            true,
-		MetadataPassthrough:               true,
-		URLRedactionEnabled:               true,
-	}
-}
-
-func officialClaudeCustomizationSettings() ClaudeCustomizationSettings {
-	cfg := DefaultClaudeCustomizationSettings()
-	cfg.Preset = ClaudePresetOfficial
-	cfg.FallbackPolicy = ClaudeFallbackStrict
-	cfg.ThinkingPrefilterEnabled = true
-	cfg.BetaPolicyMode = ClaudeBetaOfficialStrict
-	cfg.UnknownBetaAction = ClaudeUnknownBetaFilter
-	cfg.MetadataPassthrough = false
-	return cfg
+	return defaultClaudeCustomization
 }
 
 func normalizeClaudeCustomizationSettings(cfg *ClaudeCustomizationSettings) error {
@@ -106,83 +115,153 @@ func normalizeClaudeCustomizationSettings(cfg *ClaudeCustomizationSettings) erro
 	default:
 		return fmt.Errorf("invalid preset %q", cfg.Preset)
 	}
-	cfg.FallbackPolicy = strings.ToLower(strings.TrimSpace(cfg.FallbackPolicy))
-	switch cfg.FallbackPolicy {
-	case ClaudeFallbackStrict, ClaudeFallbackNativePassthrough, ClaudeFallbackFablePassthrough:
-	default:
-		return fmt.Errorf("invalid fallback_policy %q", cfg.FallbackPolicy)
-	}
-	cfg.BetaPolicyMode = strings.ToLower(strings.TrimSpace(cfg.BetaPolicyMode))
-	switch cfg.BetaPolicyMode {
-	case ClaudeBetaOfficialStrict, ClaudeBetaCapabilityAware, ClaudeBetaClientPassthrough:
-	default:
-		return fmt.Errorf("invalid beta_policy_mode %q", cfg.BetaPolicyMode)
-	}
-	cfg.UnknownBetaAction = strings.ToLower(strings.TrimSpace(cfg.UnknownBetaAction))
-	switch cfg.UnknownBetaAction {
-	case ClaudeUnknownBetaFilter, ClaudeUnknownBetaNativeOnly, ClaudeUnknownBetaPass:
-	default:
-		return fmt.Errorf("invalid unknown_beta_action %q", cfg.UnknownBetaAction)
+	for _, f := range claudeCustomizationRegistry {
+		if f.Kind != "enum" {
+			continue
+		}
+		raw, ok := f.get(cfg).(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", f.Key)
+		}
+		value, valid := f.normalizeEnum(raw)
+		if !f.PresetManaged && value == "" {
+			f.set(cfg, f.Default)
+			continue
+		}
+		if !valid {
+			return fmt.Errorf("invalid %s %q", f.Key, value)
+		}
+		f.set(cfg, value)
 	}
 	return nil
 }
 
 func applyClaudePreset(cfg *ClaudeCustomizationSettings, preset string) error {
-	var next ClaudeCustomizationSettings
-	switch strings.ToLower(strings.TrimSpace(preset)) {
-	case ClaudePresetOfficial:
-		next = officialClaudeCustomizationSettings()
-	case ClaudePresetMagic:
-		next = DefaultClaudeCustomizationSettings()
-	case ClaudePresetCustom:
-		if cfg == nil {
-			next = DefaultClaudeCustomizationSettings()
-		} else {
-			next = *cfg
+	if cfg == nil {
+		return fmt.Errorf("customization settings cannot be nil")
+	}
+	name := strings.ToLower(strings.TrimSpace(preset))
+	switch name {
+	case ClaudePresetMagic, ClaudePresetOfficial:
+		for _, f := range claudeCustomizationRegistry {
+			if f.PresetManaged {
+				value := f.MagicValue
+				if name == ClaudePresetOfficial {
+					value = f.OfficialValue
+				}
+				f.set(cfg, value)
+			}
 		}
-		next.Preset = ClaudePresetCustom
+	case ClaudePresetCustom:
 	default:
 		return fmt.Errorf("invalid preset %q", preset)
 	}
-	*cfg = next
+	cfg.Preset = name
+	return normalizeClaudeCustomizationSettings(cfg)
+}
+
+func materializeClaudeCustomization(cfg *ClaudeCustomizationSettings) error {
+	if cfg.Preset == ClaudePresetOfficial || cfg.Preset == ClaudePresetMagic {
+		return applyClaudePreset(cfg, cfg.Preset)
+	}
 	return normalizeClaudeCustomizationSettings(cfg)
 }
 
 func (s *SettingService) GetClaudeCustomizationSettings(ctx context.Context) (ClaudeCustomizationSettings, error) {
+	cfg, _, err := s.ClaudeCustomizationWithInvalidFields(ctx)
+	return cfg, err
+}
+
+func (s *SettingService) ClaudeCustomizationWithInvalidFields(ctx context.Context) (ClaudeCustomizationSettings, []string, error) {
 	cfg := DefaultClaudeCustomizationSettings()
 	if s == nil || s.settingRepo == nil {
-		return cfg, nil
+		return cfg, nil, nil
 	}
 	raw, err := s.settingRepo.GetValue(ctx, SettingKeyClaudeCustomization)
-	if err != nil {
-		if err == ErrSettingNotFound {
-			return cfg, nil
+	if errors.Is(err, ErrSettingNotFound) {
+		return cfg, nil, nil
+	}
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return cfg, nil, err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return cfg, nil, fmt.Errorf("decode claude customization: %w", errors.Join(ErrClaudeCustomizationCorrupt, err))
+	}
+	if fields == nil { // JSON null is the legacy empty setting.
+		return cfg, nil, nil
+	}
+	var invalid []string
+	if value := fields["preset"]; value != nil {
+		name, _ := value.(string)
+		switch name = strings.ToLower(strings.TrimSpace(name)); name {
+		case ClaudePresetCustom, ClaudePresetOfficial, ClaudePresetMagic:
+			cfg.Preset = name
+		default:
+			cfg.Preset = ClaudePresetCustom
+			invalid = append(invalid, "preset")
 		}
-		return cfg, err
 	}
-	if strings.TrimSpace(raw) == "" {
-		return cfg, nil
-	}
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		return DefaultClaudeCustomizationSettings(), fmt.Errorf("decode claude customization: %w", err)
-	}
-	if cfg.Preset == ClaudePresetOfficial || cfg.Preset == ClaudePresetMagic {
-		if err := applyClaudePreset(&cfg, cfg.Preset); err != nil {
-			return DefaultClaudeCustomizationSettings(), err
+	for _, f := range claudeCustomizationRegistry {
+		value := fields[f.Key]
+		if value == nil {
+			continue
 		}
+		normalized, err := f.normalizeOverride(value)
+		if err != nil {
+			invalid = append(invalid, f.Key)
+			continue
+		}
+		f.set(&cfg, normalized)
 	}
-	if err := normalizeClaudeCustomizationSettings(&cfg); err != nil {
-		return DefaultClaudeCustomizationSettings(), err
+	err = materializeClaudeCustomization(&cfg)
+	return cfg, invalid, err
+}
+
+// ResetClaudeCustomizationField repairs one stored member atomically. An
+// invalid preset already materializes as custom, preserving explicit fields.
+func (s *SettingService) ResetClaudeCustomizationField(ctx context.Context, key string) error {
+	if key != "preset" && !slices.ContainsFunc(claudeCustomizationRegistry[:], func(f claudeFieldBinding) bool { return f.Key == key }) {
+		return fmt.Errorf("unknown field %q", key)
 	}
-	return cfg, nil
+	writer, ok := s.settingRepo.(interface {
+		RepairClaudeCustomizationField(context.Context, string) error
+	})
+	if !ok {
+		return errors.New("per-field settings reset unavailable")
+	}
+	if err := writer.RepairClaudeCustomizationField(ctx, key); err != nil {
+		return err
+	}
+	s.invalidateAlignmentSnapshot(ctx)
+	return nil
 }
 
 func (s *SettingService) SetClaudeCustomizationSettings(ctx context.Context, cfg ClaudeCustomizationSettings) error {
-	if cfg.Preset == ClaudePresetOfficial || cfg.Preset == ClaudePresetMagic {
-		if err := applyClaudePreset(&cfg, cfg.Preset); err != nil {
-			return err
+	// Older clients omit alignment fields. Read the current policy once, only
+	// when needed, and abort the write if the values to preserve are unavailable.
+	var current *ClaudeCustomizationSettings
+	for _, f := range claudeCustomizationRegistry {
+		if f.PresetManaged || f.Kind != "enum" {
+			continue
 		}
-	} else if err := normalizeClaudeCustomizationSettings(&cfg); err != nil {
+		value, ok := f.get(&cfg).(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", f.Key)
+		}
+		if strings.TrimSpace(value) != "" {
+			continue
+		}
+		if current == nil {
+			stored, err := s.GetClaudeCustomizationSettings(ctx)
+			if err != nil {
+				return err
+			}
+			current = &stored
+		}
+		f.set(&cfg, f.get(current))
+	}
+	if err := materializeClaudeCustomization(&cfg); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(cfg)
@@ -195,12 +274,12 @@ func (s *SettingService) SetClaudeCustomizationSettings(ctx context.Context, cfg
 	if err := s.settingRepo.Set(ctx, SettingKeyClaudeCustomization, string(raw)); err != nil {
 		return err
 	}
+	s.invalidateAlignmentSnapshot(ctx)
 	return nil
 }
 
 // ResolveClaudeCustomization applies sparse account overrides over global.
-// Only known high-risk compatibility fields are accepted; unknown keys are
-// ignored so old/new nodes can share the same accounts.extra payload safely.
+// Unknown keys are ignored so old/new nodes can share accounts.extra.
 func (s *SettingService) ResolveClaudeCustomization(ctx context.Context, account *Account) (ClaudeCustomizationSettings, map[string]any, error) {
 	global, globalErr := s.GetClaudeCustomizationSettings(ctx)
 	overrides := map[string]any{}
@@ -218,7 +297,7 @@ func (s *SettingService) ResolveClaudeCustomization(ctx context.Context, account
 	if err := json.Unmarshal(bytes, &overrides); err != nil {
 		return global, nil, errors.Join(globalErr, fmt.Errorf("decode account claude customization: %w", err))
 	}
-	applyClaudeCustomizationOverrides(&global, overrides)
+	applyClaudeAccountOverrides(&global, overrides, account.Type)
 	return global, overrides, globalErr
 }
 
@@ -258,22 +337,23 @@ func (s *SettingService) ResolveClaudeCustomizationForRequest(ctx context.Contex
 			accountID = account.ID
 		}
 		c.Set(claudeCustomizationRequestContextKey, claudeCustomizationRequestPolicy{accountID: accountID, policy: policy})
+		if policy.UpstreamHeaderPassthrough == ClaudeHeaderPassthroughOn && s.cfg != nil && s.cfg.Security.ResponseHeaders.Enabled && len(s.cfg.Security.ResponseHeaders.ForceRemove) != 0 {
+			c.Set(officialForceRemoveKey, s.cfg.Security.ResponseHeaders.ForceRemove)
+		}
 	}
 	return policy
 }
 
 const claudeCustomizationResolveErrorLogInterval = time.Minute
 
-func (s *SettingService) logClaudeCustomizationResolveFailure(ctx context.Context, account *Account, err error) {
-	if s == nil || err == nil {
-		return
-	}
+func shouldLogClaudePolicyFailure(lastLogAt *atomic.Int64) bool {
 	now := time.Now().UnixNano()
-	last := s.claudeCustomizationErrorLogAt.Load()
-	if last != 0 && now-last < int64(claudeCustomizationResolveErrorLogInterval) {
-		return
-	}
-	if !s.claudeCustomizationErrorLogAt.CompareAndSwap(last, now) {
+	last := lastLogAt.Load()
+	return (last == 0 || now-last >= int64(claudeCustomizationResolveErrorLogInterval)) && lastLogAt.CompareAndSwap(last, now)
+}
+
+func (s *SettingService) logClaudeCustomizationResolveFailure(ctx context.Context, account *Account, err error) {
+	if s == nil || err == nil || !shouldLogClaudePolicyFailure(&s.claudeCustomizationErrorLogAt) {
 		return
 	}
 	accountID := int64(0)
@@ -287,104 +367,56 @@ func (s *SettingService) logClaudeCustomizationResolveFailure(ctx context.Contex
 	)
 }
 
-func applyClaudeCustomizationOverrides(cfg *ClaudeCustomizationSettings, overrides map[string]any) {
+func (f claudeFieldBinding) appliesToAccount(accountType string) bool {
+	return len(f.AccountTypes) == 0 || slices.Contains(f.AccountTypes, accountType)
+}
+func IgnoredClaudeOverrides(accountType string, overrides map[string]any) []string {
+	var keys []string
+	for _, f := range claudeCustomizationRegistry {
+		if overrides[f.Key] != nil && (!f.AccountOverridable || !f.appliesToAccount(accountType)) {
+			keys = append(keys, f.Key)
+		}
+	}
+	return keys
+}
+func applyClaudeAccountOverrides(cfg *ClaudeCustomizationSettings, overrides map[string]any, accountType string) {
 	if cfg == nil {
 		return
 	}
-	if v, ok := overrides["fallback_policy"].(string); ok && isClaudeFallbackPolicy(v) {
-		cfg.FallbackPolicy = v
+	for _, f := range claudeCustomizationRegistry {
+		if !f.appliesToAccount(accountType) {
+			continue
+		}
+		value := overrides[f.Key]
+		if !f.AccountOverridable || value == nil {
+			continue
+		}
+		if normalized, err := f.normalizeOverride(value); err == nil {
+			f.set(cfg, normalized)
+		}
 	}
-	if v, ok := overrides["thinking_prefilter_enabled"].(bool); ok {
-		cfg.ThinkingPrefilterEnabled = v
-	}
-	if v, ok := overrides["thinking_signature_retry_enabled"].(bool); ok {
-		cfg.ThinkingSignatureRetryEnabled = v
-	}
-	if v, ok := overrides["thinking_tool_downgrade_retry_enabled"].(bool); ok {
-		cfg.ThinkingToolDowngradeRetryEnabled = v
-	}
-	if v, ok := overrides["beta_policy_mode"].(string); ok && isClaudeBetaPolicyMode(v) {
-		cfg.BetaPolicyMode = v
-	}
-	if v, ok := overrides["unknown_beta_action"].(string); ok && isClaudeUnknownBetaAction(v) {
-		cfg.UnknownBetaAction = v
-	}
-	if v, ok := overrides["fingerprint_unification"].(bool); ok {
-		cfg.FingerprintUnification = v
-	}
-	if v, ok := overrides["metadata_passthrough"].(bool); ok {
-		cfg.MetadataPassthrough = v
-	}
-	if v, ok := overrides["url_redaction_enabled"].(bool); ok {
-		cfg.URLRedactionEnabled = v
-	}
-	// Account overrides are deliberately unable to change the preset or any
-	// protocol/security boundary. Invalid values fall back to global behavior.
-	_ = normalizeClaudeCustomizationSettings(cfg)
 }
 
 func NormalizeClaudeCustomizationOverrides(input map[string]any) (map[string]any, error) {
-	if input == nil {
-		return map[string]any{}, nil
-	}
 	out := make(map[string]any, len(input))
 	for key, value := range input {
-		switch key {
-		case "fallback_policy":
-			v, ok := value.(string)
-			if !ok || !isClaudeFallbackPolicy(v) {
-				return nil, fmt.Errorf("invalid fallback_policy")
-			}
-			out[key] = strings.ToLower(strings.TrimSpace(v))
-		case "beta_policy_mode":
-			v, ok := value.(string)
-			if !ok || !isClaudeBetaPolicyMode(v) {
-				return nil, fmt.Errorf("invalid beta_policy_mode")
-			}
-			out[key] = strings.ToLower(strings.TrimSpace(v))
-		case "unknown_beta_action":
-			v, ok := value.(string)
-			if !ok || !isClaudeUnknownBetaAction(v) {
-				return nil, fmt.Errorf("invalid unknown_beta_action")
-			}
-			out[key] = strings.ToLower(strings.TrimSpace(v))
-		case "thinking_prefilter_enabled", "thinking_signature_retry_enabled", "thinking_tool_downgrade_retry_enabled", "fingerprint_unification", "metadata_passthrough", "url_redaction_enabled":
-			if value == nil {
-				out[key] = nil
-				continue
-			}
-			if _, ok := value.(bool); !ok {
-				return nil, fmt.Errorf("%s must be boolean or null", key)
-			}
-			out[key] = value
-		default:
+		index := slices.IndexFunc(claudeCustomizationRegistry[:], func(f claudeFieldBinding) bool { return f.Key == key })
+		if index < 0 {
 			return nil, fmt.Errorf("unknown customization override %q", key)
 		}
+		f := claudeCustomizationRegistry[index]
+		if value == nil {
+			out[key] = nil
+			continue
+		}
+		if !f.AccountOverridable {
+			return nil, fmt.Errorf("%s is global-only", key)
+		}
+		normalized, err := f.normalizeOverride(value)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = normalized
 	}
 	return out, nil
-}
-
-func isClaudeFallbackPolicy(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case ClaudeFallbackStrict, ClaudeFallbackNativePassthrough, ClaudeFallbackFablePassthrough:
-		return true
-	default:
-		return false
-	}
-}
-func isClaudeBetaPolicyMode(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case ClaudeBetaOfficialStrict, ClaudeBetaCapabilityAware, ClaudeBetaClientPassthrough:
-		return true
-	default:
-		return false
-	}
-}
-func isClaudeUnknownBetaAction(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case ClaudeUnknownBetaFilter, ClaudeUnknownBetaNativeOnly, ClaudeUnknownBetaPass:
-		return true
-	default:
-		return false
-	}
 }

@@ -54,6 +54,9 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	if s.settingService != nil {
 		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
 	}
+	if err := s.settingService.checkUnknownBeta(ctx, c, account, claudePolicy); err != nil {
+		return nil, err
+	}
 	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
 		c.Set(redactUpstreamURLContextKey, claudePolicy.URLRedactionEnabled)
 	}
@@ -70,10 +73,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 解析 Claude 请求
 	var claudeReq antigravity.ClaudeRequest
 	if err := json.Unmarshal(body, &claudeReq); err != nil {
-		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
+		return nil, s.writeClaudeError(c, nil, http.StatusBadRequest, "invalid_request_error", "Invalid request body")
 	}
 	if strings.TrimSpace(claudeReq.Model) == "" {
-		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Missing model")
+		return nil, s.writeClaudeError(c, nil, http.StatusBadRequest, "invalid_request_error", "Missing model")
 	}
 
 	originalModel := claudeReq.Model
@@ -84,31 +87,31 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	)
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
-		return nil, s.writeClaudeError(c, http.StatusForbidden, "permission_error", fmt.Sprintf("model %s not in whitelist", claudeReq.Model))
+		return nil, s.writeClaudeError(c, nil, http.StatusForbidden, "permission_error", fmt.Sprintf("model %s not in whitelist", claudeReq.Model))
 	}
 	// 应用 thinking 模式自动后缀：如果 thinking 开启且目标是 claude-sonnet-4-5，自动改为 thinking 版本
 	thinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
 	if geminiImageGenerationDenied(c, nil, originalModel, mappedModel) {
-		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
+		return nil, s.writeClaudeError(c, nil, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
 	}
 	billingModel := mappedModel
 
 	// 获取 access_token
 	if s.tokenProvider == nil {
-		return nil, s.writeClaudeError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
+		return nil, s.writeClaudeError(c, nil, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
 	}
 	accessToken, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
-		return nil, &UpstreamFailoverError{
+		return nil, (&UpstreamFailoverError{
 			StatusCode:   http.StatusBadGateway,
 			ResponseBody: []byte(`{"error":{"type":"authentication_error","message":"Failed to get upstream access token"},"type":"error"}`),
-		}
+		}).withOfficialHeaders(c, nil)
 	}
 
 	projectID, err := resolveAntigravityProjectID(account)
 	if err != nil {
-		_ = s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		_ = s.writeClaudeError(c, nil, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
 
@@ -126,7 +129,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	// 转换 Claude 请求为 Gemini 格式
 	geminiBody, err := antigravity.TransformClaudeToGeminiWithOptions(&claudeReq, projectID, mappedModel, transformOpts)
 	if err != nil {
-		return nil, s.writeClaudeError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
+		return nil, s.writeClaudeError(c, nil, http.StatusBadRequest, "invalid_request_error", "Invalid request")
 	}
 
 	// Antigravity 上游只支持流式请求，统一使用 streamGenerateContent
@@ -155,16 +158,16 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 	if err != nil {
 		// 检查是否是账号切换信号，转换为 UpstreamFailoverError 让 Handler 切换账号
 		if switchErr, ok := IsAntigravityAccountSwitchError(err); ok {
-			return nil, &UpstreamFailoverError{
+			return nil, (&UpstreamFailoverError{
 				StatusCode:        http.StatusServiceUnavailable,
 				ForceCacheBilling: switchErr.IsStickySession,
-			}
+			}).withOfficialHeaders(c, nil)
 		}
 		// 区分客户端取消和真正的上游失败，返回更准确的错误消息
 		if c.Request.Context().Err() != nil {
-			return nil, s.writeClaudeError(c, antigravityStatusClientClosed, "client_disconnected", "Client disconnected before upstream response")
+			return nil, s.writeClaudeError(c, nil, antigravityStatusClientClosed, "client_disconnected", "Client disconnected before upstream response")
 		}
-		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
+		return nil, s.writeClaudeError(c, nil, http.StatusBadGateway, "upstream_error", "Upstream request failed after retries")
 	}
 	resp := result.resp
 	defer func() { _ = resp.Body.Close() }()
@@ -422,9 +425,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					Detail:             upstreamDetail,
 				})
 				return nil, &PromptTooLongError{
-					StatusCode: resp.StatusCode,
-					RequestID:  resp.Header.Get("x-request-id"),
-					Body:       respBody,
+					StatusCode:      resp.StatusCode,
+					RequestID:       resp.Header.Get("x-request-id"),
+					ResponseHeaders: resp.Header,
+					Body:            respBody,
 				}
 			}
 
@@ -449,7 +453,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 						Message:            upstreamMsg,
 						Detail:             upstreamDetail,
 					})
-					return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: true}
+					return nil, (&UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody, RetryableOnSameAccount: true}).withOfficialHeaders(c, resp.Header)
 				}
 			}
 
@@ -469,9 +473,10 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				return nil, (&UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}).withOfficialHeaders(c, resp.Header)
 			}
 
+			prepareOfficialResponse(c, claudePolicy, resp.Header, nil)
 			return nil, s.writeMappedClaudeError(c, account, resp.StatusCode, resp.Header.Get("x-request-id"), respBody)
 		}
 	}

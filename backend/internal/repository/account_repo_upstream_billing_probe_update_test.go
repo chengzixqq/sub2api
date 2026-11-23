@@ -482,3 +482,20 @@ func updatedAccountRows(id int64, extra string) *sqlmock.Rows {
 		nil, nil, nil, service.QuotaDimensionGlobal,
 	)
 }
+
+func TestScopedCustomizationPatchUsesCurrentRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+	t.Cleanup(func() { _ = client.Close() })
+	repo := newAccountRepositoryWithSQL(client, db, nil)
+	ctx := service.WithScope(t.Context(), service.Scope{WorkspaceID: 8})
+	mock.ExpectBegin()
+	mock.ExpectExec(`(?s)UPDATE accounts SET extra = .*jsonb_build_object\('claude_customization_overrides'.*THEN extra -> 'claude_customization_overrides'.*\|\| .* - ARRAY\(SELECT key FROM jsonb_each.*WHERE value = 'null'::jsonb\).*AND workspace_id = \$3`).
+		WithArgs(`{"claude_customization_overrides":{"request_id_mode":null}}`, int64(7), int64(8)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+	err = repo.UpdateExtra(ctx, 7, map[string]any{service.AccountClaudeCustomizationExtraKey: map[string]any{service.ClaudeFieldRequestIDMode: nil}})
+	require.ErrorIs(t, err, service.ErrAccountNotFound)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

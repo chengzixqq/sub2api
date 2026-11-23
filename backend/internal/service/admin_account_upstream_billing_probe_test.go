@@ -607,7 +607,7 @@ func TestUpdateAccountExtraDropsManagedBillingProbeFields(t *testing.T) {
 		accountID: {ID: accountID, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
 	}}
 
-	err := (&adminServiceImpl{accountRepo: repo}).UpdateAccountExtra(context.Background(), accountID, map[string]any{
+	err := (&adminServiceImpl{accountRepo: repo}).UpdateAccountExtra(WithScope(t.Context(), AdminScope()), accountID, map[string]any{
 		"custom":                               "value",
 		UpstreamBillingProbeEnabledExtraKey:    true,
 		UpstreamBillingRateSyncEnabledExtraKey: true,
@@ -853,7 +853,7 @@ func TestUpdateAccountExtraDropsOpenCodeGoManagedKeys(t *testing.T) {
 	}}
 
 	svc := &adminServiceImpl{accountRepo: repo}
-	err := svc.UpdateAccountExtra(context.Background(), accountID, map[string]any{
+	err := svc.UpdateAccountExtra(WithScope(t.Context(), AdminScope()), accountID, map[string]any{
 		OpenCodeGoUsageAutoRefreshExtraKey: false,
 		OpenCodeGoUsageSnapshotExtraKey:    map[string]any{"status": "forged"},
 		"custom":                           "value",

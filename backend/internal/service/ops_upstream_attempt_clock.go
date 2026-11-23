@@ -99,6 +99,17 @@ func (k *OpsUpstreamAttemptClock) Pending() (accountID, startedAtUnixMs int64, o
 	return k.accountID, k.startedAtMs, true
 }
 
+// hasDispatched includes attempts already claimed by Ops. It can only detect
+// sends on paths that install this clock and mark the HTTP upstream dispatch.
+func (k *OpsUpstreamAttemptClock) hasDispatched() bool {
+	if k == nil {
+		return false
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.startedAtMs > 0
+}
+
 // claim hands the pending start to one event of the same account that ended
 // no earlier than the dispatch began.
 func (k *OpsUpstreamAttemptClock) claim(accountID, atUnixMs int64) int64 {

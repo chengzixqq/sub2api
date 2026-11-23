@@ -29,7 +29,7 @@ const accountDispatchPolicySelect = `
 	    ))
 	LEFT JOIN account_groups ag ON ag.account_id = g.account_id AND ag.group_id = p.group_id
 	WHERE %s
-	ORDER BY p.user_id, g.account_id
+	ORDER BY p.user_id, p.group_id, g.account_id
 `
 
 const adminAccountDispatchPolicySelect = `
@@ -131,7 +131,7 @@ func scanAccountDispatchPolicies(rows *sql.Rows) ([]service.AccountDispatchPolic
 		if err := rows.Scan(&userID, &groupID, &version, &mode, &username, &email, &accountID, &origin, &accountName, &dispatchScope, &memberAccountID); err != nil {
 			return nil, err
 		}
-		if len(policies) == 0 || policies[len(policies)-1].UserID != userID {
+		if len(policies) == 0 || policies[len(policies)-1].UserID != userID || policies[len(policies)-1].GroupID != groupID {
 			policies = append(policies, service.AccountDispatchPolicy{
 				UserID: userID, GroupID: groupID, Version: version, Mode: mode,
 				Accounts: make([]service.AccountDispatchGrant, 0), Username: username, Email: email,

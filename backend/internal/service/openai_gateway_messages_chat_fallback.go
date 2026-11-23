@@ -175,9 +175,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, anthropicResp)
+	delivered := writeOpenAIConvertedJSON(c, &usage, anthropicResp)
 
 	return &OpenAIForwardResult{
+		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
@@ -208,6 +209,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
 	anthropicState := apicompat.NewChatCompletionsToAnthropicStreamState(compositeClientModel(c.Request.Context(), originalModel))
+	var delivered bool
 	clientDisconnected := false
 
 	// 与 responses 兄弟不同：客户端断开后仍继续做事件转换（喂 anthropicState），
@@ -228,6 +230,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 				clientDisconnected = true
 				break
 			}
+			delivered = delivered || anthropicEventHasContent(aEvt)
 		}
 		if !clientDisconnected && len(anthropicEvents) > 0 {
 			c.Writer.Flush()
@@ -238,10 +241,12 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	usage := scan.Usage
 
 	if scan.Err != nil {
+		writeOpenAIMessagesStreamReadError(c, scan.Err, clientDisconnected)
 		// Broken upstream read: skip finalization so no synthetic message_stop
 		// masks the truncation, and surface the error to flag usage incomplete
 		// (mirrors forwardResponsesViaRawChatCompletions).
 		return &OpenAIForwardResult{
+			ClientContentDelivered:        delivered,
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
 			Usage:                         usage,
@@ -273,6 +278,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 				clientDisconnected = true
 				break
 			}
+			delivered = delivered || anthropicEventHasContent(aEvt)
 		}
 		c.Writer.Flush()
 	}
@@ -281,6 +287,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	}
 
 	return &OpenAIForwardResult{
+		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,

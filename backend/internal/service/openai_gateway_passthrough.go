@@ -352,6 +352,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	compactModelFallbackRetried := false
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
 	var resp *http.Response
+	var delivered bool
 	var usage *OpenAIUsage
 	var firstTokenMs *int
 	responseID := ""
@@ -446,6 +447,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if reqStream {
 			result, handleErr := s.handleStreamingResponsePassthrough(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel)
 			if result != nil {
+				delivered = result.delivered
 				usage = result.usage
 				firstTokenMs = result.firstTokenMs
 				responseID = strings.TrimSpace(result.responseID)
@@ -497,6 +499,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				_ = resp.Body.Close()
 				return nil, handleErr
 			}
+			delivered = result.delivered
 			usage = result.usage
 			responseID = strings.TrimSpace(result.responseID)
 			imageCount = result.imageCount
@@ -527,6 +530,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		ResponseID:                    responseID,
+		ClientContentDelivered:        delivered,
 		Usage:                         *usage,
 		Model:                         reqModel,
 		UpstreamModel:                 upstreamPassthroughModel,
@@ -1014,6 +1018,7 @@ func collectOpenAIPassthroughTimeoutHeaders(h http.Header) []string {
 }
 
 type openaiStreamingResultPassthrough struct {
+	delivered        bool
 	usage            *OpenAIUsage
 	firstTokenMs     *int
 	responseID       string
@@ -1022,6 +1027,7 @@ type openaiStreamingResultPassthrough struct {
 }
 
 type openaiNonStreamingResultPassthrough struct {
+	delivered bool
 	*OpenAIUsage
 	usage            *OpenAIUsage
 	responseID       string
@@ -2050,8 +2056,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
+	var delivered bool
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
+			delivered:        delivered,
 			usage:            usage,
 			firstTokenMs:     firstTokenMs,
 			responseID:       responseID,
@@ -2061,6 +2069,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	}
 
 	for documentScanner.Scan() {
+		lineDeliversContent := false
 		line := documentScanner.Text()
 		if eventType, ok := extractOpenAISSEEventLine(line); ok {
 			pendingSSEEventType = eventType
@@ -2242,10 +2251,15 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			// 只有上游真实内容帧才算「已投递」。lineStartsClientOutput 是「要不要写客户端」
 			// 的判定（黑名单，裸 error 与 response.incomplete 都会穿透），不能直接复用为计费
 			// 门控——收窄它会改变客户端写出行为。故这里独立用白名单判定。
-			if openAIResponsesStreamEventDeliversRealContent(trimmedData, eventType) {
+			var upstreamContent bool
+			upstreamContent, lineDeliversContent = openAIResponsesStreamContent(trimmedData, eventType)
+			if upstreamContent {
 				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
 			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			if !delivered && !lineDeliversContent && openAIUsageNeedsDelivery(usage) {
+				lineDeliversContent = openAIFinalEventHasContent(trimmedData, eventType)
+			}
 		}
 		if line == "" {
 			pendingSSEEventType = ""
@@ -2275,6 +2289,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
 			} else {
+				delivered = delivered || lineDeliversContent
 				clientOutputStarted = true
 				flushPending = true
 				if line == "" {
@@ -2421,10 +2436,12 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
-		c.Data(resp.StatusCode, contentType, body)
+	bridged, delivered := writeOpenAICompactSSEBridgeWithDelivery(c, resp.StatusCode, body, usage)
+	if !bridged {
+		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 	return &openaiNonStreamingResultPassthrough{
+		delivered:        delivered,
 		OpenAIUsage:      usage,
 		usage:            usage,
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
@@ -2461,8 +2478,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
 		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
-			inheritOpenAICacheCreationTTL(&parsedUsage, *usage)
-			*usage = parsedUsage
+			replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		}
 		// When the terminal event has an empty output array, reconstruct
 		// output from accumulated delta events so the client gets full content.
@@ -2504,14 +2520,16 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			contentType = "text/event-stream"
 		}
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+	bridged, delivered := writeOpenAICompactSSEBridgeWithDelivery(c, resp.StatusCode, body, usage)
+	if !bridged {
 		// 上游的 Content-Type（text/event-stream）已复制到响应头，而 c.Data
 		// 不会覆盖已存在的 Content-Type，这里需显式设置为聚合后的类型。
 		c.Writer.Header().Set("Content-Type", contentType)
-		c.Data(resp.StatusCode, contentType, body)
+		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
 	return &openaiNonStreamingResultPassthrough{
+		delivered:        delivered,
 		OpenAIUsage:      usage,
 		usage:            usage,
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),

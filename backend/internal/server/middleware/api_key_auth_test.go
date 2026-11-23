@@ -331,6 +331,13 @@ func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 
 		require.Equal(t, http.StatusTooManyRequests, w.Code)
 		require.Contains(t, w.Body.String(), "USAGE_LIMIT_EXCEEDED")
+
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		req.Header.Set("x-api-key", apiKey.Key)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusTooManyRequests, w.Code)
+		require.JSONEq(t, `{"type":"error","error":{"type":"rate_limit_error","message":"daily usage limit exceeded"}}`, w.Body.String())
 	})
 }
 
@@ -1533,7 +1540,7 @@ func TestAPIKeyAuthOpenAIQuotaErrorFormat(t *testing.T) {
 	require.Equal(t, "insufficient_quota", response.Error.Code)
 }
 
-func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
+func TestAPIKeyAuthQuotaErrorByClientProtocol(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	user := &service.User{ID: 11, Role: service.RoleUser, Status: service.StatusActive, Balance: 10}
@@ -1554,13 +1561,67 @@ func TestAPIKeyAuthQuotaErrorKeepsLegacyFormatOutsideResponses(t *testing.T) {
 
 	cfg := &config.Config{RunMode: config.RunModeStandard}
 	router := newAuthTestRouter(service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg), nil, cfg)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	req.Header.Set("x-api-key", apiKey.Key)
-	router.ServeHTTP(w, req)
+	const anthropic = `{"type":"error","error":{"type":"rate_limit_error","message":"API key quota has been exhausted"}}`
+	const legacy = `{"code":"API_KEY_QUOTA_EXHAUSTED","message":"API key 额度已用完","reason":"API_KEY_QUOTA_EXHAUSTED"}`
+	for _, tc := range []struct {
+		method, path, header, value, body string
+	}{
+		{http.MethodPost, "/v1/messages", "x-api-key", apiKey.Key, anthropic},
+		{http.MethodGet, "/v1/models", "x-api-key", apiKey.Key, anthropic},
+		{http.MethodGet, "/v1/models", "Authorization", "Bearer " + apiKey.Key, legacy},
+	} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set(tc.header, tc.value)
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusTooManyRequests, w.Code)
+		if tc.body == anthropic {
+			require.Equal(t, tc.body, w.Body.String())
+			require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+		} else {
+			require.JSONEq(t, tc.body, w.Body.String())
+		}
+	}
+}
 
-	require.Equal(t, http.StatusTooManyRequests, w.Code)
-	requireAPIKeyAuthError(t, w, "API_KEY_QUOTA_EXHAUSTED", "API key 额度已用完")
+func TestAPIKeyAuthAnthropicGroupAndLookupErrors(t *testing.T) {
+	groupID := int64(3)
+	for _, tc := range []struct {
+		name   string
+		group  *service.Group
+		err    error
+		status int
+		body   string
+	}{
+		{"deleted group", nil, nil, 403,
+			`{"type":"error","error":{"type":"permission_error","message":"The group assigned to this API key has been deleted"}}`},
+		{"disabled group", &service.Group{ID: groupID, Status: service.StatusDisabled}, nil, 403,
+			`{"type":"error","error":{"type":"permission_error","message":"The group assigned to this API key is disabled"}}`},
+		{"exclusive group", &service.Group{ID: groupID, Status: service.StatusActive, IsExclusive: true}, nil, 403,
+			`{"type":"error","error":{"type":"permission_error","message":"The user is no longer allowed to use the group assigned to this API key"}}`},
+		{"lookup failure", nil, errors.New("internal lookup failed"), 500,
+			`{"type":"error","error":{"type":"api_error","message":"Failed to validate API key"}}`},
+		{"lookup overloaded", nil, service.ErrAPIKeyAuthOverloaded, 503,
+			`{"type":"error","error":{"type":"api_error","message":"API key authentication is temporarily unavailable"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &stubApiKeyRepo{getByKey: func(context.Context, string) (*service.APIKey, error) {
+				if tc.err != nil {
+					return nil, tc.err
+				}
+				return &service.APIKey{ID: 1, UserID: 2, GroupID: &groupID, Group: tc.group, Status: service.StatusActive,
+					User: &service.User{ID: 2, Status: service.StatusActive, Balance: 10}}, nil
+			}}
+			cfg := &config.Config{RunMode: config.RunModeStandard}
+			svc := service.NewAPIKeyService(repo, nil, nil, nil, nil, nil, cfg)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			req.Header.Set("x-api-key", "test-key")
+			newAuthTestRouter(svc, nil, cfg).ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.JSONEq(t, tc.body, w.Body.String())
+		})
+	}
 }
 
 func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) *gin.Engine {
@@ -1572,6 +1633,7 @@ func newAuthTestRouter(apiKeyService *service.APIKeyService, subscriptionService
 	router.GET("/t", ok)
 	router.POST("/v1/responses", ok)
 	router.POST("/v1/messages", ok)
+	router.GET("/v1/models", ok)
 	router.GET("/v1/usage", ok)
 	router.GET("/v1/sub2api/billing", ok)
 	return router
@@ -1855,4 +1917,17 @@ func (r *stubUserSubscriptionRepo) IncrementUsage(ctx context.Context, id int64,
 
 func (r *stubUserSubscriptionRepo) BatchUpdateExpiredStatus(ctx context.Context) (int64, error) {
 	return 0, errors.New("not implemented")
+}
+
+func TestGlobalFillAfterGroupAllowlist(t *testing.T) {
+	settings := service.NewSettingService(fakeSettingRepo{values: map[string]string{service.SettingKeyClaudeCustomization: `{"request_id_mode":"fill"}`}}, nil)
+	settings.AnyAlignmentReject(t.Context(), "request_id_mode")
+	r := gin.New()
+	r.Use(GroupModelAllowlistWithSettings(settings))
+	r.POST("/v1/messages", func(c *gin.Context) { AnthropicErrorWriter(c, 500, "Failed to resolve composite model route") })
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", nil))
+	id := rec.Header().Get("Request-Id")
+	require.NotEmpty(t, id)
+	require.Contains(t, rec.Body.String(), `"request_id":"`+id+`"`)
 }

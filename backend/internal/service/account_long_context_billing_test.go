@@ -230,7 +230,7 @@ func TestAdminServiceUpdateAccountExtraRejectsMalformedOpenAILongContextBillingV
 	repo := &longContextBillingRepoStub{account: &Account{ID: 1, Platform: PlatformOpenAI}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	err := svc.UpdateAccountExtra(context.Background(), 1, map[string]any{
+	err := svc.UpdateAccountExtra(WithScope(t.Context(), AdminScope()), 1, map[string]any{
 		openAILongContextBillingEnabledKey: "true",
 	})
 
@@ -242,7 +242,7 @@ func TestAdminServiceUpdateAccountExtraAllowsProviderOwnedValueForNonOpenAIAccou
 	repo := &longContextBillingRepoStub{account: &Account{ID: 1, Platform: PlatformAnthropic}}
 	svc := &adminServiceImpl{accountRepo: repo}
 
-	err := svc.UpdateAccountExtra(context.Background(), 1, map[string]any{
+	err := svc.UpdateAccountExtra(WithScope(t.Context(), AdminScope()), 1, map[string]any{
 		openAILongContextBillingEnabledKey: "provider-owned",
 	})
 
@@ -295,4 +295,27 @@ func TestAdminServiceBulkUpdateAccountsRejectsMalformedValueForMixedTargetsInclu
 	require.Nil(t, result)
 	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
 	require.Zero(t, repo.bulkUpdateCalls)
+}
+
+func TestAccountExtraWorkspaceOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		scope   Scope
+		allowed bool
+	}{
+		{"same workspace", Scope{WorkspaceID: 3}, true}, {"different workspace", Scope{WorkspaceID: 4}, false}, {"owner", AdminScope(), true}, {"missing", Scope{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &longContextBillingRepoStub{account: &Account{ID: 1, WorkspaceID: 3, Platform: PlatformAnthropic}}
+			svc := &adminServiceImpl{accountRepo: repo}
+			err := svc.UpdateAccountExtra(WithScope(t.Context(), tc.scope), 1, map[string]any{"custom": true})
+			if tc.allowed {
+				require.NoError(t, err)
+				require.Equal(t, 1, repo.updateExtraCalls)
+			} else {
+				require.ErrorIs(t, err, ErrAccountNotFound)
+				require.Zero(t, repo.updateExtraCalls)
+			}
+		})
+	}
 }

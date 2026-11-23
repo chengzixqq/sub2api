@@ -29,6 +29,7 @@ const (
 	BetaEffort                      = "effort-2025-11-24"
 	BetaRedactThinking              = "redact-thinking-2026-02-12"
 	BetaContextManagement           = "context-management-2025-06-27"
+	BetaCompact                     = "compact-2026-01-12"
 	BetaThinkingBindingControls     = "thinking-binding-controls-2026-08-01"
 	BetaMidConversationOutputConfig = "mid-conversation-output-config-2026-07-01"
 	BetaPerTurnControl              = "per-turn-control-2026-07-01"

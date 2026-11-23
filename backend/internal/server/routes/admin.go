@@ -729,8 +729,10 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpA
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)
 		// Claude 魔改兼容策略（全局预设）
 		adminSettings.GET("/customization", h.Admin.Setting.GetClaudeCustomization)
+		adminSettings.GET("/customization/schema", h.Admin.Setting.GetClaudeCustomizationSchema)
 		adminSettings.PUT("/customization", h.Admin.Setting.UpdateClaudeCustomization)
 		adminSettings.POST("/customization/apply-preset", h.Admin.Setting.ApplyClaudeCustomizationPreset)
+		adminSettings.POST("/customization/reset/:field", h.Admin.Setting.ResetClaudeCustomizationField)
 		adminSettings.POST("/customization/reset", h.Admin.Setting.ResetClaudeCustomization)
 		// Web Search 模拟配置
 		adminSettings.GET("/web-search-emulation", h.Admin.Setting.GetWebSearchEmulationConfig)

@@ -135,7 +135,11 @@ func (s *adminServiceImpl) PutAccountDispatchPolicy(ctx context.Context, policy 
 			return nil, infraerrors.New(http.StatusForbidden, "ACCOUNT_DISPATCH_WORKSPACE_DENIED", "account workspace is not granted this group")
 		}
 	}
-	return writer.PutAccountDispatchPolicy(ctx, policy, expectedVersion)
+	saved, err := writer.PutAccountDispatchPolicy(ctx, policy, expectedVersion)
+	if err == nil {
+		s.settingService.invalidateAlignmentSnapshot(ctx)
+	}
+	return saved, err
 }
 
 func (s *adminServiceImpl) accountDispatchWorkspaceGrants(ctx context.Context, workspaceIDs []int64, groupID int64) (map[int64]struct{}, error) {
@@ -184,5 +188,9 @@ func (s *adminServiceImpl) DeleteAccountDispatchPolicy(ctx context.Context, user
 	if userID <= 0 || groupID <= 0 || expectedVersion <= 0 {
 		return infraerrors.BadRequest("INVALID_ACCOUNT_DISPATCH_POLICY", "invalid account dispatch policy identifiers or version")
 	}
-	return writer.DeleteAccountDispatchPolicy(ctx, userID, groupID, expectedVersion)
+	err = writer.DeleteAccountDispatchPolicy(ctx, userID, groupID, expectedVersion)
+	if err == nil {
+		s.settingService.invalidateAlignmentSnapshot(ctx)
+	}
+	return err
 }

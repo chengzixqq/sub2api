@@ -17,7 +17,7 @@ type cacheControlPathsSnapshot struct {
 }
 
 func snapshotCacheControlPaths(body []byte) cacheControlPathsSnapshot {
-	invalid, messages, tools, system := collectCacheControlPaths(body)
+	invalid, messages, tools, system := collectCacheControlPaths(body, false)
 	return cacheControlPathsSnapshot{invalid, messages, tools, system}
 }
 

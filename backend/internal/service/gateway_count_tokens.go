@@ -15,6 +15,37 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// For an early local response the published global snapshot and the selected
+// account already contain the alignment fields. Avoid a settings query.
+func (s *GatewayService) countTokensEarlyPolicy(c *gin.Context, account *Account) ClaudeCustomizationSettings {
+	policy := s.publishedClaudePolicy(c, account)
+	if settings := s.settingService; settings != nil {
+		if snapshot := settings.alignmentRejectCache.Load(); snapshot != nil {
+			settings.tryRefreshAlignmentSnapshot(c.Request.Context(), snapshot)
+		}
+	}
+	c.Set(claudeCustomizationRequestContextKey, claudeCustomizationRequestPolicy{accountID: account.ID, policy: policy})
+	return policy
+}
+
+func (s *GatewayService) publishedClaudePolicy(c *gin.Context, account *Account) ClaudeCustomizationSettings {
+	if value, ok := c.Get(claudeCustomizationRequestContextKey); ok {
+		if cached, ok := value.(claudeCustomizationRequestPolicy); ok && cached.accountID == account.ID {
+			return cached.policy
+		}
+	}
+	policy := DefaultClaudeCustomizationSettings()
+	if settings := s.settingService; settings != nil {
+		if snapshot := settings.alignmentRejectCache.Load(); snapshot != nil {
+			policy = snapshot.global
+		}
+	}
+	if overrides, ok := account.Extra[AccountClaudeCustomizationExtraKey].(map[string]any); ok {
+		applyClaudeAccountOverrides(&policy, overrides, account.Type)
+	}
+	return policy
+}
+
 // ForwardCountTokens 转发 count_tokens 请求到上游 API
 // 特点：不记录使用量、仅支持非流式响应
 func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) error {
@@ -22,14 +53,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return fmt.Errorf("parse request: empty request")
 	}
-	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
-		policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
-		c.Set(redactUpstreamURLContextKey, policy.URLRedactionEnabled)
-	}
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
 	// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
 	// 凭据只能走其他协议的 OAuth 账号同理，且必须在取 token、建请求之前拦下。
 	if account != nil && (account.Platform == PlatformAntigravity || !anthropicMessagesCredentialAllowed(account)) {
+		policy := s.countTokensEarlyPolicy(c, account)
+		if err := s.settingService.checkUnknownBeta(ctx, c, account, policy); err != nil {
+			return err
+		}
 		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this platform")
 		return nil
 	}
@@ -46,11 +77,35 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 	if account != nil && account.Platform == PlatformAnthropic {
 		if err := validateClaude55Request(parsed.Body.Bytes(), validationModel); err != nil {
+			s.countTokensEarlyPolicy(c, account)
 			s.countTokensError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return err
 		}
 	}
 
+	// Bedrock 不支持 count_tokens 端点
+	if account != nil && account.IsBedrock() {
+		s.countTokensEarlyPolicy(c, account)
+		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Bedrock")
+		return nil
+	}
+
+	claudePolicy := DefaultClaudeCustomizationSettings()
+	if isNativeCacheControlAccount(account) || (account != nil && account.Type == AccountTypeAPIKey) {
+		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	if err := s.settingService.checkUnknownBeta(ctx, c, account, claudePolicy); err != nil {
+		return err
+	}
+	if c != nil && s.settingService != nil && account != nil && account.Type == AccountTypeAPIKey {
+		c.Set(redactUpstreamURLContextKey, claudePolicy.URLRedactionEnabled)
+	}
+
+	limitMode := requestCacheControlLimitMode(c, account, claudePolicy)
+	thinkingMode := requestThinkingCacheControlMode(c, account, claudePolicy)
+	if err := s.settingService.AlignmentHits().checkCacheControls(c, account, thinkingMode, limitMode, parsed); err != nil {
+		return err
+	}
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body.Bytes()
 		passthroughModel := parsed.Model
@@ -62,12 +117,6 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			}
 		}
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody, passthroughModel)
-	}
-
-	// Bedrock 不支持 count_tokens 端点
-	if account != nil && account.IsBedrock() {
-		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for Bedrock")
-		return nil
 	}
 
 	body := parsed.Body.Bytes()
@@ -89,13 +138,22 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCodeCT
 
 	if shouldMimicClaudeCode {
+		// 与 /v1/messages 相同：在注入 tools[-1] / messages 断点之前按客户端原始
+		// 断点数决定 4 块上限的处理方式（见 planCacheControlLimit）。
+		cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, true)
+		if marked {
+			if err := replaceBody(plannedBody); err != nil {
+				return err
+			}
+		}
+
 		var normalizedBody []byte
 		normalizedBody, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, claudeOAuthNormalizeOptions{})
 		if err := replaceBody(normalizedBody); err != nil {
 			return err
 		}
 
-		if err := replaceBody(s.rewriteMessageCacheControlIfEnabled(ctx, body)); err != nil {
+		if err := replaceBody(s.rewriteMessageCacheControlIfEnabled(ctx, body, cacheControlPlan.preserveThinking)); err != nil {
 			return err
 		}
 		if rw := buildToolNameRewriteFromBody(body); rw != nil {
@@ -111,7 +169,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		// 4 块上限的兜底：其余四条出口都在自己的转发路径上调过一次，只有这里没有。
 		// 不再剥离客户端 system 断点之后，「客户端 system + 客户端 messages +
 		// 上面刚注入的 tools[-1]」可以直接顶到 5 块，而上游对超限是 400。
-		if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
+		if err := replaceBody(cacheControlPlan.apply(body)); err != nil {
+			return err
+		}
+	} else if limitMode == ClaudeCacheControlLimitTrim && isNativeCacheControlAccount(account) {
+		if err := replaceBody(trimRealCacheControlSlots(body, thinkingMode != ClaudeAlignStrip, true)); err != nil {
 			return err
 		}
 	}
@@ -149,6 +211,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// 获取凭证
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
+		if !isNativeCacheControlAccount(account) {
+			s.countTokensEarlyPolicy(c, account)
+		}
 		s.countTokensError(c, http.StatusBadGateway, "upstream_error", "Failed to get access token")
 		return err
 	}
@@ -156,11 +221,22 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// 构建上游请求
 	upstreamReq, wireBody, err := s.buildCountTokensRequest(ctx, c, account, body, token, tokenType, reqModel, shouldMimicClaudeCode)
 	if err != nil {
-		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
+		if _, selected := c.Get(claudeCustomizationRequestContextKey); !selected {
+			s.countTokensEarlyPolicy(c, account)
+		}
+		const message = "Failed to build request"
+		var blocked *BetaBlockedError
+		if !errors.As(err, &blocked) || !blocked.WriteContextPolicyJSON(c, http.StatusInternalServerError, "api_error", message) {
+			s.countTokensError(c, http.StatusInternalServerError, "api_error", message)
+		}
 		return err
 	}
+	claudePolicy = cachedClaudeResponsePolicy(c)
 	// 先记录首发 wire body；如果后面进入 400 retry，retry 会基于未签名的逻辑 body 重新构建。
-	acceptedWireBody := wireBody
+	acceptedWireBody, err := s.alignAnthropicWireRequest(c, account, claudePolicy, upstreamReq, wireBody)
+	if err != nil {
+		return err
+	}
 
 	// 获取代理URL（自定义 base URL 模式下，proxy 通过 buildCustomRelayURL 作为查询参数传递）
 	proxyURL := ""
@@ -192,10 +268,6 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
-	claudePolicy := DefaultClaudeCustomizationSettings()
-	if s.settingService != nil {
-		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
-	}
 	if resp.StatusCode == 400 && claudePolicy.ThinkingSignatureRetryEnabled && s.shouldRectifySignatureError(ctx, c, account, respBody, body, reqModel) {
 		logger.LegacyPrintf("service.gateway", "Account %d: detected thinking block signature error on count_tokens, retrying with filtered thinking blocks", account.ID)
 
@@ -203,10 +275,13 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		if !bytes.Equal(filteredBody, body) {
 			retryReq, retryWireBody, buildErr := s.buildCountTokensRequest(ctx, c, account, filteredBody, token, tokenType, reqModel, shouldMimicClaudeCode)
 			if buildErr == nil {
+				retryWireBody, err = s.alignAnthropicWireRequest(c, account, claudePolicy, retryReq, retryWireBody)
+				if err != nil {
+					return err
+				}
 				retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 				if retryErr == nil {
 					if retryResp.StatusCode < 400 {
-						// count_tokens 签名重试成功后记录最终 wire body，错误响应仍保留原 body 便于后续处理。
 						acceptedWireBody = retryWireBody
 					}
 					resp = retryResp
@@ -232,10 +307,12 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
-		// 标记账号状态（429/529等）；传入实际发往上游的模型，临时不可调度规则才能按模型隔离
-		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
+		prepareOfficialResponse(c, claudePolicy, resp.Header, nil)
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		if s.rateLimitService != nil {
+			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
+		}
 		upstreamMsg = sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(upstreamMsg))
 		upstreamDetail := ""
 		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
@@ -260,15 +337,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 			)
 		}
 
-		// 返回简化的错误响应
-		errMsg := "Upstream request failed"
-		switch resp.StatusCode {
-		case 429:
-			errMsg = "Rate limit exceeded"
-		case 529:
-			errMsg = "Service overloaded"
-		}
-		s.countTokensError(c, resp.StatusCode, "upstream_error", errMsg)
+		s.writeCountTokensUpstreamError(c, resp.StatusCode)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", resp.StatusCode)
 		}
@@ -276,6 +345,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	// 透传成功响应
+	prepareOfficialResponse(c, claudePolicy, resp.Header, nil)
 	c.Data(resp.StatusCode, "application/json", respBody)
 	return nil
 }
@@ -293,7 +363,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		return fmt.Errorf("anthropic api key passthrough requires apikey token, got: %s", tokenType)
 	}
 
-	upstreamReq, err := s.buildCountTokensRequestAnthropicAPIKeyPassthrough(ctx, c, account, body, token)
+	upstreamReq, wireBody, err := s.buildCountTokensRequestAnthropicAPIKeyPassthrough(ctx, c, account, body, token)
 	if err != nil {
 		s.countTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return err
@@ -304,6 +374,10 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		proxyURL = account.Proxy.URL()
 	}
 
+	policy := s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	if _, err := s.alignAnthropicWireRequest(c, account, policy, upstreamReq, wireBody); err != nil {
+		return err
+	}
 	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
 	if err != nil {
 		setOpsUpstreamError(c, 0, sanitizeUpstreamErrorMessage(err.Error()), "")
@@ -336,11 +410,12 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	}
 
 	if resp.StatusCode >= 400 {
+
+		prepareOfficialResponse(c, policy, resp.Header, nil)
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		if s.rateLimitService != nil {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
 		}
-
-		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessageForContext(c, sanitizeUpstreamErrorMessage(upstreamMsg))
 
 		// 中转站不支持 count_tokens 端点时（404），返回 404 让客户端 fallback 到本地估算。
@@ -378,14 +453,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			Detail:             upstreamDetail,
 		})
 
-		errMsg := "Upstream request failed"
-		switch resp.StatusCode {
-		case 429:
-			errMsg = "Rate limit exceeded"
-		case 529:
-			errMsg = "Service overloaded"
-		}
-		s.countTokensError(c, resp.StatusCode, "upstream_error", errMsg)
+		s.writeCountTokensUpstreamError(c, resp.StatusCode)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", resp.StatusCode)
 		}
@@ -393,6 +461,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	}
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	prepareOfficialResponse(c, policy, resp.Header, nil)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -407,39 +476,32 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	account *Account,
 	body []byte,
 	token string,
-) (*http.Request, error) {
+) (*http.Request, []byte, error) {
 	body = stripDeferredToolCacheControl(body)
 	targetURL := claudeAPICountTokensURL
 	baseURL := getAnthropicGatewayBaseURL(account)
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		targetURL = validatedURL + "/v1/messages/count_tokens?beta=true"
 	}
 	body = sanitizeCountTokensRequestBody(body)
 
 	// 同 buildUpstreamRequestAnthropicAPIKeyPassthrough：能力维度 sanitize。
-	clientBeta := ""
-	if c != nil && c.Request != nil {
-		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
-	}
-	// 账号覆写了 anthropic-beta 时，覆写值即最终上游值：净化以覆写值为准
-	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
-		clientBeta = beta
-	}
 	claudePolicy := DefaultClaudeCustomizationSettings()
 	if s.settingService != nil {
 		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
 	}
+	body, clientBeta := s.resolvePassthroughRequestBeta(c, account, body, claudePolicy)
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, clientBeta, claudePolicy.FallbackPolicy, true); changed {
 		body = sanitized
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if c != nil && c.Request != nil {
@@ -475,7 +537,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 
-	return req, nil
+	return req, body, nil
 }
 
 // buildCountTokensRequest 构建 count_tokens 上游请求
@@ -549,20 +611,19 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// === 计算最终 anthropic-beta header（先于 body sanitize 与 CCH 签名）===
 	// 顺序约束同 buildUpstreamRequest。
-	ctPolicyFilterSet, err := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
+	ctPolicy, err := s.requestBetaPolicy(ctx, c, account, modelID)
 	if err != nil {
 		return nil, nil, err
 	}
-	ctEffectiveDropSet := mergeDropSets(ctPolicyFilterSet)
+	ctEffectiveDropSet := mergeDropSets(ctPolicy.filterSet)
 	ctEffectiveDropSet = applyNativeAnthropicFallbackBetaPolicy(account, claudePolicy.FallbackPolicy, ctEffectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalCountTokensAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, ctEffectiveDropSet,
 	)
 
-	// 账号覆写了 anthropic-beta 时，覆写值即最终上游值：净化以覆写值为准
-	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
-		finalBetaHeader, finalBetaShouldSet = beta, true
-	}
+	// 账号覆写整体替代策略处理后的客户端声明。
+	body, finalBetaHeader = resolveAnthropicRequestBeta(c, account, body, finalBetaHeader, ctPolicy)
+	finalBetaShouldSet = finalBetaShouldSet || finalBetaHeader != ""
 	finalBetaHeader = filterSonnet55ToolsetBeta(finalBetaHeader, body, modelID)
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
@@ -618,12 +679,6 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		applyClaudeCodeMimicHeaders(req, false, ctMimicUserAgent)
 	}
 
-	// 写入最终 anthropic-beta header（Del 一次避免白名单透传值残留）
-	deleteHeaderAllForms(req.Header, "anthropic-beta")
-	if finalBetaShouldSet {
-		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
-	}
-
 	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
 	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
 		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
@@ -635,6 +690,12 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// 账号级请求头覆写覆盖通用来源；严格协议边界仍在下方做最终过滤。
 	account.ApplyHeaderOverrides(req.Header)
+	// 写入最终 anthropic-beta header（Del 一次避免白名单透传值残留）
+	deleteHeaderAllForms(req.Header, "anthropic-beta")
+	if finalBetaShouldSet {
+		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
+	}
+
 	// Strict remains authoritative over account-level header overrides.
 	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, modelID)
@@ -672,13 +733,18 @@ func sanitizeCountTokensRequestBody(body []byte) []byte {
 	return out
 }
 
+func (s *GatewayService) writeCountTokensUpstreamError(c *gin.Context, status int) {
+	msg := "Upstream request failed"
+	switch status {
+	case 429:
+		msg = "Rate limit exceeded"
+	case 529:
+		msg = "Service overloaded"
+	}
+	s.countTokensError(c, status, "upstream_error", msg)
+}
+
 // countTokensError 返回 count_tokens 错误响应
 func (s *GatewayService) countTokensError(c *gin.Context, status int, errType, message string) {
-	c.JSON(status, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	writeAnthropicError(c, status, errType, message)
 }

@@ -1715,6 +1715,9 @@ type CostInput struct {
 	LongContextBillingEnabled *bool
 	// DisableModelLongContextPricing 豁免模型价卡的长上下文附加费，不改变自定义区间价格。
 	DisableModelLongContextPricing bool
+	// PricingContextTokens optionally selects a shared context tier while each
+	// component is still charged only for its own Tokens.
+	PricingContextTokens *int
 }
 
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
@@ -1730,7 +1733,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		if err != nil {
 			return nil, err
 		}
-		breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongContextBilling && !input.DisableModelLongContextPricing)
+		breakdown := s.computeTokenBreakdownForContext(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongContextBilling && !input.DisableModelLongContextPricing, input.PricingContextTokens)
 		applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
 		return breakdown, nil
 	}
@@ -1773,6 +1776,9 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 // calculateTokenCost 按 token 区间计费
 func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input CostInput) (*CostBreakdown, error) {
 	totalContext := input.Tokens.InputTokens + input.Tokens.CacheCreationTokens + input.Tokens.CacheReadTokens
+	if input.PricingContextTokens != nil {
+		totalContext = *input.PricingContextTokens
+	}
 
 	// 分组开关是统一入口；账号 API 开关保留为额外开启能力，但 false 不否决分组配置。
 	contextTierPricingEnabled := resolved.longContextPricingEnabled
@@ -1824,7 +1830,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 	// 官方长上下文阶梯仅在无区间定价时应用（区间定价已包含上下文分层）。
 	applyLongCtx := len(resolved.Intervals) == 0 && contextTierPricingEnabled && !input.DisableModelLongContextPricing
 
-	breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
+	breakdown := s.computeTokenBreakdownForContext(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx, input.PricingContextTokens)
 	applyCostBreakdownMultiplier(breakdown, resolvedChannelTimeMultiplier(resolved, input.PricingAt))
 	applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
 	return breakdown, nil
@@ -1836,6 +1842,14 @@ func (s *BillingService) computeTokenBreakdown(
 	pricing *ModelPricing, tokens UsageTokens,
 	rateMultiplier float64, serviceTier string,
 	applyLongCtx bool,
+) *CostBreakdown {
+	return s.computeTokenBreakdownForContext(pricing, tokens, rateMultiplier, serviceTier, applyLongCtx, nil)
+}
+
+func (s *BillingService) computeTokenBreakdownForContext(
+	pricing *ModelPricing, tokens UsageTokens,
+	rateMultiplier float64, serviceTier string,
+	applyLongCtx bool, pricingContextTokens *int,
 ) *CostBreakdown {
 	// 保存时强制 > 0；若仍有负数泄漏，按 0 处理避免按 1x 误扣。
 	if rateMultiplier < 0 {
@@ -1880,7 +1894,11 @@ func (s *BillingService) computeTokenBreakdown(
 		tierMultiplier = configuredServiceTierMultiplier(serviceTier, pricing)
 	}
 
-	longContextPricingEligible := applyLongCtx && s.shouldApplySessionLongContextPricing(tokens, pricing)
+	contextUsage := tokens
+	if pricingContextTokens != nil {
+		contextUsage = UsageTokens{InputTokens: *pricingContextTokens}
+	}
+	longContextPricingEligible := applyLongCtx && s.shouldApplySessionLongContextPricing(contextUsage, pricing)
 	var baselineCost *CostBreakdown
 	if longContextPricingEligible {
 		baselineCost = s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, false)

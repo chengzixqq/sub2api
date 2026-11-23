@@ -299,24 +299,27 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	}
 	// 非流式响应必须是 application/json（上游被强制流式，透传头会污染）。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	billUsage := claudeUsageToOpenAIUsage(&usage)
+	var delivered bool
 	if respBytes, err := json.Marshal(ccResp); err == nil {
 		respBytes = reverseToolNamesIfPresent(c, respBytes)
-		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
+		delivered = writeOpenAIResponseData(c, http.StatusOK, "application/json; charset=utf-8", respBytes, &billUsage)
 	} else {
-		c.JSON(http.StatusOK, ccResp)
+		delivered = writeOpenAIConvertedJSON(c, &billUsage, ccResp)
 	}
 
 	return &OpenAIForwardResult{
-		RequestID:        requestID,
-		UpstreamHeaders:  resp.Header,
-		Usage:            claudeUsageToOpenAIUsage(&usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		ReasoningEffort:  reasoningEffort,
-		Stream:           false,
-		Duration:         time.Since(startTime),
+		RequestID:              requestID,
+		UpstreamHeaders:        resp.Header,
+		Usage:                  billUsage,
+		ClientContentDelivered: delivered,
+		Model:                  originalModel,
+		BillingModel:           billingModel,
+		UpstreamModel:          upstreamModel,
+		UpstreamEndpoint:       "/v1/messages",
+		ReasoningEffort:        reasoningEffort,
+		Stream:                 false,
+		Duration:               time.Since(startTime),
 	}, nil
 }
 
@@ -360,20 +363,22 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 	scanner.Split(newBoundedSSESplit(s.cfg, maxLineSize, nil))
 
+	var delivered bool
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:        requestID,
-			UpstreamHeaders:  resp.Header,
-			Usage:            claudeUsageToOpenAIUsage(&usage),
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			UpstreamEndpoint: "/v1/messages",
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
+			RequestID:              requestID,
+			UpstreamHeaders:        resp.Header,
+			Usage:                  claudeUsageToOpenAIUsage(&usage),
+			ClientContentDelivered: delivered,
+			Model:                  originalModel,
+			BillingModel:           billingModel,
+			UpstreamModel:          upstreamModel,
+			UpstreamEndpoint:       "/v1/messages",
+			ReasoningEffort:        reasoningEffort,
+			Stream:                 true,
+			Duration:               time.Since(startTime),
+			FirstTokenMs:           firstTokenMs,
+			ClientDisconnect:       clientDisconnected,
 		}
 	}
 
@@ -419,6 +424,7 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 			clientDisconnected = true
 			return false
 		}
+		delivered = delivered || chatChunkHasContent(chunk)
 		return false
 	}
 

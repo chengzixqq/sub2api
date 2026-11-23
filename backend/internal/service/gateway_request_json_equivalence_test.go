@@ -18,11 +18,11 @@ import (
 // implementations before the fast path was introduced. The tests below compare
 // the optimized code against them byte for byte.
 func legacyEnforceCacheControlLimit(body []byte) []byte {
-	return legacyNormalizeCacheControlTTLOrder(enforceCacheControlBlockLimit(body))
+	return legacyNormalizeCacheControlTTLOrder(enforceCacheControlBlockLimitScoped(body, cacheControlLimitPlan{}))
 }
 
 func legacyNormalizeCacheControlTTLOrder(body []byte) []byte {
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, false)
 	paths := make([]string, 0, len(toolPaths)+len(systemPaths)+len(messagePaths)+1)
 	paths = append(paths, toolPaths...)
 	paths = append(paths, systemPaths...)
@@ -114,7 +114,7 @@ func TestNormalizeCacheControlTTLOrderMatchesLegacy(t *testing.T) {
 		body := []byte(raw)
 		before := append([]byte(nil), body...)
 		want := legacyNormalizeCacheControlTTLOrder(append([]byte(nil), body...))
-		got := normalizeCacheControlTTLOrder(body)
+		got := normalizeCacheControlTTLOrder(body, false)
 		require.Equal(t, string(want), string(got), name)
 		require.Equal(t, string(before), string(body), "%s: input must not be mutated", name)
 	}

@@ -207,8 +207,7 @@ func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIU
 			if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
 				return
 			}
-			inheritOpenAICacheCreationTTL(&parsedUsage, *usage)
-			*usage = parsedUsage
+			replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		} else {
 			mergeOpenAIUsageNonZero(usage, parsedUsage)
 		}

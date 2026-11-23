@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // ForwardUpstream 使用 base_url + /v1/messages + 双 header 认证透传上游 Claude 请求
@@ -44,9 +45,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	// 构建上游请求 URL
 	upstreamURL := baseURL + "/v1/messages"
 
-	// 能力维度 sanitize：Anthropic-compatible 上游透传路径也需要保证 body↔beta header
-	// 对称。客户端 anthropic-beta header 不含 context-management-2025-06-27 但 body 带
-	// context_management 时 strip，与 Anthropic 直连 / Bedrock / Vertex 路径保持一致。
+	// Anthropic-compatible upstreams retain context edits when either context beta is forwarded.
 	clientBeta := c.GetHeader("anthropic-beta")
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
@@ -95,6 +94,9 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		}
 
 		// 透传上游错误
+		policy := cachedClaudeResponsePolicy(c)
+		applyOfficialResponseHeaders(c, policy, resp.Header)
+		respBody = fillRequestID(c, policy, resp.Header, respBody)
 		c.Header("Content-Type", resp.Header.Get("Content-Type"))
 		c.Status(resp.StatusCode)
 		_, _ = c.Writer.Write(respBody)
@@ -123,7 +125,11 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		clientDisconnect = streamRes.clientDisconnect
 	} else {
 		// 非流式响应：直接透传
-		respBody, err := ReadUpstreamResponseBody(resp.Body, s.antigravitySSEConfig(), c, anthropicTooLargeError)
+		policy := cachedClaudeResponsePolicy(c)
+		respBody, err := ReadUpstreamResponseBody(resp.Body, s.antigravitySSEConfig(), c, func(c *gin.Context) {
+			prepareOfficialResponse(c, policy, resp.Header, nil)
+			anthropicTooLargeError(c)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("read upstream response: %w", err)
 		}
@@ -131,10 +137,16 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 		// 提取 usage
 		upstreamResponseModelObserverFromContext(c).ObserveAnthropic(respBody)
 		usage = s.extractClaudeUsage(respBody)
+		observeClaudeIterationEvent(string(respBody), usage)
 
+		prepareOfficialResponse(c, policy, resp.Header, nil)
 		c.Header("Content-Type", resp.Header.Get("Content-Type"))
 		c.Status(http.StatusOK)
 		_, _ = c.Writer.Write(respBody)
+	}
+
+	if !usage.HasCompactionUsage() {
+		usage.IterationUsage = nil
 	}
 
 	// 构建计费结果
@@ -157,6 +169,15 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 // streamUpstreamResponse 透传上游 SSE 流并提取 Claude usage
 func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp *http.Response, startTime time.Time) *antigravityStreamResult {
 	usage := &ClaudeUsage{}
+	// The production scalar parser recognizes "data: ". Keep normalized SSE
+	// counters for compacted streams that use the equally valid "data:" form.
+	var normalized *ClaudeUsage
+	defer func() {
+		if normalized != nil && usage.HasCompactionUsage() {
+			normalized.IterationUsage = usage.IterationUsage
+			*usage = *normalized
+		}
+	}()
 	var firstTokenMs *int
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -234,6 +255,8 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 
 	flusher, _ := c.Writer.(http.Flusher)
 	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity upstream")
+	cw.beforeFirstWrite = pendingOfficialStreamHeaders(c, resp.Header)
+	inErrorEvent := false
 
 	for {
 		select {
@@ -242,6 +265,7 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 				queueBudget.release(len(ev.line))
 			}
 			if !ok {
+				cw.prepareFirstWrite()
 				return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}
 			}
 			if ev.err != nil {
@@ -257,6 +281,16 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				upstreamResponseModelObserverFromContext(c).ObserveAnthropic([]byte(strings.TrimSpace(data)))
+				if normalized == nil && !strings.HasPrefix(line, "data: ") {
+					snapshot := *usage
+					normalized = &snapshot
+				}
+				if normalized != nil {
+					s.extractSSEUsage("data: "+data, normalized)
+				}
+				observed := *usage
+				observeClaudeIterationEvent(data, &observed)
+				usage.IterationUsage = observed.IterationUsage
 			}
 
 			// 记录首 token 时间
@@ -270,6 +304,18 @@ func (s *AntigravityGatewayService) streamUpstreamResponse(c *gin.Context, resp 
 			s.extractSSEUsage(line, usage)
 
 			// 透传行
+			cw.prepareFirstWrite()
+			if id := FilledAnthropicRequestID(c); id != "" {
+				if data, ok := extractAnthropicSSEDataLine(line); ok {
+					if inErrorEvent || gjson.Get(data, "type").Str == "error" {
+						line = "data: " + string(appendResponseRequestID([]byte(data), id))
+					}
+				} else if name, ok := strings.CutPrefix(line, "event:"); ok {
+					inErrorEvent = strings.TrimSpace(name) == "error"
+				} else if line == "" {
+					inErrorEvent = false
+				}
+			}
 			cw.Fprintf("%s\n", line)
 
 		case <-intervalCh:

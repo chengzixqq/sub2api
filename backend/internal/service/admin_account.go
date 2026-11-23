@@ -717,6 +717,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	// 新账号加入工作区后，该工作区的账号白名单缓存已过期。
 	s.invalidateWorkspaceAccountScope(account.WorkspaceID)
 
+	AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
 	return account, nil
 }
 
@@ -730,7 +731,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if err != nil {
 		return nil, err
 	}
-	return s.updateLoadedAccount(ctx, id, account, input)
+	previousMixed := account.IsMixedSchedulingEnabled()
+	updated, err := s.updateLoadedAccount(ctx, id, account, input)
+	if err == nil && (input.GroupIDs != nil || input.DispatchScope != nil || input.Status != "" || previousMixed != updated.IsMixedSchedulingEnabled()) {
+		AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
+	}
+	return updated, err
 }
 
 // PatchAccount applies a sparse edit: credentials / extra are merged by top-level
@@ -742,6 +748,8 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 	if input == nil {
 		return nil, ErrAccountNilInput
 	}
+	_, mixedEdited := input.ExtraPatch["mixed_scheduling"]
+	refreshAlignment := input.Fields.GroupIDs != nil || input.Fields.DispatchScope != nil || input.Fields.Status != "" || mixedEdited
 	if s.entClient != nil {
 		tx, err := s.entClient.Tx(ctx)
 		if err != nil {
@@ -757,6 +765,9 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
+		if refreshAlignment {
+			AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
+		}
 		if refresher, ok := s.accountRepo.(AccountSchedulerSnapshotRefresher); ok {
 			if err := refresher.RefreshAccountSchedulerSnapshots(dbent.WithoutTx(ctx), id); err != nil {
 				logger.LegacyPrintf("service.admin_account", "[Scheduler] refresh account snapshots after patch failed: account=%d err=%v", id, err)
@@ -764,7 +775,11 @@ func (s *adminServiceImpl) PatchAccount(ctx context.Context, id int64, input *Pa
 		}
 		return account, nil
 	}
-	return s.patchAccountInContext(ctx, id, input)
+	saved, err := s.patchAccountInContext(ctx, id, input)
+	if err == nil && refreshAlignment {
+		AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
+	}
+	return saved, err
 }
 
 func (s *adminServiceImpl) patchAccountInContext(ctx context.Context, id int64, input *PatchAccountInput) (*Account, error) {
@@ -1188,17 +1203,22 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OllamaCloudUsageSnapshotExtraKey)
 	delete(updates, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(updates, OpenCodeGoUsageSnapshotExtraKey)
-	if _, exists := updates[openAILongContextBillingEnabledKey]; exists {
+	if len(updates) == 0 {
+		return nil
+	}
+	scope := ScopeFromContextOrDeny(ctx)
+	_, hasLongContextSetting := updates[openAILongContextBillingEnabledKey]
+	if !scope.Unrestricted || hasLongContextSetting {
 		account, err := s.accountRepo.GetByIDScoped(ctx, id)
 		if err != nil {
 			return err
 		}
+		if account == nil || !scope.OwnsWorkspaceID(account.WorkspaceID) {
+			return ErrAccountNotFound
+		}
 		if err := ValidateOpenAILongContextBillingExtra(account.Platform, updates); err != nil {
 			return err
 		}
-	}
-	if len(updates) == 0 {
-		return nil
 	}
 	return s.accountRepo.UpdateExtra(ctx, id, updates)
 }
@@ -1436,6 +1456,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		return nil, err
 	}
 
+	_, mixedEdited := input.Extra["mixed_scheduling"]
+	if input.Schedulable != nil || input.GroupIDs != nil || input.Status != "" || mixedEdited {
+		defer AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
+	}
+
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
 	if repoUpdates.ProxyID != nil {
 		var effectiveProxyID *int64
@@ -1618,7 +1643,11 @@ func (s *adminServiceImpl) SetAccountError(ctx context.Context, id int64, errorM
 	if err := s.requireAccountAccess(ctx, id); err != nil {
 		return err
 	}
-	return s.accountRepo.SetError(ctx, id, errorMsg)
+	if err := s.accountRepo.SetError(ctx, id, errorMsg); err != nil {
+		return err
+	}
+	AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
+	return nil
 }
 
 // SetAccountSchedulable 切换账号是否参与调度。
@@ -1632,6 +1661,7 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 	if err := s.accountRepo.SetSchedulable(ctx, id, schedulable); err != nil {
 		return nil, err
 	}
+	AfterAccountCommit(ctx, s.settingService.invalidateAlignmentSnapshot)
 	updated, err := s.accountRepo.GetByIDScoped(ctx, id)
 	if err != nil {
 		return nil, err

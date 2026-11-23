@@ -727,13 +727,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
 	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	upstreamUsageOnly := failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil)
 	guard := newBillingSettlementGuard(guardDeps{
 		resetAttemptOutput: billingAttemptOutputReset(c),
-		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		upstreamUsageOnly:  upstreamUsageOnly,
 		estimatedPromptTokens: func() int {
 			return service.EstimateFailurePromptTokens(requestPlatform, body)
 		},
 		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			BillStandaloneImageInput: !upstreamUsageOnly,
+
 			APIKey:              apiKey,
 			Subscription:        subscription,
 			ReqModel:            reqModel,
@@ -941,9 +944,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if err == nil || openAIForwardResultHasActualBillableUsage(res) {
 				guard.MarkSettled()
 				channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel)
+				billingResult, provenance := guard.openAISettlementResult(res)
 				recordUsage := func(ctx context.Context) error {
 					return h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-						Result:             res,
+						BillStandaloneImageInput: !upstreamUsageOnly,
+
+						Result:             billingResult,
+						BillingProvenance:  provenance,
 						APIKey:             apiKey,
 						User:               apiKey.User,
 						Account:            account,
@@ -1395,7 +1402,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		reqLog.Info("openai_messages.billing_eligibility_check_failed", zap.Error(err))
-		status, code, message, retryAfter := billingErrorDetails(err)
+		status, code, message, retryAfter := billingErrorDetailsForRequest(c, err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
@@ -1409,7 +1416,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	// 余额模式在途预留（与计费同口径估算；计费任务扣减余额缓存后才释放）。
 	inflightDone, inflightErr := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, tokenInflightEstimate(reqModel, body))
 	if inflightErr != nil {
-		status, code, message, retryAfter := billingErrorDetails(inflightErr)
+		status, code, message, retryAfter := billingErrorDetailsForRequest(c, inflightErr)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
@@ -1471,13 +1478,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
 	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	upstreamUsageOnly := failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil)
 	guard := newBillingSettlementGuard(guardDeps{
 		resetAttemptOutput: billingAttemptOutputReset(c),
-		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		upstreamUsageOnly:  upstreamUsageOnly,
 		estimatedPromptTokens: func() int {
 			return service.EstimateFailurePromptTokens(requestPlatform, body)
 		},
 		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			BillStandaloneImageInput: !upstreamUsageOnly,
+
 			APIKey:              apiKey,
 			Subscription:        subscription,
 			ReqModel:            reqModel,
@@ -1586,6 +1596,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 		}()
+		if errors.Is(err, service.ErrLocalAnthropicRejected) {
+			guard.MarkSettled()
+			return
+		}
 		var cyberBlockBodyMsg []byte
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyMsg = body
@@ -1632,9 +1646,13 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			if err == nil || openAIForwardResultHasActualBillableUsage(res) {
 				guard.MarkSettled()
 				channelUsageFields := clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel)
+				billingResult, provenance := guard.openAISettlementResult(res)
 				recordUsage := func(ctx context.Context) error {
 					return h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-						Result:             res,
+						BillStandaloneImageInput: !upstreamUsageOnly,
+
+						Result:             billingResult,
+						BillingProvenance:  provenance,
 						APIKey:             apiKey,
 						User:               apiKey.User,
 						Account:            account,
@@ -1820,34 +1838,14 @@ func resolveOpenAIMessagesMetadataSession(c *gin.Context, sessionHash, promptCac
 
 // anthropicErrorResponse writes an error in Anthropic Messages API format.
 func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int, errType, message string) {
-	c.JSON(status, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	service.PreserveOpsErrorResponse(c, service.OpsClaudeErrorPayload(errType, "", service.OpsOriginalErrorMessage(c, message)), "")
+	h.anthropicStreamingAwareError(c, status, errType, message, false)
 }
 
 // anthropicStreamingAwareError handles errors that may occur during streaming,
 // using Anthropic SSE error format.
 func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
-		flusher, ok := c.Writer.(http.Flusher)
-		if ok {
-			errPayload, _ := json.Marshal(gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    errType,
-					"message": message,
-				},
-			})
-			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errPayload) //nolint:errcheck
-			flusher.Flush()
-		}
-		return
-	}
-	h.anthropicErrorResponse(c, status, errType, message)
+	service.WriteAnthropicError(c, status, errType, service.MessagesErrorType(c, status, errType), "", message, service.FilledAnthropicRequestID(c), streamStarted)
 }
 
 // handleAnthropicFailoverExhausted maps upstream failover errors to Anthropic format.
@@ -1871,7 +1869,7 @@ func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, 
 	// A failed or error frame that triggered the failover no longer reaches the
 	// client in-band, so its error passthrough rule is applied here instead.
 	if status, errType, msg, ok := service.ApplyOpenAIStreamFailedFrameRule(c, failoverErr); ok {
-		h.anthropicStreamingAwareError(c, status, errType, msg, streamStarted)
+		service.WriteAnthropicError(c, status, errType, errType, "", msg, service.FilledAnthropicRequestID(c), streamStarted)
 		return
 	}
 	status, errType, errMsg := h.mapUpstreamError(failoverErr.StatusCode)
@@ -2516,7 +2514,7 @@ func openAIForwardResultHasActualBillableUsage(result *service.OpenAIForwardResu
 		return false
 	}
 	u := result.Usage
-	return u.HasAdvisorUsage() || u.InputTokens > 0 || u.OutputTokens > 0 ||
+	return u.HasAdvisorUsage() || u.HasCompactionUsage() || u.InputTokens > 0 || u.OutputTokens > 0 ||
 		u.CacheReadInputTokens > 0 || u.CacheCreationInputTokens > 0 ||
 		u.ImageInputTokens > 0 || u.ImageOutputTokens > 0 ||
 		result.ImageCount > 0 || result.VideoCount > 0 ||
@@ -4230,7 +4228,12 @@ func (h *OpenAIGatewayHandler) applyOpenAIFailoverPassthroughRule(
 		c.Set(service.OpsSkipPassthroughKey, true)
 	}
 
-	h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+	if service.IsAnthropicMessagesRequest(c) {
+		service.PreserveOpsOpenAIError(c, "upstream_error", "", msg, streamStarted)
+		service.WriteAnthropicError(c, respCode, "upstream_error", "upstream_error", "", msg, service.FilledAnthropicRequestID(c), streamStarted)
+	} else {
+		h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+	}
 	return true
 }
 
@@ -4341,6 +4344,14 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}
+	if service.IsAnthropicMessagesRequest(c) {
+		service.PreserveOpsOpenAIError(c, errType, code, message, streamStarted)
+		if streamStarted && countTowardsSLA {
+			service.MarkOpsStreamFailure(c, errType, code, message, status)
+		}
+		service.WriteAnthropicError(c, status, errType, service.MessagesErrorType(c, status, errType), code, message, service.FilledAnthropicRequestID(c), streamStarted)
+		return
+	}
 	if streamStarted {
 		if countTowardsSLA {
 			service.MarkOpsStreamFailure(c, errType, code, message, status)
@@ -4359,11 +4370,12 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			errorObject := gin.H{"type": errType, "message": message}
+			errorObject := gin.H{"type": service.MessagesErrorType(c, status, errType), "message": message}
 			if code != "" {
 				errorObject["code"] = code
 			}
-			payload, err := json.Marshal(gin.H{"error": errorObject})
+			envelope := gin.H{"error": errorObject}
+			payload, err := json.Marshal(envelope)
 			if err != nil {
 				payload = []byte(`{"error":{"type":"upstream_error","message":"Upstream request failed"}}`)
 			}
@@ -4381,9 +4393,8 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 		h.errorResponse(c, status, errType, message)
 		return
 	}
-	c.JSON(status, gin.H{"error": gin.H{
-		"type": errType, "code": code, "message": message,
-	}})
+	envelope := gin.H{"error": gin.H{"type": service.MessagesErrorType(c, status, errType), "code": code, "message": message}}
+	c.JSON(status, envelope)
 }
 
 func (h *OpenAIGatewayHandler) ensureOpenAIStreamReadErrorResponse(c *gin.Context, err error, streamStarted bool) bool {
@@ -4526,6 +4537,11 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 		if writeResponsesFailedSSE(c, errType, "", message) {
 			return
 		}
+	}
+	if service.IsAnthropicMessagesRequest(c) {
+		service.PreserveOpsOpenAIError(c, errType, "", message, false)
+		h.anthropicStreamingAwareError(c, status, errType, message, false)
+		return
 	}
 	c.JSON(status, gin.H{
 		"error": gin.H{
@@ -4779,7 +4795,8 @@ func buildCyberPolicyOpsErrorEntry(meta cyberPolicyOpsErrorMeta, mark *service.C
 }
 
 // 双语单串：网关客户端面向中英用户，且本错误无 i18n 协商通道。
-const cyberSessionBlockedClientMsg = "该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session"
+const cyberSessionBlockedEnglishMsg = "This session is blocked by cyber-security policy, please start a new session"
+const cyberSessionBlockedClientMsg = "该会话已被网络安全策略屏蔽，请开启新会话 / " + cyberSessionBlockedEnglishMsg
 
 // buildCyberSessionBlockedOpsEntry builds the ops_error_logs entry for a request
 // rejected locally by the cyber session block (F5a). Distinct error_type from
@@ -4863,10 +4880,7 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 	}
 	switch format {
 	case cyberBlockFormatAnthropic:
-		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
-			"type":    "permission_error",
-			"message": cyberSessionBlockedClientMsg,
-		}})
+		h.anthropicErrorResponse(c, http.StatusForbidden, "permission_error", cyberSessionBlockedEnglishMsg)
 	default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
 			"type":    "permission_error",

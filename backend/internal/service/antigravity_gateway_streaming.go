@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go.uber.org/zap"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -649,17 +650,17 @@ func mergeCollectedPartsToResponse(response map[string]any, collectedParts []map
 // antigravityStatusClientClosed 是客户端在上游响应前断开时回写的状态码（499 client closed request）。
 const antigravityStatusClientClosed = 499
 
-func (s *AntigravityGatewayService) writeClaudeError(c *gin.Context, status int, errType, message string) error {
+func (s *AntigravityGatewayService) writeClaudeError(c *gin.Context, upstream http.Header, status int, errType, message string) error {
 	MarkResponseCommitted(c)
-	c.JSON(status, gin.H{
-		"type":  "error",
-		"error": gin.H{"type": errType, "message": message},
-	})
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), upstream, nil)
+	preserveOpsClaudeJSON(c, errType, message)
+	writeAnthropicError(c, status, errType, message)
 	return fmt.Errorf("%s", message)
 }
 
 // WriteMappedClaudeError 导出版本，供 handler 层使用（如 fallback 错误处理）
-func (s *AntigravityGatewayService) WriteMappedClaudeError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte) error {
+func (s *AntigravityGatewayService) WriteMappedClaudeError(c *gin.Context, account *Account, upstreamStatus int, upstreamRequestID string, body []byte, upstream http.Header) error {
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), upstream, nil)
 	return s.writeMappedClaudeError(c, account, upstreamStatus, upstreamRequestID, body)
 }
 
@@ -693,10 +694,8 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 		c, account.Platform, upstreamStatus, body,
 		0, "", "",
 	); matched {
-		c.JSON(ptStatus, gin.H{
-			"type":  "error",
-			"error": gin.H{"type": ptErrType, "message": ptErrMsg},
-		})
+		preserveOpsClaudeJSON(c, ptErrType, ptErrMsg)
+		WriteAnthropicError(c, ptStatus, ptErrType, ptErrType, "", ptErrMsg, FilledAnthropicRequestID(c), false)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", upstreamStatus)
 		}
@@ -733,10 +732,8 @@ func (s *AntigravityGatewayService) writeMappedClaudeError(c *gin.Context, accou
 		errMsg = "Upstream request failed"
 	}
 
-	c.JSON(statusCode, gin.H{
-		"type":  "error",
-		"error": gin.H{"type": errType, "message": errMsg},
-	})
+	preserveOpsClaudeJSON(c, errType, errMsg)
+	writeAnthropicError(c, statusCode, errType, errMsg)
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", upstreamStatus)
 	}
@@ -928,12 +925,12 @@ returnResponse:
 	// 处理空响应情况 — 触发同账号重试 + failover 切换账号
 	if !meaningfulResponse {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] warning: empty stream response (claude non-stream), triggering failover")
-		return nil, nil, &UpstreamFailoverError{
+		return nil, nil, (&UpstreamFailoverError{
 			StatusCode:             http.StatusBadGateway,
 			ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 			RetryableOnSameAccount: true,
 			Reason:                 GatewayFailureReasonEmptyResponse,
-		}
+		}).withOfficialHeaders(c, resp.Header)
 	}
 
 	// 选择最后一个有效响应
@@ -993,8 +990,9 @@ func (s *AntigravityGatewayService) handleClaudeStreamToNonStreaming(c *gin.Cont
 			errType = "response_too_large"
 		}
 
-		return streamRes, s.writeClaudeError(c, http.StatusBadGateway, errType, errMsg)
+		return streamRes, s.writeClaudeError(c, resp.Header, http.StatusBadGateway, errType, errMsg)
 	}
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), resp.Header, nil)
 	c.Data(http.StatusOK, "application/json", claudeResp)
 	return streamRes, nil
 }
@@ -1105,15 +1103,20 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 	lastDataAt := time.Now()
 
 	cw := newAntigravityClientWriter(c.Writer, flusher, "antigravity claude")
+	cw.beforeFirstWrite = pendingOfficialStreamHeaders(c, resp.Header)
 
 	// 仅发送一次错误事件，避免多次写入导致协议混乱
 	errorEventSent := false
-	sendErrorEvent := func(reason string) {
+	sendErrorEvent := func(status int, reason, message string) {
 		if errorEventSent || cw.Disconnected() {
 			return
 		}
 		errorEventSent = true
-		_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: {\"error\":\"%s\"}\n\n", reason)
+		cw.prepareFirstWrite() // The error itself may be the first frame.
+		markOpsAnthropicTerminalError(c, reason, gin.H{"error": reason})
+		MarkResponseCommitted(c)
+		logger.FromContext(c.Request.Context()).Warn("Antigravity upstream stream failed", zap.String("reason", reason))
+		_, _ = fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSEWithID(MessagesErrorType(c, status, "upstream_error"), message, FilledAnthropicRequestID(c)))
 		flusher.Flush()
 	}
 
@@ -1138,12 +1141,12 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 					// 整个流未收到任何可解析的上游数据（全部 SSE 行均无法被 JSON 解析），
 					// 触发 failover 在同账号重试，避免向客户端发出缺少 message_start 的残缺流
 					logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Claude-Stream] empty stream response (no valid events parsed), triggering failover")
-					return nil, &UpstreamFailoverError{
+					return nil, (&UpstreamFailoverError{
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           []byte(`{"error":"empty stream response from upstream"}`),
 						RetryableOnSameAccount: true,
 						Reason:                 GatewayFailureReasonEmptyResponse,
-					}
+					}).withOfficialHeaders(c, resp.Header)
 				}
 				return &antigravityStreamResult{usage: convertUsage(agUsage), firstTokenMs: firstTokenMs, clientDisconnect: cw.Disconnected()}, nil
 			}
@@ -1153,10 +1156,10 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 				}
 				if errors.Is(ev.err, bufio.ErrTooLong) {
 					logger.LegacyPrintf("service.antigravity_gateway", "SSE line too long (antigravity): max_size=%d error=%v", maxLineSize, ev.err)
-					sendErrorEvent("response_too_large")
+					sendErrorEvent(http.StatusBadGateway, "response_too_large", "Upstream response exceeded the size limit")
 					return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, ev.err
 				}
-				sendErrorEvent("stream_read_error")
+				sendErrorEvent(http.StatusBadGateway, "stream_read_error", "Failed to read upstream stream")
 				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
 			}
 
@@ -1184,7 +1187,7 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 				return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 			}
 			logger.LegacyPrintf("service.antigravity_gateway", "Stream data interval timeout (antigravity)")
-			sendErrorEvent("stream_timeout")
+			sendErrorEvent(http.StatusGatewayTimeout, "stream_timeout", "Upstream response stream timed out")
 			return &antigravityStreamResult{usage: finishUsage(), firstTokenMs: firstTokenMs}, fmt.Errorf("stream data interval timeout")
 
 		case <-keepaliveCh:

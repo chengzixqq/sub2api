@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -134,27 +136,24 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 顺序约束：
 	//   1) 算 finalBeta（纯函数，不依赖 req.Header；mimicry 路径仅保留明确支持的
 	//      客户端兼容性 beta，其余使用固定列表）
-	//   2) 按 finalBeta 做能力维度 body sanitize（如 context-management beta 缺失 →
-	//      strip body.context_management，与 Bedrock 路径对称）
+	//   2) 应用账号覆写和显式规则，再按出站 beta 净化受限字段
 	//   3) CCH 签名（必须使用 strip 后的 body，否则 hash 与最终 body 不一致 →
 	//      被 Anthropic 判 third-party）
 	//   4) NewRequest（body 至此最终敲定）
 	//   5) 透传白名单 / fingerprint / mimic header / 写入 finalBeta
-	policyFilterSet, err := s.getBetaPolicyFilterSet(ctx, c, account, modelID)
+	policy, err := s.requestBetaPolicy(ctx, c, account, modelID)
 	if err != nil {
 		return nil, nil, err
 	}
-	effectiveDropSet := mergeDropSets(policyFilterSet)
+	effectiveDropSet := mergeDropSets(policy.filterSet)
 	effectiveDropSet = applyNativeAnthropicFallbackBetaPolicy(account, claudePolicy.FallbackPolicy, effectiveDropSet)
 	finalBetaHeader, finalBetaShouldSet := s.computeFinalAnthropicBeta(
 		tokenType, mimicClaudeCode, modelID, clientHeaders, body, effectiveDropSet,
 	)
 
-	// 账号覆写了 anthropic-beta 时，覆写值即最终上游值（由下方 ApplyHeaderOverrides 写入）：
-	// body 能力净化必须以覆写值为准，否则 header/body 不对称会被上游 400。
-	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
-		finalBetaHeader, finalBetaShouldSet = beta, true
-	}
+	// 账号覆写整体替代策略处理后的客户端声明。
+	body, finalBetaHeader = resolveAnthropicRequestBeta(c, account, body, finalBetaHeader, policy)
+	finalBetaShouldSet = finalBetaShouldSet || finalBetaHeader != ""
 	finalBetaHeader = filterSonnet55ToolsetBeta(finalBetaHeader, body, modelID)
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
@@ -220,14 +219,6 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		applyClaudeCodeMimicHeaders(req, reqStream, mimicUserAgent)
 	}
 
-	// 写入最终 anthropic-beta header
-	// 注：透传分支白名单可能写入了客户端 anthropic-beta，无条件 Del 一次再按 finalBeta
-	// 决定是否 set，确保 dropSet 过滤后的结果一定覆盖客户端原始值。
-	deleteHeaderAllForms(req.Header, "anthropic-beta")
-	if finalBetaShouldSet {
-		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
-	}
-
 	// 同步 X-Claude-Code-Session-Id 头：取 body 中已处理的 metadata.user_id 的 session_id 覆盖
 	if sessionHeader := getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"); sessionHeader != "" {
 		if uid := gjson.GetBytes(body, "metadata.user_id").String(); uid != "" {
@@ -240,6 +231,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 放在通用 header 逻辑之后；严格协议边界仍在下方做最终过滤。
 	account.ApplyHeaderOverrides(req.Header)
+	// 写入最终 anthropic-beta header
+	// 注：透传分支白名单可能写入了客户端 anthropic-beta，无条件 Del 一次再按 finalBeta
+	// 决定是否 set，确保 dropSet 过滤后的结果一定覆盖客户端原始值。
+	deleteHeaderAllForms(req.Header, "anthropic-beta")
+	if finalBetaShouldSet {
+		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
+	}
+
 	// Strict is a protocol boundary, so an account-level header override must
 	// not be able to reintroduce fallback capability tokens after sanitization.
 	applyStrictAnthropicFallbackBetaHeader(req.Header, claudePolicy.FallbackPolicy)
@@ -344,7 +343,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 	if c != nil && c.Request != nil {
 		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
 	}
-	policy := s.evaluateBetaPolicy(ctx, clientBeta, account, modelID)
+	policy := s.evaluateBetaPolicy(ctx, c, clientBeta, account, modelID)
 	if policy.blockErr != nil {
 		return nil, policy.blockErr
 	}
@@ -730,27 +729,39 @@ func stripBetaTokensWithSet(header string, drop map[string]struct{}) string {
 
 // BetaBlockedError indicates a request was blocked by a beta policy rule.
 type BetaBlockedError struct {
-	Message string
+	Message           string
+	nativeContextRule bool
 }
 
 func (e *BetaBlockedError) Error() string { return e.Message }
 
+// WriteContextPolicyJSON preserves the production JSON response to an explicit
+// native context-beta rule. A streaming response or an opt-in request ID uses
+// the normal Claude error writer.
+func (e *BetaBlockedError) WriteContextPolicyJSON(c *gin.Context, status int, errType, message string) bool {
+	if !e.nativeContextRule || c.Writer.Written() || cachedClaudeResponsePolicy(c).RequestIDMode == ClaudeRequestIDFill || FilledAnthropicRequestID(c) != "" {
+		return false
+	}
+	c.Set(OpsAnthropicErrorTypeKey, errType)
+	MarkResponseCommitted(c)
+	c.JSON(status, gin.H{"type": "error", "error": gin.H{"type": errType, "message": message}})
+	return true
+}
+
 // betaPolicyResult holds the evaluated result of beta policy rules for a single request.
 type betaPolicyResult struct {
-	blockErr  *BetaBlockedError   // non-nil if a block rule matched
-	filterSet map[string]struct{} // tokens to filter (may be nil)
+	blockedTokens   map[string]struct{} // scope- and model-matched rules, independent of client header lines
+	compactFiltered bool                // explicit filter, distinct from filtering an unknown token
+	blockErr        *BetaBlockedError   // non-nil if a block rule matched
+	filterSet       map[string]struct{} // tokens to filter (may be nil)
 }
 
 // evaluateBetaPolicy loads settings once and evaluates all rules against the given request.
-func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader string, account *Account, model string) betaPolicyResult {
+func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, c *gin.Context, betaHeader string, account *Account, model string) betaPolicyResult {
 	if s.settingService == nil {
 		return betaPolicyResult{}
 	}
-	// Client passthrough intentionally leaves client-declared beta tokens alone
-	// on native Anthropic paths. Provider-specific builders still apply their
-	// protocol allowlists (Vertex/Bedrock) after this policy check.
 	customization := s.settingService.ResolveClaudeCustomizationForRequest(ctx, nil, account)
-	nativeAnthropicAPIKey := isNativeAnthropicAPIKeyAccount(account)
 	if customization.BetaPolicyMode == ClaudeBetaClientPassthrough {
 		return betaPolicyResult{}
 	}
@@ -758,10 +769,20 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 	if err != nil || settings == nil {
 		return betaPolicyResult{}
 	}
+	var preserveContext bool
+	if c != nil {
+		selected, ok := c.Get(bedrockCCContextAccountKey)
+		preserveContext = ok && selected == account
+	}
+	return evaluateBetaRules(customization, settings.Rules, betaHeader, account, model, preserveContext)
+}
+
+func evaluateBetaRules(customization ClaudeCustomizationSettings, rules []BetaPolicyRule, betaHeader string, account *Account, model string, preserveContext bool) betaPolicyResult {
+	nativeAnthropicAPIKey := isNativeAnthropicAPIKeyAccount(account)
 	isOAuth := account != nil && account.IsOAuth()
 	isBedrock := account != nil && account.IsBedrock()
 	var result betaPolicyResult
-	for _, rule := range settings.Rules {
+	for _, rule := range rules {
 		if !betaPolicyScopeMatches(rule.Scope, isOAuth, isBedrock) {
 			continue
 		}
@@ -776,14 +797,24 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 		}
 		switch effectiveAction {
 		case BetaPolicyActionBlock:
-			if result.blockErr == nil && betaHeader != "" && containsBetaToken(betaHeader, rule.BetaToken) {
+			if result.blockedTokens == nil {
+				result.blockedTokens = make(map[string]struct{})
+			}
+			result.blockedTokens[rule.BetaToken] = struct{}{}
+			if result.blockErr == nil && containsBetaToken(betaHeader, rule.BetaToken) {
 				msg := effectiveErrMsg
 				if msg == "" {
 					msg = "beta feature " + rule.BetaToken + " is not allowed"
 				}
-				result.blockErr = &BetaBlockedError{Message: msg}
+				result.blockErr = &BetaBlockedError{
+					Message:           msg,
+					nativeContextRule: isNativeCacheControlAccount(account) && (rule.BetaToken == claude.BetaContextManagement || rule.BetaToken == claude.BetaCompact),
+				}
 			}
 		case BetaPolicyActionFilter:
+			if rule.BetaToken == claude.BetaCompact {
+				result.compactFiltered = true
+			}
 			if result.filterSet == nil {
 				result.filterSet = make(map[string]struct{})
 			}
@@ -794,8 +825,8 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 	// an explicit rule. Native API-key passthrough can preserve unknown client
 	// declarations in magic mode; strict/translated paths filter them.
 	if customization.UnknownBetaAction != ClaudeUnknownBetaPass && betaHeader != "" {
-		known := make(map[string]struct{}, len(settings.Rules))
-		for _, rule := range settings.Rules {
+		known := make(map[string]struct{}, len(rules))
+		for _, rule := range rules {
 			if token := strings.TrimSpace(rule.BetaToken); token != "" {
 				known[token] = struct{}{}
 			}
@@ -804,6 +835,9 @@ func (s *GatewayService) evaluateBetaPolicy(ctx context.Context, betaHeader stri
 		for _, token := range strings.Split(betaHeader, ",") {
 			token = strings.TrimSpace(token)
 			if token == "" {
+				continue
+			}
+			if preserveContext && token == claude.BetaContextManagement {
 				continue
 			}
 			if native && customization.FallbackPolicy != ClaudeFallbackStrict && isAnthropicFallbackBetaToken(token) {
@@ -871,6 +905,199 @@ func applyNativeAnthropicFallbackBetaPolicy(account *Account, fallbackPolicy str
 	return preserved
 }
 
+func anthropicBetaHeader(header http.Header) string {
+	// Wire-format builders use lowercase keys. Prefer those values when
+	// a canonical entry for the same header is also present.
+	var canonical, otherKeys []string
+	for key, values := range header {
+		if !strings.EqualFold(key, "anthropic-beta") || len(values) == 0 {
+			continue
+		}
+		switch key {
+		case "anthropic-beta":
+			return strings.Join(values, ",")
+		case "Anthropic-Beta":
+			canonical = values
+		default:
+			otherKeys = append(otherKeys, key)
+		}
+	}
+	if len(canonical) > 0 {
+		return strings.Join(canonical, ",")
+	}
+	slices.Sort(otherKeys)
+	var values []string
+	for _, key := range otherKeys {
+		values = append(values, header[key]...)
+	}
+	return strings.Join(values, ",")
+}
+
+func clientAnthropicBetaHeader(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return anthropicBetaHeader(c.Request.Header)
+}
+
+func contextManagementBetaDrops(filterSet map[string]struct{}) []string {
+	var drops []string
+	for _, token := range []string{claude.BetaContextManagement, claude.BetaCompact} {
+		if _, ok := filterSet[token]; ok {
+			drops = append(drops, token)
+		}
+	}
+	return drops
+}
+
+// Managed builders read the first line, except for the compact capability.
+func includeClientContextBetas(beta string, c *gin.Context) string {
+	for _, value := range strings.Split(clientAnthropicBetaHeader(c), ",") {
+		token := strings.TrimSpace(value)
+		if token != claude.BetaCompact || containsBetaToken(beta, token) {
+			continue
+		}
+		if beta != "" {
+			beta += ","
+		}
+		beta += token
+	}
+	return beta
+}
+
+func clientBetaForPolicy(c *gin.Context, account *Account) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	if isNativeAnthropicAPIKeyAccount(account) {
+		return getHeaderRaw(c.Request.Header, "anthropic-beta")
+	}
+	return c.GetHeader("anthropic-beta")
+}
+
+// Direct forwarding preserves the client's header lines. An explicit rule can
+// still disable the extra compact-only body capability. Use the policy snapshot
+// already populated at startup, without doing a settings read on this path.
+func (s *GatewayService) resolvePassthroughRequestBeta(c *gin.Context, account *Account, body []byte, customization ClaudeCustomizationSettings) ([]byte, string) {
+	beta := clientBetaForPolicy(c, account)
+	if _, override := account.HeaderOverrideValue("anthropic-beta"); !override && s.settingService != nil &&
+		customization.BetaPolicyMode != ClaudeBetaClientPassthrough && (containsContextManagementKey(body) || hasAlignmentNameEscape(body)) &&
+		containsBetaToken(clientAnthropicBetaHeader(c), claude.BetaCompact) {
+		if snapshot := s.settingService.alignmentRejectCache.Load(); snapshot != nil {
+			model := gjson.Get(openAIWSPayloadStringView(body), "model").String()
+			for _, rule := range snapshot.betaRules {
+				if rule.BetaToken != claude.BetaCompact || !betaPolicyScopeMatches(rule.Scope, false, false) {
+					continue
+				}
+				action, _ := resolveRuleAction(rule, model)
+				if action == BetaPolicyActionBlock || action == BetaPolicyActionFilter {
+					beta = stripBetaTokens(beta, []string{claude.BetaCompact})
+					body, _ = stripAnthropicContextManagementUnlessBeta(body, beta)
+					return body, beta
+				}
+			}
+		}
+	}
+	return resolveAnthropicRequestBeta(c, account, body, beta, betaPolicyResult{})
+}
+
+// Apply the account override and named context restrictions before serializing the body.
+// Without either restriction, preserve the field for validation before dispatch.
+func resolveAnthropicRequestBeta(c *gin.Context, account *Account, body []byte, beta string, policy betaPolicyResult) ([]byte, string) {
+	override, overridden := account.HeaderOverrideValue("anthropic-beta")
+	if overridden {
+		beta = override
+	}
+	if !isNativeAnthropicAPIKeyAccount(account) {
+		return body, beta
+	}
+	if overridden {
+		body, _ = stripAnthropicContextManagementUnlessBeta(body, beta)
+		return body, beta
+	}
+	_, compactBlocked := policy.blockedTokens[claude.BetaCompact]
+	compactBlocked = compactBlocked && containsBetaToken(clientAnthropicBetaHeader(c), claude.BetaCompact)
+	allowCompact := !compactBlocked && !policy.compactFiltered &&
+		(containsContextManagementKey(body) || hasAlignmentNameEscape(body)) &&
+		gjson.Get(openAIWSPayloadStringView(body), "context_management").Exists()
+	if allowCompact {
+		beta = includeClientContextBetas(beta, c)
+	}
+	drops := contextManagementBetaDrops(policy.filterSet)
+	// A filter may discard the field only when it filtered a client
+	// declaration. Otherwise missing-beta validation owns the decision.
+	drops = slices.DeleteFunc(drops, func(token string) bool {
+		if token == claude.BetaCompact {
+			return allowCompact || !containsBetaToken(clientAnthropicBetaHeader(c), token)
+		}
+		return !containsBetaToken(clientBetaForPolicy(c, account), token)
+	})
+	if len(drops) > 0 || compactBlocked {
+		beta = stripBetaTokens(beta, drops)
+		body, _ = stripAnthropicContextManagementUnlessBeta(body, beta)
+	}
+	return body, beta
+}
+
+func hasContextManagementBeta(header string) bool {
+	return containsBetaToken(header, claude.BetaContextManagement) || containsBetaToken(header, claude.BetaCompact)
+}
+
+// MissingContextManagementBeta describes the body/header mismatch. The handler
+// uses the inbound pair only to defer queue pings. Rejection uses the wire pair.
+func MissingContextManagementBeta(header http.Header, body []byte) bool {
+	return (containsContextManagementKey(body) || hasAlignmentNameEscape(body)) &&
+		!hasContextManagementBeta(getHeaderRaw(header, "anthropic-beta")) && !containsBetaToken(anthropicBetaHeader(header), claude.BetaCompact) && gjson.Get(openAIWSPayloadStringView(body), "context_management").Exists()
+}
+
+// Match the full quoted key at its uncommon suffix; ordinary source code
+// contains many occurrences of the first letter.
+func containsContextManagementKey(body []byte) bool {
+	const suffix = `_management"`
+	for {
+		i := bytes.Index(body, []byte(suffix))
+		if i < 0 {
+			return false
+		}
+		if bytes.HasSuffix(body[:i], []byte(`"context`)) {
+			return true
+		}
+		body = body[i+len(suffix):]
+	}
+}
+
+func (r *AlignmentHitRecorder) applyContextManagementMissingBeta(c *gin.Context, account *Account, policy ClaudeCustomizationSettings, header http.Header, wireBody []byte) ([]byte, bool, error) {
+	if !IsAnthropicMessagesRequest(c) || !isNativeAnthropicAPIKeyAccount(account) || !MissingContextManagementBeta(header, wireBody) {
+		return wireBody, false, nil
+	}
+	mode := policy.ContextManagementMissingBeta
+	if (r != nil || mode == ClaudeAlignReject) && !opsUpstreamAttemptClockFromGin(c).hasDispatched() {
+		unknown := claude.UnknownTopLevelRequestFields(wireBody, anthropicBetaHeader(header))
+		if len(unknown) == 1 && unknown[0] == "context_management" {
+			r.Record(c, ClaudeFieldContextManagementMissingBeta, account.ID, mode)
+			if mode == ClaudeAlignReject {
+				return nil, false, WriteLocalAnthropicInvalidRequest(c, "context_management: Extra inputs are not permitted")
+			}
+		}
+	}
+	if mode != ClaudeAlignReject {
+		body, changed := deleteAnthropicBodyField(wireBody, "context_management")
+		return body, changed, nil
+	}
+	return wireBody, false, nil
+}
+
+// Keep the serialized request, redirects and accepted-body accounting in sync.
+func (s *GatewayService) alignAnthropicWireRequest(c *gin.Context, account *Account, policy ClaudeCustomizationSettings, req *http.Request, wireBody []byte) ([]byte, error) {
+	body, changed, err := s.settingService.AlignmentHits().applyContextManagementMissingBeta(c, account, policy, req.Header, wireBody)
+	if err == nil && changed {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.ContentLength = int64(len(body))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	}
+	return body, err
+}
+
 func isNativeAnthropicAPIKeyAccount(account *Account) bool {
 	return account != nil && account.Platform == PlatformAnthropic && account.Type == AccountTypeAPIKey
 }
@@ -881,10 +1108,10 @@ const betaPolicyFilterSetKey = "betaPolicyFilterSet"
 type betaPolicyFilterCache struct {
 	accountID int64
 	model     string
-	filterSet map[string]struct{}
+	policy    betaPolicyResult
 }
 
-func setBetaPolicyFilterSet(c *gin.Context, account *Account, model string, filterSet map[string]struct{}) {
+func cacheBetaPolicy(c *gin.Context, account *Account, model string, policy betaPolicyResult) {
 	if c == nil {
 		return
 	}
@@ -892,17 +1119,14 @@ func setBetaPolicyFilterSet(c *gin.Context, account *Account, model string, filt
 	if account != nil {
 		accountID = account.ID
 	}
-	if filterSet == nil {
-		filterSet = map[string]struct{}{}
-	}
-	c.Set(betaPolicyFilterSetKey, betaPolicyFilterCache{accountID: accountID, model: model, filterSet: filterSet})
+	c.Set(betaPolicyFilterSetKey, betaPolicyFilterCache{accountID: accountID, model: model, policy: policy})
 }
 
-// getBetaPolicyFilterSet returns the beta policy filter set, using the gin context cache if available.
+// requestBetaPolicy returns the evaluated beta policy, using the gin context cache if available.
 // In the /v1/messages path, Forward() evaluates the policy first and caches the result;
 // buildUpstreamRequest reuses it (zero extra DB calls). In the count_tokens path, this
 // evaluates on demand (one DB call).
-func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Context, account *Account, model string) (map[string]struct{}, error) {
+func (s *GatewayService) requestBetaPolicy(ctx context.Context, c *gin.Context, account *Account, model string) (betaPolicyResult, error) {
 	if c != nil {
 		if v, ok := c.Get(betaPolicyFilterSetKey); ok {
 			if cached, ok := v.(betaPolicyFilterCache); ok {
@@ -911,20 +1135,16 @@ func (s *GatewayService) getBetaPolicyFilterSet(ctx context.Context, c *gin.Cont
 					accountID = account.ID
 				}
 				if cached.accountID == accountID && cached.model == model {
-					return cached.filterSet, nil
+					return cached.policy, nil
 				}
 			}
 		}
 	}
-	betaHeader := ""
-	if c != nil && c.Request != nil {
-		betaHeader = c.GetHeader("anthropic-beta")
-	}
-	policy := s.evaluateBetaPolicy(ctx, betaHeader, account, model)
+	policy := s.evaluateBetaPolicy(ctx, c, clientBetaForPolicy(c, account), account, model)
 	if policy.blockErr != nil {
-		return nil, policy.blockErr
+		return policy, policy.blockErr
 	}
-	return policy.filterSet, nil
+	return policy, nil
 }
 
 // betaPolicyScopeMatches checks whether a rule's scope matches the current account type.
@@ -1034,13 +1254,14 @@ func filterBetaTokens(tokens []string, filterSet map[string]struct{}) []string {
 
 func (s *GatewayService) resolveBedrockBetaTokensForRequest(
 	ctx context.Context,
+	c *gin.Context,
 	account *Account,
 	betaHeader string,
 	body []byte,
 	modelID string,
 ) ([]string, error) {
 	// 1. 对原始 header 中的 beta token 做 block 检查（快速失败）
-	policy := s.evaluateBetaPolicy(ctx, betaHeader, account, modelID)
+	policy := s.evaluateBetaPolicy(ctx, c, betaHeader, account, modelID)
 	if policy.blockErr != nil {
 		return nil, policy.blockErr
 	}

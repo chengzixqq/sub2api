@@ -1,20 +1,28 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"log/slog"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tidwall/gjson"
+	"golang.org/x/time/rate"
 )
 
 // ClaudeIterationUsage is copy-on-write: forwarding/failure snapshots may share
 // this pointer, but observing another SSE frame never changes an earlier copy.
 type ClaudeIterationUsage struct {
-	Iterations  []ClaudeUsageIteration
-	Present     bool
-	Invalid     bool
-	Terminal    bool
-	AdvisorSeen bool
+	// Settlement-only snapshot before compactions and message TTL recovery.
+	originalExecutor *UsageTokens
+	Iterations       []ClaudeUsageIteration
+	Present          bool
+	Invalid          bool
+	Terminal         bool
+	AdvisorSeen      bool
 }
 
 type ClaudeUsageIteration struct {
@@ -41,29 +49,130 @@ func (u ClaudeUsage) Clone() ClaudeUsage {
 }
 
 func (u ClaudeUsage) HasAdvisorUsage() bool {
+	return u.hasIterationTokens("advisor_message")
+}
+
+func (u ClaudeUsage) HasCompactionUsage() bool {
+	return u.hasIterationTokens("compaction")
+}
+
+func (u ClaudeUsage) hasIterationTokens(typ string) bool {
 	if u.IterationUsage == nil {
 		return false
 	}
 	for _, entry := range u.IterationUsage.Iterations {
-		if !entry.Invalid && entry.Type == "advisor_message" && (entry.Usage.InputTokens > 0 || entry.Usage.OutputTokens > 0 || entry.Usage.CacheCreationTokens > 0 || entry.Usage.CacheReadTokens > 0) {
+		if !entry.Invalid && entry.Type == typ && (entry.Usage.InputTokens > 0 || entry.Usage.OutputTokens > 0 || entry.Usage.CacheCreationTokens > 0 || entry.Usage.CacheReadTokens > 0) {
 			return true
 		}
 	}
 	return false
 }
 
+var compactionOverlapLogLimit = rate.NewLimiter(rate.Every(time.Minute), 1)
+
+// Anthropic's top-level executor usage already includes message iterations.
+// Add only separately metered compactions, on a copy used for settlement.
+func (r *ForwardResult) withCompactionUsage(ctx context.Context) *ForwardResult {
+	if !r.Usage.HasCompactionUsage() {
+		return r
+	}
+	// A compatible provider may already include compacted usage in its total.
+	// Keep settlement unchanged while collecting evidence of that convention.
+	if claudeIterationsMatchAggregate(r.Usage, true) && compactionOverlapLogLimit.Allow() {
+		slog.InfoContext(ctx, "billing.compaction_usage_overlap", "request_id", r.RequestID,
+			"input_tokens", r.Usage.InputTokens, "output_tokens", r.Usage.OutputTokens)
+	}
+	bill := *r
+	if err := addCompactionUsage(&bill.Usage); err != nil {
+		slog.ErrorContext(ctx, "billing.compaction_usage_fallback", "request_id", r.RequestID, "error", err)
+		bill.Usage = r.Usage
+		bill.Usage.IterationUsage = nil // Settle the original top-level counters only.
+	} else {
+		state := *bill.Usage.IterationUsage
+		original := r.Usage.billingUsageTokens()
+		state.originalExecutor = &original
+		bill.Usage.IterationUsage = &state
+	}
+	return &bill
+}
+
+func addCompactionUsage(u *ClaudeUsage) error {
+	// All downstream sums, including input-to-cache transfers, must fit in int.
+	remaining, ok := remainingClaudeTokens(math.MaxInt, claudeUsageTokens(*u))
+	if !ok {
+		return errors.New("invalid top-level usage in Claude compaction response")
+	}
+	fillCompactionMessageCacheTTL(u)
+	for _, entry := range u.IterationUsage.Iterations {
+		if entry.Invalid || entry.Type != "compaction" {
+			continue
+		}
+		t := entry.Usage
+		remaining, ok = remainingClaudeTokens(remaining, t)
+		if !ok {
+			return errors.New("compaction usage exceeds representable token total")
+		}
+		if t.CacheCreation5mTokens > math.MaxInt-u.CacheCreation5mTokens || t.CacheCreation1hTokens > math.MaxInt-u.CacheCreation1hTokens {
+			return errors.New("compaction cache TTL usage exceeds representable token total")
+		}
+		u.InputTokens += t.InputTokens
+		u.OutputTokens += t.OutputTokens
+		u.CacheCreationInputTokens += t.CacheCreationTokens
+		u.CacheReadInputTokens += t.CacheReadTokens
+		u.CacheCreation5mTokens += t.CacheCreation5mTokens
+		u.CacheCreation1hTokens += t.CacheCreation1hTokens
+	}
+	return nil
+}
+
+// message_delta may update cache_creation_input_tokens while leaving only
+// message_start's TTL breakdown at the top level. Recover missing detail from
+// message iterations once their aggregate matches the final executor usage.
+func fillCompactionMessageCacheTTL(u *ClaudeUsage) {
+	if u.CacheCreation5mTokens < 0 || u.CacheCreation1hTokens < 0 ||
+		u.CacheCreation5mTokens >= u.CacheCreationInputTokens-u.CacheCreation1hTokens {
+		return
+	}
+	raw := *u
+	raw.CacheCreation5mTokens, raw.CacheCreation1hTokens = 0, 0
+	if !claudeExecutorIterationsComplete(raw) {
+		return
+	}
+	var short, long int
+	for _, entry := range u.IterationUsage.Iterations {
+		if entry.Type == "message" {
+			short += entry.Usage.CacheCreation5mTokens
+			long += entry.Usage.CacheCreation1hTokens
+		}
+	}
+	if short >= u.CacheCreation5mTokens && long >= u.CacheCreation1hTokens {
+		u.CacheCreation5mTokens, u.CacheCreation1hTokens = short, long
+	}
+}
+
+func remainingClaudeTokens(limit int, t UsageTokens) (int, bool) {
+	for _, count := range [...]int{t.InputTokens, t.OutputTokens, t.CacheCreationTokens, t.CacheReadTokens} {
+		if count < 0 || count > limit {
+			return 0, false
+		}
+		limit -= count
+	}
+	return limit, true
+}
+
 // transformExecutorIterations preserves advisor token buckets and snapshots.
-func transformExecutorIterations(u *ClaudeUsage, transform func(*ClaudeUsage)) {
+func transformExecutorIterations(u *ClaudeUsage, transform func(string, *ClaudeUsage)) {
 	if u == nil || u.IterationUsage == nil {
 		return
 	}
 	state := cloneClaudeIterations(u.IterationUsage)
 	for i := range state.Iterations {
-		if state.Iterations[i].Type != "message" {
+		entry := state.Iterations[i]
+		if entry.Invalid || (entry.Type != "message" && entry.Type != "compaction") {
 			continue
 		}
-		executor := claudeUsageFromTokens(state.Iterations[i].Usage)
-		transform(&executor)
+		executor := claudeUsageFromTokens(entry.Usage)
+		transform(entry.Type, &executor)
 		state.Iterations[i].Usage = claudeUsageTokens(executor)
 	}
 	u.IterationUsage = state
@@ -158,8 +267,7 @@ func observeClaudeIterationUsage(node gjson.Result, usage *ClaudeUsage) {
 			}
 			*f.dst = int(n)
 		}
-		maxInt := int(^uint(0) >> 1)
-		if entry.Usage.CacheCreation5mTokens > maxInt-entry.Usage.CacheCreation1hTokens {
+		if entry.Usage.CacheCreation5mTokens > math.MaxInt-entry.Usage.CacheCreation1hTokens {
 			valid = false
 		} else {
 			cacheTotal := entry.Usage.CacheCreation5mTokens + entry.Usage.CacheCreation1hTokens
@@ -170,13 +278,8 @@ func observeClaudeIterationUsage(node gjson.Result, usage *ClaudeUsage) {
 				valid = false
 			}
 		}
-		contextSum := 0
-		for _, count := range []int{entry.Usage.InputTokens, entry.Usage.OutputTokens, entry.Usage.CacheCreationTokens, entry.Usage.CacheReadTokens} {
-			if count > maxInt-contextSum {
-				valid = false
-				break
-			}
-			contextSum += count
+		if _, ok := remainingClaudeTokens(math.MaxInt, entry.Usage); !ok {
+			valid = false
 		}
 		if i < len(state.Iterations) && !state.Iterations[i].Invalid {
 			prev := state.Iterations[i]
@@ -219,7 +322,13 @@ func claudeUsageFromTokens(u UsageTokens) ClaudeUsage {
 		CacheCreation30mTokens: u.CacheCreation30mTokens, CacheCreation12hTokens: u.CacheCreation12hTokens}
 }
 
+// Check the raw Anthropic top-level usage against message iterations only.
 func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
+	return claudeIterationsMatchAggregate(u, false)
+}
+
+// The settlement copy includes compactions in the aggregate used for pricing.
+func claudeIterationsMatchAggregate(u ClaudeUsage, includesCompactions bool) bool {
 	s := u.IterationUsage
 	if s == nil || !s.Present || s.Invalid || !s.Terminal {
 		return false
@@ -234,11 +343,17 @@ func claudeExecutorIterationsComplete(u ClaudeUsage) bool {
 	if !checkOpenAITTL {
 		limits[6], limits[7] = u.CacheCreationInputTokens, u.CacheCreationInputTokens
 	}
+	hasBillableCompaction := u.HasCompactionUsage()
 	for _, entry := range s.Iterations {
-		if entry.Type == "advisor_message" {
+		// With no separately metered compaction, keep the legacy advisor
+		// completeness rule: only message and advisor entries certify a split.
+		if entry.Type == "compaction" && !hasBillableCompaction {
+			return false
+		}
+		if entry.Type == "advisor_message" || (entry.Type == "compaction" && !includesCompactions) {
 			continue
 		}
-		if entry.Type != "message" {
+		if entry.Invalid || (entry.Type != "message" && entry.Type != "compaction") {
 			return false
 		}
 		t := entry.Usage

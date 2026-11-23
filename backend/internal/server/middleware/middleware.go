@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -29,6 +30,9 @@ const (
 	// apiKey 已加载但尚未写入 ContextKeyAPIKey；该键让 Ops 错误日志仍能取到
 	// user/group/platform。仅供 Ops 错误日志读取，不代表请求已通过鉴权。
 	ContextKeyOpsFallbackAPIKey ContextKey = "ops_fallback_api_key"
+	// ContextKeyOpsAPIKeyAuthErrorCode preserves the local auth code for Ops
+	// when the client protocol has no field for it.
+	ContextKeyOpsAPIKeyAuthErrorCode ContextKey = "ops_api_key_auth_error_code"
 )
 
 // ForcePlatform 返回设置强制平台的中间件
@@ -104,20 +108,34 @@ func abortWithOpenAIQuotaError(c *gin.Context, statusCode int, message string) {
 // GatewayErrorWriter 定义网关错误响应格式（不同协议使用不同格式）
 type GatewayErrorWriter func(c *gin.Context, status int, message string)
 
-// AnthropicErrorWriter 按 Anthropic API 规范输出错误；error.type 随状态码映射
-// （404 -> not_found_error，403 -> permission_error，其余 api_error）。
-func AnthropicErrorWriter(c *gin.Context, status int, message string) {
-	errorType := "api_error"
+// AnthropicErrorType maps an HTTP status to the official Anthropic error type.
+func AnthropicErrorType(status int) string {
+	return claude.ErrorType(status)
+}
+
+// AnthropicStatusOpsType preserves the classification used by writers which
+// already derived their error type from status before these statuses were added.
+func AnthropicStatusOpsType(status int) string {
 	switch status {
-	case http.StatusNotFound:
-		errorType = "not_found_error"
-	case http.StatusForbidden:
-		errorType = "permission_error"
+	case http.StatusPaymentRequired, http.StatusConflict, http.StatusGatewayTimeout, 529:
+		return "api_error"
+	default:
+		return AnthropicErrorType(status)
 	}
-	c.JSON(status, gin.H{
-		"type":  "error",
-		"error": gin.H{"type": errorType, "message": message},
-	})
+}
+
+// The group-assignment middleware also serves OpenAI, Codex and media routes.
+func AnthropicErrorWriter(c *gin.Context, status int, message string) {
+	if UsesAnthropicGatewayErrors(c) {
+		opsType := AnthropicStatusOpsType(status)
+		// The generic writer historically emitted api_error for a direct 401.
+		if status == http.StatusUnauthorized {
+			opsType = "api_error"
+		}
+		service.WriteAnthropicError(c, status, opsType, AnthropicErrorType(status), "", message, service.FilledAnthropicRequestID(c), false)
+		return
+	}
+	c.JSON(status, gin.H{"type": "error", "error": gin.H{"type": AnthropicErrorType(status), "message": message}})
 }
 
 // GoogleErrorWriter 按 Google API 规范输出错误

@@ -336,6 +336,7 @@ func TestOpenAIAdvisorNativeResponses_PreserveIterationUsage(t *testing.T) {
 					body = `{"id":"msg_advisor","type":"message","role":"assistant","model":"executor-model","content":[],"stop_reason":"end_turn","usage":` + nativeAdvisorUsageJSON + `}`
 					contentType = "application/json"
 				}
+				body = strings.Replace(body, `"iterations":[`, `"iterations":[{"type":"compaction","input_tokens":50,"output_tokens":7},`, 1)
 				resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(body))}
 				var result *OpenAIForwardResult
 				var err error
@@ -363,7 +364,8 @@ func TestOpenAIAdvisorNativeResponses_PreserveIterationUsage(t *testing.T) {
 				require.NotNil(t, result)
 				require.True(t, result.Usage.HasAdvisorUsage())
 				require.True(t, claudeExecutorIterationsComplete(result.Usage.ToClaudeUsage()))
-				require.Len(t, result.Usage.IterationUsage.Iterations, 3)
+				require.Len(t, result.Usage.IterationUsage.Iterations, 4)
+				require.True(t, result.Usage.HasCompactionUsage())
 			})
 		}
 	}

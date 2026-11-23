@@ -2,12 +2,15 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/setting"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 // SetContentModerationConfig holds live group rows until the setting is written.
@@ -44,6 +47,35 @@ type settingRepository struct {
 
 func NewSettingRepository(client *ent.Client) service.SettingRepository {
 	return &settingRepository{client: client}
+}
+
+// ListClaudeAlignmentOverrides projects only the sparse customization object.
+// Malformed legacy values are ignored just as they are by the policy resolver.
+func (r *settingRepository) ListClaudeAlignmentOverrides(ctx context.Context, accountTypes []string) ([]service.ClaudeAlignmentOverrides, error) {
+	rows, err := r.client.QueryContext(ctx, `
+		SELECT id, type, platform, extra -> $1::text, schedulable, dispatch_scope,
+           extra @> '{"mixed_scheduling":true}', ARRAY(SELECT group_id FROM account_groups WHERE account_id = accounts.id)
+        FROM accounts
+		WHERE deleted_at IS NULL AND platform = ANY($2) AND type = ANY($3) AND status = $4
+		  AND extra ? $1::text AND jsonb_typeof(extra -> $1::text) = 'object'`,
+		service.AccountClaudeCustomizationExtraKey, pq.Array([]string{service.PlatformAnthropic, service.PlatformAntigravity}), pq.Array(accountTypes), service.StatusActive)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []service.ClaudeAlignmentOverrides
+	for rows.Next() {
+		var account service.ClaudeAlignmentOverrides
+		var raw []byte
+		if err := rows.Scan(&account.AccountID, &account.AccountType, &account.Platform, &raw, &account.Schedulable, &account.DispatchScope, &account.Mixed, pq.Array(&account.GroupIDs)); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &account.Fields); err != nil {
+			return nil, err
+		}
+		result = append(result, account)
+	}
+	return result, rows.Err()
 }
 
 func (r *settingRepository) Get(ctx context.Context, key string) (*service.Setting, error) {
@@ -145,4 +177,48 @@ func (r *settingRepository) GetAll(ctx context.Context) (map[string]string, erro
 func (r *settingRepository) Delete(ctx context.Context, key string) error {
 	_, err := r.client.Setting.Delete().Where(setting.KeyEQ(key)).Exec(ctx)
 	return err
+}
+
+func (r *settingRepository) RepairClaudeCustomizationField(ctx context.Context, key string) error {
+	query := `UPDATE settings SET value=(value::jsonb - $2::text)::text,updated_at=NOW() WHERE key=$1`
+	if key == "preset" {
+		// Resetting a missing preset would activate magic and replace other stored values.
+		query = `UPDATE settings SET value=jsonb_set(value::jsonb, ARRAY[$2::text], '"custom"'::jsonb)::text,updated_at=NOW() WHERE key=$1`
+	}
+	_, err := r.client.ExecContext(ctx, query, service.SettingKeyClaudeCustomization, key)
+	return err
+}
+
+func (r *settingRepository) ClaudeAlignmentRouting(ctx context.Context) (*service.ClaudeAlignmentRouting, error) {
+	rows, err := r.client.QueryContext(ctx, `SELECT id,platform,claude_code_only,fallback_group_id FROM groups WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	routing := &service.ClaudeAlignmentRouting{Groups: map[int64]*service.Group{}, Policies: map[[2]int64]*service.AccountDispatchPolicy{}}
+	for rows.Next() {
+		var g service.Group
+		if err := rows.Scan(&g.ID, &g.Platform, &g.ClaudeCodeOnly, &g.FallbackGroupID); err != nil {
+			return nil, err
+		}
+		routing.Groups[g.ID] = &g
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Share the dispatch reader's authorization joins and member/extra eligibility.
+	grants, err := r.client.QueryContext(ctx, fmt.Sprintf(accountDispatchPolicySelect, "TRUE"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = grants.Close() }()
+	policies, err := scanAccountDispatchPolicies(grants)
+	if err != nil {
+		return nil, err
+	}
+	for i := range policies {
+		policy := &policies[i]
+		routing.Policies[[2]int64{policy.UserID, policy.GroupID}] = policy
+	}
+	return routing, nil
 }

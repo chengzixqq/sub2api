@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/googleapi"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -61,21 +62,43 @@ func (h *GatewayHandler) responsesSecurityAuditError(c *gin.Context, decision *s
 	}})
 }
 
+// Translate the built-in audit messages at the Messages protocol boundary.
+func anthropicSecurityAuditMessage(c *gin.Context, decision *securityaudit.Decision) string {
+	message := securityAuditMessage(decision)
+	c.Set(service.OpsAnthropicErrorMessageKey, message)
+	const moderationBlock = "内容审计命中风险规则，请调整输入后重试"
+	if strings.HasPrefix(message, moderationBlock+"（hash: ") && strings.HasSuffix(message, "）") {
+		return "Request blocked by content policy. Revise your input and try again."
+	}
+	switch message {
+	case "提示词安全审计拒绝了该请求，请调整输入后重试":
+		return "Request blocked by prompt security policy. Revise your input and try again."
+	case "提示词安全审计暂时不可用，请稍后重试":
+		return "Prompt security checks are temporarily unavailable. Please retry later."
+	case moderationBlock:
+		return "Request blocked by content policy. Revise your input and try again."
+	default:
+		return message
+	}
+}
+
 func (h *GatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
 		return
 	}
+	message := securityAuditMessage(decision)
+	if middleware2.UsesAnthropicGatewayErrors(c) {
+		message = anthropicSecurityAuditMessage(c, decision)
+	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
-		h.errorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
+		h.errorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), message)
 		return
 	}
 	errType := "api_error"
 	if decision.Kind == securityaudit.DecisionBlock {
 		errType = "permission_error"
 	}
-	c.JSON(securityAuditStatus(decision), gin.H{"type": "error", "error": gin.H{
-		"type": errType, "code": securityAuditErrorCode(decision), "message": securityAuditMessage(decision),
-	}})
+	h.errorResponseWithCode(c, securityAuditStatus(decision), errType, securityAuditErrorCode(decision), message)
 }
 
 func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
@@ -83,16 +106,21 @@ func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decis
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
-		h.anthropicErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
+		h.anthropicErrorResponse(c, securityAuditStatus(decision), securityAuditErrorCode(decision), anthropicSecurityAuditMessage(c, decision))
 		return
 	}
 	errType := "api_error"
 	if decision.Kind == securityaudit.DecisionBlock {
 		errType = "permission_error"
 	}
-	c.JSON(securityAuditStatus(decision), gin.H{"type": "error", "error": gin.H{
-		"type": errType, "code": securityAuditErrorCode(decision), "message": securityAuditMessage(decision),
-	}})
+	status, code := securityAuditStatus(decision), securityAuditErrorCode(decision)
+	message := anthropicSecurityAuditMessage(c, decision)
+	if service.IsAnthropicMessagesRequest(c) {
+		service.PreserveOpsErrorResponse(c, service.AnthropicErrorWithCodeAndRequestID(errType, code, securityAuditMessage(decision), ""), "")
+		service.WriteAnthropicError(c, status, errType, service.MessagesErrorType(c, status, errType), code, message, service.FilledAnthropicRequestID(c), false)
+		return
+	}
+	h.handleStreamingAwareErrorWithCode(c, status, errType, code, message, false, false)
 }
 
 func googleSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {

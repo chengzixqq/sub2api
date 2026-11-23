@@ -29,11 +29,15 @@ func (h *AccountHandler) GetClaudeCustomization(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, service.ClaudeCustomizationResponse{
-		Global:    effectiveGlobalClaudeCustomization(c, h),
-		Overrides: overrides,
-		Effective: effective,
-	})
+	response.Success(c, struct {
+		service.ClaudeCustomizationResponse
+		Hits map[string]service.AlignmentHitCounts `json:"hits"`
+	}{service.ClaudeCustomizationResponse{
+		Global:           effectiveGlobalClaudeCustomization(c, h),
+		Overrides:        overrides,
+		IgnoredOverrides: service.IgnoredClaudeOverrides(account.Type, overrides),
+		Effective:        effective,
+	}, customizationHits(c, h.settingService, &accountID)})
 }
 
 // UpdateClaudeCustomization updates only sparse account-level overrides. A
@@ -49,9 +53,18 @@ func (h *AccountHandler) UpdateClaudeCustomization(c *gin.Context) {
 		response.BadRequest(c, "invalid customization overrides: "+err.Error())
 		return
 	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	overrides, err := service.NormalizeClaudeCustomizationOverrides(req.Overrides)
 	if err != nil {
 		response.BadRequest(c, err.Error())
+		return
+	}
+	if ignored := service.IgnoredClaudeOverrides(account.Type, overrides); len(ignored) > 0 {
+		response.BadRequest(c, ignored[0]+" is not applicable to account type "+account.Type)
 		return
 	}
 	if err := h.adminService.UpdateAccountExtra(c.Request.Context(), accountID, map[string]any{
@@ -60,7 +73,7 @@ func (h *AccountHandler) UpdateClaudeCustomization(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	account, err = h.adminService.GetAccount(c.Request.Context(), accountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -71,9 +84,10 @@ func (h *AccountHandler) UpdateClaudeCustomization(c *gin.Context) {
 		return
 	}
 	response.Success(c, service.ClaudeCustomizationResponse{
-		Global:    effectiveGlobalClaudeCustomization(c, h),
-		Overrides: persisted,
-		Effective: effective,
+		Global:           effectiveGlobalClaudeCustomization(c, h),
+		Overrides:        persisted,
+		IgnoredOverrides: service.IgnoredClaudeOverrides(account.Type, persisted),
+		Effective:        effective,
 	})
 }
 

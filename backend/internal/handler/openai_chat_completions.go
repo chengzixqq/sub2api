@@ -206,13 +206,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// 计费结算守卫：保证下面的转发循环无论从哪个 return 退出都恰好结算一次。
 	// 请求体已由上面的 gjson.ValidBytes 闸门确认是合法 JSON，可安全进入估算器。
+	upstreamUsageOnly := failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil)
 	guard := newBillingSettlementGuard(guardDeps{
 		resetAttemptOutput: billingAttemptOutputReset(c),
-		upstreamUsageOnly:  failureBillingUpstreamUsageOnlySnapshot(c.Request.Context(), nil),
+		upstreamUsageOnly:  upstreamUsageOnly,
 		estimatedPromptTokens: func() int {
 			return service.EstimateFailurePromptTokens(requestPlatform, body)
 		},
 		sink: h.openAIFailureSink(c, openAIFailureSinkParams{
+			BillStandaloneImageInput: !upstreamUsageOnly,
+
 			APIKey:              apiKey,
 			Subscription:        subscription,
 			ReqModel:            reqModel,
@@ -364,9 +367,13 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			if err == nil || openAIForwardResultHasActualBillableUsage(res) {
 				guard.MarkSettled()
 				channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel)
+				billingResult, provenance := guard.openAISettlementResult(res)
 				recordUsage := func(ctx context.Context) error {
 					return h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
-						Result:             res,
+						BillStandaloneImageInput: !upstreamUsageOnly,
+
+						Result:             billingResult,
+						BillingProvenance:  provenance,
 						APIKey:             apiKey,
 						User:               apiKey.User,
 						Account:            account,
@@ -505,6 +512,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		}
 		if result != nil {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, reqModel, false, result), true, result.FirstTokenMs)
+			if result.RawChatStreamAbortedWithoutUsage && !openAIForwardResultHasActualBillableUsage(result) {
+				// 无 usage 的取消流由延迟结算守卫按实际投递状态决定是否估算。
+				guard.outputStarted = forwardDeliveredStreamContent(c)
+				return
+			}
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, reqModel, false, result), true, nil)
 		}

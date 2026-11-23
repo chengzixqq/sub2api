@@ -1246,6 +1246,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reqBody = nil
 
 		// Handle normal response
+		var delivered bool
 		var usage *OpenAIUsage
 		var firstTokenMs *int
 		responseID := ""
@@ -1256,6 +1257,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
 			if streamResult != nil {
+				delivered = streamResult.delivered
 				usage = streamResult.usage
 				firstTokenMs = streamResult.firstTokenMs
 				responseID = strings.TrimSpace(streamResult.responseID)
@@ -1323,6 +1325,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 				return nil, err
 			}
+			delivered = nonStreamResult.delivered
 			usage = nonStreamResult.usage
 			responseID = strings.TrimSpace(nonStreamResult.responseID)
 			imageCount = nonStreamResult.imageCount
@@ -1351,6 +1354,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			RequestID:                     resp.Header.Get("x-request-id"),
 			UpstreamHeaders:               resp.Header,
 			ResponseID:                    responseID,
+			ClientContentDelivered:        delivered,
 			Usage:                         *usage,
 			Model:                         originalModel,
 			BillingModel:                  billingModel,

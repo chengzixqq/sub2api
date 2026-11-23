@@ -8,7 +8,10 @@
       <div v-else-if="!loaded" class="flex flex-col items-center gap-4 py-12" role="alert">
         <Icon name="exclamationTriangle" size="lg" class="text-amber-500" />
         <p class="text-sm text-gray-600 dark:text-gray-400">{{ t('admin.customization.loadFailed') }}</p>
-        <button type="button" class="btn btn-secondary" data-testid="customization-retry" @click="load">
+        <button v-if="corruptSettings" type="button" class="btn btn-secondary" :disabled="busy" data-reset-all @click="resetAll">
+          {{ t('admin.customization.resetCorruptSettings') }}
+        </button>
+        <button type="button" class="btn btn-secondary" :disabled="busy" data-testid="customization-retry" @click="load">
           <Icon name="refresh" size="sm" />
           {{ t('common.tryAgain') }}
         </button>
@@ -31,6 +34,12 @@
             class="w-full sm:w-72 sm:shrink-0 lg:w-80"
             @update:model-value="applyPreset"
           />
+        </div>
+        <div v-for="field in invalidFields" :key="field" class="flex items-center gap-3 px-4 py-2 text-sm" role="alert">
+          {{ t('admin.customization.invalidField', { field: fieldLabel(field) }) }}
+          <button type="button" class="btn btn-secondary" :disabled="busy" :data-reset-field="field" @click="resetField(field)">
+            {{ t('admin.customization.resetField') }}
+          </button>
         </div>
         <div class="divide-y divide-gray-100 dark:divide-dark-700">
           <section class="px-4 py-5 sm:px-6" aria-labelledby="customization-compatibility">
@@ -88,6 +97,11 @@
               </div>
             </div>
           </section>
+          <OfficialAlignmentCard
+            v-if="alignmentFields.length" mode="global" class="px-4 py-5 sm:px-6"
+            :fields="alignmentFields" :model-value="alignmentValues" :hits="hits" :disabled="busy"
+            @update:model-value="updateAlignment"
+          />
         </div>
         <div class="flex flex-col items-stretch gap-3 border-t border-gray-100 px-4 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:justify-end sm:px-6">
           <span v-if="message" class="inline-flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400" role="status">
@@ -108,14 +122,18 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import OfficialAlignmentCard from '@/components/admin/customization/OfficialAlignmentCard.vue'
 import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { applyClaudeCustomizationPreset, getClaudeCustomization, updateClaudeCustomization, type ClaudeCustomizationSettings } from '@/api/admin/settings'
+import {
+  resetClaudeCustomization, resetClaudeCustomizationField, applyClaudeCustomizationPreset, getClaudeCustomization, getClaudeCustomizationSchema, updateClaudeCustomization,
+  type AlignmentHitCounts, type ClaudeCustomizationField, type ClaudeCustomizationSettings,
+} from '@/api/admin/settings'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const appStore = useAppStore()
 const presets = ['magic', 'official', 'custom'] as const
 const presetOptions = computed(() => presets.map(value => ({ value, label: t(`admin.customization.presets.${value}`) })))
@@ -133,7 +151,21 @@ const form = reactive<ClaudeCustomizationSettings>({
   thinking_signature_retry_enabled: false, thinking_tool_downgrade_retry_enabled: false,
   beta_policy_mode: 'capability_aware', unknown_beta_action: 'pass_on_native_only',
   fingerprint_unification: true, metadata_passthrough: true, url_redaction_enabled: true,
+  context_management_missing_beta: 'strip', request_id_mode: 'passthrough', cache_control_limit_mode: 'trim',
+  unknown_beta_header: 'passthrough', models_catalog: 'synthetic', upstream_header_passthrough: 'off',
+  thinking_cache_control: 'strip', bedrock_cc_context_management: 'strip',
 })
+const corruptSettings = ref(false)
+const invalidFields = ref<string[]>([])
+const alignmentFields = ref<ClaudeCustomizationField[]>([])
+const hits = ref<Record<string, AlignmentHitCounts> | null>()
+const alignmentValues = computed<Record<string, string>>(() => Object.fromEntries(
+  alignmentFields.value.flatMap(({ key }) => {
+    const value = form[key]
+    return typeof value === 'string' ? [[key, value]] : []
+  })
+))
+const editedAlignmentFields = new Set<ClaudeCustomizationField['key']>()
 const loading = ref(true)
 const loaded = ref(false)
 const saving = ref(false)
@@ -146,16 +178,72 @@ function markCustom() {
   message.value = ''
 }
 
+function updateAlignment(values: Record<string, string | null>) {
+  for (const { key } of alignmentFields.value) {
+    const value = values[key]
+    if (typeof value === 'string' && value !== alignmentValues.value[key]) {
+      Object.assign(form, { [key]: value })
+      editedAlignmentFields.add(key)
+    }
+  }
+  message.value = ''
+}
+
+function replaceSettings(settings: ClaudeCustomizationSettings) {
+  Object.assign(form, settings, Object.fromEntries(
+    alignmentFields.value.map(({ key }) => [key, settings[key]])
+  ))
+  editedAlignmentFields.clear()
+}
+
 async function load() {
+  corruptSettings.value = false
   loading.value = true
   try {
-    Object.assign(form, (await getClaudeCustomization()).global)
+    const [settings, schema] = await Promise.all([getClaudeCustomization(), getClaudeCustomizationSchema()])
+    alignmentFields.value = schema.filter(field => field.group === 'official_alignment')
+    replaceSettings(settings.global)
+    invalidFields.value = settings.invalid_fields ?? []
+    hits.value = settings.hits
     loaded.value = true
   } catch (error) {
+    corruptSettings.value = !!error && typeof error === 'object' && 'reason' in error && error.reason === 'CLAUDE_CUSTOMIZATION_CORRUPT'
     loaded.value = false
     appStore.showError(extractApiErrorMessage(error, t('common.error')))
   } finally {
     loading.value = false
+  }
+}
+function fieldLabel(field: string) {
+  if (field === 'preset') return t('admin.customization.presetLabel')
+  const prefix = alignmentFields.value.some(f => f.key === field) ? 'alignment.fields' : 'fields'
+  const path = `admin.customization.${prefix}.${field}.label`
+  return te(path) ? t(path) : field
+}
+async function resetAll() {
+  if (!corruptSettings.value || busy.value) return
+  saving.value = true
+  try {
+    await resetClaudeCustomization()
+    await load()
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    saving.value = false
+  }
+}
+
+async function resetField(field: string) {
+  if (busy.value) return
+  saving.value = true
+  try {
+    await resetClaudeCustomizationField(field)
+    await load()
+    if (loaded.value) message.value = t('common.saved')
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    saving.value = false
   }
 }
 async function applyPreset(value: unknown) {
@@ -163,7 +251,7 @@ async function applyPreset(value: unknown) {
   applyingPreset.value = true
   message.value = ''
   try {
-    Object.assign(form, (await applyClaudeCustomizationPreset(value as ClaudeCustomizationSettings['preset'])).global)
+    replaceSettings((await applyClaudeCustomizationPreset(value as ClaudeCustomizationSettings['preset'])).global)
     message.value = t('common.saved')
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('common.error')))
@@ -176,7 +264,14 @@ async function save() {
   saving.value = true
   message.value = ''
   try {
-    Object.assign(form, (await updateClaudeCustomization({ ...form })).global)
+    const payload = {
+      ...form,
+      // Empty alignment values ask the server to preserve its current settings.
+      ...Object.fromEntries(alignmentFields.value.map(({ key }) => [
+        key, editedAlignmentFields.has(key) ? form[key] : '',
+      ])),
+    }
+    replaceSettings((await updateClaudeCustomization(payload)).global)
     message.value = t('common.saved')
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('common.error')))

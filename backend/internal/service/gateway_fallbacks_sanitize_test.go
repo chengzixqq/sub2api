@@ -287,7 +287,7 @@ func TestPrepareBedrockRequestBodyWithTokens_FallbacksRequireSupportedBeta(t *te
 // beta API 专有字段，Bedrock 无对应 beta → 无条件剥除。
 func TestSanitizeBedrockCCFields_StripsFallbacksUnconditionally(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-6","context_management":{"edits":[]},"fallbacks":"default","fallback_credit_token":"tok_123","messages":[]}`)
-	result := sanitizeBedrockCCFields(body)
+	result := sanitizeBedrockCCFields(body, ClaudeAlignStrip)
 
 	assert.False(t, gjson.GetBytes(result, "fallbacks").Exists())
 	assert.False(t, gjson.GetBytes(result, "fallback_credit_token").Exists())

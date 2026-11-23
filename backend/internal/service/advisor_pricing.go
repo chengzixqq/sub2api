@@ -138,7 +138,7 @@ func (s *GatewayService) validateAdvisorPricingForForward(ctx context.Context, c
 	}
 	if err := s.ValidateAdvisorPricing(ctx, key, body); err != nil {
 		if c != nil && !c.Writer.Written() {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"type": "error", "error": gin.H{"type": "advisor_pricing_unavailable", "message": "Advisor model pricing is unavailable"}})
+			writeAnthropicError(c, http.StatusServiceUnavailable, "advisor_pricing_unavailable", "Advisor model pricing is unavailable")
 		}
 		return err
 	}

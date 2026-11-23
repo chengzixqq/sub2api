@@ -29,7 +29,14 @@ import (
 //   - 拒绝：按入口协议格式返回 404，并标记运维业务限流原因
 //     local_model_configuration 与 ingress 拒绝原因 model_not_allowed。
 func GroupModelAllowlist() gin.HandlerFunc {
+	return GroupModelAllowlistWithSettings(nil)
+}
+
+func GroupModelAllowlistWithSettings(settings *service.SettingService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if UsesAnthropicGatewayErrors(c) || IsAnthropicModelsRequest(c) {
+			service.BindClaudeErrorSettings(c, settings)
+		}
 		apiKey, ok := GetAPIKeyFromContext(c)
 		if !ok || apiKey == nil || apiKey.Group == nil || !apiKey.Group.ModelAllowlistEnabled() {
 			c.Next()
@@ -83,8 +90,18 @@ func GroupModelAllowlist() gin.HandlerFunc {
 
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
 		MarkIngressRejected(c, IngressRejectModelNotAllowed)
-		groupModelAllowlistErrorWriter(c)(c, http.StatusNotFound, fmt.Sprintf("Model %q is not available for this group", blocked))
 		c.Abort()
+		if c.Param("model") != "" && apiKey.Group.Platform != service.PlatformOpenAI && apiKey.Group.Platform != service.PlatformGrok && IsAnthropicModelsRequest(c) {
+			if official, _ := settings.ClaudeModelsCatalogPolicy(c.Request.Context()); official {
+				service.WriteLocalAnthropicModelNotFound(c, c.Param("model"))
+				return
+			}
+		}
+		if UsesAnthropicGatewayErrors(c) {
+			AnthropicErrorWriter(c, http.StatusNotFound, fmt.Sprintf("Model %+q is not available for this group", blocked))
+			return
+		}
+		groupModelAllowlistErrorWriter(c)(c, http.StatusNotFound, fmt.Sprintf("Model %q is not available for this group", blocked))
 	}
 }
 

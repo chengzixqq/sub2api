@@ -151,7 +151,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 	if account != nil && account.Platform == PlatformAnthropic {
 		if err := validateClaude55Request(parsed.Body.Bytes(), validationModel); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error", "message": err.Error()}})
+			writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return nil, err
 		}
 	}
@@ -161,6 +161,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	claudePolicy := DefaultClaudeCustomizationSettings()
 	if s.settingService != nil {
 		claudePolicy = s.settingService.ResolveClaudeCustomizationForRequest(ctx, c, account)
+	}
+	limitMode := requestCacheControlLimitMode(c, account, claudePolicy)
+	if err := s.settingService.checkUnknownBeta(ctx, c, account, claudePolicy); err != nil {
+		return nil, err
+	}
+	thinkingMode := requestThinkingCacheControlMode(c, account, claudePolicy)
+	if err := s.settingService.AlignmentHits().checkCacheControls(c, account, thinkingMode, limitMode, parsed); err != nil {
+		return nil, err
 	}
 	if c != nil {
 		redact := claudePolicy.URLRedactionEnabled && account != nil && account.Type == AccountTypeAPIKey
@@ -210,15 +218,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// Beta policy: evaluate once; block check + cache filter set for buildUpstreamRequest.
 	// Always overwrite the cache to prevent stale values from a previous retry with a different account.
 	if account.Platform == PlatformAnthropic && c != nil {
-		policy := s.evaluateBetaPolicy(ctx, c.GetHeader("anthropic-beta"), account, parsed.Model)
+		policy := s.evaluateBetaPolicy(ctx, c, clientBetaForPolicy(c, account), account, parsed.Model)
 		if policy.blockErr != nil {
 			return nil, policy.blockErr
 		}
-		filterSet := policy.filterSet
-		if filterSet == nil {
-			filterSet = map[string]struct{}{}
-		}
-		setBetaPolicyFilterSet(c, account, parsed.Model, filterSet)
+		cacheBetaPolicy(c, account, parsed.Model, policy)
 	}
 
 	body := parsed.Body.Bytes()
@@ -268,6 +272,16 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
+	// cache_control 4 块上限的处理方式在任何注入之前决定：passthrough 以客户端
+	// 原始断点数为准。只有 mimic 分支会注入断点（system blocks 锚点、tools[-1]、
+	// 可选的 messages 断点改写），这时先给客户端断点打标，enforce 时只删未打标的。
+	cacheControlPlan, plannedBody, marked := planCacheControlLimit(body, limitMode, thinkingMode, shouldMimicClaudeCode)
+	if marked {
+		if err := replaceBody(plannedBody); err != nil {
+			return nil, err
+		}
+	}
+
 	if shouldMimicClaudeCode {
 		// 与 Parrot 对齐：OAuth 账号无条件重写 system（即使客户端已发了 Claude Code
 		// 风格的 system prompt）。原因：第三方工具（opencode 等）会发 "You are Claude
@@ -306,7 +320,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		// D/E/F: 可选 messages cache 策略 + 工具名混淆 + tools[-1] 断点
 		// 与 forward_as_chat_completions / forward_as_responses 路径对齐，
 		// 原生 /v1/messages 路径也走同一套可配置字段级改写。
-		if err := replaceBody(s.rewriteMessageCacheControlIfEnabled(ctx, body)); err != nil {
+		if err := replaceBody(s.rewriteMessageCacheControlIfEnabled(ctx, body, cacheControlPlan.preserveThinking)); err != nil {
 			return nil, err
 		}
 		if rw := buildToolNameRewriteFromBody(body); rw != nil {
@@ -333,8 +347,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 	}
 
-	// 强制执行 cache_control 块数量限制（最多 4 个）
-	if err := replaceBody(enforceCacheControlLimit(body)); err != nil {
+	// 强制执行 cache_control 块数量限制（最多 4 个）。trim 与历史行为一致；
+	// passthrough 下客户端自己超限时原样交给上游报 400，只回收网关注入的断点。
+	if err := replaceBody(cacheControlPlan.apply(body)); err != nil {
 		return nil, err
 	}
 
@@ -455,7 +470,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, err
 		}
 		// 记录本次实际发送的 wire body；只有请求成功后才写回 ParsedRequest，避免 400 retry 基于已签名 CCH 再改写。
-		lastWireBody = wireBody
+		lastWireBody, err = s.alignAnthropicWireRequest(c, account, claudePolicy, upstreamReq, wireBody)
+		if err != nil {
+			return nil, err
+		}
 
 		// 发送请求
 		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
@@ -535,6 +553,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					retryReq, retryWireBody, buildErr := s.buildUpstreamRequest(retryCtx, c, account, filteredBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 					releaseRetryCtx()
 					if buildErr == nil {
+						retryWireBody, err = s.alignAnthropicWireRequest(c, account, claudePolicy, retryReq, retryWireBody)
+						if err != nil {
+							return nil, err
+						}
 						retryResp, retryErr := s.httpUpstream.DoWithTLS(retryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 						if retryErr == nil {
 							if retryResp.StatusCode < 400 {
@@ -578,6 +600,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 									retryReq2, retryWireBody2, buildErr2 := s.buildUpstreamRequest(retryCtx2, c, account, filteredBody2, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 									releaseRetryCtx2()
 									if buildErr2 == nil {
+										retryWireBody2, err = s.alignAnthropicWireRequest(c, account, claudePolicy, retryReq2, retryWireBody2)
+										if err != nil {
+											return nil, err
+										}
 										retryResp2, retryErr2 := s.httpUpstream.DoWithTLS(retryReq2, proxyURL, account.ID, account.Concurrency, tlsProfile)
 										if retryErr2 == nil {
 											if retryResp2.StatusCode < 400 {
@@ -661,6 +687,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 						budgetRetryReq, budgetWireBody, buildErr := s.buildUpstreamRequest(budgetRetryCtx, c, account, rectifiedBody, token, tokenType, reqModel, reqStream, shouldMimicClaudeCode)
 						releaseBudgetRetryCtx()
 						if buildErr == nil {
+							budgetWireBody, err = s.alignAnthropicWireRequest(c, account, claudePolicy, budgetRetryReq, budgetWireBody)
+							if err != nil {
+								return nil, err
+							}
 							budgetRetryResp, retryErr := s.httpUpstream.DoWithTLS(budgetRetryReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 							if retryErr == nil {
 								if budgetRetryResp.StatusCode < 400 {
@@ -781,11 +811,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					return ""
 				}(),
 			})
-			return nil, &UpstreamFailoverError{
+			return nil, (&UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			}).withOfficialHeaders(c, resp.Header)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account, reqModel)
 	}
@@ -818,11 +848,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				return ""
 			}(),
 		})
-		return nil, &UpstreamFailoverError{
+		return nil, (&UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
 			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		}).withOfficialHeaders(c, resp.Header)
 	}
 	if resp.StatusCode >= 400 {
 		// 可选：对部分 400 触发 failover（默认关闭以保持语义）
@@ -871,7 +901,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 					logger.LegacyPrintf("service.gateway", "Account %d: 400 error, attempting failover", account.ID)
 				}
 				s.handleFailoverSideEffects(ctx, resp, account, reqModel)
-				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+				return nil, (&UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}).withOfficialHeaders(c, resp.Header)
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, reqModel)
@@ -1150,8 +1180,8 @@ func (s *GatewayService) sseStreamErrorEventFailover(ctx context.Context, c *gin
 		logBody,
 	)
 
-	return &UpstreamFailoverError{
+	return (&UpstreamFailoverError{
 		StatusCode:   semanticStatus,
 		ResponseBody: body,
-	}
+	}).withOfficialHeaders(c, resp.Header)
 }

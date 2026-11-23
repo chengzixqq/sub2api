@@ -1291,6 +1291,7 @@ export interface GrokModelDiagnostics {
 }
 
 export interface Account {
+  config_version?: number
   id: number
   name: string
   notes?: string | null

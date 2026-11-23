@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -750,4 +751,106 @@ func TestBillingSettlementGuard_AdvisorOnlySnapshotSettlesOnce(t *testing.T) {
 			require.Equal(t, 7, converted.IterationUsage.Iterations[0].Usage.OutputTokens)
 		})
 	}
+}
+
+func TestOpenAISettlementUsesFinalAttemptUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		usage          service.OpenAIUsage
+		platform       string
+		only, failed   bool
+		wantProvenance string
+	}{
+		{name: "delivered", wantProvenance: "estimated"},
+		{name: "partial result", failed: true, wantProvenance: "failed_estimated"},
+		{name: "image cache tokens", usage: service.OpenAIUsage{ImageCacheReadTokens: 2}},
+		{name: "cache TTL tokens", usage: service.OpenAIUsage{CacheCreation30mInputTokens: 3}},
+		{name: "upstream only", only: true},
+		{name: "native Claude account", platform: service.PlatformAnthropic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newBillingSettlementGuard(guardDeps{
+				upstreamUsageOnly: tc.only,
+				estimatedPromptTokens: func() int {
+					require.NotEmpty(t, tc.wantProvenance, "estimate should be lazy")
+					return 12
+				},
+				observedEvents: func() int { return 4 },
+			})
+			g.ObserveAttempt(&service.Account{Platform: tc.platform})
+			result := &service.OpenAIForwardResult{Usage: tc.usage, ClientContentDelivered: true, SearchCount: 2, Model: "gpt-5.4"}
+			g.ObserveOpenAIForwardResult(result)
+			if tc.failed {
+				g.ObserveForwardOutcome(io.ErrUnexpectedEOF, true)
+			}
+			billed, provenance := g.openAISettlementResult(result)
+			require.Equal(t, tc.usage, result.Usage)
+			if tc.wantProvenance == "" {
+				require.Same(t, result, billed)
+				require.Nil(t, provenance)
+			} else {
+				require.NotNil(t, provenance)
+				require.Equal(t, tc.wantProvenance, *provenance)
+				require.Equal(t, 12, billed.Usage.InputTokens)
+				require.Equal(t, 4, billed.Usage.OutputTokens)
+				require.Equal(t, result.Model, billed.Model)
+				require.Equal(t, result.SearchCount, billed.SearchCount)
+			}
+		})
+	}
+}
+
+func TestUpstreamUsageOnlySkipsFailureEstimators(t *testing.T) {
+	unexpected := func() int {
+		t.Fatal("local estimator ran in upstream-only mode")
+		return 0
+	}
+	g := newBillingSettlementGuard(guardDeps{
+		upstreamUsageOnly: true, estimatedPromptTokens: unexpected, observedEvents: unexpected,
+		sink: func(service.FailureBillingDecision, *service.Account) {},
+	})
+	g.ObserveAttempt(&service.Account{Platform: service.PlatformOpenAI})
+	g.ObserveForwardOutcome(io.ErrUnexpectedEOF, true)
+	g.Flush()
+}
+
+func TestUnclassifiedOpenAIUsageSettlement(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		usage           service.OpenAIUsage
+		events          int
+		only            bool
+		wantIn, wantOut int
+	}{
+		{"upstream larger", service.OpenAIUsage{ReportedOutputFloor: 7}, 2, false, 6, 7},
+		{"estimate larger", service.OpenAIUsage{ReportedOutputFloor: 7}, 12, false, 6, 12},
+		{"reasoning and total", service.OpenAIUsage{OutputTokens: 7, ReportedOutputFloor: 23, OutputFromUnclassifiedUsage: true}, 2, false, 6, 23},
+		{"reasoning and total upstream only", service.OpenAIUsage{OutputTokens: 7, ReportedOutputFloor: 23, OutputFromUnclassifiedUsage: true}, 2, true, 0, 7},
+		{"complete split", service.OpenAIUsage{InputTokens: 2, OutputTokens: 3, ReportedOutputFloor: 7}, 12, false, 2, 3},
+		{"upstream only", service.OpenAIUsage{ReportedOutputFloor: 7}, 12, true, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newBillingSettlementGuard(guardDeps{estimatedPromptTokens: func() int { return 6 }, observedEvents: func() int { return tc.events }, upstreamUsageOnly: tc.only})
+			g.ObserveAttempt(&service.Account{Platform: service.PlatformOpenAI})
+			raw := &service.OpenAIForwardResult{Usage: tc.usage}
+			g.ObserveOpenAIForwardResult(raw)
+			billed, _ := g.openAISettlementResult(raw)
+			require.Equal(t, tc.wantIn, billed.Usage.InputTokens)
+			require.Equal(t, tc.wantOut, billed.Usage.OutputTokens)
+			require.Equal(t, tc.usage, raw.Usage)
+		})
+	}
+}
+
+func TestOpenAIImageCountSkipsTokenEstimate(t *testing.T) {
+	g := newBillingSettlementGuard(guardDeps{estimatedPromptTokens: func() int {
+		t.Fatal("counted image triggered a token estimate")
+		return 0
+	}})
+	g.ObserveAttempt(&service.Account{Platform: service.PlatformOpenAI})
+	raw := &service.OpenAIForwardResult{ClientContentDelivered: true, ImageCount: 1, Usage: service.OpenAIUsage{ReportedOutputFloor: 7}}
+	g.ObserveOpenAIForwardResult(raw)
+	billed, provenance := g.openAISettlementResult(raw)
+	require.Same(t, raw, billed)
+	require.Nil(t, provenance)
 }

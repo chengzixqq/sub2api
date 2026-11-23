@@ -51,11 +51,8 @@ func openAIResponsesStreamEventDeliversRealContent(payload, eventType string) bo
 	// 增量内容帧：output_text / reasoning_summary_text / function_call_arguments /
 	// audio / refusal 等一切 .delta。refusal 也算 —— 上游确实生成了 token 并收费。
 	if strings.Contains(eventType, ".delta") {
-		if !gjson.Valid(payload) {
-			return false
-		}
-		delta := gjson.Get(payload, "delta")
-		return delta.Exists() && delta.String() != ""
+		upstream, _ := openAIResponsesDeltaContent(payload)
+		return upstream
 	}
 	// 图片增量帧：携带真实图片字节，不含 .delta 后缀。
 	if strings.HasSuffix(eventType, ".partial_image") {
@@ -82,54 +79,87 @@ func openAIResponsesStreamEventDeliversRealContent(payload, eventType string) bo
 	return false
 }
 
+// The existing upstream marker also drives failure and failover handling.
+// Keep it independent of the stricter successful delivery requirement.
+func openAIResponsesStreamContent(payload, eventType string) (upstream, client bool) {
+	if strings.Contains(eventType, ".delta") {
+		return openAIResponsesDeltaContent(payload)
+	}
+	upstream = openAIResponsesStreamEventDeliversRealContent(payload, eventType)
+	return upstream, upstream
+}
+
+func openAIResponsesDeltaContent(payload string) (upstream, client bool) {
+	if !gjson.Valid(payload) {
+		return false, false
+	}
+	delta := gjson.Get(payload, "delta")
+	return delta.Exists() && delta.String() != "", delta.Str != ""
+}
+
 // openAIChatStreamChunkDeliversRealContent 判定一个原生 ChatCompletions 流式 chunk 是否
 // 携带上游真实增量内容。用于 raw CC 直转叶子——该形状没有事件名，只能看 choices[].delta。
 func openAIChatStreamChunkDeliversRealContent(payload string) bool {
+	upstream, _ := openAIChatStreamContent(payload)
+	return upstream
+}
+
+// Keep the legacy upstream marker for failures, including tool skeletons.
+// The successful settlement also needs to know whether the delta had a value.
+func openAIChatStreamContent(payload string) (upstream, client bool) {
 	trimmed := strings.TrimSpace(payload)
 	if trimmed == "" || trimmed == "[DONE]" {
-		return false
+		return false, false
 	}
 	if !gjson.Valid(trimmed) {
-		return false
+		return false, false
 	}
 	// 错误帧：CC 形状下错误以顶层 error 对象或 type:"error" 出现，均不含推理内容。
 	if gjson.Get(trimmed, "error").Exists() {
-		return false
+		return false, false
 	}
 	if strings.TrimSpace(gjson.Get(trimmed, "type").String()) == "error" {
-		return false
+		return false, false
 	}
 	choices := gjson.Get(trimmed, "choices")
 	if !choices.Exists() || !choices.IsArray() {
-		return false
+		return false, false
 	}
-	delivers := false
 	choices.ForEach(func(_, choice gjson.Result) bool {
-		if openAIChatStreamDeltaDeliversRealContent(choice.Get("delta")) {
-			delivers = true
-			return false
-		}
-		return true
+		u, c := openAIChatStreamDeltaContent(choice.Get("delta"))
+		upstream = upstream || u
+		client = client || c
+		return !upstream || !client
 	})
-	return delivers
+	return upstream, client
 }
 
-// openAIChatStreamDeltaDeliversRealContent 判定单个 choices[].delta 是否带出真实内容。
-// 只有 role / finish_reason 的骨架 chunk 不算 —— 上游此时尚未产出任何 token。
-func openAIChatStreamDeltaDeliversRealContent(delta gjson.Result) bool {
-	if !delta.Exists() || !delta.IsObject() {
-		return false
-	}
-	for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
-		if value := delta.Get(field); value.Exists() && value.String() != "" {
-			return true
+func openAIChatStreamDeltaContent(delta gjson.Result) (upstream, client bool) {
+	for _, field := range [...]string{"content", "reasoning_content", "reasoning", "refusal"} {
+		value := delta.Get(field)
+		if value.Type == gjson.String && value.Str != "" {
+			return true, true
+		}
+		if field == "content" && value.IsArray() && rawJSONView(value.Raw).any(openAIMessageBlockHasContent) {
+			return true, true
+		}
+		if value.Exists() && value.String() != "" {
+			upstream = true
 		}
 	}
-	if toolCalls := delta.Get("tool_calls"); toolCalls.Exists() && toolCalls.IsArray() &&
-		len(toolCalls.Array()) > 0 {
-		return true
+	if calls := delta.Get("tool_calls"); calls.IsArray() {
+		calls.ForEach(func(_, call gjson.Result) bool {
+			upstream = true
+			client = openAIChatDeltaFunctionHasContent(call.Get("function")) || call.Get("custom.input").Str != ""
+			return !client
+		})
 	}
-	return delta.Get("function_call").Exists()
+	call := delta.Get("function_call")
+	return upstream || call.Exists(), client || openAIChatDeltaFunctionHasContent(call) || delta.Get("audio.data").Str != "" || delta.Get("audio.transcript").Str != ""
+}
+
+func openAIChatDeltaFunctionHasContent(call gjson.Result) bool {
+	return call.Get("name").Str != "" || call.Get("arguments").Str != ""
 }
 
 // openAIImagesStreamDataDeliversRealContent 判定一个图片流 SSE data 帧是否带出真实图片内容。

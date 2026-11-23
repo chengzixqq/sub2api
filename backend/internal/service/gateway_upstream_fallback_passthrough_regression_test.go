@@ -274,7 +274,7 @@ func TestNativeAnthropicAPIKeyPaths_StrictModeRemovesFallbackContract(t *testing
 		}}
 		svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
 
-		req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-key")
+		req, _, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-key")
 		require.NoError(t, err)
 		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaServerSideFallback))
 		require.False(t, anthropicBetaTokensContains(getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaFallbackCredit))
@@ -306,15 +306,15 @@ func TestBetaPolicyFilterCacheIsScopedToAccountAndModel(t *testing.T) {
 	setBetaPolicyFilterSet(c, first, "claude-fable-5", map[string]struct{}{"filtered-beta": {}})
 
 	svc := &GatewayService{}
-	filterSet, err := svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-fable-5")
+	policy, err := svc.requestBetaPolicy(context.Background(), c, first, "claude-fable-5")
 	require.NoError(t, err)
-	require.Contains(t, filterSet, "filtered-beta")
-	filterSet, err = svc.getBetaPolicyFilterSet(context.Background(), c, second, "claude-fable-5")
+	require.Contains(t, policy.filterSet, "filtered-beta")
+	policy, err = svc.requestBetaPolicy(context.Background(), c, second, "claude-fable-5")
 	require.NoError(t, err)
-	require.NotContains(t, filterSet, "filtered-beta")
-	filterSet, err = svc.getBetaPolicyFilterSet(context.Background(), c, first, "claude-opus-5")
+	require.NotContains(t, policy.filterSet, "filtered-beta")
+	policy, err = svc.requestBetaPolicy(context.Background(), c, first, "claude-opus-5")
 	require.NoError(t, err)
-	require.NotContains(t, filterSet, "filtered-beta")
+	require.NotContains(t, policy.filterSet, "filtered-beta")
 }
 
 func TestBetaPolicyMappedModelBlockIsPropagatedAfterCacheMiss(t *testing.T) {
@@ -340,7 +340,7 @@ func TestBetaPolicyMappedModelBlockIsPropagatedAfterCacheMiss(t *testing.T) {
 
 	// Forward initially evaluates the client alias, then the account mapping
 	// selects claude-opus-5. Cache the alias result to reproduce that transition.
-	initial := svc.evaluateBetaPolicy(context.Background(), c.GetHeader("anthropic-beta"), account, "client-alias")
+	initial := svc.evaluateBetaPolicy(context.Background(), c, c.GetHeader("anthropic-beta"), account, "client-alias")
 	require.Nil(t, initial.blockErr)
 	setBetaPolicyFilterSet(c, account, "client-alias", initial.filterSet)
 

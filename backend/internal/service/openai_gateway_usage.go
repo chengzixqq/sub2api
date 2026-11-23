@@ -22,6 +22,10 @@ import (
 
 // OpenAIRecordUsageInput input for recording usage
 type OpenAIRecordUsageInput struct {
+	// The default HTTP settlement policy prices reported image detail even
+	// when its input total is missing. Other entry points keep their policy.
+	BillStandaloneImageInput bool
+
 	Result             *OpenAIForwardResult
 	APIKey             *APIKey
 	User               *User
@@ -242,6 +246,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result == nil {
 		return errors.New("openai usage result is nil")
 	}
+	if result.Usage.HasCompactionUsage() {
+		native := &ForwardResult{RequestID: result.RequestID, Usage: openAIUsageToClaudeUsage(result.Usage)}
+		if settled := native.withCompactionUsage(ctx); settled != native {
+			bill := *result
+			bill.Usage = claudeUsageToOpenAIUsage(&settled.Usage)
+			result = &bill
+		}
+	}
 	requireUsageLogPersistence := input.RequireUsageLogPersistence
 	if ctx != nil {
 		if required, _ := ctx.Value(ctxkey.ProbeUsagePersistenceRequired).(bool); required {
@@ -275,6 +287,12 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// 将三类 token 拆成互斥桶，避免缓存写入同时按普通输入和 cache_write 重复计费。
 	tokens := result.Usage.billingUsageTokens()
 	actualInputTokens := tokens.InputTokens
+	if input.BillStandaloneImageInput && result.Usage.InputTokens == 0 && tokens.ImageInputTokens > 0 && account != nil && !account.IsAnthropic() {
+		// computeTokenBreakdown splits this bucket into text and image. Its
+		// lower bound is the reported *uncached* image detail. Keep raw usage
+		// and cached image tokens intact for logging and deduplication.
+		tokens.InputTokens = tokens.ImageInputTokens
+	}
 
 	// Get rate multiplier
 	multiplier := 1.0
@@ -790,6 +808,7 @@ func (s *OpenAIGatewayService) calculateOpenAIExecutorRecordUsageCost(
 				optionalStringValue(result.ReasoningEffort),
 				longContextBillingGate,
 				modelLongContextExempt,
+				result.Usage,
 			)
 			if err == nil {
 				tokenCost = cost
@@ -883,6 +902,7 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 	reasoningEffort string,
 	longContextBillingGate *bool,
 	modelLongContextExempt bool,
+	usage OpenAIUsage,
 ) (*CostBreakdown, error) {
 	input := CostInput{
 		Ctx: ctx, Model: billingModel, Tokens: tokens, RequestCount: 1, RateMultiplier: multiplier,
@@ -895,7 +915,18 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageTokenCost(
 		input.ReasoningEffort = reasoningEffort
 		input.Resolver = s.resolver
 	}
-	return s.billingService.CalculateCostUnified(input)
+	if !usage.HasCompactionUsage() {
+		return s.billingService.CalculateCostUnified(input)
+	}
+	if input.Resolver != nil {
+		input.Resolved = input.Resolver.Resolve(ctx, PricingInput{Model: billingModel, GroupID: input.GroupID, Group: input.Group})
+	}
+	price := func(units UsageTokens, tier *int) (*CostBreakdown, error) {
+		input.Tokens, input.PricingContextTokens = units, tier
+		return s.billingService.CalculateCostUnified(input)
+	}
+	perRequest := input.Resolved != nil && input.Resolved.Mode != BillingModeToken
+	return priceCompactedExecutor(openAIUsageToClaudeUsage(usage), tokens, perRequest, price, nil)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

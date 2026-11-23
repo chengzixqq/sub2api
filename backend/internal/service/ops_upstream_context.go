@@ -19,6 +19,8 @@ const (
 	OpsUpstreamStatusCodeKey   = "ops_upstream_status_code"
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
+	// OpsTerminalStreamReasonKey identifies the final SSE fault across upstream retries.
+	OpsTerminalStreamReasonKey = "ops_terminal_stream_reason"
 	OpsUpstreamErrorsKey       = "ops_upstream_errors"
 	OpsUpstreamModelKey        = "ops_upstream_model"
 

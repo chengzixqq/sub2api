@@ -35,7 +35,11 @@ import type {
   OpenCodeGoUsageState
 } from '@/types'
 
+import type { AlignmentHitCounts } from './settings'
+
 export interface ClaudeCustomizationAccountResponse {
+  ignored_overrides?: string[] | null
+  hits?: Record<string, AlignmentHitCounts> | null
   global: Record<string, unknown>
   overrides: Record<string, unknown>
   effective: Record<string, unknown>

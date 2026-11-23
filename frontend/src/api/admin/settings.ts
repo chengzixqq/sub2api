@@ -25,14 +25,49 @@ export interface ClaudeCustomizationSettings {
   fingerprint_unification: boolean;
   metadata_passthrough: boolean;
   url_redaction_enabled: boolean;
+  context_management_missing_beta: "strip" | "reject";
+  request_id_mode: "passthrough" | "fill";
+  cache_control_limit_mode: "trim" | "passthrough" | "reject";
+  unknown_beta_header: "passthrough" | "reject";
+  models_catalog: "synthetic" | "official";
+  upstream_header_passthrough: "off" | "on";
+  thinking_cache_control: "strip" | "passthrough" | "reject";
+  bedrock_cc_context_management: "strip" | "passthrough";
+}
+
+export interface ClaudeCustomizationField {
+  key: keyof ClaudeCustomizationSettings;
+  group: string;
+  kind: "enum" | "bool";
+  options: string[] | null;
+  default: string | boolean;
+  official_value: string | boolean;
+  preset_managed: boolean;
+  account_overridable: boolean;
+  account_types?: string[] | null;
+  global_only: boolean;
+  risk: "none" | "low" | "medium" | "high";
+  hit_stats: boolean;
+}
+
+export interface AlignmentHitCounts {
+  last_24h: number;
+  last_7d: number;
 }
 
 export interface ClaudeCustomizationResponse {
+  invalid_fields?: string[] | null;
+  hits?: Record<string, AlignmentHitCounts> | null;
   global: ClaudeCustomizationSettings;
   defaults?: ClaudeCustomizationSettings;
   overrides?: Record<string, unknown>;
   effective?: ClaudeCustomizationSettings;
   precedence?: string[];
+}
+
+export async function getClaudeCustomizationSchema(): Promise<ClaudeCustomizationField[]> {
+  const { data } = await apiClient.get<ClaudeCustomizationField[]>("/admin/settings/customization/schema");
+  return data;
 }
 
 export async function getClaudeCustomization(): Promise<ClaudeCustomizationResponse> {
@@ -47,6 +82,16 @@ export async function updateClaudeCustomization(
     "/admin/settings/customization",
     settings,
   );
+  return data;
+}
+
+export async function resetClaudeCustomization(): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.post<ClaudeCustomizationResponse>("/admin/settings/customization/reset");
+  return data;
+}
+
+export async function resetClaudeCustomizationField(key: string): Promise<ClaudeCustomizationResponse> {
+  const { data } = await apiClient.post<ClaudeCustomizationResponse>(`/admin/settings/customization/reset/${encodeURIComponent(key)}`);
   return data;
 }
 
@@ -1764,6 +1809,7 @@ export const settingsAPI = {
   updateWebSearchEmulationConfig,
   testWebSearchEmulation,
   resetWebSearchUsage,
+  getClaudeCustomizationSchema,
   getClaudeCustomization,
   updateClaudeCustomization,
   applyClaudeCustomizationPreset,

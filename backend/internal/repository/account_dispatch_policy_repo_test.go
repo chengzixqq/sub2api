@@ -200,3 +200,23 @@ func TestAccountDispatchPolicyRepository_MemberRevocationInvalidatesStaleVersion
 	require.ErrorContains(t, err, "current=42")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestClaudeAlignmentRoutingProjection(t *testing.T) {
+	accounts, mock := newDispatchPolicyRepositoryMock(t)
+	repo := &settingRepository{client: accounts.client}
+	mock.ExpectQuery(`SELECT id,platform,claude_code_only,fallback_group_id FROM groups WHERE deleted_at IS NULL`).WillReturnRows(sqlmock.NewRows([]string{"id", "platform", "claude_code_only", "fallback_group_id"}).AddRow(1, "anthropic", true, 2).AddRow(2, "anthropic", false, nil))
+	mock.ExpectQuery(`(?s)WHERE TRUE.*ORDER BY p.user_id, p.group_id`).WillReturnRows(dispatchPolicyRows().AddRow(5, 1, 1, "append", "name", "a", 10, "member", "acct", "shared", 10).AddRow(5, 2, 2, "replace", "name", "a", 11, "member", "acct", "shared", nil).AddRow(6, 2, 3, "replace", "name", "b", nil, nil, "", "", nil))
+	routing, err := repo.ClaudeAlignmentRouting(t.Context())
+	require.NoError(t, err)
+	require.Len(t, routing.Policies, 3)
+	require.EqualValues(t, 2, *routing.Groups[1].FallbackGroupID)
+	require.Nil(t, routing.Groups[2].FallbackGroupID)
+	require.Len(t, routing.Policies[[2]int64{5, 1}].Accounts, 1)
+	require.Empty(t, routing.Policies[[2]int64{5, 2}].Accounts)
+	require.Equal(t, service.AccountDispatchModeReplace, routing.Policies[[2]int64{6, 2}].Mode)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE settings SET value=(value::jsonb - $2::text)::text,updated_at=NOW() WHERE key=$1")).WithArgs(service.SettingKeyClaudeCustomization, "request_id_mode").WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.RepairClaudeCustomizationField(t.Context(), "request_id_mode"))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE settings SET value=jsonb_set(value::jsonb, ARRAY[$2::text], '"custom"'::jsonb)::text,updated_at=NOW() WHERE key=$1`)).WithArgs(service.SettingKeyClaudeCustomization, "preset").WillReturnResult(sqlmock.NewResult(0, 1))
+	require.NoError(t, repo.RepairClaudeCustomizationField(t.Context(), "preset"))
+	require.NoError(t, mock.ExpectationsWereMet())
+}

@@ -73,6 +73,7 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 			payload := decodeErrorJSON(t, recorder)
 			errorObject := requireObject(t, payload["error"])
 			require.Equal(t, decision.ErrorCode, errorObject["code"])
+			require.Equal(t, decision.ClientMessage, errorObject["message"])
 			if kind == securityaudit.DecisionBlock {
 				require.Equal(t, "permission_error", errorObject["type"])
 			} else {
@@ -88,11 +89,13 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 			require.Equal(t, decision.HTTPStatus, recorder.Code)
 			errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
 			require.Equal(t, decision.ErrorCode, errorObject["code"])
+			require.Equal(t, decision.ClientMessage, errorObject["message"])
 			require.Equal(t, "api_error", errorObject["type"])
 		})
 
 		t.Run("claude_"+string(kind), func(t *testing.T) {
 			c, recorder := securityAuditErrorTestContext(t)
+			c.Request.URL.Path = "/v1/messages"
 			(&GatewayHandler{}).anthropicSecurityAuditError(c, decision)
 			require.Equal(t, decision.HTTPStatus, recorder.Code)
 			payload := decodeErrorJSON(t, recorder)
@@ -101,8 +104,10 @@ func TestPromptGuardOpenAIAndClaudeErrorEnvelopesGolden(t *testing.T) {
 			require.Equal(t, decision.ErrorCode, errorObject["code"])
 			if kind == securityaudit.DecisionBlock {
 				require.Equal(t, "permission_error", errorObject["type"])
+				require.Equal(t, "Request blocked by prompt security policy. Revise your input and try again.", errorObject["message"])
 			} else {
 				require.Equal(t, "api_error", errorObject["type"])
+				require.Equal(t, "Prompt security checks are temporarily unavailable. Please retry later.", errorObject["message"])
 			}
 		})
 	}

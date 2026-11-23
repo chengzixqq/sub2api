@@ -170,9 +170,10 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	c.JSON(http.StatusOK, responsesResp)
+	delivered := writeOpenAIConvertedJSON(c, &usage, responsesResp)
 
 	return &OpenAIForwardResult{
+		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
@@ -211,6 +212,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.FunctionTools = functionTools
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
+	var delivered bool
 	clientDisconnected := false
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
@@ -235,6 +237,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 				)
 				return
 			}
+			delivered = delivered || event.Delta != "" || (event.Type == "response.output_text.done" && event.Text != "")
 		}
 		c.Writer.Flush()
 	}
@@ -247,6 +250,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 
 	if scan.Err != nil {
 		return &OpenAIForwardResult{
+			ClientContentDelivered:        delivered,
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
 			Usage:                         scan.Usage,
@@ -265,6 +269,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 	if err := state.ValidateToolCallArguments(); err != nil {
 		return &OpenAIForwardResult{
+			ClientContentDelivered:        delivered,
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
 			Usage:                         scan.Usage,
@@ -299,6 +304,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 
 	return &OpenAIForwardResult{
+		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
 		Usage:                         scan.Usage,

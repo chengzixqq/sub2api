@@ -126,7 +126,9 @@ func TestGatewayStreamingUndelimitedEventFailsWithoutSuccessfulTerminal(t *testi
 	require.ErrorIs(t, err, errSSETransportLimit)
 	require.NotNil(t, result)
 	require.Equal(t, 3, result.usage.InputTokens)
-	require.Contains(t, rec.Body.String(), "response_too_large")
+	require.Contains(t, rec.Body.String(), `"type":"api_error"`)
+	require.Equal(t, "upstream_error", c.GetString(OpsAnthropicErrorTypeKey))
+	require.Equal(t, "response_too_large", c.GetString(OpsTerminalStreamReasonKey))
 	require.NotContains(t, rec.Body.String(), "message_stop")
 }
 

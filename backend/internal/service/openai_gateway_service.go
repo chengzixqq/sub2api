@@ -222,6 +222,9 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
+	// Settlement-only evidence from an otherwise unclassified usage report.
+	// Never project this count into the response sent to the client.
+	ReportedOutputFloor         int                   `json:"-"`
 	InputTokens                 int                   `json:"input_tokens"`
 	ImageInputTokens            int                   `json:"image_input_tokens,omitempty"`
 	ImageCacheReadTokens        int                   `json:"image_cache_read_tokens,omitempty"`
@@ -234,6 +237,9 @@ type OpenAIUsage struct {
 	CacheReadInputTokens        int                   `json:"cache_read_input_tokens,omitempty"`
 	ImageOutputTokens           int                   `json:"image_output_tokens,omitempty"`
 	IterationUsage              *ClaudeIterationUsage `json:"-"`
+	// OutputTokens was inferred solely from total and reasoning. Keep that
+	// legacy count for upstream-only billing and protocol conversion.
+	OutputFromUnclassifiedUsage bool `json:"-"`
 	// An explicit invalid split must not inherit a previous snapshot's TTLs.
 	cacheCreationTTLDetailsPresent bool
 
@@ -245,9 +251,10 @@ type OpenAIForwardResult struct {
 	RequestID  string
 	ResponseID string
 	// UpstreamHeaders 是直接上游的响应头，用于按账户配置解析上游请求标识。
-	UpstreamHeaders http.Header
-	Usage           OpenAIUsage
-	Model           string // 原始模型（用于响应和日志显示）
+	UpstreamHeaders        http.Header
+	ClientContentDelivered bool // A real output was accepted by the downstream writer in this attempt.
+	Usage                  OpenAIUsage
+	Model                  string // 原始模型（用于响应和日志显示）
 	// BillingModel is the model used for cost calculation.
 	// When non-empty, CalculateCost uses this instead of Model.
 	// This is set by the Anthropic Messages conversion path where
@@ -286,7 +293,10 @@ type OpenAIForwardResult struct {
 	Duration              time.Duration
 	FirstTokenMs          *int
 	ClientDisconnect      bool
-	ImageCount            int
+	// RawChatStreamAbortedWithoutUsage asks the Chat Completions handler to
+	// settle an interrupted raw stream through its existing billing guard.
+	RawChatStreamAbortedWithoutUsage bool
+	ImageCount                       int
 	// ImageEndpoint 标记请求来自专用图片端点；分组 image_count_billing 开关
 	// 只对这类请求生效，混合 Responses/Chat/WS 请求仍按 token 计费。
 	ImageEndpoint      bool

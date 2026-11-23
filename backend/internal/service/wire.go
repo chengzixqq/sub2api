@@ -836,9 +836,19 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 	return aggregator
 }
 
+func ProvideAlignmentHitRecorder(store AlignmentHitStore) *AlignmentHitRecorder {
+	r := NewAlignmentHitRecorder(store)
+	r.Start()
+	return r
+}
+
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config, hits *AlignmentHitRecorder) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
+	svc.alignmentHits = hits
+	if hits != nil {
+		svc.alignmentSnapshot(context.Background())
+	}
 	svc.scopedAdminKeyRepo = scopedKeys
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
@@ -973,6 +983,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOllamaCloudUsageService,
 	ProvideOpenCodeGoUsageService,
 	ProvideSettingService,
+	ProvideAlignmentHitRecorder,
 	NewWorkspaceService,
 	NewWorkspaceMemberUserReader,
 	NewWorkspaceAdminService,

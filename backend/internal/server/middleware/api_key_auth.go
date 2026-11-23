@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -24,10 +25,10 @@ const statusClientClosedRequest = 499
 
 // NewAPIKeyAuthMiddleware 创建 API Key 认证中间件
 func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) APIKeyAuthMiddleware {
-	return APIKeyAuthMiddleware(apiKeyAuthWithSubscription(apiKeyService, subscriptionService, cfg))
+	return NewAPIKeyAuthMiddlewareWithSettings(apiKeyService, subscriptionService, cfg, nil)
 }
 
-// apiKeyAuthWithSubscription API Key认证中间件（支持订阅验证）
+// NewAPIKeyAuthMiddlewareWithSettings creates the production API key middleware.
 //
 // 中间件职责分为两层：
 //   - 鉴权（Authentication）：验证 Key 有效性、用户状态、IP 限制 —— 始终执行
@@ -36,18 +37,19 @@ func NewAPIKeyAuthMiddleware(apiKeyService *service.APIKeyService, subscriptionS
 // /v1/usage、/v1/sub2api/billing 端点与异步生图任务查询只需鉴权，不需要计费执行。
 // usage 允许过期/配额耗尽的 Key 查询自身用量，billing 用于读取当前 Key 的倍率配置，
 // 异步生图查询允许已耗尽额度的 Key 拉取自身任务结果。
-func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config) gin.HandlerFunc {
+func NewAPIKeyAuthMiddlewareWithSettings(apiKeyService *service.APIKeyService, subscriptionService *service.SubscriptionService, cfg *config.Config, settings *service.SettingService) APIKeyAuthMiddleware {
+	authErrors := apiKeyAuthErrors{settings}
 	return func(c *gin.Context) {
 		// ── 1. 提取 API Key ──────────────────────────────────────────
 		if rejectInvalidAuthAbuse(c, apiKeyService) {
-			AbortWithError(c, http.StatusTooManyRequests, "INVALID_AUTH_RATE_LIMITED", "Too many invalid authentication attempts; retry later")
+			authErrors.abortWithAPIKeyAuthError(c, http.StatusTooManyRequests, "INVALID_AUTH_RATE_LIMITED", "Too many invalid authentication attempts; retry later")
 			return
 		}
 
 		if apiKeyHeadersTooLarge(c) {
 			recordInvalidAuthFailure(c, apiKeyService)
 			MarkIngressRejected(c, IngressRejectInvalidAPIKey)
-			AbortWithError(c, http.StatusUnauthorized, "INVALID_API_KEY", "Invalid API key")
+			authErrors.abortWithAPIKeyAuthError(c, http.StatusUnauthorized, "INVALID_API_KEY", "Invalid API key")
 			return
 		}
 
@@ -56,21 +58,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		if queryKey != "" || queryApiKey != "" {
 			recordInvalidAuthFailure(c, apiKeyService)
 			MarkIngressRejected(c, IngressRejectQueryAPIKeyDeprecated)
-			AbortWithError(c, 400, "api_key_in_query_deprecated", "API key in query parameter is deprecated. Please use Authorization header instead.")
+			authErrors.abortWithAPIKeyAuthError(c, 400, "api_key_in_query_deprecated", "API key in query parameter is deprecated. Please use Authorization header instead.")
 			return
 		}
 
-		// 尝试从Authorization header中提取API key (Bearer scheme)
-		authHeader := c.GetHeader("Authorization")
-		var apiKeyString string
-
-		if authHeader != "" {
-			// 验证Bearer scheme
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-				apiKeyString = strings.TrimSpace(parts[1])
-			}
-		}
+		apiKeyString := bearerAPIKey(c)
 
 		// 如果Authorization header中没有，尝试从x-api-key header中提取
 		if apiKeyString == "" {
@@ -79,7 +71,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		if len(apiKeyString) > service.MaxAPIKeyCredentialBytes {
 			recordInvalidAuthFailure(c, apiKeyService)
 			MarkIngressRejected(c, IngressRejectInvalidAPIKey)
-			AbortWithError(c, http.StatusUnauthorized, "INVALID_API_KEY", "Invalid API key")
+			authErrors.abortWithAPIKeyAuthError(c, http.StatusUnauthorized, "INVALID_API_KEY", "Invalid API key")
 			return
 		}
 
@@ -96,7 +88,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			} else {
 				MarkIngressRejected(c, IngressRejectAPIKeyRequired)
 			}
-			AbortWithError(c, 401, "API_KEY_REQUIRED", "API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header")
+			authErrors.abortWithAPIKeyAuthError(c, 401, "API_KEY_REQUIRED", "API key is required in Authorization header (Bearer scheme), x-api-key header, or x-goog-api-key header")
 			return
 		}
 
@@ -107,18 +99,18 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			if errors.Is(err, service.ErrAPIKeyNotFound) {
 				recordInvalidAuthFailure(c, apiKeyService)
 				MarkIngressRejected(c, IngressRejectInvalidAPIKey)
-				AbortWithError(c, 401, "INVALID_API_KEY", "Invalid API key")
+				authErrors.abortWithAPIKeyAuthError(c, 401, "INVALID_API_KEY", "Invalid API key")
 				return
 			}
 			if errors.Is(err, service.ErrAPIKeyAuthOverloaded) {
 				MarkIngressRejected(c, IngressRejectAPIKeyAuthOverloaded)
-				AbortWithError(c, http.StatusServiceUnavailable, "API_KEY_AUTH_OVERLOADED", "API key authentication is temporarily unavailable")
+				authErrors.abortWithAPIKeyAuthError(c, http.StatusServiceUnavailable, "API_KEY_AUTH_OVERLOADED", "API key authentication is temporarily unavailable")
 				return
 			}
 			if abortIfAPIKeyLookupClientGone(c, err) {
 				return
 			}
-			AbortWithError(c, 500, "INTERNAL_ERROR", "Failed to validate API key")
+			authErrors.abortWithAPIKeyAuthError(c, 500, "INTERNAL_ERROR", "Failed to validate API key")
 			return
 		}
 
@@ -133,7 +125,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			apiKey.Status != service.StatusAPIKeyExpired &&
 			apiKey.Status != service.StatusAPIKeyQuotaExhausted {
 			MarkIngressRejected(c, IngressRejectAPIKeyDisabled)
-			AbortWithError(c, 401, "API_KEY_DISABLED", "API key is disabled")
+			authErrors.abortWithAPIKeyAuthError(c, 401, "API_KEY_DISABLED", "API key is disabled")
 			return
 		}
 
@@ -148,27 +140,27 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				}
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonIPRestriction)
 				MarkIngressRejected(c, IngressRejectIPRestricted)
-				AbortWithError(c, 403, "ACCESS_DENIED", fmt.Sprintf("Access denied. Your IP is %s", clientIP))
+				authErrors.abortWithAPIKeyAuthError(c, 403, "ACCESS_DENIED", fmt.Sprintf("Access denied. Your IP is %s", clientIP))
 				return
 			}
 		}
 
 		// 检查关联的用户
 		if apiKey.User == nil {
-			AbortWithError(c, 401, "USER_NOT_FOUND", "User associated with API key not found")
+			authErrors.abortWithAPIKeyAuthError(c, 401, "USER_NOT_FOUND", "User associated with API key not found")
 			return
 		}
 
 		// 检查用户状态
 		if !apiKey.User.IsActive() {
 			MarkIngressRejected(c, IngressRejectUserInactive)
-			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
+			authErrors.abortWithAPIKeyAuthError(c, 401, "USER_INACTIVE", "User account is not active")
 			return
 		}
-		if abortIfAPIKeyGroupUnavailable(c, apiKey) {
+		if authErrors.abortIfAPIKeyGroupUnavailable(c, apiKey) {
 			return
 		}
-		if abortIfAPIKeyGroupNotAllowed(c, apiKey) {
+		if authErrors.abortIfAPIKeyGroupNotAllowed(c, apiKey) {
 			return
 		}
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
@@ -214,7 +206,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			)
 			if subErr != nil {
 				if !skipBilling {
-					AbortWithError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
+					authErrors.abortWithAPIKeyAuthError(c, 403, "SUBSCRIPTION_NOT_FOUND", "No active subscription found for this group")
 					return
 				}
 				// skipBilling: 订阅不存在也放行，handler 会返回可用的数据
@@ -229,20 +221,20 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			// Key 状态检查
 			switch apiKey.Status {
 			case service.StatusAPIKeyQuotaExhausted:
-				abortWithAPIKeyQuotaError(c)
+				authErrors.abortWithAPIKeyQuotaError(c)
 				return
 			case service.StatusAPIKeyExpired:
-				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+				authErrors.abortWithAPIKeyAuthError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
 				return
 			}
 
 			// 运行时过期/配额检查（即使状态是 active，也要检查时间和用量）
 			if apiKey.IsExpired() {
-				AbortWithError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
+				authErrors.abortWithAPIKeyAuthError(c, 403, "API_KEY_EXPIRED", "API key 已过期")
 				return
 			}
 			if apiKey.IsQuotaExhausted() {
-				abortWithAPIKeyQuotaError(c)
+				authErrors.abortWithAPIKeyQuotaError(c)
 				return
 			}
 
@@ -252,7 +244,7 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 				if needsMaintenance {
 					refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
 					if maintenanceErr != nil {
-						AbortWithError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
+						authErrors.abortWithAPIKeyAuthError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
 						return
 					}
 					subscription = refreshed
@@ -267,13 +259,18 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 						code = "USAGE_LIMIT_EXCEEDED"
 						status = 429
 					}
-					AbortWithError(c, status, code, validateErr.Error())
+					message := validateErr.Error()
+					if UsesAnthropicGatewayErrors(c) {
+						c.Set(service.OpsAnthropicErrorMessageKey, message)
+						message = infraerrors.Message(validateErr)
+					}
+					authErrors.abortWithAPIKeyAuthError(c, status, code, message)
 					return
 				}
 			} else {
 				// 非订阅模式 或 订阅模式但 subscriptionService 未注入：回退到余额检查
 				if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
-					AbortWithError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
+					authErrors.abortWithAPIKeyAuthError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 					return
 				}
 			}
@@ -299,6 +296,82 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 	}
 }
 
+func bearerAPIKey(c *gin.Context) string {
+	scheme, token, ok := strings.Cut(c.GetHeader("Authorization"), " ")
+	if ok && strings.EqualFold(scheme, "Bearer") {
+		return strings.TrimSpace(token)
+	}
+	return ""
+}
+
+// UsesAnthropicGatewayErrors selects the client protocol before authentication
+// or group lookup. FullPath is Gin's matched route, including any alias prefix.
+func UsesAnthropicGatewayErrors(c *gin.Context) bool {
+	if service.IsAnthropicMessagesRequest(c) {
+		return true
+	}
+	switch c.FullPath() {
+	case "/v1/models", "/models":
+		return c.Query("client_version") == "" && hasAnthropicModelsHeaders(c)
+	default:
+		return false
+	}
+}
+
+// IsAnthropicModelsRequest includes detail routes after authentication. Their
+// pre-authentication error protocol remains governed by UsesAnthropicGatewayErrors.
+func IsAnthropicModelsRequest(c *gin.Context) bool {
+	switch c.FullPath() {
+	case "/v1/models", "/models":
+		return UsesAnthropicGatewayErrors(c)
+	case "/v1/models/:model", "/models/:model":
+		return hasAnthropicModelsHeaders(c)
+	default:
+		return false
+	}
+}
+
+func hasAnthropicModelsHeaders(c *gin.Context) bool {
+	return c.Request.Method == http.MethodGet && (len(c.Request.Header.Values("anthropic-version")) > 0 ||
+		(c.GetHeader("x-api-key") != "" && bearerAPIKey(c) == ""))
+}
+
+type apiKeyAuthErrors struct {
+	settings *service.SettingService
+}
+
+func (a apiKeyAuthErrors) abortWithAPIKeyAuthError(c *gin.Context, status int, code, message string) {
+	if !UsesAnthropicGatewayErrors(c) {
+		AbortWithError(c, status, code, message)
+		return
+	}
+	// The wire type describes the HTTP failure. Ops needs the original code
+	// to distinguish auth, billing and subscription failures with that status.
+	c.Set(string(ContextKeyOpsAPIKeyAuthErrorCode), code)
+	service.PreserveOpsErrorResponse(c, NewErrorResponse(code, service.OpsOriginalErrorMessage(c, message)), "")
+	switch code {
+	case "INVALID_API_KEY":
+		message = "invalid x-api-key"
+	case "API_KEY_REQUIRED":
+		message = "x-api-key header is required"
+	case "api_key_in_query_deprecated":
+		message = "API keys in query parameters are not supported. Use the x-api-key header."
+	case "API_KEY_EXPIRED":
+		message = "API key has expired"
+	case "API_KEY_QUOTA_EXHAUSTED":
+		message = "API key quota has been exhausted"
+	case "GROUP_DELETED":
+		message = "The group assigned to this API key has been deleted"
+	case "GROUP_DISABLED":
+		message = "The group assigned to this API key is disabled"
+	case "GROUP_NOT_ALLOWED":
+		message = "The user is no longer allowed to use the group assigned to this API key"
+	}
+	id := a.settings.FillAnthropicAuthRequestID(c)
+	service.WriteAnthropicError(c, status, AnthropicStatusOpsType(status), AnthropicErrorType(status), "", message, id, false)
+	c.Abort()
+}
+
 func apiKeyHeadersTooLarge(c *gin.Context) bool {
 	if c == nil {
 		return false
@@ -317,13 +390,13 @@ func hasAPIKeyCredentialInput(c *gin.Context) bool {
 		c.GetHeader("x-goog-api-key") != ""
 }
 
-func abortWithAPIKeyQuotaError(c *gin.Context) {
+func (authErrors apiKeyAuthErrors) abortWithAPIKeyQuotaError(c *gin.Context) {
 	const message = "API key 额度已用完"
 	if isOpenAICompatibleAPIKeyRequest(c) {
 		abortWithOpenAIQuotaError(c, http.StatusTooManyRequests, message)
 		return
 	}
-	AbortWithError(c, http.StatusTooManyRequests, "API_KEY_QUOTA_EXHAUSTED", message)
+	authErrors.abortWithAPIKeyAuthError(c, http.StatusTooManyRequests, "API_KEY_QUOTA_EXHAUSTED", message)
 }
 
 func isOpenAICompatibleAPIKeyRequest(c *gin.Context) bool {
@@ -410,7 +483,7 @@ func apiKeyBalanceBelowAuthThreshold(balance float64, _ *config.Config) bool {
 	return balance <= 0
 }
 
-func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {
+func (authErrors apiKeyAuthErrors) abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {
 	code, message, ok := validateAPIKeyGroupAvailable(apiKey)
 	if ok {
 		return false
@@ -421,17 +494,17 @@ func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool 
 	} else {
 		MarkIngressRejected(c, IngressRejectGroupDisabled)
 	}
-	AbortWithError(c, 403, code, message)
+	authErrors.abortWithAPIKeyAuthError(c, 403, code, message)
 	return true
 }
 
-func abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey) bool {
+func (authErrors apiKeyAuthErrors) abortIfAPIKeyGroupNotAllowed(c *gin.Context, apiKey *service.APIKey) bool {
 	if validateAPIKeyGroupAllowed(apiKey) {
 		return false
 	}
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonAPIKeyGroupUnavailable)
 	MarkIngressRejected(c, IngressRejectGroupNotAllowed)
-	AbortWithError(c, 403, "GROUP_NOT_ALLOWED", "API Key 所属专属分组不再允许当前用户使用")
+	authErrors.abortWithAPIKeyAuthError(c, 403, "GROUP_NOT_ALLOWED", "API Key 所属专属分组不再允许当前用户使用")
 	return true
 }
 

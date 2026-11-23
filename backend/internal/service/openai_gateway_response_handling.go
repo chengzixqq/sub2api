@@ -27,6 +27,7 @@ import (
 
 // openaiStreamingResult streaming response result
 type openaiStreamingResult struct {
+	delivered        bool
 	usage            *OpenAIUsage
 	firstTokenMs     *int
 	responseID       string
@@ -36,6 +37,7 @@ type openaiStreamingResult struct {
 }
 
 type openaiNonStreamingResult struct {
+	delivered bool
 	*OpenAIUsage
 	usage            *OpenAIUsage
 	responseID       string
@@ -143,6 +145,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		return int64(bufferedWriter.Buffered())
 	}
+	var pendingContent, delivered bool
 	flushBuffered := func() error {
 		if firstOutputStage != nil && !firstOutputStage.closed {
 			if err := firstOutputStage.CommitTo(w); err != nil {
@@ -153,6 +156,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				return err
 			}
 		}
+		delivered = delivered || pendingContent
+		pendingContent = false
 		flusher.Flush()
 		return nil
 	}
@@ -364,6 +369,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	streamSearchSeen := make(map[string]struct{})
 	resultWithUsage := func() *openaiStreamingResult {
 		return &openaiStreamingResult{
+			delivered:        delivered,
 			usage:            usage,
 			firstTokenMs:     firstTokenMs,
 			responseID:       responseID,
@@ -731,7 +737,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
 			}
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
-			deliversRealContent := openAIResponsesStreamEventDeliversRealContent(data, eventType)
+			deliversRealContent, clientContent := openAIResponsesStreamContent(data, eventType)
 			startsVisibleOutput := openAIStreamDataStartsVisibleOutput(data, eventType)
 			startsTTFTOutput := openAIStreamDataStartsTTFT(data, eventType, forceFlushFailedEvent, ttftMode)
 			if stageFirstOutput {
@@ -763,6 +769,8 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				return
 			}
 
+			// Read final usage before inspecting an otherwise content-free terminal.
+			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
 				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
@@ -776,6 +784,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				} else if _, err := writePendingString("\n"); err != nil {
 					handlePendingWriteError(err)
 				} else {
+					if !delivered && !pendingContent && openAIUsageNeedsDelivery(usage) {
+						pendingContent = clientContent || (eventType == "response.output_item.done" && startsVisibleOutput) ||
+							openAIFinalEventHasContent(data, eventType)
+					}
 					eventInProgress = true
 				}
 			}
@@ -790,7 +802,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if !guardFirstOutput && deliversRealContent {
 				c.Set(GatewayUpstreamDeliveredKey, true)
 			}
-			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
 			return
 		}
 
@@ -1337,11 +1348,16 @@ func (s *OpenAIGatewayService) parseSSEUsageBytesWithType(data []byte, eventType
 		if !openAIUsageHasTokens(&parsedUsage) && openAIUsageHasTokens(usage) {
 			return
 		}
-		inheritOpenAICacheCreationTTL(&parsedUsage, *usage)
-		*usage = parsedUsage
+		replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		return
 	}
 	mergeOpenAIUsageNonZero(usage, parsedUsage)
+}
+
+func replaceOpenAIUsageSnapshot(dst *OpenAIUsage, current OpenAIUsage) {
+	current.ReportedOutputFloor = max(current.ReportedOutputFloor, dst.ReportedOutputFloor)
+	inheritOpenAICacheCreationTTL(&current, *dst)
+	*dst = current
 }
 
 // Compatible Responses upstreams may report usage before the terminal event.
@@ -1352,6 +1368,7 @@ func mergeOpenAIUsageNonZero(dst *OpenAIUsage, src OpenAIUsage) {
 	if dst == nil {
 		return
 	}
+	dst.ReportedOutputFloor = max(dst.ReportedOutputFloor, src.ReportedOutputFloor)
 	if src.InputTokens > 0 {
 		dst.InputTokens = src.InputTokens
 	}
@@ -1363,6 +1380,7 @@ func mergeOpenAIUsageNonZero(dst *OpenAIUsage, src OpenAIUsage) {
 	}
 	if src.OutputTokens > 0 {
 		dst.OutputTokens = src.OutputTokens
+		dst.OutputFromUnclassifiedUsage = src.OutputFromUnclassifiedUsage
 	}
 	if src.CacheCreationInputTokens > 0 {
 		inheritOpenAICacheCreationTTL(&src, *dst)
@@ -1647,15 +1665,9 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 	}
 	// xAI reports visible output separately from reasoning_tokens; OpenAI
 	// folds reasoning into completion/output. Use total_tokens to tell them apart.
-	reasoningTokens := max(int(firstPositiveGJSONInt(
-		value.Get("completion_tokens_details.reasoning_tokens"),
-		value.Get("output_tokens_details.reasoning_tokens"),
-	)), 0)
-	if reasoningTokens > 0 {
-		outputTokens = xai.IncludeIndependentReasoningTokens(
-			inputTokens, outputTokens, value.Get("total_tokens").Int(), int64(reasoningTokens),
-		)
-	}
+	completionReasoning := value.Get("completion_tokens_details.reasoning_tokens")
+	outputReasoning := value.Get("output_tokens_details.reasoning_tokens")
+	reasoningTokens := firstPositiveGJSONInt(completionReasoning, outputReasoning)
 	cacheReadTokens := openAICacheReadTokensFromUsage(value)
 	cacheCreationTokens := openAICacheCreationTokensFromUsage(value)
 	cache30m, cache12h, cacheTTLPresent := openAICacheCreationTTLTokensFromUsage(value, cacheCreationTokens)
@@ -1670,7 +1682,7 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		value.Get("input_tokens_details.image_tokens"),
 		value.Get("prompt_tokens_details.image_tokens"),
 	)
-	return OpenAIUsage{
+	usage := OpenAIUsage{
 		InputTokens:                    int(inputTokens),
 		ImageInputTokens:               imageInputTokens,
 		OutputTokens:                   int(outputTokens),
@@ -1680,7 +1692,19 @@ func openAIUsageFromGJSON(value gjson.Result) (OpenAIUsage, bool) {
 		cacheCreationTTLDetailsPresent: cacheTTLPresent,
 		CacheReadInputTokens:           cacheReadTokens,
 		ImageOutputTokens:              int(imageOutputTokens),
-	}, true
+	}
+	unclassified := !openAIUsageHasTokens(&usage)
+	if unclassified || reasoningTokens > 0 {
+		total := value.Get("total_tokens").Int()
+		if unclassified {
+			usage.ReportedOutputFloor = int(max(completionReasoning.Int(), outputReasoning.Int(), total, 0))
+		}
+		if reasoningTokens > 0 {
+			usage.OutputTokens = int(xai.IncludeIndependentReasoningTokens(inputTokens, outputTokens, total, int64(reasoningTokens)))
+			usage.OutputFromUnclassifiedUsage = unclassified && usage.OutputTokens > 0
+		}
+	}
+	return usage, true
 }
 
 func openAICacheReadTokensFromUsage(value gjson.Result) int {
@@ -1824,11 +1848,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
-		c.Data(resp.StatusCode, contentType, body)
+	bridged, delivered := writeOpenAICompactSSEBridgeWithDelivery(c, resp.StatusCode, body, usage)
+	if !bridged {
+		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
 	return &openaiNonStreamingResult{
+		delivered:        delivered,
 		OpenAIUsage:      usage,
 		usage:            usage,
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),
@@ -1883,8 +1909,7 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
 		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed {
-			inheritOpenAICacheCreationTTL(&parsedUsage, *usage)
-			*usage = parsedUsage
+			replaceOpenAIUsageSnapshot(usage, parsedUsage)
 		}
 		// When the terminal event has an empty output array, reconstruct
 		// output from accumulated delta events so the client gets full content.
@@ -1937,14 +1962,16 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			contentType = "text/event-stream"
 		}
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+	bridged, delivered := writeOpenAICompactSSEBridgeWithDelivery(c, resp.StatusCode, body, usage)
+	if !bridged {
 		// 上游的 Content-Type（text/event-stream）已复制到响应头，而 c.Data
 		// 不会覆盖已存在的 Content-Type，这里需显式设置为聚合后的类型。
 		c.Writer.Header().Set("Content-Type", contentType)
-		c.Data(resp.StatusCode, contentType, body)
+		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
 	return &openaiNonStreamingResult{
+		delivered:        delivered,
 		OpenAIUsage:      usage,
 		usage:            usage,
 		responseID:       extractOpenAIResponseIDFromJSONBytes(body),

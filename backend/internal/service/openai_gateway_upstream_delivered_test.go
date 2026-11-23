@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -482,4 +484,53 @@ func TestOpenAIWSHTTPBridge_TerminalOnlyStreamDoesNotMarkUpstreamDelivered(t *te
 
 	require.False(t, c.GetBool(GatewayUpstreamDeliveredKey),
 		"上游只回了终止事件、没有任何 token 事件，标记必须保持 false；否则零投递请求被计费 = 多算")
+}
+
+func TestScanCCStreamMarksRealContentForFailureBilling(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		delivered     bool
+	}{
+		{"text", `{"choices":[{"delta":{"content":"hi"}}]}`, true},
+		{"reasoning", `{"choices":[{"delta":{"reasoning_content":"thinking"}}]}`, true},
+		{"tool arguments", `{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{"}}]}}]}`, true},
+		{"role only", `{"choices":[{"delta":{"role":"assistant"}}]}`, false},
+		{"empty content", `{"choices":[{"delta":{"content":""}}]}`, false},
+		{"finish only", `{"choices":[{"delta":{},"finish_reason":"stop"}]}`, false},
+		{"usage only", `{"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":3}}`, false},
+		{"error", `{"error":{"message":"bad request"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			resp := &http.Response{Body: io.NopCloser(io.MultiReader(strings.NewReader("data: "+tc.payload+"\n\n"), iotest.ErrReader(io.ErrUnexpectedEOF)))}
+			svc := &OpenAIGatewayService{}
+			state := svc.scanCCStream(c, resp, "test", "", time.Now(), func(*apicompat.ChatCompletionsChunk) {})
+			require.ErrorIs(t, state.Err, io.ErrUnexpectedEOF)
+			require.Equal(t, tc.delivered, c.GetBool(GatewayUpstreamDeliveredKey))
+		})
+	}
+}
+
+func TestScanCCStreamPreservesLastPositiveUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, finishUsage     string
+		wantInput, wantOutput int
+	}{
+		{"zero finish", `{"prompt_tokens":0,"completion_tokens":0}`, 5, 3},
+		{"positive finish", `{"prompt_tokens":9,"completion_tokens":4}`, 9, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			sse := `data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}` + "\n\n" +
+				`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":` + tc.finishUsage + "}\n\n" +
+				"data: [DONE]\n\n"
+			resp := &http.Response{Body: io.NopCloser(strings.NewReader(sse))}
+			svc := &OpenAIGatewayService{}
+			state := svc.scanCCStream(c, resp, "test", "", time.Now(), func(*apicompat.ChatCompletionsChunk) {})
+			require.NoError(t, state.Err)
+			require.True(t, state.SawDone)
+			require.Equal(t, tc.wantInput, state.Usage.InputTokens)
+			require.Equal(t, tc.wantOutput, state.Usage.OutputTokens)
+		})
+	}
 }

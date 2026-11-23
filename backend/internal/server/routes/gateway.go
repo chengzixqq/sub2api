@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -45,7 +46,7 @@ func RegisterGatewayRoutes(
 
 	// 分组级模型白名单准入：在 apiKeyAuth 之后、compositeTarget 之前，
 	// 保证校验发生在合成路由改写与调度之前，且只看客户端书写的模型名。
-	groupModelAllowlist := middleware.GroupModelAllowlist()
+	groupModelAllowlist := middleware.GroupModelAllowlistWithSettings(settingService)
 
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		// openai、grok 与多协议 API Key 供应商经 OpenAI 网关转发（平台清单）。
@@ -582,8 +583,14 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 		if model != "" {
 			decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, compositeRouteEndpointForPath(c.Request.URL.Path))
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": "Failed to resolve composite model route"}})
 				c.Abort()
+				const message = "Failed to resolve composite model route"
+				if middleware.UsesAnthropicGatewayErrors(c) {
+					service.PreserveOpsOpenAIError(c, "server_error", "", message, false)
+					middleware.AnthropicErrorWriter(c, http.StatusInternalServerError, message)
+				} else {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"type": "server_error", "message": message}})
+				}
 				return
 			}
 			// 含 OAuth 账号的跨平台歧义是分组配置错误：拒绝而不是放行。否则未解析的
@@ -591,7 +598,13 @@ func compositeTargetPlatformMiddleware(resolver *service.CompositeRouteResolver)
 			// OAuth 凭据被送进不匹配的协议管线（如 ChatGPT token 发往 Anthropic）。
 			if decision.OAuthAmbiguous() {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": decision.AmbiguousMessage()}})
+				c.Abort()
+				if middleware.UsesAnthropicGatewayErrors(c) {
+					service.PreserveOpsOpenAIError(c, "invalid_request_error", "", decision.AmbiguousMessage(), false)
+					middleware.AnthropicErrorWriter(c, http.StatusBadRequest, fmt.Sprintf("Model %+q is mapped on multiple provider platforms in this group; configure an explicit composite route", model))
+				} else {
+					c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": decision.AmbiguousMessage()}})
+				}
 				return
 			}
 			if decision.Matched {

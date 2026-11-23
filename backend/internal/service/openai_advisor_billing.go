@@ -22,6 +22,10 @@ func (u OpenAIUsage) HasAdvisorUsage() bool {
 	return openAIUsageToClaudeUsage(u).HasAdvisorUsage()
 }
 
+func (u OpenAIUsage) HasCompactionUsage() bool {
+	return openAIUsageToClaudeUsage(u).HasCompactionUsage()
+}
+
 // ToClaudeUsage returns an independent snapshot using mutually exclusive input
 // and cache buckets, suitable for probe coalescing and deferred settlement.
 func (u OpenAIUsage) ToClaudeUsage() ClaudeUsage {
@@ -164,11 +168,14 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		total.BillingMode = executorCost.BillingMode
 	}
 	state := result.Usage.IterationUsage
-	complete := claudeExecutorIterationsComplete(openAIUsageToClaudeUsage(result.Usage))
+	usage := openAIUsageToClaudeUsage(result.Usage)
+	// Price the entire compacted executor at its combined context tier. Advisors
+	// keep their independent model and price.
+	complete := claudeIterationsMatchAggregate(usage, true)
 	if !complete {
 		details.Status = "partial_usage"
 	}
-	splitExecutor := complete && total.BillingMode == string(BillingModeToken) && executorErr == nil &&
+	splitExecutor := !usage.HasCompactionUsage() && complete && total.BillingMode == string(BillingModeToken) && executorErr == nil &&
 		result.ImageCount == 0 && result.VideoCount == 0 && result.WebSearchCalls == 0 && result.SearchCount == 0 && result.AudioUsage == nil
 	if !splitExecutor {
 		component := billingComponent("executor", model, nil, tokens, executorCost, executorPricing.Source)

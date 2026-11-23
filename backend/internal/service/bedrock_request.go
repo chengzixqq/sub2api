@@ -516,7 +516,7 @@ var bedrockSupportedBetaTokens = map[string]bool{
 	"computer-use-2025-11-24":                true,
 	"context-1m-2025-08-07":                  true,
 	"context-management-2025-06-27":          true, // compaction + clear_thinking，AWS 文档已支持
-	"compact-2026-01-12":                     true, // 官方支持，仅 InvokeModel API（Opus 4.6+）
+	claude.BetaCompact:                       true, // 官方支持，仅 InvokeModel API（Opus 4.6+）
 	"fine-grained-tool-streaming-2025-05-14": true, // AWS Tool Use 文档已支持
 	// "interleaved-thinking-2025-05-14": false, // 无官方文档支持
 	"tool-search-tool-2025-10-19": true,
@@ -673,7 +673,7 @@ func filterBedrockBetaTokens(tokens []string) []string {
 
 // sanitizeBedrockFieldsForBetaTokens 与直连路径的 sanitizeAnthropicBodyForBetaTokens
 // 对称：按最终 Bedrock beta tokens 决定是否保留 body 中的 beta 字段。
-//   - context_management 缺 context-management beta → strip
+//   - context_management 缺 context-management 和 compact beta → strip
 //   - fallbacks 缺 server-side-fallback beta → strip
 //   - fallback_credit_token 缺 server-side-fallback / 任一 fallback-credit beta → strip
 //
@@ -681,7 +681,7 @@ func filterBedrockBetaTokens(tokens []string) []string {
 // （会被 filterBedrockBetaTokens 过滤掉），因此条件 strip 实际总会剥除——这是预期：
 // Bedrock Invoke 不支持这些 beta 字段。
 func sanitizeBedrockFieldsForBetaTokens(body []byte, betaTokens []string) []byte {
-	if !containsBedrockBetaToken(betaTokens, bedrockContextManagementBetaToken) && gjson.GetBytes(body, "context_management").Exists() {
+	if !containsAnyBedrockBetaToken(betaTokens, bedrockContextManagementBetaToken, claude.BetaCompact) && gjson.GetBytes(body, "context_management").Exists() {
 		body, _ = sjson.DeleteBytes(body, "context_management")
 	}
 	if !containsBedrockBetaToken(betaTokens, claude.BetaServerSideFallback) && gjson.GetBytes(body, "fallbacks").Exists() {
@@ -830,19 +830,21 @@ const defaultCCMaxTokens = 81920
 // sanitizeBedrockCCFields 处理 Claude Code 发送的 Bedrock 不兼容字段：
 //   - 移除 service_tier（Anthropic API 专有，Bedrock 不支持）
 //   - 移除 interface_geo（Anthropic API 专有，Bedrock 不支持）
-//   - 移除 context_management（Anthropic API 专有，Bedrock 不支持，CC v2.1.87+ 默认携带）
+//   - 按最终 beta token 与渠道兼容策略决定是否保留 context_management
 //   - 无条件移除 fallbacks / fallback_credit_token（server-side refusal fallback，
 //     Anthropic 直连 beta API 专有；Bedrock Invoke 无对应 beta，永不支持）
 //   - 注入 max_tokens 默认值 81920（CC 可能省略，Bedrock 要求必须提供）
 //   - 注入 anthropic_version（CC 通过 HTTP 头发送，Bedrock 需要放在请求体中）
-func sanitizeBedrockCCFields(body []byte) []byte {
+func sanitizeBedrockCCFields(body []byte, contextManagementMode string, betaTokens ...string) []byte {
 	if gjson.GetBytes(body, "service_tier").Exists() {
 		body, _ = sjson.DeleteBytes(body, "service_tier")
 	}
 	if gjson.GetBytes(body, "interface_geo").Exists() {
 		body, _ = sjson.DeleteBytes(body, "interface_geo")
 	}
-	if gjson.GetBytes(body, "context_management").Exists() {
+	keepContextManagement := containsBedrockBetaToken(betaTokens, claude.BetaCompact) ||
+		(contextManagementMode == ClaudeAlignPassthrough && containsBedrockBetaToken(betaTokens, claude.BetaContextManagement))
+	if !keepContextManagement && gjson.GetBytes(body, "context_management").Exists() {
 		body, _ = sjson.DeleteBytes(body, "context_management")
 	}
 	if gjson.GetBytes(body, "fallbacks").Exists() {

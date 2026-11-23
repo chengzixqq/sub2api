@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 // ClearAccountErrorOptions tunes ClearAccountErrorWithOptions. The zero value
@@ -62,6 +63,9 @@ func (s *adminServiceImpl) ClearAccountErrorWithOptions(ctx context.Context, id 
 	} else if err := s.accountRepo.ClearError(ctx, id); err != nil {
 		return nil, err
 	}
+	if !skipped {
+		refreshAccountErrorSnapshot(ctx, s.settingService)
+	}
 	if err := s.clearAccountRecoverableRuntimeState(ctx, id); err != nil {
 		return nil, err
 	}
@@ -94,4 +98,39 @@ func (s *adminServiceImpl) clearAccountRecoverableRuntimeState(ctx context.Conte
 		}
 	})
 	return nil
+}
+
+// WithDeferredAccountErrorSnapshot coalesces successful error-state writes in a
+// batch. Call flush after all workers finish, using the parent context so an
+// errgroup cancellation cannot affect the refresh or its commit hook.
+func WithDeferredAccountErrorSnapshot(ctx context.Context) (context.Context, func()) {
+	batch := &accountErrorSnapshotBatch{settings: make(map[*SettingService]struct{})}
+	return context.WithValue(ctx, accountErrorSnapshotBatchKey{}, batch), func() {
+		batch.mu.Lock()
+		pending := batch.settings
+		batch.settings = make(map[*SettingService]struct{})
+		batch.mu.Unlock()
+		for settings := range pending {
+			AfterAccountCommit(ctx, settings.invalidateAlignmentSnapshot)
+		}
+	}
+}
+
+type accountErrorSnapshotBatchKey struct{}
+type accountErrorSnapshotBatch struct {
+	mu       sync.Mutex
+	settings map[*SettingService]struct{}
+}
+
+func refreshAccountErrorSnapshot(ctx context.Context, settings *SettingService) {
+	if settings == nil {
+		return
+	}
+	if batch, ok := ctx.Value(accountErrorSnapshotBatchKey{}).(*accountErrorSnapshotBatch); ok {
+		batch.mu.Lock()
+		batch.settings[settings] = struct{}{}
+		batch.mu.Unlock()
+		return
+	}
+	AfterAccountCommit(ctx, settings.invalidateAlignmentSnapshot)
 }

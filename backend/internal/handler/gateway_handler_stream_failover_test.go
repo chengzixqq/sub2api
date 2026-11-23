@@ -120,3 +120,45 @@ func TestStreamWrittenGuard_NoByteWritten_GuardNotTriggered(t *testing.T) {
 	require.False(t, guardTriggered,
 		"未写入任何字节时，守卫条件必须为 false，应允许正常 failover 继续")
 }
+
+func TestMessagesContextManagementFailoverExhausted(t *testing.T) {
+	const body = `{"model":"claude-opus-4-6","messages":[{"role":"user","content":"test"}],"context_management":{"edits":[]}}`
+	const privateError = `{"error":{"message":"relay key fragment TEST_ONLY, billing@relay.example"}}`
+	for _, tc := range []struct {
+		upstream, client int
+		typ, message     string
+	}{
+		{401, 502, "api_error", "Upstream authentication failed, please contact administrator"},
+		{402, 502, "api_error", "Upstream request failed"},
+		{403, 502, "api_error", "Upstream access forbidden, please contact administrator"},
+		{429, 429, "rate_limit_error", "Upstream rate limit exceeded, please retry later"},
+	} {
+		t.Run(http.StatusText(tc.upstream), func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+			(&GatewayHandler{}).handleFailoverExhausted(c, &service.UpstreamFailoverError{StatusCode: tc.upstream, ResponseBody: []byte(privateError)}, service.PlatformAnthropic, false)
+			require.Equal(t, tc.client, rec.Code)
+			require.JSONEq(t, `{"type":"error","error":{"type":"`+tc.typ+`","message":"`+tc.message+`"}}`, rec.Body.String())
+		})
+	}
+}
+
+func TestTransportExhaustionClearsAttemptHeadersAndFillsBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+	settings := service.NewSettingService(nil, nil)
+	account := &service.Account{ID: 8, Type: service.AccountTypeAPIKey, Platform: service.PlatformAnthropic, Extra: map[string]any{
+		service.AccountClaudeCustomizationExtraKey: map[string]any{service.ClaudeFieldRequestIDMode: "fill", service.ClaudeFieldUpstreamHeaderPassthrough: "on"},
+	}}
+	settings.ResolveClaudeCustomizationForRequest(t.Context(), c, account)
+	c.Header("Request-Id", "req_previous")
+	c.Header("Retry-After", "42")
+	h := &GatewayHandler{settingService: settings}
+	h.handleFailoverExhausted(c, &service.UpstreamFailoverError{StatusCode: 502}, service.PlatformAnthropic, false)
+	id := rec.Result().Header.Get("Request-Id")
+	require.Regexp(t, `^req_011C[1-9A-HJ-NP-Za-km-z]{20}$`, id)
+	require.Empty(t, rec.Result().Header.Get("Retry-After"))
+	require.Contains(t, rec.Body.String(), `"request_id":"`+id+`"`)
+}

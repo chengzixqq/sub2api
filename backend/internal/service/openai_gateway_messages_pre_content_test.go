@@ -158,7 +158,7 @@ func TestWriteAnthropicErrorAfterCommittedSSE(t *testing.T) {
 	writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "prompt is too long")
 
 	body := rec.Body.String()
-	require.True(t, strings.HasSuffix(body, "event: error\ndata: {\"error\":{\"message\":\"prompt is too long\",\"type\":\"invalid_request_error\"},\"type\":\"error\"}\n\n"), "body: %q", body)
+	require.True(t, strings.HasSuffix(body, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long\"}}\n\n"), "body: %q", body)
 	for _, line := range strings.Split(body, "\n") {
 		require.False(t, strings.HasPrefix(line, "{"), "bare JSON line in SSE body: %q", line)
 	}

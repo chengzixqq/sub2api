@@ -323,13 +323,6 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
 	return cost
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
@@ -3390,4 +3383,36 @@ func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamRespons
 	baseCost, calcErr := svc.billingService.CalculateCost("gpt-5.4", UsageTokens{InputTokens: 100, OutputTokens: 50}, 1.0)
 	require.NoError(t, calcErr)
 	require.InDelta(t, baseCost.TotalCost, usageRepo.lastLog.TotalCost, 1e-10)
+}
+
+func TestRecordUsageStandaloneImageInput(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bill       bool
+		imagePrice float64
+		want       float64
+	}{
+		{"image price", true, 8e-6, 56e-6},
+		{"missing image price", true, 0, 17.5e-6},
+		{"upstream only", false, 8e-6, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &openAIRecordUsageLogRepoStub{inserted: true}
+			svc := newOpenAIRecordUsageServiceForTest(logs, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+			svc.billingService = NewBillingService(svc.cfg, &PricingService{pricingData: map[string]*LiteLLMModelPricing{
+				"b17-vision": {InputCostPerToken: 2.5e-6, OutputCostPerToken: 15e-6, InputCostPerImageToken: tc.imagePrice},
+			}})
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				BillStandaloneImageInput: tc.bill,
+				Result:                   &OpenAIForwardResult{RequestID: "image-detail", Model: "b17-vision", Usage: OpenAIUsage{ImageInputTokens: 7}},
+				APIKey:                   &APIKey{ID: 10}, User: &User{ID: 20}, Account: &Account{ID: 30, Platform: PlatformOpenAI},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, logs.lastLog)
+			require.Zero(t, logs.lastLog.InputTokens)
+			require.Equal(t, 7, logs.lastLog.ImageInputTokens)
+			require.InDelta(t, tc.want, logs.lastLog.TotalCost, 1e-14)
+			require.InDelta(t, tc.want*1.1, logs.lastLog.ActualCost, 1e-14)
+		})
+	}
 }

@@ -63,8 +63,10 @@ type billingSettlementGuard struct {
 
 	// forwardErr 是 Forward 返回的原始错误快照（含非 UpstreamFailoverError）。
 	// 计费判定本身只用 ferr + outputStarted，这里留原始错误是为了排查
-	// 「这笔失败计费到底因为什么」时不必反推——注意它当前不参与决策。
-	forwardErr error
+	// 「这笔失败计费到底因为什么」时不必反推，也用于区分部分结果的估算来源。
+	forwardErr          error
+	reportedOutputFloor int  // partial usage for the current OpenAI attempt only
+	responseDelivered   bool // confirmed downstream write in this OpenAI HTTP attempt
 	// outputStarted 在 Forward 返回的那一刻定格，不可惰性求值，理由见
 	// ObserveForwardOutcome 的文档。
 	outputStarted      bool
@@ -110,6 +112,8 @@ func (g *billingSettlementGuard) ObserveAttempt(account *service.Account) {
 		g.ferr = nil
 		g.forwardErr = nil
 		g.outputStarted = false
+		g.responseDelivered = false
+		g.reportedOutputFloor = 0
 		g.usage = service.ClaudeUsage{}
 		g.requestID = ""
 		g.billingModel = ""
@@ -157,7 +161,7 @@ func (g *billingSettlementGuard) ObserveForwardOutcome(err error, outputStarted 
 		return
 	}
 	g.forwardErr = err
-	g.outputStarted = outputStarted
+	g.outputStarted = outputStarted || g.responseDelivered
 	if errors.Is(err, context.Canceled) {
 		g.clientDisconnect = true
 	}
@@ -220,6 +224,20 @@ func (g *billingSettlementGuard) ObserveOpenAIForwardResult(result *service.Open
 		ImageCacheReadTokens:     result.Usage.ImageCacheReadTokens,
 		ImageOutputTokens:        result.Usage.ImageOutputTokens,
 	})
+	g.responseDelivered = false
+	g.reportedOutputFloor = 0
+	if (result.ClientContentDelivered || result.Usage.ReportedOutputFloor > 0) &&
+		!g.deps.upstreamUsageOnly && g.account != nil && !g.account.IsAnthropic() && result.ImageCount <= 0 {
+		observed := g.usage
+		if result.Usage.OutputFromUnclassifiedUsage {
+			observed.OutputTokens = 0
+		}
+		if !hasFailureBillingUsage(observed) {
+			g.usage = observed
+			g.responseDelivered = result.ClientContentDelivered
+			g.reportedOutputFloor = result.Usage.ReportedOutputFloor
+		}
+	}
 	g.imageCount = result.ImageCount
 	if g.imageCount < 0 {
 		g.imageCount = 0
@@ -314,6 +332,35 @@ func forwardDeliveredStreamContent(c *gin.Context) bool {
 	return c.GetBool(service.GatewayUpstreamDeliveredKey)
 }
 
+// openAISettlementResult substitutes estimated tokens only in the billing
+// snapshot. Scheduling, probe observation and client bytes use the upstream
+// result. The caller submits the same single usage record as before.
+func (g *billingSettlementGuard) openAISettlementResult(result *service.OpenAIForwardResult) (*service.OpenAIForwardResult, *string) {
+	if (!g.responseDelivered && g.reportedOutputFloor <= 0) || g.deps.upstreamUsageOnly || hasFailureBillingUsage(g.usage) {
+		return result, nil
+	}
+	in := service.FailureBillingInput{OutputStarted: true}
+	g.addEstimateInputs(&in)
+	estimate := service.DecideFailureBilling(in)
+	billed := *result
+	billed.Usage.InputTokens = estimate.Usage.InputTokens
+	billed.Usage.OutputTokens = max(estimate.Usage.OutputTokens, g.reportedOutputFloor)
+	provenance := string(service.BillingProvenanceEstimated)
+	if g.forwardErr != nil {
+		provenance = string(estimate.Provenance)
+	}
+	return &billed, &provenance
+}
+
+func (g *billingSettlementGuard) addEstimateInputs(in *service.FailureBillingInput) {
+	if g.deps.estimatedPromptTokens != nil {
+		in.EstimatedPromptTokens = g.deps.estimatedPromptTokens()
+	}
+	if g.deps.observedEvents != nil {
+		in.ObservedResponseEvents = g.deps.observedEvents()
+	}
+}
+
 // MarkSettled 由成功路径调用，表示已提交正常 RecordUsage。
 func (g *billingSettlementGuard) MarkSettled() {
 	if g != nil {
@@ -339,7 +386,7 @@ func (g *billingSettlementGuard) Flush() {
 	// 反过来不能简化成「ferr == nil 一律不计费」：gateway_forward.go:846
 	// 是流式已开始后中断的路径，ferr 为 nil 但上游已经投递过 token，
 	// 那是本特性最该计费的场景，由 outputStarted 兜住。
-	if g.ferr == nil && !g.outputStarted && !g.clientDisconnect && !hasFailureBillingUsage(g.usage) && g.imageCount == 0 && g.cumulativeSearchCount == 0 {
+	if g.ferr == nil && !g.outputStarted && !g.clientDisconnect && !hasFailureBillingUsage(g.usage) && g.imageCount == 0 && g.cumulativeSearchCount == 0 && g.reportedOutputFloor <= 0 {
 		return
 	}
 
@@ -362,14 +409,20 @@ func (g *billingSettlementGuard) Flush() {
 		ClientDisconnect:       g.clientDisconnect,
 		UpstreamUsageOnly:      g.deps.upstreamUsageOnly,
 	}
-	if g.deps.estimatedPromptTokens != nil {
-		in.EstimatedPromptTokens = g.deps.estimatedPromptTokens()
-	}
-	if g.deps.observedEvents != nil {
-		in.ObservedResponseEvents = g.deps.observedEvents()
+	if !in.UpstreamUsageOnly {
+		g.addEstimateInputs(&in)
 	}
 
+	partialUsage := g.reportedOutputFloor > 0 && !hasFailureBillingUsage(g.usage) && g.imageCount == 0
+	if partialUsage {
+		// Upstream reported real work even if the transport failed before a write.
+		in.Usage.InputTokens = max(in.EstimatedPromptTokens, 0)
+		in.Usage.OutputTokens = max(in.ObservedResponseEvents, g.reportedOutputFloor)
+	}
 	decision := service.DecideFailureBilling(in)
+	if partialUsage {
+		decision.Provenance = service.BillingProvenanceFailedEstimated
+	}
 	if !decision.Billable {
 		return
 	}
@@ -389,7 +442,7 @@ func cloneBillingImageSizeBreakdown(in map[string]int) map[string]int {
 }
 
 func hasFailureBillingUsage(usage service.ClaudeUsage) bool {
-	return usage.HasAdvisorUsage() || usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+	return usage.HasAdvisorUsage() || usage.HasCompactionUsage() || usage.InputTokens > 0 || usage.OutputTokens > 0 ||
 		usage.CacheReadInputTokens > 0 || usage.CacheCreationInputTokens > 0 ||
 		usage.CacheCreation5mTokens > 0 || usage.CacheCreation1hTokens > 0 ||
 		usage.CacheCreation30mTokens > 0 || usage.CacheCreation12hTokens > 0 ||

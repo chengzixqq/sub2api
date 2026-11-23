@@ -4,38 +4,32 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
-// ============================================================================
-// 背景
-// ============================================================================
-//
-// Anthropic 上游对 body.context_management 字段实施 Pydantic schema 校验：
-// 当且仅当 anthropic-beta header 含 context-management-2025-06-27 时接受。
-// 否则报：
-//   "context_management: Extra inputs are not permitted"
-//
-// 本仓采用能力维度对称约束（与 Bedrock 路径的 sanitizeBedrockFieldsForBetaTokens
-// 对称）：在所有 Anthropic 直连出口，按最终 anthropic-beta header 是否含上述 token
-// 决定 body 是否保留同名字段。
-//
-// 本文件覆盖：
-//   1) sanitizeAnthropicBodyForBetaTokens 纯函数
-//   2) anthropicBetaTokensContains 解析辅助函数
-//   3) computeFinalAnthropicBeta / computeFinalCountTokensAnthropicBeta 各路径
-//   4) normalizeClaudeOAuthRequestBody 的 context_management 补齐行为（不再按 model 短路）
+// Native Anthropic requests validate context edits before dispatch, after
+// account overrides and named policy restrictions have been applied.
+// Translated requests gate context_management on their final context editing
+// or compaction beta to keep the wire body consistent with the header.
 
 // ============================================================================
 // anthropicBetaTokensContains
@@ -457,53 +451,733 @@ func readUpstreamBodyForTest(t *testing.T, req *http.Request) []byte {
 	return b
 }
 
-func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsContextManagementWhenClientHeaderMissingBeta(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	// 客户端仅带 oauth beta，不带 context-management-2025-06-27
-	c.Request.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
-
-	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
-	svc := &GatewayService{cfg: &config.Config{}}
-	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(
-		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
-	)
-	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, req), "context_management").Exists(),
-		"API-key passthrough + 客户端未带 context-management beta → strip body 字段")
+func TestNativeContextManagementUpstreamRequest(t *testing.T) {
+	const compact = "compact-2026-01-12"
+	const clear = "context-management-2025-06-27"
+	const both = compact + "," + clear
+	const compactEdit = `{"type":"compact_20260112","trigger":{"type":"input_tokens","value":50000}}`
+	const toolEdit = `{"type":"clear_tool_uses_20250919"}`
+	const thinkingEdit = `{"type":"clear_thinking_20251015","keep":"all"}`
+	for _, tc := range []struct {
+		name, edit, clientBeta, override, wantBeta string
+		ruleToken, ruleAction                      string
+		strict, unknownFilter, stripped, blocked   bool
+	}{
+		{name: "missing", edit: toolEdit},
+		{name: "unrelated", edit: thinkingEdit, clientBeta: claude.BetaInterleavedThinking, wantBeta: claude.BetaInterleavedThinking},
+		{name: "compact", edit: compactEdit, clientBeta: compact, wantBeta: compact},
+		{name: "clear tools", edit: toolEdit, clientBeta: clear, wantBeta: clear},
+		{name: "clear thinking", edit: thinkingEdit, clientBeta: clear, wantBeta: clear},
+		{name: "both", edit: compactEdit, clientBeta: both, wantBeta: both},
+		{name: "strict", edit: compactEdit, clientBeta: both, wantBeta: both, strict: true},
+		{name: "unknown filter", edit: compactEdit, clientBeta: both, wantBeta: both, unknownFilter: true},
+		{name: "explicit filter", edit: toolEdit, clientBeta: clear, ruleToken: clear, ruleAction: BetaPolicyActionFilter, stripped: true},
+		{name: "filter compact", edit: compactEdit, clientBeta: compact, ruleToken: compact, ruleAction: BetaPolicyActionFilter, stripped: true},
+		{name: "filter one beta", edit: compactEdit, clientBeta: both, ruleToken: clear, ruleAction: BetaPolicyActionFilter, wantBeta: compact},
+		{name: "filter including override", edit: toolEdit, clientBeta: clear, override: clear, ruleToken: clear, ruleAction: BetaPolicyActionFilter, wantBeta: clear},
+		{name: "block override", edit: compactEdit, override: compact, ruleToken: compact, ruleAction: BetaPolicyActionBlock, wantBeta: compact},
+		{name: "allow override with other named filter", edit: compactEdit, clientBeta: both, override: compact, ruleToken: clear, ruleAction: BetaPolicyActionFilter, strict: true, wantBeta: compact},
+		// The builder leaves the field for the missing-beta check when the client did not declare the token.
+		{name: "filter without beta", edit: toolEdit, ruleToken: clear, ruleAction: BetaPolicyActionFilter},
+		{name: "block without beta", edit: compactEdit, ruleToken: compact, ruleAction: BetaPolicyActionBlock},
+		{name: "block second line", edit: toolEdit, clientBeta: compact + "\n" + clear, ruleToken: clear, ruleAction: BetaPolicyActionBlock, blocked: true},
+		{name: "two header lines", edit: compactEdit, clientBeta: compact + "\n" + clear, wantBeta: both},
+		{name: "override removes context", edit: toolEdit, clientBeta: clear, override: claude.BetaInterleavedThinking, wantBeta: claude.BetaInterleavedThinking, stripped: true},
+		{name: "override", edit: compactEdit, clientBeta: both, override: "account-beta," + compact, wantBeta: "account-beta," + compact, strict: true},
+	} {
+		for _, passthrough := range []bool{false, true} {
+			for _, countTokens := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/passthrough=%t/count_tokens=%t", tc.name, passthrough, countTokens), func(t *testing.T) {
+					account := newAnthropicAPIKeyPassthroughAccountForBetaTest()
+					account.Credentials["base_url"] = "https://relay.example"
+					if !passthrough {
+						delete(account.Extra, "anthropic_passthrough")
+					}
+					mode, unknown := ClaudeBetaCapabilityAware, ClaudeUnknownBetaNativeOnly
+					if tc.unknownFilter {
+						unknown = ClaudeUnknownBetaFilter
+					}
+					if tc.strict {
+						mode, unknown = ClaudeBetaOfficialStrict, ClaudeUnknownBetaFilter
+					}
+					account.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{
+						"fallback_policy":     ClaudeFallbackNativePassthrough,
+						"beta_policy_mode":    mode,
+						"unknown_beta_action": unknown,
+					}
+					if tc.override != "" {
+						account.Credentials[credKeyHeaderOverrideEnabled] = true
+						account.Credentials[credKeyHeaderOverrides] = map[string]any{"anthropic-beta": tc.override}
+					}
+					repo := &fallbackPolicySettingRepo{}
+					svc := &GatewayService{cfg: &config.Config{}, settingService: NewSettingService(repo, &config.Config{})}
+					if tc.ruleToken != "" {
+						rules, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{
+							Scope: BetaPolicyScopeAPIKey, BetaToken: tc.ruleToken, Action: tc.ruleAction,
+						}}})
+						require.NoError(t, err)
+						require.NoError(t, repo.Set(t.Context(), SettingKeyBetaPolicySettings, string(rules)))
+					}
+					c, _ := gin.CreateTestContext(httptest.NewRecorder())
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+					if tc.clientBeta != "" {
+						for _, line := range strings.Split(tc.clientBeta, "\n") {
+							c.Request.Header.Add("Anthropic-Beta", line)
+						}
+					}
+					const model = "claude-opus-4-6"
+					body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}],"context_management":{"edits":[` + tc.edit + `]}}`)
+					var req *http.Request
+					var err error
+					switch {
+					case passthrough && countTokens:
+						req, _, err = svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(t.Context(), c, account, body, "key")
+					case passthrough:
+						req, _, err = svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(t.Context(), c, account, body, "key")
+					case countTokens:
+						req, _, err = svc.buildCountTokensRequest(t.Context(), c, account, body, "key", "apikey", model, false)
+					default:
+						req, _, err = svc.buildUpstreamRequest(t.Context(), c, account, body, "key", "apikey", model, false, false)
+					}
+					wantBeta, stripped, blocked := tc.wantBeta, tc.stripped, tc.blocked
+					if passthrough {
+						wantBeta = strings.ReplaceAll(tc.clientBeta, "\n", ",")
+						if tc.override != "" {
+							wantBeta = tc.override
+						}
+						stripped = tc.override != "" && !hasContextManagementBeta(wantBeta)
+						blocked = false
+					} else if tc.name == "strict" || tc.name == "unknown filter" || tc.name == "block second line" || tc.name == "two header lines" {
+						wantBeta, blocked = compact, false
+					}
+					if blocked {
+						var blocked *BetaBlockedError
+						require.ErrorAs(t, err, &blocked)
+						return
+					}
+					require.NoError(t, err)
+					require.Equal(t, wantBeta, strings.Join(req.Header["anthropic-beta"], ","))
+					wireBody := readUpstreamBodyForTest(t, req)
+					if stripped {
+						require.JSONEq(t, `{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}]}`, string(wireBody))
+					} else {
+						require.Equal(t, body, wireBody)
+					}
+				})
+			}
+		}
+	}
 }
 
-func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_PreservesContextManagementWhenClientHeaderHasBeta(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	c.Request.Header.Set("Anthropic-Beta", "oauth-2025-04-20,context-management-2025-06-27")
+func TestNativeContextManagementUpstream4xx(t *testing.T) {
+	const validation = `{"type":"error","error":{"type":"invalid_request_error","message":"context_management: Extra inputs are not permitted"},"request_id":"req_test"}`
+	const privateError = `{"type":"error","error":{"message":"relay key fragment TEST_ONLY, billing@relay.example"},"request_id":"private"}`
+	body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hello"}],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]}}`)
+	for _, passthrough := range []bool{false, true} {
+		for _, tc := range []struct {
+			status                        int
+			upstreamBody, countMessage    string
+			messagesFailover              bool
+			messagesStatus                int
+			messagesType, messagesMessage string
+		}{
+			{status: 400, upstreamBody: validation, countMessage: "Upstream request failed"},
+			{status: 422, upstreamBody: validation, countMessage: "Upstream request failed", messagesStatus: 502, messagesType: "api_error", messagesMessage: "Upstream request failed"},
+			{status: 401, upstreamBody: privateError, countMessage: "Upstream request failed", messagesFailover: true},
+			{status: 402, upstreamBody: privateError, countMessage: "Upstream request failed", messagesFailover: true},
+			{status: 403, upstreamBody: privateError, countMessage: "Upstream request failed", messagesFailover: true},
+			{status: 404, upstreamBody: privateError, countMessage: "Upstream request failed", messagesStatus: 502, messagesType: "api_error", messagesMessage: "Upstream request failed"},
+			{status: 413, upstreamBody: privateError, countMessage: "Upstream request failed", messagesStatus: 413, messagesType: "request_too_large", messagesMessage: "Request body is too large. Reduce the request size and try again."},
+			{status: 429, upstreamBody: privateError, countMessage: "Rate limit exceeded", messagesFailover: true},
+		} {
+			for _, count := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%d/passthrough=%t/count=%t", tc.status, passthrough, count), func(t *testing.T) {
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					path := "/v1/messages"
+					if count {
+						path += "/count_tokens"
+					}
+					c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+					c.Request.Header.Set("anthropic-beta", claude.BetaCompact)
+					account := newAnthropicAPIKeyPassthroughAccountForBetaTest()
+					account.Extra["anthropic_passthrough"] = passthrough
+					upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+						StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.upstreamBody)),
+					}}
+					svc := &GatewayService{cfg: &config.Config{}, httpUpstream: upstream, rateLimitService: NewRateLimitService(&rateLimitAccountRepoStub{}, nil, &config.Config{}, nil, nil)}
+					parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-opus-4-6"}
+					var err error
+					if count {
+						err = svc.ForwardCountTokens(t.Context(), c, account, parsed)
+					} else {
+						_, err = svc.Forward(t.Context(), c, account, parsed)
+					}
+					require.Error(t, err)
+					require.Equal(t, claude.BetaCompact, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+					require.Equal(t, body, upstream.lastBody)
+					if !count && tc.messagesFailover {
+						var failover *UpstreamFailoverError
+						require.ErrorAs(t, err, &failover)
+						require.Equal(t, tc.status, failover.StatusCode)
+						require.False(t, c.Writer.Written())
+						return
+					}
+					require.False(t, IsOpsRequestScopedError(c))
+					if !count && tc.status == http.StatusBadRequest {
+						require.Equal(t, tc.status, rec.Code)
+						require.Equal(t, tc.upstreamBody, rec.Body.String())
 
-	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
-	svc := &GatewayService{cfg: &config.Config{}}
-	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(
-		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
-	)
-	require.NoError(t, err)
-	require.True(t, gjson.GetBytes(readUpstreamBodyForTest(t, req), "context_management").Exists(),
-		"API-key passthrough + 客户端带 context-management beta → 字段保留（不过度删除）")
+						return
+					}
+					status, typ, message := tc.messagesStatus, tc.messagesType, tc.messagesMessage
+					if count {
+						status, typ, message = tc.status, claude.ErrorType(tc.status), tc.countMessage
+						require.Equal(t, "upstream_error", c.GetString(OpsAnthropicErrorTypeKey))
+					}
+					require.Equal(t, status, rec.Code)
+					require.JSONEq(t, fmt.Sprintf(`{"type":"error","error":{"type":%q,"message":%q}}`, typ, message), rec.Body.String())
+				})
+			}
+		}
+	}
 }
 
-func TestBuildCountTokensRequestAnthropicAPIKeyPassthrough_StripsContextManagementWhenClientHeaderMissingBeta(t *testing.T) {
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
-	c.Request.Header.Set("Anthropic-Beta", "oauth-2025-04-20,token-counting-2024-11-01")
+func TestNativeContextManagementBeforeDispatch(t *testing.T) {
+	const model = "claude-opus-4-6"
+	for _, pass := range []bool{false, true} {
+		for _, count := range []bool{false, true} {
+			for _, tc := range []struct {
+				name, beta, override, extra   string
+				stream, reject, strip, filter bool
+				rejectMode                    bool
+			}{
+				{name: "StripDefault", strip: true},
+				{name: "StripDefaultStream", stream: true, strip: true},
+				{name: "PassthroughAccountConfig", rejectMode: true, reject: true},
+				{name: "RejectGoldenStream", stream: true, rejectMode: true, reject: true},
+				{name: "RejectDefersWhenOtherUnknownField", rejectMode: true, extra: `,"bogus_field_xyz":false`},
+				{name: "CompactOnlyUnaffected", beta: claude.BetaCompact, rejectMode: true},
+				{name: "compact", beta: claude.BetaCompact},
+				{name: "editing", beta: claude.BetaContextManagement},
+				{name: "both", beta: claude.BetaCompact + "," + claude.BetaContextManagement},
+				{name: "override removes beta", beta: claude.BetaCompact, override: "other-beta", strip: true},
+				{name: "filter removes beta", beta: claude.BetaCompact, strip: true, filter: true},
+			} {
+				t.Run(fmt.Sprintf("%s/passthrough=%t/count=%t", tc.name, pass, count), func(t *testing.T) {
+					var calls atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls.Add(1)
+						b, err := io.ReadAll(r.Body)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						if gjson.GetBytes(b, "context_management").Exists() == (tc.strip && !(tc.filter && pass)) {
+							t.Errorf("unexpected outbound body %s", b)
+						}
+						if tc.extra != "" && !gjson.GetBytes(b, "bogus_field_xyz").Exists() {
+							t.Errorf("missing second unknown field in %s", b)
+						}
+						if tc.stream && !count {
+							w.Header().Set("Content-Type", "text/event-stream")
+							fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":3}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						if count {
+							fmt.Fprint(w, `{"input_tokens":3}`)
+							return
+						}
+						fmt.Fprint(w, `{"type":"message","id":"msg_1","model":"claude-opus-4-6","content":[],"usage":{"input_tokens":3,"output_tokens":0}}`)
+					}))
+					defer server.Close()
+					account := newAnthropicAPIKeyPassthroughAccountForBetaTest()
+					account.ID = 7
+					account.Credentials["base_url"] = server.URL
+					account.Extra["anthropic_passthrough"] = pass
+					overrides := map[string]any{
+						"fallback_policy": ClaudeFallbackNativePassthrough, "beta_policy_mode": ClaudeBetaCapabilityAware, "unknown_beta_action": ClaudeUnknownBetaNativeOnly,
+					}
+					if tc.rejectMode {
+						overrides["context_management_missing_beta"] = ClaudeAlignReject
+					}
+					account.Extra[AccountClaudeCustomizationExtraKey] = overrides
+					account.Credentials["temp_unschedulable_enabled"] = true
+					account.Credentials["temp_unschedulable_rules"] = []any{map[string]any{"error_code": float64(400), "keywords": []any{"context_management"}, "duration_minutes": float64(10), "scope": "account"}}
+					if tc.override != "" {
+						account.Credentials[credKeyHeaderOverrideEnabled] = true
+						account.Credentials[credKeyHeaderOverrides] = map[string]any{"anthropic-beta": tc.override}
+					}
+					svc := newSystemOneTestService(&systemOneHTTPUpstream{do: server.Client().Do})
+					settings := &fallbackPolicySettingRepo{}
+					if tc.filter {
+						rules, err := json.Marshal(BetaPolicySettings{Rules: []BetaPolicyRule{{Scope: BetaPolicyScopeAPIKey, BetaToken: claude.BetaCompact, Action: BetaPolicyActionFilter}}})
+						require.NoError(t, err)
+						require.NoError(t, settings.Set(t.Context(), SettingKeyBetaPolicySettings, string(rules)))
+					}
+					svc.settingService = NewSettingService(settings, svc.cfg)
+					repo := &rateLimitAccountRepoStub{}
+					svc.rateLimitService = &RateLimitService{accountRepo: repo}
+					path := "/v1/messages"
+					if count {
+						path += "/count_tokens"
+					}
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+					c.Request.Header.Set("Anthropic-Beta", tc.beta)
+					body := fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"hello"}],"context_management":{"edits":[]}%s}`, model, tc.stream, tc.extra)
+					parsed := &ParsedRequest{Model: model, Stream: tc.stream, Body: NewRequestBodyRef([]byte(body))}
+					var err error
+					var result *ForwardResult
+					if count {
+						err = svc.ForwardCountTokens(t.Context(), c, account, parsed)
+					} else {
+						result, err = svc.Forward(t.Context(), c, account, parsed)
+					}
+					if tc.reject {
+						require.ErrorIs(t, err, ErrLocalAnthropicRejected)
+						require.Nil(t, result)
+						var failover *UpstreamFailoverError
+						require.NotErrorAs(t, err, &failover)
+						require.Zero(t, calls.Load())
+						require.Zero(t, repo.tempCalls)
+						require.Zero(t, repo.rateLimitedCalls)
+						require.Zero(t, repo.setErrorCalls)
+						require.True(t, IsResponseCommitted(c))
+						require.True(t, IsOpsRequestScopedError(c))
+						require.Equal(t, 400, rec.Code)
+						require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+						id := rec.Header().Get("request-id")
+						require.NotEmpty(t, id)
+						require.Equal(t, `{"type":"error","error":{"type":"invalid_request_error","message":"context_management: Extra inputs are not permitted"},"request_id":"`+id+`"}`, rec.Body.String())
+					} else {
+						require.NoError(t, err)
+						require.EqualValues(t, 1, calls.Load())
+						require.Equal(t, 200, rec.Code)
+					}
+				})
+			}
+		}
+	}
+}
 
-	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[]},"messages":[]}`)
+func TestContextManagementUnknownTopLevelFieldsInWireOrder(t *testing.T) {
+	body := []byte(`{"first":[],"model":"claude-opus-4-6","fallbacks":"default","context_management":null,"messages":[{"nested":1}],"fallback_credit_token":"token","last":false}`)
+	require.Equal(t, []string{"first", "fallbacks", "context_management", "fallback_credit_token", "last"}, claude.UnknownTopLevelRequestFields(body, ""))
+	require.Equal(t, []string{"first", "last"}, claude.UnknownTopLevelRequestFields(body, " "+claude.BetaServerSideFallback+", "+claude.BetaCompact))
+	require.Equal(t, []string{"first", "fallbacks", "context_management", "last"}, claude.UnknownTopLevelRequestFields(body, claude.BetaFallbackCredit))
+}
+
+type queueAlignmentSettings struct {
+	claudeCustomizationRepoStub
+	accounts []*Account
+	reads    int
+	listErr  error
+}
+
+func (r *queueAlignmentSettings) ListClaudeAlignmentOverrides(context.Context, []string) ([]ClaudeAlignmentOverrides, error) {
+	r.reads++
+	var result []ClaudeAlignmentOverrides
+	for _, account := range r.accounts {
+		fields, _ := account.Extra[AccountClaudeCustomizationExtraKey].(map[string]any)
+		result = append(result, ClaudeAlignmentOverrides{AccountID: account.ID, AccountType: account.Type, Platform: account.Platform, Fields: fields, GroupIDs: account.GroupIDs, Schedulable: account.Schedulable, DispatchScope: account.DispatchScope, Mixed: account.IsMixedSchedulingEnabled()})
+	}
+	return result, r.listErr
+}
+
+type queueAlignmentAccounts struct {
+	accountDispatchTestRepo
+	calls   int
+	listErr error
+}
+
+func TestAnyAlignmentReject_SharesSnapshotAndRefreshesOverrides(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		settings := &queueAlignmentSettings{}
+		s := NewSettingService(settings, nil)
+		require.False(t, s.AnyAlignmentReject(t.Context(), "context_management_missing_beta"))
+		settings.accounts = []*Account{{ID: 8, Type: AccountTypeOAuth, Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{"thinking_cache_control": " REJECT "}}}}
+		time.Sleep(30 * time.Second)
+		require.False(t, s.AnyAlignmentReject(t.Context(), "thinking_cache_control"))
+		synctest.Wait()
+		require.True(t, s.AnyAlignmentReject(t.Context(), "thinking_cache_control"))
+		require.False(t, s.AnyAlignmentReject(t.Context(), "context_management_missing_beta"))
+		require.False(t, s.AnyAlignmentReject(t.Context(), "unknown_key"))
+		require.Equal(t, 2, settings.reads)
+		settings.accounts = nil
+		time.Sleep(30 * time.Second)
+		require.True(t, s.AnyAlignmentReject(t.Context(), "thinking_cache_control"))
+		synctest.Wait()
+		require.False(t, s.AnyAlignmentReject(t.Context(), "thinking_cache_control"))
+	})
+}
+
+func TestAlignmentSnapshotFiltersOverridesByAccountType(t *testing.T) {
+	for _, accountType := range []string{AccountTypeAPIKey, AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			fields := map[string]any{ClaudeFieldThinkingCacheControl: ClaudeAlignReject, ClaudeFieldCacheControlLimitMode: ClaudeAlignReject, ClaudeFieldContextManagementMissingBeta: ClaudeAlignReject}
+			repo := &queueAlignmentSettings{accounts: []*Account{{ID: 7, Type: accountType, Extra: map[string]any{AccountClaudeCustomizationExtraKey: fields}}}}
+			s := NewSettingService(repo, nil)
+			require.True(t, s.AnyAlignmentReject(t.Context(), ClaudeFieldThinkingCacheControl))
+			require.True(t, s.AnyAlignmentReject(t.Context(), ClaudeFieldCacheControlLimitMode))
+			require.Equal(t, accountType == AccountTypeAPIKey, s.AnyAlignmentReject(t.Context(), ClaudeFieldContextManagementMissingBeta))
+		})
+	}
+}
+
+func (r *queueAlignmentAccounts) ListByGroup(context.Context, int64) ([]Account, error) {
+	r.calls++
+	return nil, r.listErr
+}
+
+func (r *queueAlignmentAccounts) HasGroupAlignmentCandidate(_ context.Context, accountTypes []string, ids []int64, groupID *int64, _ bool, platform string, mixedOnly bool) (bool, error) {
+	r.calls++
+	if r.listErr != nil {
+		return false, r.listErr
+	}
+	for _, account := range r.accounts {
+		if (account.Platform == "" || account.Platform == platform) && (!mixedOnly || account.IsMixedSchedulingEnabled()) && slices.Contains(ids, account.ID) && slices.Contains(accountTypes, account.Type) && accountDispatchHasGroup(account, *groupID) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *queueAlignmentAccounts) GetByIDs(ctx context.Context, ids []int64) ([]*Account, error) {
+	r.calls++
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	return r.accountDispatchTestRepo.GetByIDs(ctx, ids)
+}
+
+func TestQueuePing_AlignmentDefaultAndReadFailures(t *testing.T) {
+	group := int64(5)
+	body := []byte(`{"context_management":{}}`)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request = c.Request.WithContext(accountDispatchTestContext(21))
+	settings := &queueAlignmentSettings{}
+	accounts := &queueAlignmentAccounts{}
+	groups := &mockGroupRepoForGateway{groups: map[int64]*Group{group: {ID: group, Platform: PlatformAnthropic}}}
+	s := &GatewayService{settingService: NewSettingService(settings, nil), accountRepo: accounts, groupRepo: groups}
+	check := func() bool { return s.AlignmentMayRejectBeforeDispatch(c, body, c.Request.Header, &group, nil) }
+	for range 3 {
+		require.False(t, check())
+	}
+	require.Zero(t, accounts.calls)
+	require.Zero(t, accounts.userID, "default requests must skip dispatch-policy reads")
+	require.Equal(t, 1, settings.reads, "reuse the override snapshot")
+
+	settings.getErr = errors.New("global settings unavailable")
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, check())
+	account := &Account{ID: 8, GroupIDs: []int64{group}, Status: StatusActive, Schedulable: true, Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
+		Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{"context_management_missing_beta": ClaudeAlignReject}}}
+	settings.accounts, accounts.accounts = []*Account{account}, []*Account{account}
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(`{"context_management":{},"fallbacks":"default"}`), c.Request.Header, &group, nil))
+	require.Zero(t, accounts.userID, "shape without matching reject candidates must skip dispatch-policy reads")
+	require.True(t, check(), "account reject survives a global settings read failure")
+	accounts.listErr = errors.New("account lookup failed")
+	require.False(t, check())
+	s.accountRepo = nil
+	require.False(t, check())
+	s.accountRepo, s.settingService = accounts, nil
+	require.False(t, check())
+	settings.getErr = nil
+	settings.value = `{"context_management_missing_beta":"reject"}`
+	settings.listErr = errors.New("override list unavailable")
+	s.settingService = NewSettingService(settings, nil)
+	require.True(t, check(), "an unavailable override list must preserve a known global reject")
+	settings.getErr = errors.New("global settings unavailable")
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, check(), "when both reads fail the default policy permits pings")
+}
+
+func TestQueuePing_AlignmentDefaultSkipsCacheControlMatch(t *testing.T) {
+	original := alignmentQueueConditions
+	t.Cleanup(func() { alignmentQueueConditions = original })
+	calls := 0
+	alignmentQueueConditions = []alignmentQueueCondition{{key: ClaudeFieldCacheControlLimitMode, match: func(body []byte, header http.Header, rules []BetaPolicyRule) func(ClaudeCustomizationSettings) bool {
+		calls++
+		return cacheControlLimitQueueCondition(body, header, rules)
+	}}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	settings := &queueAlignmentSettings{}
+	s := &GatewayService{settingService: NewSettingService(settings, nil), accountRepo: &queueAlignmentAccounts{}}
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(cacheControlFiveClientBreakpoints), c.Request.Header, nil, nil))
+	require.Zero(t, calls)
+	settings.value = `{"cache_control_limit_mode":"reject"}`
+	s.settingService = NewSettingService(settings, nil)
+	s.AlignmentMayRejectBeforeDispatch(c, []byte(cacheControlFiveClientBreakpoints), c.Request.Header, nil, nil)
+	require.Equal(t, 1, calls)
+	calls = 0
+	settings.value = ""
+	settings.accounts = []*Account{{ID: 8, Type: AccountTypeOAuth, Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{ClaudeFieldCacheControlLimitMode: ClaudeAlignReject}}}}
+	s.settingService = NewSettingService(settings, nil)
+	s.AlignmentMayRejectBeforeDispatch(c, []byte(cacheControlFiveClientBreakpoints), c.Request.Header, nil, nil)
+	require.Equal(t, 1, calls, "only an account rejects")
+}
+
+func TestQueuePing_ContextManagementGlobalAndFallbackGroup(t *testing.T) {
+	const body = `{"context_management":{},"messages":[]}`
+	group, fallback := int64(1), int64(2)
+	account := &Account{ID: 7, GroupIDs: []int64{fallback}, Status: StatusActive, Schedulable: true, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Extra: map[string]any{
+		AccountClaudeCustomizationExtraKey: map[string]any{"context_management_missing_beta": ClaudeAlignReject},
+	}}
+	settings := &queueAlignmentSettings{accounts: []*Account{account}}
+	groups := &mockGroupRepoForGateway{groups: map[int64]*Group{
+		group: {ID: group, Platform: PlatformAnthropic}, fallback: {ID: fallback, Platform: PlatformAnthropic},
+	}}
+	s := GatewayService{settingService: NewSettingService(settings, &config.Config{}), accountRepo: &queueAlignmentAccounts{accountDispatchTestRepo: accountDispatchTestRepo{accounts: []*Account{account}}}, groupRepo: groups}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	header := c.Request.Header
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &group, nil))
+	require.True(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &group, &fallback))
+	intermediate := int64(3)
+	groups.groups[intermediate] = &Group{ID: intermediate, Platform: PlatformAnthropic, ClaudeCodeOnly: true, FallbackGroupID: &fallback}
+	require.True(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &group, &intermediate))
+	c.Request = c.Request.WithContext(SetClaudeCodeClient(c.Request.Context(), true))
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &intermediate, nil))
+	global := DefaultClaudeCustomizationSettings()
+	global.ContextManagementMissingBeta = ClaudeAlignReject
+	require.NoError(t, s.settingService.SetClaudeCustomizationSettings(t.Context(), global))
+	require.True(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &group, nil))
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(`{"bogus":1,"context_management":null}`), header, &group, nil))
+	header.Add("Anthropic-Beta", "other")
+	header.Add("Anthropic-Beta", claude.BetaCompact)
+	require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(body), header, &group, &fallback))
+}
+
+func TestQueuePing_AlignmentLookupWarningsRateLimited(t *testing.T) {
+	var logs strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	synctest.Test(t, func(t *testing.T) {
+		group := int64(5)
+		readErr := errors.New("lookup unavailable")
+		settings := &queueAlignmentSettings{listErr: readErr, accounts: []*Account{{ID: 8, Type: AccountTypeAPIKey,
+			Extra: map[string]any{AccountClaudeCustomizationExtraKey: map[string]any{"context_management_missing_beta": ClaudeAlignReject}},
+		}}}
+		s := &GatewayService{
+			settingService: NewSettingService(settings, nil),
+			accountRepo:    &queueAlignmentAccounts{listErr: readErr},
+			groupRepo:      &mockGroupRepoForGateway{groups: map[int64]*Group{group: {ID: group, Platform: PlatformAnthropic}}},
+		}
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		check := func() {
+			require.False(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(`{"context_management":{}}`), c.Request.Header, &group, nil))
+		}
+		for want := 1; want <= 2; want++ {
+			settings.listErr = readErr
+			check()
+			time.Sleep(time.Second)
+			check()
+			synctest.Wait()
+			settings.listErr = nil
+			time.Sleep(time.Second)
+			check()
+			synctest.Wait()
+			check()
+			require.Equal(t, want, strings.Count(logs.String(), "alignment override lookup failed"))
+			require.Equal(t, want, strings.Count(logs.String(), "alignment candidate lookup failed"))
+			s.groupRepo = nil
+			for range 2 {
+				require.True(t, s.AlignmentMayRejectBeforeDispatch(c, []byte(`{"context_management":{}}`), c.Request.Header, &group, nil))
+			}
+			require.Equal(t, want, strings.Count(logs.String(), "alignment group lookup failed"))
+			s.groupRepo = &mockGroupRepoForGateway{groups: map[int64]*Group{group: {ID: group, Platform: PlatformAnthropic}}}
+			time.Sleep(time.Minute)
+		}
+	})
+}
+
+func TestQueuePing_AlignmentCompositeTarget(t *testing.T) {
+	group := int64(1)
+	account := &Account{ID: 7, Type: AccountTypeAPIKey, GroupIDs: []int64{group}, Extra: map[string]any{
+		AccountClaudeCustomizationExtraKey: map[string]any{"context_management_missing_beta": ClaudeAlignReject},
+	}}
+	s := &GatewayService{
+		settingService: NewSettingService(&queueAlignmentSettings{accounts: []*Account{account}}, nil),
+		accountRepo:    &queueAlignmentAccounts{accountDispatchTestRepo: accountDispatchTestRepo{accounts: []*Account{account}}},
+		groupRepo:      &mockGroupRepoForGateway{groups: map[int64]*Group{group: {ID: group, Platform: PlatformComposite}}},
+	}
+	check := func(platform string) bool {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil).WithContext(WithResolvedTargetPlatform(t.Context(), platform))
+		return s.AlignmentMayRejectBeforeDispatch(c, []byte(`{"context_management":{}}`), c.Request.Header, &group, nil)
+	}
+	require.True(t, check(PlatformAnthropic))
+	require.False(t, check(PlatformOpenAI))
+	account.GroupIDs = []int64{2}
+	require.False(t, check(PlatformAnthropic), "resolved targets use the composite group's own account pool")
+	require.True(t, check(""), "an unresolved target defers pings when the snapshot has a reject")
+	s.groupRepo = nil
+	require.True(t, check(""), "missing group metadata also leaves the status writable")
+}
+
+func TestQueuePing_AlignmentConditionsAreIndependent(t *testing.T) {
+	group, fallback := int64(1), int64(2)
+	account := &Account{ID: 7, Type: AccountTypeAPIKey, GroupIDs: []int64{group}, Extra: map[string]any{
+		AccountClaudeCustomizationExtraKey: map[string]any{ClaudeFieldCacheControlLimitMode: ClaudeAlignReject},
+	}}
+	settings := &queueAlignmentSettings{accounts: []*Account{account}}
+	s := GatewayService{settingService: NewSettingService(settings, nil), accountRepo: &queueAlignmentAccounts{accountDispatchTestRepo: accountDispatchTestRepo{accounts: []*Account{account}}}}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	check := func(body string, invalidFallback *int64) bool {
+		return s.AlignmentMayRejectBeforeDispatch(c, []byte(body), c.Request.Header, &group, invalidFallback)
+	}
+	composite := &Group{ID: group, Platform: PlatformComposite, Hydrated: true, Status: StatusActive}
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Group, composite))
+	const contextBody = `{"context_management":{}}`
+	require.False(t, check(contextBody, nil), "a cache override alone cannot suppress context pings in an unresolved composite group")
+	settings.accounts = nil
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, check(cacheControlFiveClientBreakpoints, nil), "default policy, unresolved composite and nil group repo")
+	account.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{ClaudeFieldContextManagementMissingBeta: ClaudeAlignReject}
+	settings.accounts = []*Account{account}
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, check(`{"context_management":{},"fallbacks":"default"}`, nil), "no matching policy even though a context reject override exists")
+	require.False(t, check(cacheControlFiveClientBreakpoints, nil))
+
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	groups := &mockGroupRepoForGateway{groups: map[int64]*Group{
+		group:    {ID: group, Platform: PlatformAnthropic, ClaudeCodeOnly: true, FallbackGroupID: &fallback},
+		fallback: {ID: fallback, Platform: PlatformAnthropic},
+	}}
+	s.groupRepo = groups
+	require.False(t, check(contextBody, nil), "a non-CC client cannot select the rejecting account in the CC-only group")
+	missing := int64(3)
+	require.False(t, check(contextBody, &missing), "a deleted invalid-request fallback is ineligible")
+	account.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{ClaudeFieldCacheControlLimitMode: ClaudeAlignReject}
+	s.settingService = NewSettingService(settings, nil)
+	require.False(t, check(cacheControlFiveClientBreakpoints, nil))
+	account.GroupIDs = []int64{fallback}
+	require.True(t, check(cacheControlFiveClientBreakpoints, nil))
+	require.False(t, check(contextBody, nil))
+	require.False(t, check(strings.Replace(cacheControlFiveClientBreakpoints, "{", `{"unknown":null,`, 1), nil))
+}
+
+func TestCompatibleNativeMessagesContextManagement(t *testing.T) {
+	const errBody = `{"type":"error","request_id":"req_relay","error":{"type":"invalid_request_error","message":"Request validation failed"}}`
+	body := []byte(`{"model":"k3","messages":[{"role":"user","content":"hello"}],"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]}}`)
+	for _, beta := range []string{"", claude.BetaCompact} {
+		t.Run("beta="+beta, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			if beta != "" {
+				c.Request.Header.Set("Anthropic-Beta", beta)
+			}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(errBody)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			_, err := svc.ForwardAsAnthropic(t.Context(), c, nativeAnthropicTestAccount(), body, "", "")
+			require.Error(t, err)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.JSONEq(t, `{"type":"error","error":{"type":"invalid_request_error","message":"Request validation failed"}}`, rec.Body.String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "context_management").Exists())
+			require.Equal(t, beta, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+		})
+	}
+}
+
+func TestAntigravityContextManagementFinalBeta(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-6","messages":[],"context_management":{"edits":[{"type":"compact_20260112"}]}}`)
+	for _, beta := range []string{"", "compact-2026-01-12"} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		c.Request.Header.Set("Anthropic-Beta", beta)
+		account := &Account{Platform: PlatformAntigravity, Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "key"}}
+		upstream := &anthropicHTTPUpstreamRecorder{resp: nativeAnthropicBufferedResponse()}
+		svc := &AntigravityGatewayService{httpUpstream: upstream}
+		_, err := svc.ForwardUpstream(t.Context(), c, account, body)
+		require.NoError(t, err)
+		require.Equal(t, beta, upstream.lastReq.Header.Get("anthropic-beta"))
+		require.Equal(t, beta != "", gjson.GetBytes(upstream.lastBody, "context_management").Exists())
+	}
+}
+
+func TestRebuiltContextManagementBetaHeaders(t *testing.T) {
+	const compact = "compact-2026-01-12"
+	const model = "claude-opus-4-6"
+	body := []byte(`{"model":"claude-opus-4-6","messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[{"type":"compact_20260112"}]}}`)
+	c := newVertexBetaTestContext(t, compact)
 	svc := &GatewayService{cfg: &config.Config{}}
-	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
-		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
-	)
+	vertex, _, err := svc.buildUpstreamRequest(t.Context(), c, newVertexServiceAccount(402), body, "token", "service_account", model, false, false)
 	require.NoError(t, err)
-	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, req), "context_management").Exists(),
-		"count_tokens passthrough + 客户端未带 context-management beta → strip")
+	require.Empty(t, getHeaderRaw(vertex.Header, "anthropic-beta"))
+	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, vertex), "context_management").Exists())
+
+	oauth := &Account{ID: 401, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	setBetaPolicyFilterSet(c, oauth, model, map[string]struct{}{claude.BetaContextManagement: {}})
+	// Messages mimic rebuilds its header. Count tokens mimic also includes client betas.
+	messages, _, err := svc.buildUpstreamRequest(t.Context(), c, oauth, body, "token", "oauth", model, false, true)
+	require.NoError(t, err)
+	require.NotContains(t, getHeaderRaw(messages.Header, "anthropic-beta"), compact)
+	require.NotContains(t, getHeaderRaw(messages.Header, "anthropic-beta"), claude.BetaContextManagement)
+	require.False(t, gjson.GetBytes(readUpstreamBodyForTest(t, messages), "context_management").Exists())
+	count, _, err := svc.buildCountTokensRequest(t.Context(), c, oauth, body, "token", "oauth", model, true)
+	require.NoError(t, err)
+	require.Contains(t, getHeaderRaw(count.Header, "anthropic-beta"), compact)
+	require.NotContains(t, getHeaderRaw(count.Header, "anthropic-beta"), claude.BetaContextManagement)
+	require.Equal(t, gjson.GetBytes(body, "context_management").Raw, gjson.GetBytes(readUpstreamBodyForTest(t, count), "context_management").Raw)
+}
+
+func TestBedrockCCCompatContextManagement(t *testing.T) {
+	groupID := int64(1)
+	channels := &ChannelService{}
+	channels.cache.Store(&channelCache{
+		loadedAt: time.Now(),
+		channelByGroupID: map[int64]*Channel{
+			groupID: {Status: StatusActive, FeaturesConfig: map[string]any{featureKeyBedrockCCCompat: true}},
+		},
+	})
+	svc := &GatewayService{channelService: channels}
+	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock}
+	body := []byte(`{"model":"claude-opus-4-6","messages":[],"context_management":{"edits":[{"type":"compact_20260112"}]}}`)
+	for _, beta := range []string{"compact-2026-01-12", "context-management-2025-06-27", "unknown-beta"} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		c.Request.Header.Set("Anthropic-Beta", beta)
+		out := svc.ApplyBedrockCCCompat(c, body, "claude-opus-4-6", account, &groupID)
+		if beta == "unknown-beta" {
+			require.Empty(t, c.GetHeader("Anthropic-Beta"))
+			require.False(t, gjson.GetBytes(out, "context_management").Exists())
+		} else {
+			require.Equal(t, beta, c.GetHeader("Anthropic-Beta"))
+			require.Equal(t, beta == "compact-2026-01-12", gjson.GetBytes(out, "context_management").Exists())
+		}
+	}
+}
+
+func TestTranslatedContextManagementUsesFinalCompactBeta(t *testing.T) {
+	const compact = "compact-2026-01-12"
+	body := []byte(`{"model":"claude-opus-4-6","messages":[],"context_management":{"edits":[{"type":"compact_20260112"}]}}`)
+	for _, beta := range []string{"", compact, compact + "-other"} {
+		want := beta == compact
+		out, _ := sanitizeAnthropicBodyForBetaTokens(body, beta)
+		require.Equal(t, want, gjson.GetBytes(out, "context_management").Exists())
+		out, _ = sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, beta, ClaudeFallbackNativePassthrough, false)
+		require.Equal(t, want, gjson.GetBytes(out, "context_management").Exists())
+		bedrock, err := PrepareBedrockRequestBody(body, "us.anthropic.claude-opus-4-6-v1", beta)
+		require.NoError(t, err)
+		require.Equal(t, want, gjson.GetBytes(bedrock, "context_management").Exists())
+		if want {
+			require.Equal(t, []string{compact}, bedrockAnthropicBetaNames(bedrock))
+		} else {
+			require.Empty(t, bedrockAnthropicBetaNames(bedrock))
+		}
+	}
 }
 
 // ============================================================================
@@ -685,8 +1359,7 @@ func TestBuildCountTokensRequest_OAuthMimic_DropsInjectedMaxTokens(t *testing.T)
 		"count_tokens wire body must not contain max_tokens")
 }
 
-func TestBuildCountTokensRequest_APIKeyHaiku_StripsContextManagementEndToEnd(t *testing.T) {
-	// API-key + haiku + 客户端 header 不带 context-management beta → final beta 不含 → strip
+func TestBuildCountTokensRequest_APIKeyHaiku_PreservesContextManagementEndToEnd(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
@@ -705,8 +1378,7 @@ func TestBuildCountTokensRequest_APIKeyHaiku_StripsContextManagementEndToEnd(t *
 	require.NoError(t, err)
 
 	outBody := readUpstreamBodyForTest(t, req)
-	require.False(t, gjson.GetBytes(outBody, "context_management").Exists(),
-		"count_tokens API-key + 客户端未带 beta token → body strip")
+	require.Equal(t, body, outBody)
 }
 
 func TestBuildCountTokensRequest_StripsCacheControlOnlyFromLiteralDeferredTools(t *testing.T) {
@@ -762,7 +1434,7 @@ func TestBuildCountTokensRequestAnthropicAPIKeyPassthrough_PreservesContextManag
 
 	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
 	svc := &GatewayService{cfg: &config.Config{}}
-	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
+	req, _, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		context.Background(), c, newAnthropicAPIKeyPassthroughAccountForBetaTest(), body, "token",
 	)
 	require.NoError(t, err)
@@ -770,9 +1442,7 @@ func TestBuildCountTokensRequestAnthropicAPIKeyPassthrough_PreservesContextManag
 		"count_tokens passthrough + 客户端带 context-management beta → 字段保留")
 }
 
-func TestBuildUpstreamRequest_APIKeyHaikuWithContextManagement_StripsField(t *testing.T) {
-	// API-key + haiku + body 带 context_management + 客户端 header 未带 context-management beta
-	// → final beta 不含 → body 字段被 strip
+func TestBuildUpstreamRequest_APIKeyHaikuWithContextManagement_PreservesField(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
@@ -791,6 +1461,62 @@ func TestBuildUpstreamRequest_APIKeyHaikuWithContextManagement_StripsField(t *te
 	require.NoError(t, err)
 
 	outBody := readUpstreamBodyForTest(t, req)
-	require.False(t, gjson.GetBytes(outBody, "context_management").Exists(),
-		"API-key + haiku + 客户端未带 beta token → body 字段必须被 strip")
+	require.Equal(t, body, outBody)
+}
+
+type projectedQueueSettings struct {
+	*queueAlignmentSettings
+	groups map[int64]*Group
+}
+
+func (p *projectedQueueSettings) ClaudeAlignmentRouting(context.Context) (*ClaudeAlignmentRouting, error) {
+	return &ClaudeAlignmentRouting{Groups: p.groups}, nil
+}
+
+func TestQueueHeadersSnapshotGroups(t *testing.T) {
+	ids := []int64{5, 6, 8}
+	groups := &mockGroupRepoForGateway{groups: map[int64]*Group{}}
+	for _, id := range ids {
+		groups.groups[id] = &Group{ID: id, Platform: PlatformAnthropic}
+	}
+	a := fallbackNativeAccountForTest(true)
+	a.GroupIDs = []int64{8}
+	a.Extra[AccountClaudeCustomizationExtraKey] = map[string]any{ClaudeFieldRequestIDMode: "fill"}
+	repo := &queueAlignmentAccounts{accountDispatchTestRepo: accountDispatchTestRepo{accounts: []*Account{a}}}
+	settings := &projectedQueueSettings{&queueAlignmentSettings{accounts: []*Account{a}}, groups.groups}
+	svc := &GatewayService{settingService: NewSettingService(settings, nil), groupRepo: groups, accountRepo: repo}
+	svc.settingService.alignmentSnapshot(t.Context())
+	c := alignmentTestContext("/v1/messages")
+	c.Request = c.Request.WithContext(accountDispatchTestContext(15))
+	for range 3 {
+		require.False(t, svc.DeferClaudeQueuePings(c, nil, nil, &ids[0], &ids[1]))
+		require.True(t, svc.DeferClaudeQueuePings(c, nil, nil, &ids[2], nil))
+	}
+	require.Zero(t, groups.getByIDCalls+groups.getByIDLiteCalls)
+	require.Equal(t, 1, settings.reads)
+	require.Zero(t, repo.calls)
+	require.Zero(t, repo.userID)
+}
+
+func TestProjectedQueueMixedPoolDispatch(t *testing.T) {
+	group := int64(5)
+	a := ClaudeAlignmentOverrides{AccountID: 7, Platform: PlatformAntigravity, Schedulable: true, Mixed: true, GroupIDs: []int64{group}}
+	pools := []alignmentPool{{groupID: &group, platform: PlatformAntigravity, mixedOnly: true}}
+	for _, tc := range []struct {
+		name, origin, scope, mode string
+		want                      bool
+	}{
+		{"shared mixed pool", "", "shared", "append", true},
+		{"replace excludes membership", "", "shared", "replace", false},
+		{"authorized only", "", "authorized_only", "append", false},
+		{"member grant", "member", "authorized_only", "replace", true},
+		{"extra grant cannot enter mixed pool", "extra", "authorized_only", "replace", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a.DispatchScope = tc.scope
+			routing := &ClaudeAlignmentRouting{accounts: map[int64]ClaudeAlignmentOverrides{7: a}}
+			dispatch := &accountDispatchSelection{requestGroupID: group, policy: &AccountDispatchPolicy{Mode: tc.mode}, grants: map[int64]string{7: tc.origin}}
+			require.Equal(t, tc.want, routing.containsCandidate(dispatch, []int64{7}, pools, false))
+		})
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"io"
 	"net/http"
 	"strings"
@@ -16,31 +17,48 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
+
+const bedrockCCContextAccountKey = "bedrock_cc_passthrough_account"
 
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
 // 清理 body 中 Anthropic API 专有字段、修复 thinking/tool_use ID、过滤 beta token，
 // 同时过滤 HTTP header 中的 anthropic-beta（防止 Passthrough 路径透传不支持的 token）。
 func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model string, account *Account, groupID *int64) []byte {
+	if _, preserved := c.Get(bedrockCCContextAccountKey); preserved {
+		c.Set(bedrockCCContextAccountKey, nil)
+	}
 	if !s.isBedrockCCCompatEnabled(c.Request.Context(), account, groupID) {
 		return body
 	}
 	if resolved, ok := ResolveBedrockModelID(account, model); ok {
 		model = resolved
 	}
-	body = sanitizeBedrockCCFields(body)
 	body = sanitizeBedrockThinking(body, model)
 	body = sanitizeBedrockToolUseIDs(body)
 	body = sanitizeBedrockCCBetaTokens(body, model)
 	// 过滤 HTTP header 中的 anthropic-beta，只保留 Bedrock 支持的 token
+	var filtered []string
 	if betaHeader := c.GetHeader("anthropic-beta"); betaHeader != "" {
-		if filtered := ResolveBedrockBetaTokens(betaHeader, body, model); len(filtered) > 0 {
+		if _, saved := c.Get(originalAnthropicBetaKey); !saved {
+			c.Set(originalAnthropicBetaKey, anthropicBetaHeader(c.Request.Header))
+		}
+		filtered = ResolveBedrockBetaTokens(betaHeader, body, model)
+		if len(filtered) > 0 {
 			c.Request.Header.Set("anthropic-beta", strings.Join(filtered, ", "))
 		} else {
 			c.Request.Header.Del("anthropic-beta")
 		}
 	}
-	return body
+	mode := ClaudeAlignStrip
+	if containsBedrockBetaToken(filtered, claude.BetaContextManagement) && gjson.GetBytes(body, "context_management").Exists() {
+		mode = s.publishedClaudePolicy(c, account).BedrockCCContextManagement
+		if mode == ClaudeAlignPassthrough {
+			c.Set(bedrockCCContextAccountKey, account)
+		}
+	}
+	return sanitizeBedrockCCFields(body, mode, filtered...)
 }
 
 // isBedrockCCCompatEnabled 检查渠道是否启用了 Bedrock CC 兼容模式
@@ -82,7 +100,7 @@ func (s *GatewayService) forwardBedrock(
 	}
 
 	// 准备请求体（注入 anthropic_version/anthropic_beta，移除 Bedrock 不支持的字段，清理 cache_control）
-	betaTokens, err := s.resolveBedrockBetaTokensForRequest(ctx, account, betaHeader, body, mappedModel)
+	betaTokens, err := s.resolveBedrockBetaTokensForRequest(ctx, c, account, betaHeader, body, mappedModel)
 	if err != nil {
 		return nil, err
 	}
@@ -312,11 +330,11 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 				Kind:               "retry_exhausted_failover",
 				Message:            extractUpstreamErrorMessage(respBody),
 			})
-			return nil, &UpstreamFailoverError{
+			return nil, (&UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-			}
+			}).withOfficialHeaders(c, resp.Header)
 		}
 		return s.handleRetryExhaustedError(ctx, resp, c, account, modelKey)
 	}
@@ -338,11 +356,11 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 			Kind:               "failover",
 			Message:            extractUpstreamErrorMessage(respBody),
 		})
-		return nil, &UpstreamFailoverError{
+		return nil, (&UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           respBody,
 			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
-		}
+		}).withOfficialHeaders(c, resp.Header)
 	}
 
 	// other errors
@@ -414,14 +432,18 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 
 	// 转换 Bedrock 特有的 amazon-bedrock-invocationMetrics 为标准 Anthropic usage 格式
 	// 并移除该字段避免透传给客户端
-	body = transformBedrockInvocationMetrics(body)
+	body, metrics := transformBedrockInvocationMetrics(body)
 
 	usage := parseClaudeUsageFromResponseBody(body)
+	var totals bedrockInvocationUsage
+	totals.observe(metrics)
+	totals.reconcile(usage)
 
 	c.Header("Content-Type", "application/json")
 	if v := resp.Header.Get("x-amzn-requestid"); v != "" {
 		c.Header("x-request-id", v)
 	}
+	prepareOfficialResponse(c, cachedClaudeResponsePolicy(c), resp.Header, nil)
 	c.Data(resp.StatusCode, "application/json", body)
 	return usage, nil
 }

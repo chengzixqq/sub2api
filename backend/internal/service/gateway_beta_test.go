@@ -1,12 +1,33 @@
 package service
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestAnthropicBetaHeaderWireCasing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"lowercase", http.Header{"anthropic-beta": {"a", "b"}}, "a,b"},
+		{"canonical", http.Header{"Anthropic-Beta": {"c", "d"}}, "c,d"},
+		{"mixed case", http.Header{"aNThropic-BETA": {"e", "f"}, "Other": {"g"}}, "e,f"},
+		{"multiple mixed keys", http.Header{"aNThropic-BETA": {"e", "f"}, "ANTHROPIC-BETA": {"g"}}, "g,e,f"},
+		{"prefer canonical to mixed", http.Header{"aNThropic-BETA": {"e"}, "Anthropic-Beta": {"c", "d"}}, "c,d"},
+		{"prefer lowercase", http.Header{"anthropic-beta": {"a", "b"}, "Anthropic-Beta": {"c"}}, "a,b"},
+		{"empty lowercase", http.Header{"anthropic-beta": {}, "Anthropic-Beta": {"c", "d"}}, "c,d"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, anthropicBetaHeader(tc.header))
+		})
+	}
+}
 
 func TestMergeAnthropicBeta(t *testing.T) {
 	got := mergeAnthropicBeta(

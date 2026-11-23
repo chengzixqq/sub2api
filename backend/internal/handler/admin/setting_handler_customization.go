@@ -1,23 +1,41 @@
 package admin
 
 import (
+	"errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
+	"net/http"
 )
+
+// GetClaudeCustomizationSchema returns the ordered fields used by admin settings.
+func (h *SettingHandler) GetClaudeCustomizationSchema(c *gin.Context) {
+	response.Success(c, service.ClaudeCustomizationFields())
+}
 
 // GetClaudeCustomization returns the global Claude compatibility policy.
 func (h *SettingHandler) GetClaudeCustomization(c *gin.Context) {
-	cfg, err := h.settingService.GetClaudeCustomizationSettings(c.Request.Context())
+	cfg, invalid, err := h.settingService.ClaudeCustomizationWithInvalidFields(c.Request.Context())
+	if errors.Is(err, service.ErrClaudeCustomizationCorrupt) {
+		response.ErrorWithDetails(c, http.StatusInternalServerError, err.Error(), "CLAUDE_CUSTOMIZATION_CORRUPT", nil)
+		return
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 	response.Success(c, gin.H{
-		"global":     cfg,
-		"defaults":   service.DefaultClaudeCustomizationSettings(),
-		"precedence": []string{"account", "global", "defaults"},
+		"invalid_fields": invalid,
+		"hits":           customizationHits(c, h.settingService, nil),
+		"global":         cfg,
+		"defaults":       service.DefaultClaudeCustomizationSettings(),
+		"precedence":     []string{"account", "global", "defaults"},
 	})
+}
+
+func customizationHits(c *gin.Context, settings *service.SettingService, accountID *int64) map[string]service.AlignmentHitCounts {
+	hits, _ := settings.AlignmentHits().Summary(c.Request.Context(), accountID)
+	return hits
 }
 
 type updateClaudeCustomizationRequest struct {
@@ -84,4 +102,12 @@ func (h *SettingHandler) ResetClaudeCustomization(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{"global": cfg})
+}
+
+func (h *SettingHandler) ResetClaudeCustomizationField(c *gin.Context) {
+	if err := h.settingService.ResetClaudeCustomizationField(c.Request.Context(), c.Param("field")); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	h.GetClaudeCustomization(c)
 }

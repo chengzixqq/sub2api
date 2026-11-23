@@ -74,8 +74,8 @@ func TestSettingHandler_GetPublicSettings_ExposesForceEmailOnThirdPartySignup(t 
 	var resp struct {
 		Code int `json:"code"`
 		Data struct {
-			ForceEmailOnThirdPartySignup bool `json:"force_email_on_third_party_signup"`
-			Version                       string `json:"version"`
+			ForceEmailOnThirdPartySignup bool   `json:"force_email_on_third_party_signup"`
+			Version                      string `json:"version"`
 		} `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))

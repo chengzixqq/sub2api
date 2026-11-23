@@ -325,7 +325,7 @@ func TestAdvisorBilling_ResponseModelTrialDoesNotReplaceRejectedDetails(t *testi
 
 func TestAdvisorUsage_UnknownIterationUsesExecutorAggregate(t *testing.T) {
 	u := advisorTestUsage("advisor-test")
-	u.IterationUsage.Iterations = append(u.IterationUsage.Iterations, ClaudeUsageIteration{Type: "compaction", Usage: UsageTokens{InputTokens: 900, OutputTokens: 800}})
+	u.IterationUsage.Iterations = append(u.IterationUsage.Iterations, ClaudeUsageIteration{Type: "unknown", Usage: UsageTokens{InputTokens: 900, OutputTokens: 800}})
 	s, key := advisorTestService()
 	cost := s.calculateTokenCost(context.Background(), &ForwardResult{Usage: u}, key, "claude-sonnet-4", 1, time.Now())
 	require.Equal(t, "partial_usage", cost.BillingDetails.Status)

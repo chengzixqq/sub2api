@@ -998,7 +998,11 @@ func (s *SettingService) SetBetaPolicySettings(ctx context.Context, settings *Be
 		return fmt.Errorf("marshal beta policy settings: %w", err)
 	}
 
-	return s.settingRepo.Set(ctx, SettingKeyBetaPolicySettings, string(data))
+	if err := s.settingRepo.Set(ctx, SettingKeyBetaPolicySettings, string(data)); err != nil {
+		return err
+	}
+	s.invalidateAlignmentSnapshot(ctx)
+	return nil
 }
 
 // GetOpenAIFastPolicySettings 获取 OpenAI fast 策略配置

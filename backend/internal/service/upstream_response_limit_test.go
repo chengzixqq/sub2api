@@ -3,6 +3,10 @@ package service
 import (
 	"bytes"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/iotest"
 
@@ -77,4 +81,25 @@ func TestReadUpstreamResponseBody(t *testing.T) {
 		require.False(t, errors.Is(err, ErrUpstreamResponseBodyTooLarge))
 		require.False(t, called)
 	})
+}
+
+func TestChatCompletionsBridgeResponseLimitErrorType(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.UpstreamResponseReadMaxBytes = 1
+	s := &OpenAIGatewayService{cfg: cfg}
+	for _, tc := range []struct{ path, expected string }{
+		{"/v1/messages", `{"type":"error","error":{"type":"api_error","message":"Upstream response too large"}}`},
+		{"/v1/chat/completions", `{"error":{"type":"upstream_error","message":"Upstream response too large"}}`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, tc.path, nil)
+			resp := &http.Response{Body: io.NopCloser(strings.NewReader("{}"))}
+			_, _, err := s.readCCUpstreamJSONResponse(c, resp, nil)
+			require.ErrorIs(t, err, ErrUpstreamResponseBodyTooLarge)
+			require.Equal(t, 502, rec.Code)
+			require.JSONEq(t, tc.expected, rec.Body.String())
+		})
+	}
 }

@@ -110,6 +110,7 @@ func (f *fakeGroupRepo) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int
 	return nil, nil
 }
 func (f *fakeGroupRepo) BindAccountsToGroup(context.Context, int64, []int64) error { return nil }
+
 // LoadAccountCountsScoped 是管理端按工作区收窄的账号计数聚合。
 //
 // 本 fake 服务的是网关预热路径，那里不存在工作区作用域，

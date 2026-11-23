@@ -2053,10 +2053,8 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		c.JSON(status, gin.H{
-			"type":  "error",
-			"error": gin.H{"type": errType, "message": errMsg},
-		})
+		preserveOpsClaudeJSON(c, errType, errMsg)
+		WriteAnthropicError(c, status, errType, errType, "", errMsg, FilledAnthropicRequestID(c), false)
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}
@@ -2173,10 +2171,8 @@ func (s *GeminiMessagesCompatService) writeGeminiMappedError(c *gin.Context, acc
 		}
 	}
 
-	c.JSON(statusCode, gin.H{
-		"type":  "error",
-		"error": gin.H{"type": errType, "message": errMsg},
-	})
+	preserveOpsClaudeJSON(c, errType, errMsg)
+	writeAnthropicError(c, statusCode, errType, errMsg)
 	if upstreamMsg == "" {
 		return fmt.Errorf("upstream error: %d", upstreamStatus)
 	}
@@ -2637,10 +2633,8 @@ func generateAnthropicMsgID() string {
 
 func (s *GeminiMessagesCompatService) writeClaudeError(c *gin.Context, status int, errType, message string) error {
 	MarkResponseCommitted(c)
-	c.JSON(status, gin.H{
-		"type":  "error",
-		"error": gin.H{"type": errType, "message": message},
-	})
+	preserveOpsClaudeJSON(c, errType, message)
+	writeAnthropicError(c, status, errType, message)
 	return fmt.Errorf("%s", message)
 }
 

@@ -1045,24 +1045,11 @@ func removeThinkingDependentContextStrategies(body []byte) []byte {
 	return body
 }
 
-// anthropicBetaContextManagementToken 是 context_management 字段受的 beta token。
-// 与 claude.BetaContextManagement 保持一致；在本文件本地定义以避免震荡
-// claude package 的该常量含义。
-const anthropicBetaContextManagementToken = "context-management-2025-06-27"
-
-// sanitizeAnthropicBodyForBetaTokens 是对 Anthropic 直连路径上 body↔beta header
-// **能力维度**对称约束的统一实现，与 Bedrock 路径的
-// `sanitizeBedrockFieldsForBetaTokens` 对称。
+// sanitizeAnthropicBodyForBetaTokens applies beta gates on translated and
+// compatibility routes. Context editing and compaction share the body field
+// context_management and advertise different beta tokens.
 //
-// 问题场景：
-//   - context_management 是 Claude Code CLI 2.1.87+ 默认携带的 beta 字段
-//     （含 clear_thinking_20251015 等清理策略）
-//   - 其被 Anthropic 上游接受的前提是 anthropic-beta header 含
-//     `context-management-2025-06-27`
-//   - 若两侧不一致上游 Pydantic schema 拒收：
-//     "context_management: Extra inputs are not permitted"
-//
-// fallbacks 场景（与 context_management 同构）：
+// fallbacks 场景：
 //   - `fallbacks` / `fallback_credit_token` 是 beta Messages API 的
 //     server-side refusal fallback 字段；标准 Messages schema 没有它们，
 //     客户端（Claude Code / SDK / OpenCode 等）最近开始默认透传
@@ -1102,11 +1089,14 @@ const anthropicBetaContextManagementToken = "context-management-2025-06-27"
 // 返回 (sanitized, changed)：changed 表示是否发生实际删除，供调用方决定
 // 是否重用原 body 引用。
 func sanitizeAnthropicBodyForBetaTokens(body []byte, anthropicBetaHeader string) ([]byte, bool) {
-	// Legacy callers (Antigravity/compatibility routes) use the conservative
-	// capability-only sanitizer. The Claude managed and API-key paths opt into
-	// the explicit policy-aware helper below. An empty policy selects the legacy
-	// beta-gated behavior (preserve only when the matching beta is present).
-	return sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, anthropicBetaHeader, "", true)
+	body, contextChanged := stripAnthropicContextManagementUnlessBeta(body, anthropicBetaHeader)
+	// Legacy compatibility routes also gate fallback fields on their beta tokens.
+	body, changed := sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body, anthropicBetaHeader, "", true)
+	return body, contextChanged || changed
+}
+
+func stripAnthropicContextManagementUnlessBeta(body []byte, beta string) ([]byte, bool) {
+	return stripAnthropicBodyFieldUnlessBeta(body, "context_management", beta, claude.BetaContextManagement, claude.BetaCompact)
 }
 
 // sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy applies capability
@@ -1120,11 +1110,9 @@ func sanitizeAnthropicBodyForBetaTokensWithFallbackPolicy(body []byte, anthropic
 
 	changed := false
 
-	// context_management：需要 context-management beta。
-	if b, deleted := stripAnthropicBodyFieldUnlessBeta(
-		body, "context_management", anthropicBetaHeader, anthropicBetaContextManagementToken,
-	); deleted {
-		body, changed = b, true
+	// Native requests validate the beta against the final outbound body and header.
+	if !nativePassthrough {
+		body, changed = stripAnthropicContextManagementUnlessBeta(body, anthropicBetaHeader)
 	}
 
 	// thinking.block_binding：需要 thinking-binding-controls beta。

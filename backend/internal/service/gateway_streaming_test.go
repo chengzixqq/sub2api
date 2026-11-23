@@ -285,12 +285,13 @@ func TestHandleStreamingResponse_StreamReadErrorAfterOutput_PassesThrough(t *tes
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr), "已经向客户端写过字节时不能再 failover")
 
-	// 客户端必须收到 Anthropic 标准格式的 SSE error 事件，error.type=stream_read_error，
-	// error.message 含具体根因（让 SDK 能解析、UI 能显示具体错误）
+	// 客户端收到官方 api_error 帧，Ops 单独保存流读错误原因码。
 	body := rec.Body.String()
 	require.Contains(t, body, "event: error\n", "必须按 Anthropic SSE 标准发送 error 事件帧")
 	require.Contains(t, body, `"type":"error"`, "data 必须含 type:error 顶层字段（Anthropic 标准）")
-	require.Contains(t, body, `"stream_read_error"`, "error.type 必须为 stream_read_error")
+	require.Contains(t, body, `"type":"api_error"`)
+	require.Equal(t, "upstream_error", c.GetString(OpsAnthropicErrorTypeKey))
+	require.Equal(t, "stream_read_error", c.GetString(OpsTerminalStreamReasonKey))
 	require.Contains(t, body, "upstream stream disconnected", "error.message 必须包含具体根因，Claude Code 等客户端才能显示有效错误文案")
 }
 

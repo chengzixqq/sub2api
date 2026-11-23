@@ -291,7 +291,7 @@ type ccStreamScanState struct {
 }
 
 // scanCCStream 驱动两条 CC 回退路径共享的 SSE 读循环：提取 data 行、在 [DONE]
-// 哨兵处停止、保留最新 usage、记录首 token 时延，并把每个解析成功的 chunk 交给
+// 哨兵处停止、保留最新有效 usage、记录首 token 时延，并把每个解析成功的 chunk 交给
 // emit 回调做各自的协议转换与写出。读错误按既有约定过滤 context 取消类噪声后
 // 记入 Warn 日志。
 func (s *OpenAIGatewayService) scanCCStream(
@@ -303,6 +303,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 	emit func(*apicompat.ChatCompletionsChunk),
 ) ccStreamScanState {
 	var st ccStreamScanState
+	delivered := false
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
@@ -327,7 +328,11 @@ func (s *OpenAIGatewayService) scanCCStream(
 		}
 
 		if u := extractCCStreamUsage(payload); u != nil {
-			st.Usage = *u
+			// Some finish frames carry an empty usage after the real snapshot.
+			if openAIUsageHasTokens(u) || u.ReportedOutputFloor > 0 || !openAIUsageHasTokens(&st.Usage) {
+				u.ReportedOutputFloor = max(u.ReportedOutputFloor, st.Usage.ReportedOutputFloor)
+				st.Usage = *u
+			}
 		}
 
 		var chunk apicompat.ChatCompletionsChunk
@@ -341,6 +346,10 @@ func (s *OpenAIGatewayService) scanCCStream(
 		if st.FirstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
 			ms := int(time.Since(startTime).Milliseconds())
 			st.FirstTokenMs = &ms
+		}
+		if !delivered && openAIChatStreamChunkDeliversRealContent(payload) {
+			c.Set(GatewayUpstreamDeliveredKey, true)
+			delivered = true
 		}
 		emit(&chunk)
 	}

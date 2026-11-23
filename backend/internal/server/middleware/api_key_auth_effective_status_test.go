@@ -75,14 +75,22 @@ func mainAuthVerdict(t *testing.T, key service.APIKey, runMode string) string {
 	if w.Code == http.StatusOK {
 		return service.StatusAPIKeyActive
 	}
-	var resp ErrorResponse
+	var resp struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
-	switch resp.Code {
-	case "API_KEY_DISABLED":
+	switch resp.Error.Message {
+	case "API key is disabled":
+		require.Equal(t, "authentication_error", resp.Error.Type)
 		return service.StatusAPIKeyInactive
-	case "API_KEY_EXPIRED":
+	case "API key has expired":
+		require.Equal(t, "permission_error", resp.Error.Type)
 		return service.StatusAPIKeyExpired
-	case "API_KEY_QUOTA_EXHAUSTED":
+	case "API key quota has been exhausted":
+		require.Equal(t, "rate_limit_error", resp.Error.Type)
 		return service.StatusAPIKeyQuotaExhausted
 	}
 	return fmt.Sprintf("unexpected %d %s", w.Code, w.Body.String())

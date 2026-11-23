@@ -4061,3 +4061,50 @@ func TestHandleCompatErrorResponseCyberPolicyEarlyReturn(t *testing.T) {
 	require.NotContains(t, gotMsg, "Upstream request failed")
 	require.NotNil(t, GetOpsCyberPolicy(c))
 }
+
+func TestBufferedPartialUsageSurvivesEmptyTerminal(t *testing.T) {
+	body := []byte(strings.Join([]string{
+		`data: {"type":"response.in_progress","response":{"id":"r","usage":{"total_tokens":13}}}`,
+		`data: {"type":"response.completed","response":{"id":"r","output":[],"usage":{"input_tokens":0,"output_tokens":0}}}`,
+	}, "\n\n"))
+	for _, passthrough := range []bool{false, true} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		svc := &OpenAIGatewayService{cfg: &config.Config{}}
+		resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+		var usage *OpenAIUsage
+		if passthrough {
+			res, err := svc.handlePassthroughSSEToJSON(resp, c, nil, body, "m", "m")
+			require.NoError(t, err)
+			usage = res.usage
+		} else {
+			res, err := svc.handleSSEToJSON(resp, c, nil, body, "m", "m")
+			require.NoError(t, err)
+			usage = res.usage
+		}
+		if usage.ReportedOutputFloor != 13 {
+			t.Errorf("passthrough=%v: got %d, want 13", passthrough, usage.ReportedOutputFloor)
+		}
+		require.Zero(t, usage.InputTokens)
+		require.Zero(t, usage.OutputTokens)
+	}
+}
+
+func TestPartialReasoningAliasesUseLargerCount(t *testing.T) {
+	usage, ok := extractOpenAIUsageFromJSONBytes([]byte(`{"usage":{"completion_tokens_details":{"reasoning_tokens":4},"output_tokens_details":{"reasoning_tokens":9}}}`))
+	require.True(t, ok)
+	require.Equal(t, 9, usage.ReportedOutputFloor)
+}
+
+func TestOpenAIReasoningAndTotalWithoutClassifiedTokens(t *testing.T) {
+	for _, raw := range []string{
+		`{"usage":{"total_tokens":7,"output_tokens_details":{"reasoning_tokens":23}}}`,
+		`{"usage":{"total_tokens":23,"completion_tokens_details":{"reasoning_tokens":7}}}`,
+	} {
+		usage, ok := extractOpenAIUsageFromJSONBytes([]byte(raw))
+		require.True(t, ok)
+		require.Equal(t, 23, usage.ReportedOutputFloor)
+		require.Equal(t, 7, usage.OutputTokens, "upstream-only snapshot")
+	}
+}

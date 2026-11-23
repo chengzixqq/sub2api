@@ -17,6 +17,8 @@ import (
 // StickySessionSeed、grok_media 的 lookup 端点用 requestID），因此统一收进结构体，
 // 由各 handler 自己把已解析好的值填进来，而不是在 sink 内部重新推导。
 type openAIFailureSinkParams struct {
+	BillStandaloneImageInput bool
+
 	// APIKey / Subscription 来自请求上下文，失败结算与成功路径用同一份。
 	APIKey       *service.APIKey
 	Subscription *service.UserSubscription
@@ -142,6 +144,8 @@ func (h *OpenAIGatewayHandler) openAIFailureSink(
 		)
 		h.submitOpenAIUsageRecordTask(c.Request.Context(), result, func(ctx context.Context) {
 			if err := h.gatewayService.RecordUsage(ctx, &service.OpenAIRecordUsageInput{
+				BillStandaloneImageInput: p.BillStandaloneImageInput,
+
 				Result:             result,
 				APIKey:             apiKey,
 				User:               apiKey.User,

@@ -900,7 +900,11 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		http.StatusBadGateway, "api_error", "Upstream request failed",
 	); matched {
 		MarkResponseCommitted(c)
-		writeError(c, status, errType, errMsg)
+		if IsAnthropicMessagesRequest(c) {
+			WriteAnthropicError(c, status, errType, errType, "", errMsg, FilledAnthropicRequestID(c), false)
+		} else {
+			writeError(c, status, errType, errMsg)
+		}
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}

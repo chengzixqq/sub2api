@@ -249,6 +249,28 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
+	platform := ""
+	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
+		platform = forcePlatform
+	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
+		platform = resolvedPlatform
+	} else if apiKey.Group != nil {
+		platform = apiKey.Group.Platform
+	}
+
+	// Queue pings commit HTTP 200. Keep the status writable until the selected
+	// native account's final body and beta policy have been validated.
+	queueStream := reqStream
+	maySwitchGroup := apiKey.Group != nil && (apiKey.Group.FallbackGroupID != nil || apiKey.Group.FallbackGroupIDOnInvalidRequest != nil)
+	if reqStream && (platform == "" || platform == service.PlatformAnthropic || platform == service.PlatformAntigravity || platform == service.PlatformGemini || platform == service.PlatformComposite || maySwitchGroup) {
+		var fallbackID *int64
+		if apiKey.Group != nil {
+			fallbackID = apiKey.Group.FallbackGroupIDOnInvalidRequest
+		}
+		queueStream = !h.gatewayService.DeferClaudeQueuePings(c, body, c.Request.Header, apiKey.GroupID, fallbackID)
+	}
+
 	// Track if we've started streaming (for error handling)
 	streamStarted := false
 
@@ -261,7 +283,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 
 	// 1. 首先获取用户并发槽位
-	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted)
+	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, subject.UserID, subject.Concurrency, queueStream, &streamStarted)
 	if err != nil {
 		reqLog.Warn("gateway.user_slot_acquire_failed", zap.Error(err))
 		h.handleConcurrencyError(c, err, "user", streamStarted)
@@ -276,7 +298,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 2. 【新增】Wait后二次检查余额/订阅
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		reqLog.Info("gateway.billing_eligibility_check_failed", zap.Error(err))
-		status, code, message, retryAfter := billingErrorDetails(err)
+		status, code, message, retryAfter := billingErrorDetailsForRequest(c, err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
@@ -288,7 +310,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	inflightRelease, err := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, tokenInflightEstimate(reqModel, body))
 	if err != nil {
 		reqLog.Info("gateway.inflight_reservation_rejected", zap.Error(err))
-		status, code, message, retryAfter := billingErrorDetails(err)
+		status, code, message, retryAfter := billingErrorDetailsForRequest(c, err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
@@ -314,16 +336,6 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
 	)
 
-	// 获取平台：优先使用强制平台（/antigravity 路由），其次使用 composite 解析出的目标平台，否则使用分组平台
-	platform := ""
-	if forcePlatform, ok := middleware2.GetForcePlatformFromContext(c); ok {
-		platform = forcePlatform
-	} else if resolvedPlatform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok {
-		platform = resolvedPlatform
-	} else if apiKey.Group != nil {
-		platform = apiKey.Group.Platform
-	}
-
 	var probeLease *ProbeLease
 	probeCandidateDetected := false
 	probeLeaderInstalled := false
@@ -334,7 +346,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		probeCtx, probeRequestID := prepareProbeAdmission(c, h.probeCoalescer)
 		probeLease = h.probeCoalescer.Begin(probeCtx, candidate, probeRequestID)
 		if probeLease.IsExhausted() {
-			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted", streamStarted)
+			h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "probe_unavailable", "Probe attempt budget exhausted", streamStarted)
 			return
 		}
 		if probeLease.IsFollower() {
@@ -344,7 +356,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if handled {
 				if probeErr != nil {
 					status, code, message := probeResolutionError(probeErr)
-					h.handleStreamingAwareError(c, status, code, message, streamStarted)
+					h.handleLocalStreamingAwareError(c, status, code, message, streamStarted)
 				}
 				return
 			}
@@ -412,7 +424,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				if !isAccountSelectionCapacityError(err) {
 					reqLog.Warn("gateway.account_select_failed", zap.Error(err))
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
 					return
 				}
 				if len(fs.FailedAccountIDs) == 0 {
@@ -431,7 +443,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					if !cls.ModelNotFound {
 						message = "No available accounts: " + err.Error()
 					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleLocalStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context(), err)
@@ -482,7 +494,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 					return
 				}
 				accountWaitCounted := false
@@ -512,7 +524,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					account.ID,
 					selection.WaitPlan.MaxConcurrency,
 					selection.WaitPlan.Timeout,
-					reqStream,
+					queueStream,
 					&streamStarted,
 				)
 				if err != nil {
@@ -535,7 +547,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
 					return
 				}
 				continue
@@ -573,12 +585,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			stampForwardBillingReasoningEffort(result, c, parsedReq)
+			if errors.Is(err, service.ErrLocalAnthropicRejected) {
+				guard.MarkSettled()
+				return
+			}
 			if err != nil {
 				guard.ObserveForwardOutcome(err, forwardDeliveredStreamContent(c))
 				guard.ObserveForwardResult(result)
 				var promptTooLongErr *service.PromptTooLongError
 				if errors.As(err, &promptTooLongErr) {
-					_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+					_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body, promptTooLongErr.ResponseHeaders)
 					return
 				}
 				var failoverErr *service.UpstreamFailoverError
@@ -748,7 +764,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				if !isAccountSelectionCapacityError(err) {
 					reqLog.Warn("gateway.account_select_failed", zap.Error(err))
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Account selection failed", streamStarted)
 					return
 				}
 				if len(fs.FailedAccountIDs) == 0 {
@@ -768,7 +784,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					if !cls.ModelNotFound {
 						message = "No available accounts: " + err.Error()
 					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleLocalStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context(), err)
@@ -829,7 +845,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						zap.String("model", reqModel),
 						zap.String("platform", platform),
 					)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", streamStarted)
 					return
 				}
 				accountWaitCounted := false
@@ -859,7 +875,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					account.ID,
 					selection.WaitPlan.MaxConcurrency,
 					selection.WaitPlan.Timeout,
-					reqStream,
+					queueStream,
 					&streamStarted,
 				)
 				if err != nil {
@@ -882,7 +898,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
-					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
+					h.handleLocalStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
 					return
 				}
 				// 尝试被否决（从未转发），立即释放该账号的会话注册
@@ -914,7 +930,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// 串行模式：获取锁 + RPM 延迟 + 释放（当前行为不变）
 				baseRPM := account.GetBaseRPM()
 				release, qErr := h.userMsgQueueHelper.AcquireWithWait(
-					c, account.ID, baseRPM, reqStream, &streamStarted,
+					c, account.ID, baseRPM, queueStream, &streamStarted,
 					h.cfg.Gateway.UserMessageQueue.WaitTimeout(),
 					reqLog,
 				)
@@ -932,7 +948,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// 软性限速：仅施加 RPM 自适应延迟，不阻塞并发
 				baseRPM := account.GetBaseRPM()
 				if tErr := h.userMsgQueueHelper.ThrottleWithPing(
-					c, account.ID, baseRPM, reqStream, &streamStarted,
+					c, account.ID, baseRPM, queueStream, &streamStarted,
 					h.cfg.Gateway.UserMessageQueue.WaitTimeout(),
 					reqLog,
 				); tErr != nil {
@@ -1007,6 +1023,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			}
 
 			stampForwardBillingReasoningEffort(result, c, attemptParsedReq)
+			if errors.Is(err, service.ErrLocalAnthropicRejected) {
+				guard.MarkSettled()
+				return
+			}
 
 			// 成功结算保留 probe 落账屏障；失败和 partial usage 统一由 guard 结算。
 			submitForwardUsage := func(result *service.ForwardResult) {
@@ -1082,7 +1102,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
 					service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
-					h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", betaBlockedErr.Message)
+					if !betaBlockedErr.WriteContextPolicyJSON(c, http.StatusBadRequest, "invalid_request_error", betaBlockedErr.Message) {
+						h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", betaBlockedErr.Message)
+					}
 					return
 				}
 
@@ -1097,7 +1119,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						fallbackGroup, err := h.gatewayService.ResolveGroupByID(c.Request.Context(), *fallbackGroupID)
 						if err != nil {
 							reqLog.Warn("gateway.resolve_fallback_group_failed", zap.Int64("fallback_group_id", *fallbackGroupID), zap.Error(err))
-							_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+							_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body, promptTooLongErr.ResponseHeaders)
 							return
 						}
 						if fallbackGroup.Platform != service.PlatformAnthropic ||
@@ -1108,12 +1130,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 								zap.String("fallback_platform", fallbackGroup.Platform),
 								zap.String("fallback_subscription_type", fallbackGroup.SubscriptionType),
 							)
-							_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+							_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body, promptTooLongErr.ResponseHeaders)
 							return
 						}
 						fallbackAPIKey := cloneAPIKeyWithGroup(apiKey, fallbackGroup)
 						if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), fallbackAPIKey.User, fallbackAPIKey, fallbackGroup, nil, service.PlatformFromAPIKey(fallbackAPIKey)); err != nil {
-							status, code, message, retryAfter := billingErrorDetails(err)
+							status, code, message, retryAfter := billingErrorDetailsForRequest(c, err)
 							if retryAfter > 0 {
 								c.Header("Retry-After", strconv.Itoa(retryAfter))
 							}
@@ -1135,7 +1157,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						sessionSlotAccounts = make(map[int64]*service.Account)
 						break
 					}
-					_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body)
+					_ = h.antigravityGatewayService.WriteMappedClaudeError(c, account, promptTooLongErr.StatusCode, promptTooLongErr.RequestID, promptTooLongErr.Body, promptTooLongErr.ResponseHeaders)
 					return
 				}
 				var failoverErr *service.UpstreamFailoverError
@@ -1268,14 +1290,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 			if source == nil {
 				source = defaultModelIDsForPlatform(service.PlatformComposite)
 			}
-			writeAllowlistedModelsList(c, service.PlatformComposite, apiKey.Group.ModelAllowlist.FilterForListing(source))
+			h.writeModelsList(c, service.PlatformComposite, apiKey.Group.ModelAllowlist.FilterForListing(source))
 			return
 		}
 		if availableModels != nil {
-			writeModelsList(c, service.PlatformComposite, availableModels)
+			h.writeModelsList(c, service.PlatformComposite, availableModels)
 			return
 		}
-		writeModelsList(c, service.PlatformComposite, defaultModelIDsForPlatform(service.PlatformComposite))
+		h.writeModelsList(c, service.PlatformComposite, defaultModelIDsForPlatform(service.PlatformComposite))
 		return
 	}
 
@@ -1287,12 +1309,12 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
 		source := modelListingSource(platform, availableModels, defaultModelIDsForPlatform(platform))
-		writeAllowlistedModelsList(c, platform, apiKey.Group.ModelAllowlist.FilterForListing(source))
+		h.writeModelsList(c, platform, apiKey.Group.ModelAllowlist.FilterForListing(source))
 		return
 	}
 
 	if availableModels != nil {
-		writeModelsList(c, platform, availableModels)
+		h.writeModelsList(c, platform, availableModels)
 		return
 	}
 
@@ -1311,11 +1333,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		return
 	}
 	if platform == service.PlatformTypeSafe {
-		writeModelsList(c, platform, []string{typesafe.JevLatestModel})
+		h.writeModelsList(c, platform, []string{typesafe.JevLatestModel})
 		return
 	}
 
-	writeModelsListResponse(c, claude.DefaultModels)
+	h.writeClaudeModelsResponse(c, claude.DefaultModels)
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1471,7 +1493,7 @@ func (h *GatewayHandler) compositeAvailableModelsWithError(ctx context.Context, 
 	return models, nil
 }
 
-func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
+func (h *GatewayHandler) writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 	if platform == service.PlatformOpenAI {
 		writeOpenAIModelsList(c, modelIDs)
 		return
@@ -1489,15 +1511,7 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 			CreatedAt:   "2024-01-01T00:00:00Z",
 		})
 	}
-	writeModelsListResponse(c, models)
-}
-
-func writeAllowlistedModelsList(c *gin.Context, platform string, modelIDs []string) {
-	if platform == service.PlatformOpenAI {
-		writeOpenAIModelsList(c, modelIDs)
-		return
-	}
-	writeModelsList(c, platform, modelIDs)
+	h.writeClaudeModelsResponse(c, models)
 }
 
 type grokReasoningEffortOption struct {
@@ -2075,6 +2089,7 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {
+	failoverErr.ApplyOfficialResponseHeaders(c)
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
@@ -2093,7 +2108,7 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 			}
 
 			// 确定响应消息
-			msg := service.SanitizeUpstreamErrorMessageForContext(c, service.ExtractUpstreamErrorMessage(responseBody))
+			msg := service.ExtractUpstreamErrorMessage(responseBody)
 			if !rule.PassthroughBody && rule.CustomMessage != nil {
 				msg = *rule.CustomMessage
 			}
@@ -2102,7 +2117,15 @@ func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *se
 				c.Set(service.OpsSkipPassthroughKey, true)
 			}
 
-			h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+			if service.IsAnthropicMessagesRequest(c) {
+				msg = service.SanitizeUpstreamErrorMessageForContext(c, msg)
+				if streamStarted {
+					service.PreserveOpsErrorResponse(c, service.AnthropicErrorWithCodeAndRequestID("upstream_error", "", msg, ""), "data: ")
+				}
+				service.WriteAnthropicError(c, respCode, "upstream_error", "upstream_error", "", msg, service.FilledAnthropicRequestID(c), streamStarted)
+			} else {
+				h.handleStreamingAwareError(c, respCode, "upstream_error", msg, streamStarted)
+			}
 			return
 		}
 	}
@@ -2140,6 +2163,11 @@ func (h *GatewayHandler) mapUpstreamError(statusCode int) (int, string, string) 
 	}
 }
 
+// handleLocalStreamingAwareError normalizes only locally generated failures.
+func (h *GatewayHandler) handleLocalStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+	h.handleStreamingAwareError(c, status, errType, message, streamStarted)
+}
+
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	h.handleStreamingAwareErrorWithCode(c, status, errType, "", message, streamStarted)
@@ -2147,6 +2175,10 @@ func (h *GatewayHandler) handleStreamingAwareError(c *gin.Context, status int, e
 
 func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, status int, errType, code, message string, streamStarted bool) {
 	message = service.SanitizeUpstreamErrorMessageForContext(c, message)
+	if middleware2.UsesAnthropicGatewayErrors(c) {
+		h.writeClaudeError(c, status, errType, code, message, streamStarted)
+		return
+	}
 	if streamStarted {
 		// 响应状态码已固化为 200（ping/部分数据已 flush），错误只能就地以 SSE 帧回传。
 		// 标记本次流内错误，供 ops_error_logger 补记——否则该中间件按 status>=400 采集，
@@ -2164,12 +2196,19 @@ func (h *GatewayHandler) handleStreamingAwareErrorWithCode(c *gin.Context, statu
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
-			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
-			errorCode := ""
-			if code != "" {
-				errorCode = `,"code":` + strconv.Quote(code)
+			errType = service.MessagesErrorType(c, status, errType)
+			var errorEvent string
+			if id := service.FilledAnthropicRequestID(c); id != "" {
+				payload, _ := json.Marshal(service.AnthropicErrorWithCodeAndRequestID(errType, code, message, id))
+				errorEvent = "data: " + string(payload) + "\n\n"
+			} else {
+				// Preserve the existing downstream frame for the default passthrough mode.
+				errorCode := ""
+				if code != "" {
+					errorCode = `,"code":` + strconv.Quote(code)
+				}
+				errorEvent = `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			}
-			errorEvent := `data: {"type":"error","error":{"type":` + strconv.Quote(errType) + errorCode + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
 			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
 				_ = c.Error(err)
 			}
@@ -2283,7 +2322,11 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 }
 
 func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errType, code, message string) {
-	errorObject := gin.H{"type": errType, "message": message}
+	if middleware2.UsesAnthropicGatewayErrors(c) {
+		h.writeClaudeError(c, status, errType, code, message, false)
+		return
+	}
+	errorObject := gin.H{"type": service.MessagesErrorType(c, status, errType), "message": message}
 	if code != "" {
 		errorObject["code"] = code
 	}
@@ -2291,6 +2334,21 @@ func (h *GatewayHandler) errorResponseWithCode(c *gin.Context, status int, errTy
 		"type":  "error",
 		"error": errorObject,
 	})
+}
+
+func (h *GatewayHandler) writeClaudeError(c *gin.Context, status int, errType, code, message string, stream bool) {
+	prefix := ""
+	if stream {
+		prefix = "data: "
+	}
+	originalMessage := service.OpsOriginalErrorMessage(c, message)
+	payload := service.OpsClaudeErrorPayload(errType, code, originalMessage)
+	if stream {
+		payload = service.AnthropicErrorWithCodeAndRequestID(errType, code, originalMessage, "")
+	}
+	service.PreserveOpsErrorResponse(c, payload, prefix)
+	id := h.settingService.FillClaudeHandlerErrorID(c)
+	service.WriteAnthropicError(c, status, errType, middleware2.AnthropicErrorType(status), code, message, id, stream)
 }
 
 // CountTokens handles token counting endpoint
@@ -2372,11 +2430,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 校验 billing eligibility（订阅/余额）
 	// 【注意】不计算并发，但需要校验订阅/余额
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
-		status, code, message, retryAfter := billingErrorDetails(err)
+		status, code, message, retryAfter := billingErrorDetailsForRequest(c, err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
 		}
-		h.errorResponse(c, status, code, message)
+		h.errorResponseWithCode(c, status, code, "", message)
 		return
 	}
 
@@ -2403,8 +2461,10 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 
 	// 转发请求（不记录使用量）
 	if err := h.gatewayService.ForwardCountTokens(c.Request.Context(), c, account, parsedReq); err != nil {
-		reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID),
-			zap.String("error", service.SanitizeUpstreamErrorMessageForContext(c, err.Error())))
+		if !errors.Is(err, service.ErrLocalAnthropicRejected) {
+			reqLog.Error("gateway.count_tokens_forward_failed", zap.Int64("account_id", account.ID),
+				zap.String("error", service.SanitizeUpstreamErrorMessageForContext(c, err.Error())))
+		}
 		// 错误响应已在 ForwardCountTokens 中处理
 		// 上游未服务该会话，立即释放选号时注册的会话槽（客户端可能已断开，用独立 ctx）
 		h.gatewayService.ReleaseAccountSession(context.Background(), account, sessionHash)
@@ -2652,6 +2712,29 @@ func extractQuotaResetSeconds(err error) int {
 		return fallback
 	}
 	return int(math.Ceil(secs))
+}
+
+// billingErrorDetailsForRequest adapts shared billing errors at the protocol
+// boundary. Keep service messages and non-Anthropic responses unchanged.
+func billingErrorDetailsForRequest(c *gin.Context, err error) (status int, code, message string, retryAfter int) {
+	status, code, message, retryAfter = billingErrorDetails(err)
+	if !middleware2.UsesAnthropicGatewayErrors(c) {
+		return
+	}
+	c.Set(service.OpsAnthropicErrorMessageKey, message)
+	switch {
+	case errors.Is(err, service.ErrAPIKeyRateLimit5hExceeded):
+		message = "API key 5-hour rate limit exceeded"
+	case errors.Is(err, service.ErrAPIKeyRateLimit1dExceeded):
+		message = "API key daily rate limit exceeded"
+	case errors.Is(err, service.ErrAPIKeyRateLimit7dExceeded):
+		message = "API key 7-day rate limit exceeded"
+	case errors.Is(err, service.ErrAPIKeyQuotaExhausted):
+		message = "API key quota has been exhausted"
+	case errors.Is(err, service.ErrAPIKeyExpired):
+		message = "API key has expired"
+	}
+	return
 }
 
 func billingErrorDetails(err error) (status int, code, message string, retryAfter int) {

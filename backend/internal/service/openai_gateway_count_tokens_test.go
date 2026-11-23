@@ -432,3 +432,44 @@ func maxLocalInt(a, b int) int {
 	}
 	return b
 }
+
+func TestCountTokensErrorTypeAcrossClientProtocols(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		status                    int
+		claudeType, original, msg string
+	}{
+		{"upstream 401", 401, "authentication_error", "upstream_error", "Upstream request failed"},
+		{"credential failure", 502, "api_error", "upstream_error", "Failed to get access token"},
+		{"no account", 503, "api_error", "api_error", "No available OpenAI accounts"},
+	} {
+		for _, path := range []string{"/v1/responses/input_tokens", "/v1/messages/count_tokens", "/messages/count_tokens", "/antigravity/v1/messages/count_tokens"} {
+			t.Run(tc.name+path, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+				account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test"}}
+				if tc.status == 502 {
+					delete(account.Credentials, "api_key")
+				}
+				if tc.status == 503 {
+					account = nil
+				}
+				upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: 401, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"fixture"}}`))}}
+				s := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+				var err error
+				typ := tc.claudeType
+				if path == "/v1/responses/input_tokens" {
+					typ = tc.original
+					err = s.ForwardResponsesInputTokens(t.Context(), c, account, []byte(`{"model":"gpt-5","input":"Hi"}`))
+				} else {
+					err = s.ForwardCountTokensAsAnthropic(t.Context(), c, account, []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"Hi"}]}`), "")
+				}
+				require.Error(t, err)
+				require.Equal(t, tc.status, c.Writer.Status())
+				require.Equal(t, typ, gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+				require.Equal(t, tc.msg, gjson.GetBytes(rec.Body.Bytes(), "error.message").String())
+			})
+		}
+	}
+}

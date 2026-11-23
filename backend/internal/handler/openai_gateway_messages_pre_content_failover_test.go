@@ -80,10 +80,11 @@ type unexpectedEOFReader struct{}
 func (unexpectedEOFReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 type preContentFailoverScenario struct {
-	accounts    []service.Account
-	respond     func(call int) (*http.Response, error)
-	passthrough *service.ErrorPassthroughService
-	requestBody string
+	accounts        []service.Account
+	respond         func(call int) (*http.Response, error)
+	passthrough     *service.ErrorPassthroughService
+	requestBody     string
+	filledRequestID string
 }
 
 func preContentAccounts(count int) []service.Account {
@@ -143,6 +144,10 @@ func serveMessagesScenario(t *testing.T, sc preContentFailoverScenario) (*httpte
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.User.ID, Concurrency: 1})
 		service.BindErrorPassthroughService(c, sc.passthrough)
+		if sc.filledRequestID != "" {
+			c.Set("anthropic_filled_request_id", sc.filledRequestID)
+			c.Header("Request-Id", sc.filledRequestID)
+		}
 		c.Next()
 	})
 	router.POST("/v1/messages", h.Messages)

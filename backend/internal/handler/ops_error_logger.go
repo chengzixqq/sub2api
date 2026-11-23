@@ -1115,10 +1115,14 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		status := c.Writer.Status()
 		body := w.capturedBytes()
 		parsed := parseOpsErrorResponse(body)
+		authCode := c.GetString(string(middleware2.ContextKeyOpsAPIKeyAuthErrorCode))
 		if !parsed.StreamFailure {
 			if terminal, ok := w.capturedTerminalError(); ok {
 				parsed = terminal
 			}
+		}
+		if original := c.GetString(service.OpsAnthropicErrorTypeKey); original != "" && (len(body) > 0 || parsed.StreamFailure) {
+			body, parsed = originalAnthropicOpsResponse(c, original, parsed)
 		}
 		if status < 400 {
 			if parsed.StreamFailure {
@@ -1148,7 +1152,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 
 		// Skip logging if the error should be filtered based on settings
-		if shouldSkipOpsErrorLog(c.Request.Context(), ops, parsed.Message, string(body), c.Request.URL.Path) {
+		if shouldSkipOpsErrorLog(ops, parsed.Message, string(body), c.Request.URL.Path, authCode) {
 			return
 		}
 		if shouldSkipOpsClientClosed(c, ops, status) {
@@ -1291,6 +1295,29 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 
 		enqueueOpsErrorLog(ops, entry)
 	}
+}
+
+// The wire and Ops formats diverge only for locally adapted Claude failures.
+func originalAnthropicOpsResponse(c *gin.Context, original string, parsed parsedOpsError) ([]byte, parsedOpsError) {
+	if body, ok := service.OpsOriginalResponseBody(c); ok {
+		if parsed.StreamFailure && c.GetString(service.OpsTerminalStreamReasonKey) != "" {
+			if mark, ok := service.GetOpsStreamError(c); ok {
+				fallback, _ := json.Marshal(service.AnthropicErrorWithCodeAndRequestID(mark.ErrType, mark.Code, mark.Message, ""))
+				body = append(body, []byte("data: ")...)
+				body = append(body, fallback...)
+				body = append(body, '\n', '\n')
+			}
+		}
+		body = body[:min(len(body), opsCaptureWriterLimit)]
+		return body, parseOpsErrorResponse(body)
+	}
+	parsed.ErrorType = original
+	parsed.Message = service.OpsOriginalErrorMessage(c, parsed.Message)
+	payload, _ := json.Marshal(service.AnthropicErrorWithCodeAndRequestID(original, parsed.Code, parsed.Message, ""))
+	if parsed.StreamFailure {
+		payload = []byte("event: error\ndata: " + string(payload) + "\n\n")
+	}
+	return payload, parsed
 }
 
 func logOpsRecoveredUpstream(c *gin.Context, ops *service.OpsService, finalStatus int) {
@@ -1454,7 +1481,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 	}
 
 	// 复用与 status>=400 分支相同的设置过滤（context canceled / 无可用账号等）。
-	if shouldSkipOpsErrorLog(c.Request.Context(), ops, streamErr.Message, streamErr.Message, c.Request.URL.Path) {
+	if shouldSkipOpsErrorLog(ops, streamErr.Message, streamErr.Message, c.Request.URL.Path, "") {
 		return
 	}
 
@@ -1761,6 +1788,11 @@ func applyOpsUpstreamFieldsFromContext(c *gin.Context, entry *service.OpsInsertE
 		if events, ok := v.([]*service.OpsUpstreamErrorEvent); ok && len(events) > 0 {
 			applyOpsUpstreamErrorEvents(entry, events)
 		}
+	}
+	// The aggregate classifier reads this detail even when it belongs to a
+	// previous attempt. Only supply the terminal reason for an empty detail.
+	if reason := c.GetString(service.OpsTerminalStreamReasonKey); reason != "" && entry.UpstreamErrorDetail == nil {
+		entry.UpstreamErrorDetail = &reason
 	}
 }
 
@@ -2372,6 +2404,10 @@ func isOpsLocalBusinessLimitError(code string, msg string) bool {
 		strings.Contains(msg, "api key 5小时限额已用完") ||
 		strings.Contains(msg, "api key 日限额已用完") ||
 		strings.Contains(msg, "api key 7天限额已用完") ||
+		strings.Contains(msg, "api key quota has been exhausted") ||
+		strings.Contains(msg, "api key 5-hour rate limit exceeded") ||
+		strings.Contains(msg, "api key daily rate limit exceeded") ||
+		strings.Contains(msg, "api key 7-day rate limit exceeded") ||
 		strings.Contains(msg, "daily usage limit exceeded") ||
 		strings.Contains(msg, "weekly usage limit exceeded") ||
 		strings.Contains(msg, "monthly usage limit exceeded") ||
@@ -2503,13 +2539,12 @@ func strconvItoa(v int) string {
 
 // shouldSkipOpsErrorLog determines if an error should be skipped from logging based on settings.
 // Returns true for errors that should be filtered according to OpsAdvancedSettings.
-func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message, body, requestPath string) bool {
+func shouldSkipOpsErrorLog(ops *service.OpsService, message, body, requestPath, authCode string) bool {
 	if ops == nil {
 		return false
 	}
 
 	// Get advanced settings to check filter configuration
-	_ = ctx
 	settings := ops.OpsAdvancedSettingsSnapshot()
 
 	msgLower := strings.ToLower(message)
@@ -2536,7 +2571,8 @@ func shouldSkipOpsErrorLog(ctx context.Context, ops *service.OpsService, message
 
 	// Check if invalid/missing API key errors should be ignored (user misconfiguration)
 	if settings.IgnoreInvalidApiKeyErrors {
-		if strings.Contains(bodyLower, opsErrInvalidAPIKey) || strings.Contains(bodyLower, opsErrAPIKeyRequired) {
+		if authCode == opsCodeInvalidAPIKey || authCode == opsCodeAPIKeyRequired ||
+			strings.Contains(bodyLower, opsErrInvalidAPIKey) || strings.Contains(bodyLower, opsErrAPIKeyRequired) {
 			return true
 		}
 	}

@@ -57,7 +57,7 @@ func TestCountTokensPassthroughSendsOneContentTypeAndVersion(t *testing.T) {
 			svc := &GatewayService{cfg: &config.Config{}}
 			body := []byte(`{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`)
 
-			req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "test-key")
+			req, _, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "test-key")
 			require.NoError(t, err)
 
 			require.Equal(t, []string{"content-type"}, headerKeysFold(req.Header, "content-type"))

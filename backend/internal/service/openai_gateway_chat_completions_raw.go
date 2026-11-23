@@ -315,11 +315,17 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	}
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
+	clientCtx := c.Request.Context()
 
 	var usage OpenAIUsage
+	usageObserved := false
 	var firstTokenMs *int
 	clientDisconnected := false
 	clientOutputStarted := false
+	sawRealContent := false
+	clientContentSeen := false
+	clientContentDelivered := false
+	wroteRealContent := false
 	flushPending := false
 	flushToClient := func() {
 		if flushPending && !clientDisconnected && clientOutputStarted {
@@ -374,7 +380,12 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
-					usage = *u
+					// Some finish frames carry an empty usage after the real snapshot.
+					if openAIUsageHasTokens(u) || u.ReportedOutputFloor > 0 || !openAIUsageHasTokens(&usage) {
+						u.ReportedOutputFloor = max(u.ReportedOutputFloor, usage.ReportedOutputFloor)
+						usage = *u
+					}
+					usageObserved = true
 				}
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
@@ -383,8 +394,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				// 投递标记与 firstTokenMs（TTFT，既有语义）拆开门控：原门控只排除
 				// usage-only 尾块，错误帧/骨架 chunk 仍会置位，导致上游零 token 产出
 				// 的请求被计费 = 多算。这里改判 choices[].delta 是否真的带出内容。
-				if openAIChatStreamChunkDeliversRealContent(payload) {
-					c.Set(GatewayUpstreamDeliveredKey, true)
+				if !clientContentSeen || !sawRealContent {
+					upstream, client := openAIChatStreamContent(payload)
+					clientContentSeen = clientContentSeen || client
+					if upstream && !sawRealContent {
+						sawRealContent = true
+						c.Set(GatewayUpstreamDeliveredKey, true)
+					}
 				}
 			}
 		}
@@ -392,7 +408,15 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
 		line = s.replaceModelInSSELine(line, upstreamModel, originalModel)
+		// 只记录客户端取消前写出的内容。扫描器仍可在断开后读到真实增量。
+		trackContent := sawRealContent && !wroteRealContent && !clientDisconnected && clientCtx.Err() == nil
 		writeLine(line)
+		if clientOutputStarted && !clientDisconnected && clientCtx.Err() == nil {
+			clientContentDelivered = clientContentDelivered || clientContentSeen
+		}
+		if trackContent && clientOutputStarted && !clientDisconnected {
+			wroteRealContent = true
+		}
 		// 不逐行 flush：scanner 下次向上游读取前统一 flush（见 flushBeforeUpstreamRead）。
 		flushPending = true
 	}
@@ -402,6 +426,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		return &OpenAIForwardResult{
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
+			ClientContentDelivered:        clientContentDelivered,
 			Usage:                         usage,
 			Model:                         originalModel,
 			BillingModel:                  billingModel,
@@ -425,8 +450,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		)
 	}
 
-	// 客户端取消/断开后上游读失败与上游截断不可区分（取消会连带取消上游请求），
-	// 沿用既有语义：按已收到的用量正常收尾计费，不判为上游故障。
+	// 客户端断开或取消导致的读错误沿用正常收尾语义。
 	clientAborted := clientDisconnected ||
 		errors.Is(scanErr, context.Canceled) ||
 		errors.Is(scanErr, context.DeadlineExceeded)
@@ -462,6 +486,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			return nil, newOpenAISilentRefusalFailoverError(c, account, requestID)
 		}
 		if len(pendingLines) > 0 {
+			trackContent := sawRealContent && clientCtx.Err() == nil
 			writeStreamHeaders()
 			for _, pending := range pendingLines {
 				if _, werr := c.Writer.WriteString(pending + "\n"); werr != nil {
@@ -476,11 +501,18 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if !clientDisconnected {
 				c.Writer.Flush()
 				clientOutputStarted = true
+				wroteRealContent = trackContent
+				clientContentDelivered = clientContentSeen && clientCtx.Err() == nil
 			}
 		}
 	}
 
-	return resultWithUsage(), nil
+	result := resultWithUsage()
+	if !usageObserved && (clientAborted || clientDisconnected || clientCtx.Err() != nil) {
+		result.RawChatStreamAbortedWithoutUsage = true
+		c.Set(GatewayUpstreamDeliveredKey, wroteRealContent)
+	}
+	return result, nil
 }
 
 // ensureOpenAIChatStreamUsage 确保 raw Chat Completions 流式请求会让上游返回 usage。
@@ -567,11 +599,12 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	n, _ := c.Writer.Write(respBody)
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
+		ClientContentDelivered:        bufferedOpenAIContentDelivered(c, &usage, respBody, n),
 		Usage:                         usage,
 		Model:                         originalModel,
 		BillingModel:                  billingModel,

@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func newGroupModelAllowlistTestRouter(apiKey *service.APIKey, pathPrefix string) (*gin.Engine, *[]string) {
@@ -209,6 +210,25 @@ func TestGroupModelAllowlistGeminiWildcardAndPrefixForms(t *testing.T) {
 	w := doJSON(t, router, http.MethodPost, "/v1beta/models/models/gemini-2.5-flash:generateContent", `{}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("models/ prefixed model should match wildcard entry, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupModelAllowlistNilSettingsModelDetailMatchesBase(t *testing.T) {
+	// Golden response from before the settings-aware entry point.
+	const body = `{"error":{"code":"model_not_found","message":"Model \"blocked\" is not available for this group","type":"invalid_request_error"}}`
+	for _, prefix := range []string{"/v1", ""} {
+		t.Run(prefix+"/models/blocked", func(t *testing.T) {
+			// This helper mounts GroupModelAllowlist(), so settings is nil.
+			router, calls := newGroupModelAllowlistTestRouter(allowlistAPIKey(true, "visible"), prefix)
+			req := httptest.NewRequest(http.MethodGet, prefix+"/models/blocked", nil)
+			req.Header.Set("x-api-key", "test")
+			rec := httptest.NewRecorder()
+			require.NotPanics(t, func() { router.ServeHTTP(rec, req) })
+			require.Empty(t, *calls, "the allowlist must reject before reaching the handler")
+			require.Equal(t, http.StatusNotFound, rec.Code)
+			require.Equal(t, http.Header{"Content-Type": {"application/json; charset=utf-8"}}, rec.Result().Header)
+			require.Equal(t, []byte(body), rec.Body.Bytes())
+		})
 	}
 }
 

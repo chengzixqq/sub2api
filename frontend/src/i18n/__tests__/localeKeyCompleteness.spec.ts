@@ -6,7 +6,7 @@ import zh from '../locales/zh'
 type LocaleValue = Record<string, unknown>
 
 function flattenLeafKeys(value: unknown, prefix = ''): string[] {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+  if (value === null || typeof value !== 'object' || (Array.isArray(value) && value.length === 0)) {
     return prefix ? [prefix] : []
   }
 

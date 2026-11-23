@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/model"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ func TestGatewayUpstreamErrorAfterKeepalive(t *testing.T) {
 		exhausted  bool
 		rule       bool
 		wantStatus int
-		wantType   string
+		opsType    string
 		wantMsg    string
 	}{
 		{"bad request", 400, rejected, false, false, 400, "invalid_request_error", "Invalid schema for field messages"},
@@ -100,19 +101,21 @@ func TestGatewayUpstreamErrorAfterKeepalive(t *testing.T) {
 					wantHTTPStatus = http.StatusOK
 				}
 				require.Equal(t, wantHTTPStatus, rec.Code)
+				wantType := claude.ErrorType(tt.wantStatus)
 				if tt.rule {
+					wantType = tt.opsType
 					require.True(t, c.GetBool(OpsSkipPassthroughKey))
 				}
 				if state.wantSSE {
 					require.Equal(t, state.contentType, rec.Result().Header.Get("Content-Type"))
 					require.True(t, rec.Flushed)
 					payload := requireGatewayKeepaliveErrorEvent(t, rec.Body.String(), state.prefix)
-					require.Equal(t, tt.wantType, payload.Error.Type)
+					require.Equal(t, wantType, payload.Error.Type)
 					require.Equal(t, tt.wantMsg, payload.Error.Message)
 					streamErr, ok := GetOpsStreamError(c)
 					require.True(t, ok, "HTTP 200 stream failures must remain visible to Ops")
 					require.Equal(t, tt.wantStatus, streamErr.IntendedStatus)
-					require.Equal(t, tt.wantType, streamErr.ErrType)
+					require.Equal(t, tt.opsType, streamErr.ErrType)
 					require.Equal(t, tt.wantMsg, streamErr.Message)
 				} else {
 					require.NotContains(t, rec.Body.String(), "event: error")
@@ -123,7 +126,7 @@ func TestGatewayUpstreamErrorAfterKeepalive(t *testing.T) {
 						var payload gatewayKeepaliveErrorPayload
 						require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 						require.Equal(t, "error", payload.Type)
-						require.Equal(t, tt.wantType, payload.Error.Type)
+						require.Equal(t, wantType, payload.Error.Type)
 						require.Equal(t, tt.wantMsg, payload.Error.Message)
 					}
 				}

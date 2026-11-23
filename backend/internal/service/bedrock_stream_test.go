@@ -43,7 +43,8 @@ func TestExtractBedrockChunkData(t *testing.T) {
 func TestTransformBedrockInvocationMetrics(t *testing.T) {
 	t.Run("converts metrics to usage", func(t *testing.T) {
 		input := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"amazon-bedrock-invocationMetrics":{"inputTokenCount":150,"outputTokenCount":42}}`
-		result := transformBedrockInvocationMetrics([]byte(input))
+		result, metrics := transformBedrockInvocationMetrics([]byte(input))
+		assert.True(t, metrics.IsObject())
 
 		// amazon-bedrock-invocationMetrics should be removed
 		assert.False(t, gjson.GetBytes(result, "amazon-bedrock-invocationMetrics").Exists())
@@ -57,13 +58,15 @@ func TestTransformBedrockInvocationMetrics(t *testing.T) {
 
 	t.Run("no metrics present", func(t *testing.T) {
 		input := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`
-		result := transformBedrockInvocationMetrics([]byte(input))
+		result, metrics := transformBedrockInvocationMetrics([]byte(input))
+		assert.False(t, metrics.Exists())
 		assert.JSONEq(t, input, string(result))
 	})
 
 	t.Run("does not overwrite existing usage", func(t *testing.T) {
 		input := `{"type":"message_delta","usage":{"output_tokens":100},"amazon-bedrock-invocationMetrics":{"inputTokenCount":150,"outputTokenCount":42}}`
-		result := transformBedrockInvocationMetrics([]byte(input))
+		result, metrics := transformBedrockInvocationMetrics([]byte(input))
+		assert.Equal(t, int64(150), metrics.Get("inputTokenCount").Int())
 
 		// metrics removed but existing usage preserved
 		assert.False(t, gjson.GetBytes(result, "amazon-bedrock-invocationMetrics").Exists())

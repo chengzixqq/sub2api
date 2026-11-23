@@ -20,7 +20,7 @@ import (
 // such requests with HTTP 400.
 func requireCacheTTLOrderAccepted(t *testing.T, body []byte) {
 	t.Helper()
-	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body)
+	_, messagePaths, toolPaths, systemPaths := collectCacheControlPaths(body, false)
 	var paths []string
 	paths = append(paths, toolPaths...)
 	paths = append(paths, systemPaths...)
@@ -44,7 +44,7 @@ func TestNormalizeCacheControlTTLOrder_RaisesBreakpointsBeforeLast1h(t *testing.
 		`{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h"}},` +
 		`{"type":"text","text":"b","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}`)
 
-	out := normalizeCacheControlTTLOrder(body)
+	out := normalizeCacheControlTTLOrder(body, false)
 
 	require.Equal(t, "1h", gjson.GetBytes(out, "tools.0.cache_control.ttl").String(), "omitted ttl counts as 5m")
 	require.Equal(t, "1h", gjson.GetBytes(out, "system.0.cache_control.ttl").String())
@@ -59,7 +59,7 @@ func TestNormalizeCacheControlTTLOrder_TopLevelCacheControlIsLast(t *testing.T) 
 		`"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"5m"}}],` +
 		`"messages":[{"role":"user","content":"hi"}]}`)
 
-	out := normalizeCacheControlTTLOrder(body)
+	out := normalizeCacheControlTTLOrder(body, false)
 
 	require.Equal(t, "1h", gjson.GetBytes(out, "system.0.cache_control.ttl").String())
 }
@@ -75,7 +75,7 @@ func TestNormalizeCacheControlTTLOrder_KeepsValidRequestsUnchanged(t *testing.T)
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, body, string(normalizeCacheControlTTLOrder([]byte(body))))
+			require.Equal(t, body, string(normalizeCacheControlTTLOrder([]byte(body), false)))
 		})
 	}
 }

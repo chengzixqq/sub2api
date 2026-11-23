@@ -42,11 +42,13 @@ func addIterationCost(total, cost *CostBreakdown) {
 // or request log is issued for an advisor call.
 func (s *GatewayService) calculateTokenCost(ctx context.Context, result *ForwardResult, key *APIKey, model string, multiplier float64, at time.Time) *CostBreakdown {
 	state := result.Usage.IterationUsage
-	if state == nil || !state.AdvisorSeen {
-		return s.calculateExecutorTokenCost(ctx, result, key, model, multiplier, at)
+	billCompactions := result.Usage.HasCompactionUsage()
+	request := s.executorTokenCostRequest(ctx, result, key, model, multiplier, at)
+	if state == nil || (!state.AdvisorSeen && !billCompactions) {
+		return s.executorTokenCost(request)
 	}
 	details := &BillingDetails{Version: 1, Status: "complete", Components: make([]BillingComponent, 0, len(state.Iterations))}
-	complete := claudeExecutorIterationsComplete(result.Usage)
+	complete := claudeIterationsMatchAggregate(result.Usage, true)
 	if !complete {
 		details.Status = "partial_usage"
 	}
@@ -55,31 +57,54 @@ func (s *GatewayService) calculateTokenCost(ctx context.Context, result *Forward
 	if key != nil {
 		pricingInput.GroupID, pricingInput.Group = key.GroupID, key.Group
 	}
-	executorPricing := resolver.Resolve(ctx, pricingInput)
+	executorInput := pricingInput
+	if billCompactions && request.Group != nil {
+		executorInput.GroupID = &request.Group.ID
+	}
+	executorPricing := resolver.Resolve(ctx, executorInput)
 	total := &CostBreakdown{BillingMode: string(executorPricing.Mode), BillingDetails: details}
 	if total.BillingMode == "" {
 		total.BillingMode = string(BillingModeToken)
 	}
-	// Per-request pricing applies once even when an executor iterates. An
-	// incomplete executor snapshot uses its authoritative top-level aggregate.
-	if !complete || executorPricing.Mode != BillingModeToken {
-		cost := s.calculateExecutorTokenCost(ctx, result, key, model, multiplier, at)
+	// The quote and the per-request decision use the same loaded group.
+	if request.Resolver != nil && request.Group != nil && executorInput.GroupID != nil && *executorInput.GroupID == request.Group.ID {
+		request.Resolved = executorPricing
+	}
+	var compactParts map[int]executorCharge
+	if billCompactions {
+		compactParts = make(map[int]executorCharge)
+		price := func(units UsageTokens, tier *int) (*CostBreakdown, error) {
+			request.Tokens, request.PricingContextTokens = units, tier
+			return s.executorTokenCost(request), nil
+		}
+		cost, _ := priceCompactedExecutor(result.Usage, request.Tokens, executorPricing.Mode != BillingModeToken, price, compactParts)
+		addIterationCost(total, cost)
+		if merged, ok := compactParts[-1]; ok {
+			details.Components = append(details.Components, billingComponent("executor", model, nil, merged.tokens, merged.cost, executorPricing.Source))
+		}
+	} else if !complete || executorPricing.Mode != BillingModeToken {
+		cost := s.executorTokenCost(request)
 		addIterationCost(total, cost)
 		details.Components = append(details.Components, billingComponent("executor", model, nil, claudeUsageTokens(result.Usage), cost, executorPricing.Source))
 	}
 	for i, entry := range state.Iterations {
-		if entry.Invalid {
+		if entry.Invalid || (entry.Type == "compaction" && (!billCompactions || entry.Usage == (UsageTokens{}))) {
 			continue
 		}
 		idx := i
 		switch entry.Type {
-		case "message":
+		case "message", "compaction":
+			if billCompactions {
+				if part, ok := compactParts[i]; ok {
+					details.Components = append(details.Components, billingComponent("executor", model, &idx, part.tokens, part.cost, executorPricing.Source))
+				}
+				continue
+			}
 			if !complete || executorPricing.Mode != BillingModeToken {
 				continue
 			}
-			part := *result
-			part.Usage = claudeUsageFromTokens(entry.Usage)
-			cost := s.calculateExecutorTokenCost(ctx, &part, key, model, multiplier, at)
+			request.Tokens = claudeUsageFromTokens(entry.Usage).billingUsageTokens()
+			cost := s.executorTokenCost(request)
 			addIterationCost(total, cost)
 			details.Components = append(details.Components, billingComponent("executor", model, &idx, entry.Usage, cost, executorPricing.Source))
 		case "advisor_message":

@@ -38,7 +38,7 @@ func TestAddMessageCacheBreakpoints_JSONStringEscaping(t *testing.T) {
 				},
 			})
 			require.NoError(t, err)
-			out := addMessageCacheBreakpoints(body)
+			out := addMessageCacheBreakpoints(body, false)
 			// gjson accepts some malformed input, so validate with encoding/json
 			// before inspecting the rewritten content and cache metadata.
 			var decoded any
@@ -53,7 +53,7 @@ func TestAddMessageCacheBreakpoints_JSONStringEscaping(t *testing.T) {
 				require.Equal(t, "ephemeral", block.Get("cache_control.type").String())
 				require.Equal(t, "5m", block.Get("cache_control.ttl").String())
 			}
-			require.JSONEq(t, string(out), string(addMessageCacheBreakpoints(out)))
+			require.JSONEq(t, string(out), string(addMessageCacheBreakpoints(out, false)))
 		})
 	}
 }
