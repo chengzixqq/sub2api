@@ -32,7 +32,8 @@ import (
 
 // forwardAnthropicViaNativeAnthropicEndpoint 将 Anthropic Messages 请求零转换
 // 直通到国产供应商的原生 Anthropic 端点。仅做模型名映射与少量 body 清洗
-// （空文本块 / web-search 历史块），协议本身不转换。
+// （空文本块 / web-search 历史块），协议本身不转换。对 DeepSeek 官方账号补齐
+// tool_use 历史的单个空格占位 thinking 块（thinking 模式下缺 thinking 会被上游 400）。
 func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	ctx context.Context,
 	c *gin.Context,
@@ -81,6 +82,12 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	// 无法接受的 web-search 历史块（GLM/Kimi/DeepSeek 对 server_tool_use 400）。
 	body = StripEmptyTextBlocks(body)
 	body = FilterWebSearchHistoryBlocks(body, upstreamModel)
+
+	// thinking 模式下 DeepSeek 要求工具续接历史回传 thinking 块；缺失时上游
+	// 自动恢复失败会返回 400。仅对 DeepSeek 官方账号、thinking 启用时生效。
+	if shouldRepairDeepSeekAnthropicThinking(account, body) {
+		body = ensureDeepSeekAnthropicThinkingBlocks(body)
+	}
 
 	logger.LegacyPrintf("service.gateway", "[CN Anthropic 直通] account=%d(%s) platform=%s model=%s upstream=%s stream=%v",
 		account.ID, account.Name, account.Platform, originalModel, upstreamModel, clientStream)
@@ -173,7 +180,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	if c != nil && c.Request != nil {
 		clientBeta = getHeaderRaw(c.Request.Header, "anthropic-beta")
 	}
-	if beta, ok := account.HeaderOverrideValue("anthropic-beta"); ok {
+	if beta, ok := account.requestHeaderOverrideValue(ctx, "anthropic-beta"); ok {
 		clientBeta = beta
 	}
 	body, _ = stripAnthropicBodyFieldUnlessBeta(body, "context_management", clientBeta, claude.BetaContextManagement)
@@ -223,7 +230,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 	applyOpenCodeUpstreamUserAgent(account, targetURL, req.Header)
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverrides(req.Context(), req.Header)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 	payloads := append([][]byte{body}, sessionBodies...)
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, payloads...)

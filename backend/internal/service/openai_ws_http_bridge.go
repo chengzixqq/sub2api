@@ -655,8 +655,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 
 	responseID := ""
 	usage := OpenAIUsage{}
-	searchCount := 0
-	searchSeen := make(map[string]struct{})
+	var grokSearch grokSearchStreamCounter
 	imageCounter := newOpenAIImageOutputCounter()
 	var searches openAINativeSearchCounter
 	var searchObserver *openAINativeSearchCounter
@@ -713,10 +712,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			UpstreamResponseServiceTier:   responseModelObserver.ServiceTier(),
 			ServiceTier:                   resolvedOpenAIUpstreamServiceTierFromObserver(responseModelObserver, extractOpenAIServiceTierFromBody(body)),
 			ReasoningEffort:               ApplyThinkingEnabledFallback(extractOpenAIReasoningEffortFromBody(body, mappedModel, originalModel), body, mappedModel),
-			RequestedReasoningEffort:      CanonicalRequestedReasoningEffort(body, originalModel, mappedModel),
 			Stream:                        reqStream,
 			OpenAIWSMode:                  true,
-			SearchCount:                   searchCount,
+			SearchCount:                   grokSearch.count,
 			NativeSearchCount:             searches.count(),
 			UpstreamTerminalEvent:         upstreamTerminalEvent,
 			ResponseHeaders:               cloneHeader(resp.Header),
@@ -814,16 +812,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		eventType, eventResponseID, _ := parseOpenAIWSEventEnvelope(upstreamMessage)
 		responseModelObserver.ObserveOpenAI(upstreamMessage, eventType)
 		if account.Platform == PlatformGrok {
-			delta := countGrokNativeSearchCallsInSSEDataDedup(upstreamMessage, searchSeen)
-			var saturated bool
-			searchCount, saturated = SaturatingSearchCountAdd(searchCount, delta)
-			if saturated {
-				logOpenAIWSModeInfo(
-					"ingress_ws_http_bridge_search_count_saturated account_id=%d turn=%d",
-					account.ID,
-					turn,
-				)
-			}
+			grokSearch.observe(upstreamMessage, eventType)
 		}
 		if responseID == "" && eventResponseID != "" {
 			responseID = eventResponseID
@@ -916,7 +905,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				} else {
 					failoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, true, resp.Header.Get("x-request-id"), upstreamMessage, errMessage, mappedModel, resp.Header)
 				}
-				if searchCount > 0 || searches.count() > 0 {
+				if grokSearch.count > 0 || searches.count() > 0 {
 					return resultWithUsage(), failoverErr
 				}
 				return nil, failoverErr
@@ -1064,7 +1053,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 		streamErr := fmt.Errorf("read upstream http bridge stream: %w", err)
 		if turn == 1 && !clientDisconnected && !wroteDownstream {
 			failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, streamErr, true)
-			if searchCount > 0 || searches.count() > 0 {
+			if grokSearch.count > 0 || searches.count() > 0 {
 				return resultWithUsage(), failoverErr
 			}
 			return nil, failoverErr
@@ -1077,7 +1066,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 	}
 	if turn == 1 && !clientDisconnected && !wroteDownstream {
 		failoverErr := s.handleOpenAIUpstreamTransportError(ctx, c, account, terminalErr, true)
-		if searchCount > 0 || searches.count() > 0 {
+		if grokSearch.count > 0 || searches.count() > 0 {
 			return resultWithUsage(), failoverErr
 		}
 		return nil, failoverErr

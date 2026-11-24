@@ -43,7 +43,7 @@ func newGroupUndoFixture(t *testing.T) *groupUndoFixture {
 	groups := newGroupRepositoryWithSQL(client, integrationDB)
 	svc := service.NewAdminService(
 		nil, users, groups, nil, nil, keys, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	return &groupUndoFixture{ctx: ctx, svc: svc, users: users, keys: keys, userID: user.ID, plainID: plain.ID, exclusive: exclusive.ID, other: other.ID}
 }

@@ -153,6 +153,7 @@ func AccountPatchBaseFromContext(ctx context.Context, accountID int64) (*Account
 var managedAccountExtraKeys = []string{
 	UpstreamBillingProbeEnabledExtraKey,
 	UpstreamBillingRateSyncEnabledExtraKey,
+	UpstreamBillingGroupSyncEnabledExtraKey,
 	UpstreamBillingProbeExtraKey,
 	OllamaCloudUsageSessionExtraKey,
 	OllamaCloudUsageAutoRefreshExtraKey,

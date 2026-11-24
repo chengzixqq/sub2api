@@ -116,3 +116,57 @@ func TestSonnet55ToolsetBetaFilteredAfterAccountOverrideAndOnVertex(t *testing.T
 	require.False(t, containsBetaToken(nativeHeader, claude.BetaFineGrainedToolStreaming))
 	require.True(t, containsBetaToken(nativeHeader, claude.BetaContext1M))
 }
+
+func TestAnthropicHeaderTemplateRespectsFinalBetaPolicy(t *testing.T) {
+	body := []byte(`{"model":"claude-sonnet-5-5","tools":[{"type":"browser_toolset_20260801"}],"messages":[{"role":"user","content":"hi"}]}`)
+	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Credentials: map[string]any{
+		credKeyHeaderOverrideEnabled: true,
+		credKeyHeaderOverrides: map[string]any{
+			"anthropic-beta": claude.BetaFineGrainedToolStreaming + "," + claude.BetaContext1M + ",user-{{user_id}}",
+			"x-report-user":  "user-{{user_id}}",
+		},
+	}}
+	svc := &GatewayService{cfg: &config.Config{}}
+	for _, authenticated := range []bool{true, false} {
+		ctx := t.Context()
+		if authenticated {
+			ctx = WithHeaderOverrideRequestScope(ctx, 7, 11, nil)
+		}
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/messages", nil)
+		c.Request.Header.Set("anthropic-beta", "client-supplied")
+		for _, build := range []struct {
+			name string
+			fn   func() (*http.Request, []byte, error)
+		}{
+			{"messages", func() (*http.Request, []byte, error) {
+				return svc.buildUpstreamRequest(ctx, c, account, body, "key", "apikey", "claude-sonnet-5-5", false, false)
+			}},
+			{"count_tokens", func() (*http.Request, []byte, error) {
+				return svc.buildCountTokensRequest(ctx, c, account, body, "key", "apikey", "claude-sonnet-5-5", false)
+			}},
+			{"passthrough", func() (*http.Request, []byte, error) {
+				return svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(ctx, c, account, body, "key")
+			}},
+			{"native", func() (*http.Request, []byte, error) {
+				return (&OpenAIGatewayService{}).buildNativeAnthropicUpstreamRequest(ctx, c, account, body, "key", "https://example.test/v1/messages")
+			}},
+		} {
+			t.Run(build.name, func(t *testing.T) {
+				req, _, err := build.fn()
+				require.NoError(t, err)
+				beta := getHeaderRaw(req.Header, "anthropic-beta")
+				if authenticated {
+					require.Equal(t, "user-7", getHeaderRaw(req.Header, "x-report-user"))
+					require.True(t, containsBetaToken(beta, "user-7"), beta)
+					require.True(t, containsBetaToken(beta, claude.BetaContext1M), beta)
+					require.False(t, containsBetaToken(beta, claude.BetaFineGrainedToolStreaming), beta)
+				} else {
+					require.Empty(t, getHeaderRaw(req.Header, "x-report-user"))
+					require.Empty(t, beta)
+					require.Empty(t, headerValuesFold(req.Header, "anthropic-beta"))
+				}
+			})
+		}
+	}
+}

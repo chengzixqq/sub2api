@@ -80,7 +80,7 @@ func TestAccountDispatchPolicyIntegration_Bulk500AndStrictValidation(t *testing.
 	admin := service.NewAdminService(
 		nil, NewUserRepository(f.client, integrationDB), NewAdminGroupRepository(f.client, integrationDB), f.repo,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, f.client,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	svc, ok := admin.(service.AccountDispatchAdminService)
 	require.True(t, ok)

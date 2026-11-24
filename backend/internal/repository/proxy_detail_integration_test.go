@@ -33,7 +33,7 @@ func TestGetProxyWithAccountCount_ScopedCountsAndFallback(t *testing.T) {
 	proxies := newProxyRepositoryWithSQL(client, integrationDB)
 	svc := service.NewAdminService(
 		nil, nil, nil, nil, proxies, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	adminCtx := service.WithScope(ctx, service.AdminScope())
 	got, err := svc.GetProxyWithAccountCount(adminCtx, proxy.ID)

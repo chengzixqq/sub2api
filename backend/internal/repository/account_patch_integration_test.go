@@ -22,7 +22,7 @@ func (s *AccountRepoSuite) newPatchAdminService() service.AdminService {
 	// Standalone tests below use a root client to verify PATCH commit/rollback.
 	return service.NewAdminService(
 		nil, nil, nil, s.repo, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 
@@ -34,11 +34,9 @@ type failAccountBillingSettingsUpdateRepo struct {
 func (r *failAccountBillingSettingsUpdateRepo) UpdateWithAccountBillingSettings(
 	ctx context.Context,
 	account *service.Account,
-	probeEnabled *bool,
-	rateSyncEnabled *bool,
-	rateMultiplier *float64,
+	settings service.AccountBillingSettingsUpdate,
 ) error {
-	if err := r.accountRepository.UpdateWithAccountBillingSettings(ctx, account, probeEnabled, rateSyncEnabled, rateMultiplier); err != nil {
+	if err := r.accountRepository.UpdateWithAccountBillingSettings(ctx, account, settings); err != nil {
 		return err
 	}
 	return r.err
@@ -47,7 +45,7 @@ func (r *failAccountBillingSettingsUpdateRepo) UpdateWithAccountBillingSettings(
 func newPatchAdminServiceForIntegration(client *dbent.Client, accountRepo service.AdminAccountRepository) service.AdminService {
 	return service.NewAdminService(
 		nil, nil, NewAdminGroupRepository(client, integrationDB), accountRepo, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 
@@ -331,4 +329,84 @@ func (s *AccountRepoSuite) TestConfigVersion_RuntimeWritesDoNotBumpIt() {
 	after, err := s.repo.GetByID(s.ctx, account.ID)
 	s.Require().NoError(err)
 	s.Require().Equal(before.ConfigVersion, after.ConfigVersion)
+}
+
+func (s *AccountRepoSuite) TestProbeDisplayTextAndPatchVersion() {
+	ctx := service.WithScope(s.ctx, service.AdminScope())
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name: "local", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "example-key"}, Extra: map[string]any{
+			service.UpstreamBillingProbeEnabledExtraKey: true, service.UpstreamBillingGroupSyncEnabledExtraKey: true,
+		},
+	})
+	read := func() *service.Account {
+		a, err := s.repo.GetByID(ctx, account.ID)
+		s.Require().NoError(err)
+		return a
+	}
+	poll := func(base *service.Account, name, notes string) {
+		s.Require().NoError(s.repo.UpdateUpstreamBillingProbeSnapshot(ctx, base,
+			&service.UpstreamBillingProbeSnapshot{Status: service.UpstreamBillingProbeStatusOK},
+			nil, service.BillingGroupInfo{Name: name, Description: notes}))
+	}
+	editor := s.newPatchAdminService()
+	before := read()
+	poll(before, "plan", "plan notes")
+	synced := read()
+	s.Require().Equal(before.ConfigVersion+1, synced.ConfigVersion)
+	_, err := editor.PatchAccount(ctx, account.ID, &service.PatchAccountInput{
+		ExpectedConfigVersion: &before.ConfigVersion, Fields: service.UpdateAccountInput{Name: "stale"},
+	})
+	s.Require().Equal(http.StatusPreconditionFailed, infraerrors.Code(err))
+	poll(synced, "plan", "plan notes")
+	s.Require().Equal(synced.ConfigVersion, read().ConfigVersion)
+	priority := 7
+	before.Priority = priority
+	s.Require().NoError(s.repo.UpdateWithAccountBillingSettings(ctx, before, service.AccountBillingSettingsUpdate{}))
+	pending := read()
+	s.Require().Equal("plan", pending.Name)
+	s.Require().Equal("plan notes", *pending.Notes)
+	manualNotes := "manual notes"
+	edited, err := editor.PatchAccount(ctx, account.ID, &service.PatchAccountInput{
+		ExpectedConfigVersion: &pending.ConfigVersion, Fields: service.UpdateAccountInput{Name: "manual", Notes: &manualNotes},
+	})
+	s.Require().NoError(err)
+	poll(pending, "late", "late notes")
+	after := read()
+	s.Require().Equal("manual", after.Name)
+	s.Require().Equal(manualNotes, *after.Notes)
+	s.Require().Equal(edited.ConfigVersion, after.ConfigVersion)
+}
+
+func (s *AccountRepoSuite) TestIdentityHeaderWritesValidateLockedConfiguration() {
+	newAccount := func(name string) *service.Account {
+		return mustCreateAccount(s.T(), s.client, &service.Account{
+			Name: name, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+			Credentials: map[string]any{"base_url": "https://relay.example"},
+		})
+	}
+	plain := newAccount("static")
+	protected := newAccount("protected")
+	pending, err := s.repo.GetByID(s.ctx, protected.ID)
+	s.Require().NoError(err)
+	adminEdit, err := s.repo.GetByID(s.ctx, protected.ID)
+	s.Require().NoError(err)
+	adminEdit.Credentials["header_overrides"] = map[string]any{"x-user": "{{user_id}}"}
+	s.Require().NoError(s.repo.Update(s.ctx, adminEdit))
+
+	pending.Credentials["base_url"] = "https://another.example"
+	err = s.repo.UpdateWithAccountBillingSettings(s.ctx, pending, service.AccountBillingSettingsUpdate{GuardIdentityHeaders: true})
+	s.Require().Equal(http.StatusForbidden, infraerrors.Code(err))
+	_, err = s.repo.BulkUpdate(s.ctx, []int64{plain.ID, protected.ID}, service.AccountBulkUpdate{
+		GuardIdentityHeaders: true, Credentials: map[string]any{"header_override_enabled": true},
+	})
+	s.Require().Equal(http.StatusForbidden, infraerrors.Code(err))
+	unchanged, err := s.repo.GetByID(s.ctx, plain.ID)
+	s.Require().NoError(err)
+	s.Require().NotContains(unchanged.Credentials, "header_override_enabled")
+	unchanged, err = s.repo.GetByID(s.ctx, protected.ID)
+	s.Require().NoError(err)
+	s.Require().NotContains(unchanged.Credentials, "header_override_enabled")
+	s.Require().Equal("https://relay.example", unchanged.Credentials["base_url"])
+	s.Require().Contains(unchanged.Credentials, "header_overrides")
 }

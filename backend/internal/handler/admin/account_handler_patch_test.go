@@ -49,7 +49,7 @@ func TestAccountHandlerPatch_PassesPatchesAndIfMatch(t *testing.T) {
 	svc := &patchAccountRecorder{stubAdminService: newStubAdminService(), account: service.Account{Name: "a", Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey, ConfigVersion: 8}}
 	router := newPatchAccountRouter(svc)
 
-	body := `{"priority":10,"credentials_patch":{"base_url":"https://x","custom_error_codes":null},"extra_patch":{"pool_mode":false}}`
+	body := `{"upstream_billing_group_sync_enabled":false,"priority":10,"credentials_patch":{"base_url":"https://x","custom_error_codes":null},"extra_patch":{"pool_mode":false}}`
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/accounts/5", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("If-Match", `"cv-7"`)
@@ -62,6 +62,8 @@ func TestAccountHandlerPatch_PassesPatchesAndIfMatch(t *testing.T) {
 	require.NotNil(t, svc.lastPatch.ExpectedConfigVersion)
 	require.Equal(t, int64(7), *svc.lastPatch.ExpectedConfigVersion)
 	require.Equal(t, 10, *svc.lastPatch.Fields.Priority)
+	require.NotNil(t, svc.lastPatch.Fields.GroupSyncEnabled)
+	require.False(t, *svc.lastPatch.Fields.GroupSyncEnabled)
 	require.Equal(t, "https://x", svc.lastPatch.CredentialsPatch["base_url"])
 	require.Contains(t, svc.lastPatch.CredentialsPatch, "custom_error_codes")
 	require.Nil(t, svc.lastPatch.CredentialsPatch["custom_error_codes"])
@@ -88,6 +90,7 @@ func TestAccountHandlerPatch_BodyVersionAndConflicts(t *testing.T) {
 	rec := send(`{"expected_config_version":3}`, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, int64(3), *svc.lastPatch.ExpectedConfigVersion)
+	require.Nil(t, svc.lastPatch.Fields.GroupSyncEnabled)
 
 	rec = send(`{"expected_config_version":3}`, `"cv-4"`)
 	require.Equal(t, http.StatusBadRequest, rec.Code)

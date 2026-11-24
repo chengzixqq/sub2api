@@ -936,3 +936,27 @@ func TestCompactionOverlapObservation(t *testing.T) {
 	}
 	require.Equal(t, 1, strings.Count(messages.String(), "billing.compaction_usage_overlap"))
 }
+
+func TestClaudeCodeCompactionForwardAndAccountTTLSettlement(t *testing.T) {
+	account, settings, _ := cacheTTLOverrideBoundaryAccount(t, "account/1h/global")
+	account.Credentials = map[string]any{"access_token": "oauth-token"}
+	body := []byte(`{"model":"claude-sonnet-4","max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":` + compactionTestJSONString(t, testCompactPrompt) + `,"cache_control":{"type":"ephemeral","ttl":"1h"}}]}]}`)
+	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), PlatformAnthropic)
+	require.NoError(t, err)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	reply := `{"type":"message","role":"assistant","model":"claude-sonnet-4","content":[],"stop_reason":"end_turn","usage":{` + compactionMessageFields + `,"iterations":[` + compactionMessage + "," + compactionFirst + `]}}`
+	upstream := &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(reply)),
+	}}
+	svc := newForwardPartialUsageServiceForTest(upstream)
+	svc.settingService = settings
+	result, err := svc.Forward(t.Context(), c, account, parsed)
+	require.NoError(t, err)
+	require.Contains(t, string(upstream.lastBody), `"ttl":"5m"`)
+	require.NotContains(t, string(upstream.lastBody), `"ttl":"1h"`)
+	log := recordCompactionUsage(t, result.Usage, false, false, account.GetCacheTTLOverrideTarget())
+	require.Equal(t, 0, log.CacheCreation5mTokens)
+	require.Equal(t, 10, log.CacheCreation1hTokens)
+}

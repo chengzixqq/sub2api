@@ -368,7 +368,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	var nativeSearch openAINativeSearchCounter
 	// Dedup search tool calls across SSE events (item.done + response.completed
 	// both list the same call_id — counting both would ~2× the surcharge).
-	streamSearchSeen := make(map[string]struct{})
+	var grokSearch grokSearchStreamCounter
 	resultWithUsage := func() *openaiStreamingResult {
 		return &openaiStreamingResult{
 			delivered:        delivered,
@@ -563,6 +563,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				suppressCurrentEvent = true
 			}
 			observer.ObserveOpenAI(dataBytes, eventType)
+			if account != nil && account.IsGrok() {
+				// A failed terminal can return before any downstream write.
+				grokSearch.observe(dataBytes, eventType)
+				searchCounter = grokSearch.count
+			}
 			// 初始上游 data 的 type 只解析一次：原始值保持终止事件的精确匹配，规范化值供后续分支复用。
 			if openAIStreamEventIsTerminalWithType(data, eventType) {
 				sawTerminalEvent = true
@@ -680,8 +685,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if countNative {
 				nativeSearch.observeRaw(dataBytes, eventType)
 				searchCounter = nativeSearch.count()
-			} else {
-				searchCounter = AccumulateSearchCount(searchCounter, countGrokNativeSearchCallsInSSEDataDedup(dataBytes, streamSearchSeen), "responses_stream")
 			}
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
@@ -1892,6 +1895,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if account.Type == AccountTypeOAuth && bodyLooksLikeSSE {
 		return s.handleSSEToJSON(resp, c, account, body, originalModel, mappedModel)
 	}
+	countNative := openAINativeSearchPriced(c, account)
+	searchCount := 0
+	if countNative {
+		searchCount = countOpenAINativeSearchJSON(body)
+	} else if account != nil && account.IsGrok() {
+		searchCount = countGrokNativeSearchCallsFromJSONBytes(body)
+	}
 	if account != nil && account.IsGrok() && isOpenAIResponsesCompactPath(c) {
 		body, err = convertGrokResponseToOpenAICompact(body)
 		if err != nil {
@@ -1911,11 +1921,6 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	usage := &usageValue
 	logOpenAISuccessMissingUsage(ctx, c, account, resp, usage, "json", false)
 
-	countNative := openAINativeSearchPriced(c, account)
-	searchCount := 0
-	if countNative {
-		searchCount = countOpenAINativeSearchJSON(body)
-	}
 	// Replace model in response if needed
 	if originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
@@ -1952,9 +1957,6 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
-	if !countNative {
-		searchCount = countGrokNativeSearchCallsFromJSONBytes(body)
-	}
 	return &openaiNonStreamingResult{
 		delivered:        delivered,
 		OpenAIUsage:      usage,
@@ -2017,10 +2019,20 @@ func bodyHasSSEFraming(body []byte) bool {
 
 func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Context, account *Account, body []byte, originalModel, mappedModel string) (out *openaiNonStreamingResult, outErr error) {
 	bodyText := string(body)
+	searchCount := 0
+	isGrok := account != nil && account.IsGrok()
+	if openAINativeSearchPriced(c, account) {
+		searchCount = countOpenAINativeSearchSSE(bodyText)
+	} else if isGrok {
+		searchCount = countGrokNativeSearchCallsFromSSEBody(bodyText)
+	}
+	usage := s.parseSSEUsageFromBody(bodyText)
 	defer func() {
-		if outErr != nil && out == nil && openAINativeSearchPriced(c, account) {
-			if count := countOpenAINativeSearchSSE(bodyText); count > 0 {
-				out = &openaiNonStreamingResult{searchCount: count}
+		if outErr != nil && out == nil {
+			if isGrok && (searchCount > 0 || hasOpenAIPartialUsage(usage)) {
+				out = &openaiNonStreamingResult{searchCount: searchCount, usage: usage, OpenAIUsage: usage}
+			} else if searchCount > 0 {
+				out = &openaiNonStreamingResult{searchCount: searchCount}
 			}
 		}
 	}()
@@ -2043,12 +2055,6 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		finalResponse, ok = extractOpenAINonCompletedTerminalResponse(terminalType, terminalPayload)
 	}
 
-	countNative := openAINativeSearchPriced(c, account)
-	searchCount := 0
-	if countNative {
-		searchCount = countOpenAINativeSearchSSE(bodyText)
-	}
-	usage := s.parseSSEUsageFromBody(bodyText)
 	if ok {
 		if parsedUsage, parsed := extractOpenAIUsageFromJSONBytes(finalResponse); parsed && !retainOpenAIUsageAfterZero(usage, &parsedUsage) {
 			replaceOpenAIUsageSnapshot(usage, parsedUsage)
@@ -2112,9 +2118,6 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		delivered = writeOpenAIResponseData(c, resp.StatusCode, contentType, body, usage)
 	}
 
-	if !countNative {
-		searchCount = countGrokNativeSearchCallsFromSSEBody(bodyText)
-	}
 	return &openaiNonStreamingResult{
 		delivered:        delivered,
 		OpenAIUsage:      usage,

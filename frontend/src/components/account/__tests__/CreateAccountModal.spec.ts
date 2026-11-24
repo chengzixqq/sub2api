@@ -10,7 +10,9 @@ import {
 const {
   createAccountMock,
   probeUpstreamBillingMock,
+  previewUpstreamGroup,
   syncUpstreamModelsMock,
+  showErrorMock,
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
@@ -18,10 +20,13 @@ const {
   createFromSSOMock,
   authIsSimpleMode,
   authIsOwner,
+  authIsVendor,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
   probeUpstreamBillingMock: vi.fn(),
+  previewUpstreamGroup: vi.fn(),
   syncUpstreamModelsMock: vi.fn(),
+  showErrorMock: vi.fn(),
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
@@ -29,11 +34,12 @@ const {
   createFromSSOMock: vi.fn(),
   authIsSimpleMode: { value: true },
   authIsOwner: { value: false },
+  authIsVendor: { value: false },
 }))
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
+    showError: showErrorMock,
     showSuccess: vi.fn(),
     showWarning: showWarningMock,
   }),
@@ -42,6 +48,7 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
     get isOwner() { return authIsOwner.value },
+    get isVendor() { return authIsVendor.value },
     get isSimpleMode() {
       return authIsSimpleMode.value
     },
@@ -54,6 +61,7 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       create: createAccountMock,
       probeUpstreamBilling: probeUpstreamBillingMock,
+      previewUpstreamGroup,
       syncUpstreamModels: syncUpstreamModelsMock,
       checkMixedChannelRisk: vi.fn().mockResolvedValue({ has_risk: false }),
       importCodexSession: importCodexSessionMock,
@@ -214,9 +222,11 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   beforeEach(() => {
     authIsSimpleMode.value = true
     authIsOwner.value = false
+    authIsVendor.value = false
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
     probeUpstreamBillingMock.mockReset().mockResolvedValue({})
     syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showErrorMock.mockReset()
     showWarningMock.mockReset()
     importCodexSessionMock.mockReset().mockResolvedValue({
       created: 1,
@@ -232,6 +242,47 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it.each([
+    { role: 'site administrator', isOwner: true, value: '{{user_id}}' },
+    { role: 'vendor', isOwner: false, value: 'fixed-value' }
+  ])('creates header overrides allowed for a $role', async ({ isOwner, value }) => {
+    authIsOwner.value = isOwner
+    authIsVendor.value = !isOwner
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('[data-tour="account-form-name"]').setValue('Test account')
+    await wrapper.get('form input[type="password"]').setValue('test-api-key')
+
+    const toggle = wrapper.findAll('button').find((button) =>
+      button.element.parentElement?.querySelector('label')?.textContent === 'admin.accounts.headerOverride.title'
+    )
+    expect(toggle).toBeDefined()
+    await toggle?.trigger('click')
+    if (isOwner) {
+      await wrapper.get('[data-testid="header-override-variable-user_id"]').trigger('click')
+    } else {
+      expect(wrapper.find('[data-testid="header-override-variables"]').exists()).toBe(false)
+      await selectButtonByText(wrapper, 'admin.accounts.headerOverride.addRow')
+      await wrapper.get('input[placeholder="admin.accounts.headerOverride.namePlaceholder"]').setValue('x-gateway-user-id')
+      await wrapper.get('[data-testid="header-override-value"]').setValue('{{user_id}}')
+      await wrapper.get('#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+      expect(createAccountMock).not.toHaveBeenCalled()
+      expect(showErrorMock).toHaveBeenCalledWith('admin.accounts.headerOverride.variableNotAllowed')
+      await wrapper.get('[data-testid="header-override-value"]').setValue(value)
+    }
+
+    await wrapper.get('#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.lastCall?.[0].credentials).toMatchObject({
+      header_override_enabled: true,
+      header_overrides: { 'x-gateway-user-id': value }
+    })
+    wrapper.unmount()
+  })
 
   it('creates an authorized-only account without binding a default group', async () => {
     authIsOwner.value = true
@@ -300,6 +351,45 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
       skip_default_group_bind: true,
       group_ids: []
     }))
+  })
+
+  it('fills the name and notes from the unsaved API key and its adaptive Chat URL', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Kimi')
+    await wrapper.get('[data-testid="cn-adaptive-base-url-chat_completions"]').setValue('https://relay.example/v1')
+    await wrapper.get('form input[type="password"]').setValue('test-key')
+    previewUpstreamGroup.mockResolvedValue({ name: '标准组', notes: '共享账号' })
+
+    await selectButtonByText(wrapper, 'admin.accounts.upstreamBilling.syncGroup')
+    await flushPromises()
+
+    expect(previewUpstreamGroup).toHaveBeenCalledWith({
+      platform: 'kimi', base_url: 'https://relay.example/v1', api_key: 'test-key', proxy_id: null
+    }, expect.anything())
+    expect(wrapper.get<HTMLInputElement>('[data-tour="account-form-name"]').element.value).toBe('标准组')
+    expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe('共享账号')
+    expect(createAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('creates an API key account with group sync only after opt-in', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('[data-tour="account-form-name"]').setValue('local')
+    await wrapper.get('form input[type="password"]').setValue('synthetic-key')
+    const group = wrapper.get('[data-testid="upstream-billing-group-sync"]')
+    const probe = wrapper.get('[data-testid="upstream-billing-auto-probe"]')
+    expect(group.attributes('aria-checked')).toBe('false')
+    await probe.trigger('click')
+    await group.trigger('click')
+    expect(probe.attributes('aria-checked')).toBe('true')
+    await wrapper.get('#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      upstream_billing_group_sync_enabled: true, upstream_billing_probe_enabled: true
+    })
+    wrapper.unmount()
   })
 
   it('can create a passthrough account with model filtering enabled', async () => {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -58,9 +59,15 @@ func AccumulateSearchCount(current, delta int, component string) int {
 // Counts: web_search_call, x_search_call, tool_search_call, and function_call
 // named tool_search / web_search / x_search, and custom_tool_call items the xAI
 // server runs itself (apicompat.IsServerSideSearchCall: call_id xs_ / as_).
+//
+// When usage.server_side_tool_usage_details is present, xAI's reported success
+// counts replace the item count (see grokSearchCountFromUsage).
 func countGrokNativeSearchCallsFromJSONBytes(body []byte) int {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return 0
+	}
+	if n, ok := grokReportedSearchCount(body); ok {
+		return n
 	}
 	// Responses envelopes normally expose either top-level output (JSON mode)
 	// or response.output (terminal SSE payload). Compatibility layers can retain
@@ -73,15 +80,82 @@ func countGrokNativeSearchCallsFromJSONBytes(body []byte) int {
 }
 
 func countGrokNativeSearchCallsFromSSEBody(body string) int {
-	if strings.TrimSpace(body) == "" {
-		return 0
-	}
-	seen := make(map[string]struct{})
-	total := 0
-	forEachOpenAISSEDataPayload(body, func(data []byte) {
-		total = AccumulateSearchCount(total, countGrokNativeSearchCallsInSSEDataDedup(data, seen), "sse_body")
+	var searches grokSearchStreamCounter
+	forEachOpenAISSEFrame(body, func(eventType string, data []byte) {
+		searches.observe(data, eventType)
 	})
-	return total
+	return searches.count
+}
+
+// One upstream attempt may repeat an item in its terminal output. An explicit
+// terminal usage report replaces all such evidence, even when the report is zero.
+type grokSearchStreamCounter struct {
+	seen     map[string]struct{}
+	count    int
+	reported bool
+}
+
+func (s *grokSearchStreamCounter) observe(data []byte, eventType string) {
+	eventType = effectiveOpenAISSEEventType(data, eventType)
+	if openAIStreamEventTypeIsTerminal(eventType) {
+		if n, ok := grokReportedSearchCount(data); ok && gjson.ValidBytes(data) {
+			s.count, s.reported = n, true
+			return
+		}
+	}
+	if s.reported {
+		return
+	}
+	switch eventType {
+	case "response.output_item.done", "response.completed", "response.done", "response.incomplete":
+	default:
+		return
+	}
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	if !gjson.GetBytes(data, "type").Exists() {
+		data = []byte(openAICompatPayloadWithEventType(string(data), eventType))
+	}
+	s.count = AccumulateSearchCount(s.count, countGrokNativeSearchCallsInSSEDataDedup(data, s.seen), "grok_search_stream")
+}
+
+func grokReportedSearchCount(data []byte) (int, bool) {
+	for _, path := range []string{"response.usage", "usage"} {
+		if n, ok := grokSearchCountFromUsage(gjson.GetBytes(data, path)); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// grokSearchCountFromUsage reads xAI's per-class success counts from a usage
+// object. xAI documents these counts as what determines billing for per-call
+// tools (https://docs.x.ai/developers/tools/tool-usage-details#server-side-tool-calls-vs-tool-usage).
+// Only the classes the item counter also counts are read: web_search_calls
+// (web_search_call items), x_search_calls (xs_ custom_tool_call items) and
+// document_search_calls (as_ custom_tool_call items). Other classes and the
+// X Search item counts (x_posts_fetched, x_users_fetched) are not read. ok is
+// false when server_side_tool_usage_details is absent, so callers keep the
+// item count.
+func grokSearchCountFromUsage(usage gjson.Result) (int, bool) {
+	details := usage.Get("server_side_tool_usage_details")
+	if !details.IsObject() {
+		return 0, false
+	}
+	total := 0
+	for _, field := range []string{"web_search_calls", "x_search_calls", "document_search_calls"} {
+		value := details.Get(field)
+		if value.Type == gjson.String && gjson.Valid(value.Str) {
+			value = gjson.Parse(value.Str)
+		}
+		n, ok := boundedJSONNonNegativeInt(value)
+		if !ok && value.Type == gjson.Number && value.Num >= float64(math.MaxInt) {
+			n = math.MaxInt
+		}
+		total = AccumulateSearchCount(total, n, "grok_search_usage")
+	}
+	return total, true
 }
 
 // countGrokNativeSearchCallsInSSEData counts search tool calls in one SSE
@@ -158,7 +232,7 @@ func collectGrokNativeSearchCallKeys(data []byte) []string {
 	// An empty type means a bare item object without an SSE envelope; anything
 	// else that is not a completion event carries no billable call.
 	switch strings.TrimSpace(gjson.GetBytes(data, "type").String()) {
-	case "response.output_item.done", "response.completed", "response.done", "":
+	case "response.output_item.done", "response.completed", "response.done", "response.incomplete", "":
 	default:
 		return nil
 	}
@@ -189,11 +263,11 @@ func collectGrokNativeSearchCallKeys(data []byte) []string {
 	if item := gjson.GetBytes(data, "item"); item.Exists() {
 		consider(item)
 	}
-	gjson.GetBytes(data, "response.output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	gjson.GetBytes(data, "output").ForEach(func(_, item gjson.Result) bool {
+	output := gjson.GetBytes(data, "response.output")
+	if !output.IsArray() {
+		output = gjson.GetBytes(data, "output")
+	}
+	output.ForEach(func(_, item gjson.Result) bool {
 		consider(item)
 		return true
 	})
@@ -210,7 +284,7 @@ func countGrokNativeSearchCallsInSSEDataWithKeys(data []byte) (int, []string) {
 	// Count once on item completion / completed response, not on every delta.
 	// An empty type is a bare item object without an SSE envelope.
 	switch strings.TrimSpace(gjson.GetBytes(data, "type").String()) {
-	case "response.output_item.done", "response.completed", "response.done", "":
+	case "response.output_item.done", "response.completed", "response.done", "response.incomplete", "":
 	default:
 		return 0, nil
 	}
@@ -234,11 +308,11 @@ func countGrokNativeSearchCallsInSSEDataWithKeys(data []byte) (int, []string) {
 	if item := gjson.GetBytes(data, "item"); item.Exists() {
 		consider(item)
 	}
-	gjson.GetBytes(data, "response.output").ForEach(func(_, item gjson.Result) bool {
-		consider(item)
-		return true
-	})
-	gjson.GetBytes(data, "output").ForEach(func(_, item gjson.Result) bool {
+	output := gjson.GetBytes(data, "response.output")
+	if !output.IsArray() {
+		output = gjson.GetBytes(data, "output")
+	}
+	output.ForEach(func(_, item gjson.Result) bool {
 		consider(item)
 		return true
 	})

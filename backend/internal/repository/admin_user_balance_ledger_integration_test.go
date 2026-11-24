@@ -82,7 +82,7 @@ func ledgerSettingService(values map[string]string) *service.SettingService {
 func newLedgerAdminService(client *dbent.Client, redeemRepo service.RedeemCodeRepository, adjustmentRepo service.AdminUserAdjustmentRepository, settings *service.SettingService) service.AdminService {
 	return service.NewAdminService(
 		nil, NewUserRepository(client, integrationDB), nil, nil, nil, nil, redeemRepo, adjustmentRepo, nil, nil, nil,
-		nil, nil, nil, client, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 

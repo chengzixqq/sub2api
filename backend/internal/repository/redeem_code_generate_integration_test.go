@@ -30,7 +30,7 @@ func (r *failingRedeemRepo) Create(ctx context.Context, code *service.RedeemCode
 func newGenerateService(redeemRepo service.RedeemCodeRepository) service.AdminService {
 	return service.NewAdminService(
 		nil, nil, nil, nil, nil, nil, redeemRepo, nil, nil, nil, nil,
-		nil, nil, nil, integrationEntClient, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, integrationEntClient, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 

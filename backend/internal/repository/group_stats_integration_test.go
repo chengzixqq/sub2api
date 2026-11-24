@@ -58,7 +58,7 @@ func TestAdminGetGroupStats_MatchesLists(t *testing.T) {
 	subs := NewUserSubscriptionRepository(client)
 	svc := service.NewAdminService(
 		nil, nil, groups, nil, nil, keys, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, subs, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, subs, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 
 	stats, err := svc.GetGroupStats(ctx, group.ID)

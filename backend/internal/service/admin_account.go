@@ -156,6 +156,8 @@ func cloneAccountJSONMap(value map[string]any) (map[string]any, error) {
 var duplicateAccountDiscardedExtraKeys = map[string]struct{}{
 	// A retry identity belongs to the operation that created one copy, not to later copies.
 	duplicateAccountOperationIDExtraKey: {},
+	// Keep the copy's local name until its administrator opts into group sync.
+	UpstreamBillingGroupSyncEnabledExtraKey: {},
 	// External sync identity belongs to one local account only.
 	"crs_account_id": {},
 	"crs_kind":       {},
@@ -387,11 +389,17 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	if err := ValidateHeaderOverrideVariableUsage(input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	duplicate, err := buildAccountForCreate(ctx, input, accountExtra)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateWorkspaceAccountProxy(ctx, duplicate.ProxyID); err != nil {
 		return nil, err
 	}
 	// A copied credential must be reviewed before it can share live traffic with its source.
@@ -475,6 +483,11 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
+	if !canManageIdentityHeaders(ctx) {
+		if err := ValidateIdentityHeaderChange(&Account{}, &Account{Credentials: input.Credentials}); err != nil {
+			return nil, err
+		}
+	}
 	if input.DispatchScope == "" {
 		input.DispatchScope = DispatchScopeShared
 	}
@@ -503,9 +516,10 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
-	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
+	// Probe/session state is system-managed. Only explicit account settings can enable it.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
+	delete(accountExtra, UpstreamBillingGroupSyncEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingProbeExtraKey)
 	delete(accountExtra, OllamaCloudUsageSessionExtraKey)
 	delete(accountExtra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -528,7 +542,11 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 		DispatchScope: input.DispatchScope,
 		WorkspaceID:   resolveNewAccountWorkspaceID(ctx),
 	}
-	if input.ProbeEnabled != nil && *input.ProbeEnabled {
+	groupSync := input.GroupSyncEnabled != nil && *input.GroupSyncEnabled
+	if groupSync && input.ProbeEnabled != nil && !*input.ProbeEnabled {
+		return nil, ErrUpstreamBillingGroupSyncRequiresProbe
+	}
+	if groupSync || (input.ProbeEnabled != nil && *input.ProbeEnabled) {
 		if !isUpstreamBillingProbeAccount(account) {
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
@@ -536,6 +554,9 @@ func buildAccountForCreate(ctx context.Context, input *CreateAccountInput, accou
 			account.Extra = make(map[string]any)
 		}
 		account.Extra[UpstreamBillingProbeEnabledExtraKey] = true
+		if groupSync {
+			account.Extra[UpstreamBillingGroupSyncEnabledExtraKey] = true
+		}
 	}
 	// 预计算固定时间重置的下次重置时间
 	if account.Extra != nil {
@@ -605,6 +626,19 @@ func resolveNewAccountWorkspaceID(ctx context.Context) int64 {
 	return scope.WorkspaceID
 }
 
+// A workspace request may select only a proxy visible to that workspace.
+// Internal account maintenance can also call these methods without an operator scope.
+func (s *adminServiceImpl) validateWorkspaceAccountProxy(ctx context.Context, proxyID *int64) error {
+	scope, scoped := ScopeFromContext(ctx)
+	if !scoped || !scope.IsVendor() || proxyID == nil || *proxyID == 0 {
+		return nil
+	}
+	if s.proxyRepo == nil {
+		return ErrServiceUnavailable
+	}
+	return s.requireProxyAccess(ctx, *proxyID)
+}
+
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
 	if input.DispatchScope == DispatchScopeAuthorizedOnly {
 		input.SkipDefaultGroupBind = true
@@ -661,6 +695,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	if err := ValidateHeaderOverrideVariableUsage(input.Type, input.Credentials); err != nil {
+		return nil, err
+	}
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
@@ -671,6 +708,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 
 	account, err := buildAccountForCreate(ctx, input, accountExtra)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateWorkspaceAccountProxy(ctx, account.ProxyID); err != nil {
 		return nil, err
 	}
 	if err := s.ValidateAccountGroupBindings(ctx, groupIDs); err != nil {
@@ -820,6 +860,7 @@ func (s *adminServiceImpl) patchAccountInContext(ctx context.Context, id int64, 
 }
 
 func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, account *Account, input *UpdateAccountInput) (*Account, error) {
+	before := *account
 	if input.DispatchScope != nil {
 		base, ok := AccountPatchBaseFromContext(ctx, account.ID)
 		if !ok || base.ExpectedConfigVersion == nil {
@@ -923,10 +964,16 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		// 手动刷新、apply / 重新授权、换令牌都经过这里：access_token 变了就记刷新时间。
 		stampTokenRefreshedAtOnNewAccessToken(account.Type, previousAccessToken, account.Credentials, time.Now())
 	}
+	// 放在 credentials 分支之外：只改账号类型（不带 credentials）的更新同样要拦，
+	// 否则 api_key 账号改成 OAuth 后会把带变量的覆写值留在 OAuth 账号上。
+	if err := ValidateHeaderOverrideVariableUsage(account.Type, account.Credentials); err != nil {
+		return nil, err
+	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
 	requestedProbeEnabledUpdate := input.ProbeEnabled
 	requestedRateSyncEnabledUpdate := input.RateSyncEnabled
+	groupSyncUpdate := input.GroupSyncEnabled
 	if input.Extra != nil {
 		requestedProbeEnabled, hasRequestedProbeEnabled := normalizedExtra[UpstreamBillingProbeEnabledExtraKey]
 		if hasRequestedProbeEnabled {
@@ -941,6 +988,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		}
 		delete(normalizedExtra, UpstreamBillingProbeEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingRateSyncEnabledExtraKey)
+		delete(normalizedExtra, UpstreamBillingGroupSyncEnabledExtraKey)
 		delete(normalizedExtra, UpstreamBillingProbeExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageSessionExtraKey)
 		delete(normalizedExtra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -962,6 +1010,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 			UpstreamModelMetadataExtraKey,
 			UpstreamBillingProbeEnabledExtraKey,
 			UpstreamBillingRateSyncEnabledExtraKey,
+			UpstreamBillingGroupSyncEnabledExtraKey,
 			UpstreamBillingProbeExtraKey,
 			OllamaCloudUsageSessionExtraKey,
 			OllamaCloudUsageAutoRefreshExtraKey,
@@ -997,6 +1046,12 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 	if input.Extra == nil {
 		account.Extra = prepareCodexFingerprintExtraForUpdate(account, account.Extra)
 	}
+	if groupSyncUpdate != nil && *groupSyncUpdate {
+		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
+			return nil, ErrUpstreamBillingGroupSyncRequiresProbe
+		}
+		requestedProbeEnabledUpdate = groupSyncUpdate
+	}
 	if requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate {
 		if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
 			return nil, infraerrors.BadRequest(
@@ -1010,6 +1065,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 	if requestedProbeEnabledUpdate != nil && !*requestedProbeEnabledUpdate {
 		disabled := false
 		requestedRateSyncEnabledUpdate = &disabled
+		groupSyncUpdate = &disabled
 	}
 	if (requestedProbeEnabledUpdate != nil && *requestedProbeEnabledUpdate) ||
 		(requestedRateSyncEnabledUpdate != nil && *requestedRateSyncEnabledUpdate) {
@@ -1017,7 +1073,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 			return nil, ErrUpstreamBillingProbeAccountInvalid
 		}
 	}
-	if account.Extra == nil && (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil) {
+	if account.Extra == nil && (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil || groupSyncUpdate != nil) {
 		account.Extra = make(map[string]any)
 	}
 	if requestedProbeEnabledUpdate != nil {
@@ -1025,6 +1081,9 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 	}
 	if requestedRateSyncEnabledUpdate != nil {
 		account.Extra[UpstreamBillingRateSyncEnabledExtraKey] = *requestedRateSyncEnabledUpdate
+	}
+	if groupSyncUpdate != nil {
+		account.Extra[UpstreamBillingGroupSyncEnabledExtraKey] = *groupSyncUpdate
 	}
 	// 影子代理恒继承母账号(由 propagateProxyToShadows 同步),不接受独立编辑——外审 B/P1;
 	// 否则要等母账号下次改 proxy 才被覆盖,期间影子会出现"有时继承、有时独立"的漂移。
@@ -1042,6 +1101,7 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		if !isUpstreamBillingProbeAccount(account) {
 			delete(account.Extra, UpstreamBillingProbeEnabledExtraKey)
 			delete(account.Extra, UpstreamBillingRateSyncEnabledExtraKey)
+			delete(account.Extra, UpstreamBillingGroupSyncEnabledExtraKey)
 		}
 	}
 	if account.Extra != nil {
@@ -1128,6 +1188,19 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		}
 	}
 
+	guardIdentityHeaders := !canManageIdentityHeaders(ctx)
+	if guardIdentityHeaders {
+		if err := ValidateIdentityHeaderChange(&before, account); err != nil {
+			return nil, err
+		}
+	}
+
+	if input.ProxyID != nil && !reflect.DeepEqual(before.ProxyID, account.ProxyID) {
+		if err := s.validateWorkspaceAccountProxy(ctx, account.ProxyID); err != nil {
+			return nil, err
+		}
+	}
+
 	billingSettingsAppliedAtomically := false
 	updater := s.accountBillingRepo
 	if updater == nil {
@@ -1138,11 +1211,11 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 	}
 	if updater != nil {
 		if err := updater.UpdateWithAccountBillingSettings(
-			ctx,
-			account,
-			requestedProbeEnabledUpdate,
-			requestedRateSyncEnabledUpdate,
-			input.RateMultiplier,
+			ctx, account, AccountBillingSettingsUpdate{
+				ProbeEnabled: requestedProbeEnabledUpdate, RateSyncEnabled: requestedRateSyncEnabledUpdate,
+				GroupSyncEnabled: groupSyncUpdate, RateMultiplier: input.RateMultiplier,
+				SetName: input.Name != "", SetNotes: input.Notes != nil, GuardIdentityHeaders: guardIdentityHeaders,
+			},
 		); err != nil {
 			return nil, err
 		}
@@ -1152,14 +1225,17 @@ func (s *adminServiceImpl) updateLoadedAccount(ctx context.Context, id int64, ac
 		if err := s.accountRepo.Update(ctx, account); err != nil {
 			return nil, err
 		}
-		if (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil) &&
+		if (requestedProbeEnabledUpdate != nil || requestedRateSyncEnabledUpdate != nil || groupSyncUpdate != nil) &&
 			isUpstreamBillingProbeAccount(account) {
-			settings := make(map[string]any, 2)
+			settings := make(map[string]any, 3)
 			if requestedProbeEnabledUpdate != nil {
 				settings[UpstreamBillingProbeEnabledExtraKey] = *requestedProbeEnabledUpdate
 			}
 			if requestedRateSyncEnabledUpdate != nil {
 				settings[UpstreamBillingRateSyncEnabledExtraKey] = *requestedRateSyncEnabledUpdate
+			}
+			if groupSyncUpdate != nil {
+				settings[UpstreamBillingGroupSyncEnabledExtraKey] = *groupSyncUpdate
 			}
 			if err := s.accountRepo.UpdateExtra(ctx, account.ID, settings); err != nil {
 				return nil, err
@@ -1197,6 +1273,7 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	updates = stripOpenAIAutoResetCreditManagedExtra(updates, true)
 	delete(updates, UpstreamBillingProbeEnabledExtraKey)
 	delete(updates, UpstreamBillingRateSyncEnabledExtraKey)
+	delete(updates, UpstreamBillingGroupSyncEnabledExtraKey)
 	delete(updates, UpstreamBillingProbeExtraKey)
 	delete(updates, OllamaCloudUsageSessionExtraKey)
 	delete(updates, OllamaCloudUsageAutoRefreshExtraKey)
@@ -1236,6 +1313,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)
 	delete(input.Extra, UpstreamBillingProbeEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingRateSyncEnabledExtraKey)
+	delete(input.Extra, UpstreamBillingGroupSyncEnabledExtraKey)
 	delete(input.Extra, UpstreamBillingProbeExtraKey)
 	delete(input.Extra, OllamaCloudUsageSessionExtraKey)
 	delete(input.Extra, OllamaCloudUsageAutoRefreshExtraKey)
@@ -1387,6 +1465,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	for _, account := range cachedTargets {
+		if account == nil {
+			continue
+		}
+		if err := ValidateHeaderOverrideVariableUsage(account.Type, input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
@@ -1410,6 +1496,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		repoUpdates.Extra[UpstreamBillingProbeEnabledExtraKey] = *input.ProbeEnabled
 		if !*input.ProbeEnabled {
 			repoUpdates.Extra[UpstreamBillingRateSyncEnabledExtraKey] = false
+			repoUpdates.Extra[UpstreamBillingGroupSyncEnabledExtraKey] = false
 		}
 	}
 	if updatesUpstreamBillingProbeIdentity(input.Credentials) || input.ProxyID != nil {
@@ -1449,6 +1536,21 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 	if input.Schedulable != nil {
 		repoUpdates.Schedulable = input.Schedulable
+	}
+
+	if !canManageIdentityHeaders(ctx) && (len(repoUpdates.Credentials) > 0 || repoUpdates.ProxyID != nil) {
+		repoUpdates.GuardIdentityHeaders = true
+		for _, current := range cachedTargets {
+			if current != nil {
+				if err := repoUpdates.ValidateBulkIdentityHeaders(current); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	if err := s.validateWorkspaceAccountProxy(ctx, repoUpdates.ProxyID); err != nil {
+		return nil, err
 	}
 
 	// Run bulk update for column/jsonb fields first.

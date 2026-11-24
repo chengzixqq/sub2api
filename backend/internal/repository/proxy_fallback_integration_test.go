@@ -48,7 +48,7 @@ func newProxyFallbackFixture(t *testing.T) *proxyFallbackFixture {
 	accounts := newAccountRepositoryWithSQL(client, integrationDB, nil)
 	svc := service.NewAdminService(
 		nil, nil, nil, accounts, proxies, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	return &proxyFallbackFixture{ctx: ctx, svc: svc, proxy: proxy, backup: backup, movedA: a, movedB: b, proxies: proxies}
 }

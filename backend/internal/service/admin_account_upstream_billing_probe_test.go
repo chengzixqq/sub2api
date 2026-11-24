@@ -28,9 +28,7 @@ type accountBillingSettingsAdminRepo struct {
 func (r *accountBillingSettingsAdminRepo) UpdateWithAccountBillingSettings(
 	_ context.Context,
 	account *Account,
-	probeEnabled *bool,
-	rateSyncEnabled *bool,
-	rateMultiplier *float64,
+	settings AccountBillingSettingsUpdate,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -45,15 +43,15 @@ func (r *accountBillingSettingsAdminRepo) UpdateWithAccountBillingSettings(
 	if updated.Extra == nil {
 		updated.Extra = make(map[string]any)
 	}
-	if probeEnabled != nil {
-		updated.Extra[UpstreamBillingProbeEnabledExtraKey] = *probeEnabled
+	if settings.ProbeEnabled != nil {
+		updated.Extra[UpstreamBillingProbeEnabledExtraKey] = *settings.ProbeEnabled
 	}
-	if rateSyncEnabled != nil {
-		updated.Extra[UpstreamBillingRateSyncEnabledExtraKey] = *rateSyncEnabled
+	if settings.RateSyncEnabled != nil {
+		updated.Extra[UpstreamBillingRateSyncEnabledExtraKey] = *settings.RateSyncEnabled
 	}
 	switch {
-	case rateMultiplier != nil:
-		value := *rateMultiplier
+	case settings.RateMultiplier != nil:
+		value := *settings.RateMultiplier
 		updated.RateMultiplier = &value
 		r.lastExplicitRate = &value
 	case r.concurrentRate != nil:
@@ -913,4 +911,83 @@ func TestCreateAccountDropsOpenCodeGoManagedKeys(t *testing.T) {
 	require.NotContains(t, created.Extra, OpenCodeGoUsageAutoRefreshExtraKey)
 	require.NotContains(t, created.Extra, OpenCodeGoUsageSnapshotExtraKey)
 	require.Equal(t, "value", created.Extra["custom"])
+}
+
+func TestCreateAccountGroupSyncIsExplicitAndEnablesOnlyTheProbe(t *testing.T) {
+	ctx := WithScope(t.Context(), AdminScope())
+	enabled, disabled := true, false
+	input := &CreateAccountInput{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	account, err := buildAccountForCreate(ctx, input, map[string]any{UpstreamBillingGroupSyncEnabledExtraKey: true})
+	require.NoError(t, err)
+	require.NotContains(t, account.Extra, UpstreamBillingGroupSyncEnabledExtraKey)
+	input.GroupSyncEnabled = &enabled
+	account, err = buildAccountForCreate(ctx, input, nil)
+	require.NoError(t, err)
+	require.True(t, upstreamBillingProbeEnabled(account))
+	require.Equal(t, true, account.Extra[UpstreamBillingGroupSyncEnabledExtraKey])
+	require.False(t, upstreamBillingRateSyncEnabled(account))
+	copyExtra, err := duplicateAccountExtra(account.Extra)
+	require.NoError(t, err)
+	require.NotContains(t, copyExtra, UpstreamBillingGroupSyncEnabledExtraKey)
+	input.ProbeEnabled = &disabled
+	_, err = buildAccountForCreate(ctx, input, nil)
+	require.ErrorIs(t, err, ErrUpstreamBillingGroupSyncRequiresProbe)
+}
+
+type probeWorkspaceRepo struct {
+	*upstreamBillingProbeAccountRepo
+}
+
+func (r *probeWorkspaceRepo) GetByIDScoped(ctx context.Context, id int64) (*Account, error) {
+	account, err := r.GetByID(ctx, id)
+	if err == nil && !ScopeFromContextOrDeny(ctx).OwnsWorkspaceID(account.WorkspaceID) {
+		return nil, ErrAccountNotFound
+	}
+	return account, err
+}
+
+func TestWorkspaceProbeAndEnableRequireOwnedAccountAndProxy(t *testing.T) {
+	proxyID := int64(8)
+	repo := &probeWorkspaceRepo{&upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{
+		1: {ID: 1, WorkspaceID: 9, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		2: {ID: 2, WorkspaceID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			ProxyID: &proxyID, Proxy: &Proxy{ID: proxyID, WorkspaceID: 9}},
+	}}}
+	svc := NewUpstreamBillingProbeService(repo, nil, nil)
+	ctx := WithScope(t.Context(), VendorScope(7, WorkspacePermissions{AccountManage: true}))
+	for id, want := range map[int64]error{1: ErrAccountNotFound, 2: ErrProxyNotFound} {
+		_, err := svc.ProbeAccount(ctx, id)
+		require.ErrorIs(t, err, want)
+		require.ErrorIs(t, svc.SetAccountEnabled(ctx, id, true), want)
+		require.Empty(t, repo.accounts[id].Extra)
+	}
+}
+
+type workspaceAccountProxyRepo struct {
+	ProxyRepository
+	proxy Proxy
+}
+
+func (r *workspaceAccountProxyRepo) GetByIDScoped(ctx context.Context, id int64) (*Proxy, error) {
+	if id != r.proxy.ID || !ScopeFromContextOrDeny(ctx).OwnsWorkspaceID(r.proxy.WorkspaceID) {
+		return nil, ErrProxyNotFound
+	}
+	return &r.proxy, nil
+}
+
+func TestVendorAccountProxySelectionUsesWorkspace(t *testing.T) {
+	repo := &upstreamBillingProbeAdminRepo{&upstreamBillingProbeAccountRepo{}}
+	svc := &adminServiceImpl{accountRepo: repo, proxyRepo: &workspaceAccountProxyRepo{proxy: Proxy{ID: 8, WorkspaceID: 7}}}
+	ctx := WithScope(t.Context(), VendorScope(7, WorkspacePermissions{AccountManage: true}))
+	foreign, own := int64(9), int64(8)
+	input := &CreateAccountInput{Name: "relay", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, SkipDefaultGroupBind: true, ProxyID: &foreign}
+	_, err := svc.CreateAccount(ctx, input)
+	require.ErrorIs(t, err, ErrProxyNotFound)
+	input.ProxyID = &own
+	account, err := svc.CreateAccount(ctx, input)
+	require.NoError(t, err)
+	_, err = svc.UpdateAccount(ctx, account.ID, &UpdateAccountInput{ProxyID: &foreign})
+	require.ErrorIs(t, err, ErrProxyNotFound)
+	_, err = svc.BulkUpdateAccounts(ctx, &BulkUpdateAccountsInput{AccountIDs: []int64{account.ID}, ProxyID: &foreign})
+	require.ErrorIs(t, err, ErrProxyNotFound)
 }

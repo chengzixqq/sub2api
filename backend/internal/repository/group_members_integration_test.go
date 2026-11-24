@@ -322,7 +322,7 @@ func TestAdminUpdateGroupMembers_PerAccountResults(t *testing.T) {
 	groups := newGroupRepositoryWithSQL(client, integrationDB)
 	svc := service.NewAdminService(
 		nil, nil, groups, accounts, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, client, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 
 	res, err := svc.UpdateGroupMembers(ctx, group.ID, service.UpdateGroupMembersInput{

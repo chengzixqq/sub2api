@@ -7,10 +7,21 @@ import {
   setPlatformCatalog
 } from '@/constants/platformCatalog'
 
-const { updateAccountMock, patchAccountMock, checkMixedChannelRiskMock, showWarningMock, authIsSimpleMode, authIsOwner } = vi.hoisted(() => ({
+const {
+  updateAccountMock,
+  patchAccountMock,
+  checkMixedChannelRiskMock,
+  previewUpstreamGroup,
+  showErrorMock,
+  showWarningMock,
+  authIsSimpleMode,
+  authIsOwner
+} = vi.hoisted(() => ({
   updateAccountMock: vi.fn(),
   patchAccountMock: vi.fn(),
+  previewUpstreamGroup: vi.fn(),
   checkMixedChannelRiskMock: vi.fn(),
+  showErrorMock: vi.fn(),
   showWarningMock: vi.fn(),
   authIsSimpleMode: { value: true },
   authIsOwner: { value: true }
@@ -18,7 +29,7 @@ const { updateAccountMock, patchAccountMock, checkMixedChannelRiskMock, showWarn
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
+    showError: showErrorMock,
     showSuccess: vi.fn(),
     showInfo: vi.fn(),
     showWarning: showWarningMock
@@ -28,7 +39,7 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
     get isOwner() { return authIsOwner.value },
-    isVendor: false,
+    get isVendor() { return !authIsOwner.value },
     workspace: undefined,
     get isSimpleMode() {
       return authIsSimpleMode.value
@@ -41,6 +52,7 @@ vi.mock('@/api/admin', () => ({
     accounts: {
       update: updateAccountMock,
       patch: patchAccountMock,
+      previewUpstreamGroup,
       checkMixedChannelRisk: checkMixedChannelRiskMock
     },
     settings: {
@@ -369,10 +381,136 @@ describe('EditAccountModal', () => {
     authIsOwner.value = true
     editAccountFixtures.clear()
     setUpPatchAdapter()
+    showErrorMock.mockReset()
     showWarningMock.mockReset()
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it.each([
+    { role: 'site administrator', isOwner: true, value: 'user-{{user_id}}' },
+    { role: 'vendor', isOwner: false, value: 'fixed-value' }
+  ])('patches header overrides allowed for a $role', async ({ isOwner, value }) => {
+    authIsOwner.value = isOwner
+    const account = buildAccount()
+    account.credentials.header_override_enabled = true
+    account.credentials.header_overrides = { 'x-test': 'original-value' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account, false, '"cv-8"')
+
+    expect(wrapper.find('[data-testid="header-override-variables"]').exists()).toBe(isOwner)
+    if (!isOwner) {
+      await wrapper.get('[data-testid="header-override-value"]').setValue('{{user_id}}')
+      await wrapper.get('#edit-account-form').trigger('submit.prevent')
+      await flushPromises()
+      expect(patchAccountMock).not.toHaveBeenCalled()
+    }
+    await wrapper.get('[data-testid="header-override-value"]').setValue(value)
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({
+      credentials_patch: expect.objectContaining({ header_overrides: { 'x-test': value } })
+    }), '"cv-8"')
+    wrapper.unmount()
+  })
+
+  it.each([true, false])('lets vendors patch other fields while preserving an administrator header template (enabled=%s)', async (enabled) => {
+    authIsOwner.value = false
+    const account = buildAccount()
+    account.credentials.header_override_enabled = enabled
+    account.credentials.header_overrides = { 'x-test': '{{api_key_id}}', 'x-static': 'fixed-value' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account, false, '"cv-9"')
+
+    await wrapper.get('[data-tour="edit-account-form-name"]').setValue('Renamed account')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({
+      name: 'Renamed account'
+    }), '"cv-9"')
+    expect(patchAccountMock.mock.lastCall?.[1].credentials_patch ?? {}).not.toHaveProperty('header_overrides')
+    expect(patchAccountMock.mock.lastCall?.[1].credentials_patch ?? {}).not.toHaveProperty('header_override_enabled')
+    expect(wrapper.findAll<HTMLInputElement>('[data-testid="header-override-value"]').map(({ element }) => element.value))
+      .toEqual(['fixed-value'])
+    expect(wrapper.find('[data-testid="header-override-variables"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each([true, false, undefined])('patches static headers without changing administrator settings (enabled=%s)', async (enabled) => {
+    authIsOwner.value = false
+    const account = buildAccount()
+    delete account.credentials.base_url
+    if (enabled !== undefined) account.credentials.header_override_enabled = enabled
+    account.credentials.header_overrides = {
+      'X-Identity': '  user={{ user_id }}  ',
+      'x-request': '{{request_id}}',
+      'x-change': 'old',
+      'x-delete': 'old'
+    }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account, false, '"cv-11"')
+    const toggle = wrapper.get<HTMLButtonElement>('[data-testid="header-override-toggle"]')
+    const valueSelector = '[data-testid="header-override-value"]'
+
+    expect(toggle.element.disabled).toBe(true)
+    expect(toggle.attributes('aria-checked')).toBe(String(enabled === true))
+    expect(wrapper.get('input[placeholder="https://api.openai.com"]').element.matches(':disabled')).toBe(true)
+    expect(wrapper.get('input[placeholder="sk-proj-..."]').element.matches(':disabled')).toBe(true)
+    expect(wrapper.getComponent({ name: 'ProxySelector' }).props('disabled')).toBe(true)
+    expect(wrapper.findAll(valueSelector)).toHaveLength(2)
+
+    await wrapper.findAll(valueSelector)[0].setValue('updated')
+    await wrapper.findAll('button[aria-label="admin.accounts.headerOverride.removeRow"]')[1].trigger('click')
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.headerOverride.addRow')!.trigger('click')
+    await wrapper.findAll('input[placeholder="admin.accounts.headerOverride.namePlaceholder"]')[1].setValue('X-Added')
+    await wrapper.findAll(valueSelector)[1].setValue('new')
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({
+      credentials_patch: expect.objectContaining({
+        header_overrides: {
+          'X-Identity': '  user={{ user_id }}  ',
+          'x-request': '{{request_id}}',
+          'x-change': 'updated',
+          'x-added': 'new'
+        }
+      })
+    }), '"cv-11"')
+    const patch = patchAccountMock.mock.lastCall?.[1]
+    expect(patch.credentials_patch).not.toHaveProperty('header_override_enabled')
+    expect(patch.credentials_patch).not.toHaveProperty('base_url')
+    expect(patch.credentials_patch).not.toHaveProperty('api_key')
+    expect(patch).not.toHaveProperty('proxy_id')
+    expect(updateAccountMock.mock.lastCall?.[1].credentials.header_override_enabled).toBe(enabled)
+    wrapper.unmount()
+  })
+
+  it.each([
+    { name: ' X-IDENTITY ', value: 'spoofed', error: 'duplicateName' },
+    { name: 'x-extra', value: '{{group_id}}', error: 'variableNotAllowed' }
+  ])('blocks $error when a vendor adds a header to a disabled administrator template', async ({ name, value, error }) => {
+    authIsOwner.value = false
+    const account = buildAccount()
+    account.credentials.header_override_enabled = false
+    account.credentials.header_overrides = { 'x-identity': '{{user_id}}' }
+    const wrapper = mountModal(account)
+
+    await wrapper.findAll('button').find(button => button.text() === 'admin.accounts.headerOverride.addRow')!.trigger('click')
+    await wrapper.get('input[placeholder="admin.accounts.headerOverride.namePlaceholder"]').setValue(name)
+    await wrapper.get('[data-testid="header-override-value"]').setValue(value)
+    await wrapper.get('#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(patchAccountMock).not.toHaveBeenCalled()
+    expect(showErrorMock).toHaveBeenCalledWith(`admin.accounts.headerOverride.${error}`)
+    wrapper.unmount()
+  })
 
   it('writes a changed dispatch scope with account fields in one versioned PATCH', async () => {
     const account = buildAccount()
@@ -425,6 +563,28 @@ describe('EditAccountModal', () => {
     authIsOwner.value = false
     const wrapper = mountModal(buildAccount())
     expect(wrapper.find('[data-testid="account-dispatch-scope"]').exists()).toBe(false)
+  })
+
+  it('uses the saved connection until the administrator changes the upstream', async () => {
+    const account = buildAccount()
+    account.notes = 'local notes'
+    const wrapper = mountModal(account)
+    const sync = wrapper.getComponent({ name: 'UpstreamGroupSyncButton' }).get('button')
+    previewUpstreamGroup.mockResolvedValue({ name: 'Updated group' })
+    await sync.trigger('click')
+    await flushPromises()
+    expect(previewUpstreamGroup).toHaveBeenLastCalledWith({ account_id: account.id }, expect.anything())
+    expect(wrapper.get<HTMLInputElement>('[data-tour="edit-account-form-name"]').element.value).toBe('Updated group')
+    expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe('local notes')
+
+    await wrapper.get('input[placeholder="https://api.openai.com"]').setValue('https://new-relay.example')
+    expect(sync.element.disabled).toBe(true)
+    await wrapper.get('input[type="password"]').setValue('replacement-key')
+    await sync.trigger('click')
+    expect(previewUpstreamGroup).toHaveBeenLastCalledWith({
+      platform: 'openai', base_url: 'https://new-relay.example', api_key: 'replacement-key', proxy_id: null
+    }, expect.anything())
+    wrapper.unmount()
   })
 
   it.each(['apikey', 'oauth'])('can opt a passthrough %s account into model filtering without changing groups', async (type) => {
@@ -1428,6 +1588,30 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.upstream_billing_probe_enabled).toBe(true)
   })
 
+  it('opts into group sync independently and clears it when probing stops', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account, false, '"cv-10"')
+    const group = wrapper.get('[data-testid="upstream-billing-group-sync"]')
+    const probe = wrapper.get('[data-testid="upstream-billing-auto-probe"]')
+    const rate = wrapper.get('[data-testid="upstream-billing-rate-sync"]')
+    expect(group.attributes('aria-checked')).toBe('false')
+    await group.trigger('click')
+    expect(probe.attributes('aria-checked')).toBe('true')
+    expect(rate.attributes('aria-checked')).toBe('false')
+    await wrapper.get('form').trigger('submit.prevent')
+    expect(patchAccountMock).toHaveBeenCalledTimes(1)
+    expect(patchAccountMock).toHaveBeenCalledWith(account.id, expect.objectContaining({
+      upstream_billing_probe_enabled: true,
+      upstream_billing_group_sync_enabled: true,
+      upstream_billing_rate_sync_enabled: false
+    }), '"cv-10"')
+    expect(patchAccountMock.mock.lastCall?.[1].extra_patch ?? {}).not.toHaveProperty('upstream_billing_group_sync_enabled')
+    await probe.trigger('click')
+    expect(group.attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
   it('enabling rate sync also enables probing and stops submitting a manual rate', async () => {
     const account = buildAccount()
     updateAccountMock.mockReset()
@@ -1459,10 +1643,11 @@ describe('EditAccountModal', () => {
     expect(payload).not.toHaveProperty('rate_multiplier')
   })
 
-  it('disabling probing also disables rate sync and restores manual rate editing', async () => {
+  it('disabling probing also disables group and rate sync and restores manual rate editing', async () => {
     const account = buildAccount()
     account.extra = {
       upstream_billing_probe_enabled: true,
+      upstream_billing_group_sync_enabled: true,
       upstream_billing_rate_sync_enabled: true
     }
     updateAccountMock.mockReset()
@@ -1471,22 +1656,31 @@ describe('EditAccountModal', () => {
     updateAccountMock.mockResolvedValue(account)
 
     const wrapper = mountModal(account)
+    const groupToggle = wrapper.get('[data-testid="upstream-billing-group-sync"]')
     const syncToggle = wrapper.get('[data-testid="upstream-billing-rate-sync"]')
     const probeToggle = wrapper.get('[data-testid="upstream-billing-auto-probe"]')
     const rateInput = wrapper.get<HTMLInputElement>('[data-testid="account-rate-multiplier"]')
+    expect(groupToggle.attributes('aria-checked')).toBe('true')
     expect(syncToggle.attributes('aria-checked')).toBe('true')
     expect(rateInput.element.disabled).toBe(true)
 
     await probeToggle.trigger('click')
     expect(probeToggle.attributes('aria-checked')).toBe('false')
+    expect(groupToggle.attributes('aria-checked')).toBe('false')
     expect(syncToggle.attributes('aria-checked')).toBe('false')
     expect(rateInput.element.disabled).toBe(false)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
-    const payload = updateAccountMock.mock.calls[0]?.[1]
-    expect(payload?.upstream_billing_probe_enabled).toBe(false)
-    expect(payload?.upstream_billing_rate_sync_enabled).toBe(false)
-    expect(payload?.rate_multiplier).toBe(1)
+    const payload = patchAccountMock.mock.lastCall?.[1]
+    expect(payload).toMatchObject({
+      upstream_billing_probe_enabled: false,
+      upstream_billing_group_sync_enabled: false,
+      upstream_billing_rate_sync_enabled: false,
+      rate_multiplier: 1
+    })
+    expect(payload?.extra_patch ?? {}).not.toHaveProperty('upstream_billing_probe_enabled')
+    expect(payload?.extra_patch ?? {}).not.toHaveProperty('upstream_billing_group_sync_enabled')
+    expect(payload?.extra_patch ?? {}).not.toHaveProperty('upstream_billing_rate_sync_enabled')
   })
 
   it('disabling only rate sync keeps automatic probing enabled', async () => {

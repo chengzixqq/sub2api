@@ -215,9 +215,10 @@ func TestAccountHandlerUpdateMapsUpstreamBillingRateSyncSettings(t *testing.T) {
 	adminSvc := newStubAdminService()
 	router := setupAccountMixedChannelRouter(adminSvc)
 	body, _ := json.Marshal(map[string]any{
-		"name":                               "gemini-key",
-		"upstream_billing_probe_enabled":     true,
-		"upstream_billing_rate_sync_enabled": true,
+		"name":                                "gemini-key",
+		"upstream_billing_probe_enabled":      true,
+		"upstream_billing_rate_sync_enabled":  true,
+		"upstream_billing_group_sync_enabled": false,
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/accounts/42", bytes.NewReader(body))
@@ -231,6 +232,8 @@ func TestAccountHandlerUpdateMapsUpstreamBillingRateSyncSettings(t *testing.T) {
 	require.True(t, *adminSvc.lastUpdateAccountInput.ProbeEnabled)
 	require.NotNil(t, adminSvc.lastUpdateAccountInput.RateSyncEnabled)
 	require.True(t, *adminSvc.lastUpdateAccountInput.RateSyncEnabled)
+	require.NotNil(t, adminSvc.lastUpdateAccountInput.GroupSyncEnabled)
+	require.False(t, *adminSvc.lastUpdateAccountInput.GroupSyncEnabled)
 }
 
 func TestAccountHandlerBulkUpdateMixedChannelConflict(t *testing.T) {

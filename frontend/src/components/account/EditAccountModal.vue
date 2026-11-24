@@ -14,8 +14,22 @@
       class="space-y-5"
     >
       <div>
-        <label class="input-label">{{ t('common.name') }}</label>
+        <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <label class="input-label mb-0">{{ t('common.name') }}</label>
+          <UpstreamGroupSyncButton
+            v-if="account.type === 'apikey' || (account.platform === 'antigravity' && account.type === 'upstream')"
+            v-model:name="form.name"
+            v-model:notes="form.notes"
+            :source="upstreamGroupSource"
+            :allow-auto="account.type === 'apikey'"
+            :auto="upstreamGroupSyncEnabled"
+            @update:auto="setUpstreamGroupSync"
+          />
+        </div>
         <input v-model="form.name" type="text" required class="input" data-tour="edit-account-form-name" />
+        <p v-if="account.type === 'apikey' && upstreamGroupSyncEnabled" class="input-hint">
+          {{ t('admin.accounts.upstreamBilling.autoSyncGroupHint') }}
+        </p>
       </div>
       <div>
         <label class="input-label">{{ t('admin.accounts.notes') }}</label>
@@ -92,6 +106,7 @@
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
+            :disabled="identityHeaderSettingsLocked"
             type="text"
             class="input"
             :placeholder="
@@ -108,12 +123,12 @@
           />
           <p v-if="baseUrlHint" class="input-hint">{{ baseUrlHint }}</p>
           <GrokBaseUrlPresets
-            v-if="account.platform === 'grok'"
+            v-if="account.platform === 'grok' && !identityHeaderSettingsLocked"
             class="mt-2"
             @select="editBaseUrl = $event"
           />
           <CnBaseUrlPresets
-            v-if="isCNApiKeyAccount && isCNProviderPlatform(account.platform)"
+            v-if="isCNApiKeyAccount && isCNProviderPlatform(account.platform) && !identityHeaderSettingsLocked"
             class="mt-2"
             :platform="cnPresetPlatform"
             :mode="cnPresetMode"
@@ -129,7 +144,7 @@
               <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
                 {{ t(`admin.accounts.cnProviders.apiProtocol.${item.labelKey}`) }}
               </label>
-              <input v-model="editAdaptiveBaseUrls[item.value]" type="text" class="input" />
+              <input v-model="editAdaptiveBaseUrls[item.value]" :disabled="identityHeaderSettingsLocked" type="text" class="input" />
             </div>
           </div>
           <p v-if="!cnSupportsNativeResponses(account.platform, currentOpenCodeOrCNMode())" class="input-hint">
@@ -142,6 +157,7 @@
           <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <button
               type="button"
+              :disabled="identityHeaderSettingsLocked"
               @click="editOpenCodeAccountMode = 'zen'"
               :class="[
                 'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
@@ -165,6 +181,7 @@
             </button>
             <button
               type="button"
+              :disabled="identityHeaderSettingsLocked"
               @click="editOpenCodeAccountMode = 'go'"
               :class="[
                 'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
@@ -196,6 +213,7 @@
               v-for="mode in genericAccountModes"
               :key="mode"
               type="button"
+              :disabled="identityHeaderSettingsLocked"
               :class="[
                 'rounded-lg border-2 px-3 py-1.5 text-xs transition-all',
                 editAccountMode === mode
@@ -216,6 +234,7 @@
               v-for="opt in cnAccountModeOptions"
               :key="opt.value"
               type="button"
+              :disabled="identityHeaderSettingsLocked"
               :class="[
                 'rounded-lg border-2 px-3 py-1.5 text-xs transition-all',
                 editAccountMode === opt.value
@@ -237,6 +256,7 @@
               v-for="opt in cnProtocolOptions"
               :key="opt.value"
               type="button"
+              :disabled="identityHeaderSettingsLocked"
               :class="[
                 'rounded-lg border-2 px-3 py-1.5 text-xs transition-all',
                 editApiProtocol === opt.value
@@ -250,12 +270,16 @@
           </div>
           <p class="input-hint">{{ t(`admin.accounts.cnProviders.apiProtocol.${cnProtocolDescKey}Desc`) }}</p>
         </div>
-        <OpenCodeGoProtocolRulesEditor
+        <fieldset
           v-if="isCNApiKeyAccount && providerRoutesByModel(account.platform) && editApiProtocol === 'adaptive'"
-          v-model:rows="editOpenCodeGoProtocolRules"
-          :platform="account.platform"
-          :plan="currentOpenCodeOrCNMode()"
-        />
+          :disabled="identityHeaderSettingsLocked"
+        >
+          <OpenCodeGoProtocolRulesEditor
+            v-model:rows="editOpenCodeGoProtocolRules"
+            :platform="account.platform"
+            :plan="currentOpenCodeOrCNMode()"
+          />
+        </fieldset>
         <!-- Zhipu 团队版 Coding Plan：组织/项目 ID（可选，填写后用量查询走团队版端点） -->
         <div v-if="account.platform === 'zhipu' && editAccountMode === 'coding'">
           <div class="flex items-center">
@@ -289,6 +313,7 @@
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
             v-model="editApiKey"
+            :disabled="identityHeaderSettingsLocked"
             type="password"
             class="input font-mono"
             autocomplete="new-password"
@@ -867,6 +892,7 @@
           <button
             type="button"
             data-testid="grok-custom-base-url-toggle"
+            :disabled="identityHeaderSettingsLocked"
             @click="grokOAuthCustomBaseUrlEnabled = !grokOAuthCustomBaseUrlEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
@@ -884,12 +910,13 @@
         <div v-if="grokOAuthCustomBaseUrlEnabled" class="space-y-2">
           <input
             v-model="grokOAuthBaseUrl"
+            :disabled="identityHeaderSettingsLocked"
             type="text"
             class="input"
             data-testid="grok-custom-base-url-input"
             :placeholder="t('admin.accounts.grokCustomBaseUrl.placeholder')"
           />
-          <GrokBaseUrlPresets @select="grokOAuthBaseUrl = $event" />
+          <GrokBaseUrlPresets v-if="!identityHeaderSettingsLocked" @select="grokOAuthBaseUrl = $event" />
         </div>
       </div>
 
@@ -904,9 +931,14 @@
           </div>
           <button
             type="button"
+            role="switch"
+            data-testid="header-override-toggle"
+            :aria-label="t('admin.accounts.headerOverride.title')"
+            :aria-checked="headerOverrideEnabled"
+            :disabled="identityHeaderSettingsLocked"
             @click="headerOverrideEnabled = !headerOverrideEnabled"
             :class="[
-              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60',
               headerOverrideEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
             ]"
           >
@@ -919,8 +951,14 @@
           </button>
         </div>
 
-        <div v-if="headerOverrideEnabled" class="space-y-3">
-          <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
+        <div v-if="identityHeaderSettingsLocked" class="mb-3">
+          <p class="input-hint">{{ t('admin.accounts.headerOverride.managedByAdministrator') }}</p>
+          <ul class="mt-1 list-inside list-disc text-xs text-gray-500 dark:text-gray-400">
+            <li v-for="row in lockedHeaderOverrideRows" :key="row.name"><code>{{ row.name }}</code></li>
+          </ul>
+        </div>
+        <div v-if="headerOverrideEnabled || identityHeaderSettingsLocked" class="space-y-3">
+          <div v-if="headerOverrideEnabled" class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
             <p class="text-xs text-blue-700 dark:text-blue-400">
               <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
               {{ t('admin.accounts.headerOverride.info') }}
@@ -929,6 +967,7 @@
 
           <HeaderOverrideEditor
             :rows="headerOverrideRows"
+            :allow-variables="headerOverrideAllowVariables"
             @update:rows="headerOverrideRows = $event"
           />
         </div>
@@ -1983,7 +2022,7 @@
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <ProxySelector v-model="form.proxy_id" :proxies="proxies" :disabled="identityHeaderSettingsLocked" />
       </div>
 
       <UpstreamRequestIdHeaderField
@@ -3504,6 +3543,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
+import UpstreamGroupSyncButton from '@/components/account/UpstreamGroupSyncButton.vue'
 import OpenAIImageSizeTiersField from '@/components/account/OpenAIImageSizeTiersField.vue'
 import {
   OPENAI_IMAGE_SIZE_TIERS,
@@ -3550,6 +3590,7 @@ import {
   resolveOpenCodeAccountMode,
   isCustomGrokBaseUrl,
   isHeaderOverrideCapable,
+  headerOverrideHasVariable,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   cnSupportsNativeResponses,
@@ -3558,6 +3599,7 @@ import {
   isCNProviderPlatform,
   HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY,
   HEADER_OVERRIDES_CREDENTIAL_KEY,
+  OPENCODE_GO_PROTOCOL_RULES_KEY,
   type CnAccountMode,
   type CnApiProtocol,
   type CnNativeApiProtocol,
@@ -3982,9 +4024,62 @@ const customErrorCodeInput = ref<number | null>(null)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 
+const headerOverrideAllowVariables = computed(() => props.account?.type === 'apikey' && isOwner.value === true)
 const headerOverrideCapable = computed(
   () => !!props.account && isHeaderOverrideCapable(props.account.platform, props.account.type)
 )
+const savedHeaderOverrideRows = computed(() =>
+  splitHeaderOverridesObject(props.account?.credentials?.[HEADER_OVERRIDES_CREDENTIAL_KEY])
+)
+const lockedHeaderOverrideRows = computed(() =>
+  isOwner.value ? [] : savedHeaderOverrideRows.value.filter((row) => headerOverrideHasVariable(row.value))
+)
+const identityHeaderSettingsLocked = computed(() => lockedHeaderOverrideRows.value.length > 0)
+const savedEditableHeaderOverrideRows = computed(() => identityHeaderSettingsLocked.value
+  ? savedHeaderOverrideRows.value.filter((row) => !headerOverrideHasVariable(row.value))
+  : savedHeaderOverrideRows.value)
+
+// 与后端 ValidateIdentityHeaderChange 的目标凭据字段保持一致。
+const identityHeaderDestinationKeys = [
+  'base_url', 'api_base_urls', 'api_protocol', 'account_mode', OPENCODE_GO_PROTOCOL_RULES_KEY, 'api_key'
+]
+
+const applyEditableHeaderOverride = (credentials: Record<string, unknown>): boolean => {
+  if (!headerOverrideCapable.value) return true
+  if (identityHeaderSettingsLocked.value) {
+    const savedRows = savedEditableHeaderOverrideRows.value
+    const rows = headerOverrideRows.value.filter(({ name, value }) => name.trim() || value.trim())
+    if (rows.length === savedRows.length && rows.every((row, index) =>
+      row.name === savedRows[index].name && row.value === savedRows[index].value
+    )) return true
+
+    // 保留模板名称参与重名和条目数校验。
+    const reservedRows = lockedHeaderOverrideRows.value.map(({ name }) => ({ name, value: '' }))
+    const error = validateHeaderOverrideRows([...reservedRows, ...rows], { allowVariables: false })
+    if (error) {
+      appStore.showError(t(`admin.accounts.headerOverride.${error}`))
+      return false
+    }
+
+    // PATCH 会替换整个映射。模板沿用原始键和值，启停状态留在已有凭据中。
+    credentials[HEADER_OVERRIDES_CREDENTIAL_KEY] = Object.fromEntries([
+      ...lockedHeaderOverrideRows.value.map(({ name, value }) => [name, value]),
+      ...rows.map(({ name, value }) => [name.trim().toLowerCase(), value.trim()])
+    ])
+    return true
+  }
+  if (headerOverrideEnabled.value) {
+    const error = validateHeaderOverrideRows(headerOverrideRows.value, {
+      allowVariables: headerOverrideAllowVariables.value
+    })
+    if (error) {
+      appStore.showError(t(`admin.accounts.headerOverride.${error}`))
+      return false
+    }
+  }
+  applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
+  return true
+}
 
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
@@ -4188,6 +4283,11 @@ const autoPause7dDisabled = ref(false)
 const autoResetCreditEnabled = ref(false)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
+const upstreamGroupSyncEnabled = ref(false)
+function setUpstreamGroupSync(enabled: boolean) {
+  upstreamGroupSyncEnabled.value = enabled
+  if (enabled) upstreamBillingAutoProbeEnabled.value = true
+}
 const upstreamBillingAutoProbeEnabled = ref(false)
 const upstreamBillingRateSyncEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
@@ -4718,10 +4818,31 @@ const handleUpstreamBillingRateSyncChange = (enabled: boolean) => {
   }
 }
 
+const billingBaseUrl = computed(() => (
+  isCNApiKeyAccount.value && editApiProtocol.value === 'adaptive'
+    ? editAdaptiveBaseUrls.value.chat_completions
+    : editBaseUrl.value
+).trim())
+const savedBillingBaseUrl = ref('')
+const upstreamGroupSource = computed(() => {
+  const account = props.account
+  if (!account) return null
+  if (identityHeaderSettingsLocked.value) return { account_id: account.id }
+  const apiKey = editApiKey.value.trim()
+  if (apiKey && billingBaseUrl.value) {
+    return { platform: account.platform, base_url: billingBaseUrl.value, api_key: apiKey, proxy_id: form.proxy_id }
+  }
+  if (billingBaseUrl.value === savedBillingBaseUrl.value && form.proxy_id === account.proxy_id && !apiKey) {
+    return { account_id: account.id }
+  }
+  return null
+})
+
 const handleUpstreamBillingAutoProbeChange = (enabled: boolean) => {
   upstreamBillingAutoProbeEnabled.value = enabled
   if (!enabled) {
     upstreamBillingRateSyncEnabled.value = false
+    upstreamGroupSyncEnabled.value = false
   }
 }
 
@@ -4856,6 +4977,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoResetCredit7dThreshold.value =
 		typeof extra?.auto_reset_credit_7d_threshold === 'number' ? extra.auto_reset_credit_7d_threshold * 100 : 100
 	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
+  upstreamGroupSyncEnabled.value =
+    upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_group_sync_enabled === true
   upstreamBillingRateSyncEnabled.value =
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
 
@@ -5028,12 +5151,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load header override state for eligible account platforms/types
   headerOverrideEnabled.value = false
   headerOverrideRows.value = []
-  if (newAccount.credentials && isHeaderOverrideCapable(newAccount.platform, newAccount.type)) {
-    const overrideCreds = newAccount.credentials as Record<string, unknown>
-    headerOverrideEnabled.value = overrideCreds[HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY] === true
-    headerOverrideRows.value = splitHeaderOverridesObject(
-      overrideCreds[HEADER_OVERRIDES_CREDENTIAL_KEY]
-    )
+  if (credentials && isHeaderOverrideCapable(newAccount.platform, newAccount.type)) {
+    headerOverrideEnabled.value = credentials[HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY] === true
+    headerOverrideRows.value = savedEditableHeaderOverrideRows.value.map((row) => ({ ...row }))
   }
 
   // Load Grok OAuth custom upstream URL state（存储的官方地址视同未定制）
@@ -5240,6 +5360,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     selectedErrorCodes.value = []
   }
   editApiKey.value = ''
+  savedBillingBaseUrl.value = billingBaseUrl.value
 }
 
 async function loadTLSProfiles() {
@@ -5834,6 +5955,11 @@ const submitUpdateAccount = async (
     (account?.credentials as Record<string, unknown> | undefined) ?? {},
     patchPayload.credentials as Record<string, unknown> | undefined
   )
+  if (identityHeaderSettingsLocked.value) {
+    // 默认值回填也可能生成 PATCH。保留上报目标的原始凭据和代理。
+    for (const key of identityHeaderDestinationKeys) delete credentialsPatch[key]
+    delete patchPayload.proxy_id
+  }
   const extraPatch = buildAccountMapPatch(
     (account?.extra as Record<string, unknown> | undefined) ?? {},
     patchPayload.extra as Record<string, unknown> | undefined
@@ -5917,6 +6043,10 @@ const handleSubmit = async () => {
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
     if (props.account.type === 'apikey') {
+      if (form.name === props.account.name) delete updatePayload.name
+      if (form.notes === (props.account.notes || '')) delete updatePayload.notes
+      // 探测和同步开关通过顶层字段更新，extra_patch 保留原值。
+      updatePayload.upstream_billing_group_sync_enabled = upstreamGroupSyncEnabled.value
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
       if (upstreamBillingRateSyncEnabled.value) {
@@ -6035,17 +6165,7 @@ const handleSubmit = async () => {
         delete newCredentials.custom_error_codes
       }
 
-      // Add header override if enabled for this API-key platform
-      if (isHeaderOverrideCapable(props.account.platform, 'apikey')) {
-        if (headerOverrideEnabled.value) {
-          const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
-          if (headerError) {
-            appStore.showError(t(`admin.accounts.headerOverride.${headerError}`))
-            return
-          }
-        }
-        applyHeaderOverride(newCredentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
-      }
+      if (!applyEditableHeaderOverride(newCredentials)) return
 
       // Add intercept warmup requests setting
       applyInterceptWarmup(newCredentials, interceptWarmupRequests.value, 'edit')
@@ -6265,14 +6385,7 @@ const handleSubmit = async () => {
         delete newCredentials.base_url
       }
 
-      if (headerOverrideEnabled.value) {
-        const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
-        if (headerError) {
-          appStore.showError(t(`admin.accounts.headerOverride.${headerError}`))
-          return
-        }
-      }
-      applyHeaderOverride(newCredentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
+      if (!applyEditableHeaderOverride(newCredentials)) return
 
       updatePayload.credentials = newCredentials
 
@@ -6589,12 +6702,6 @@ const handleSubmit = async () => {
       const currentExtra = (updatePayload.extra as Record<string, unknown>) ||
         (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
-      // 上游倍率自动探测对全部 API-key 平台开放（sub2api 上游即可应答），
-      // Bedrock 凭证无静态 Key 不参与。
-      if (props.account.type === 'apikey') {
-        delete newExtra.upstream_billing_probe_enabled
-        delete newExtra.upstream_billing_rate_sync_enabled
-      }
       // Total quota
       if (editQuotaLimit.value != null && editQuotaLimit.value > 0) {
         newExtra.quota_limit = editQuotaLimit.value

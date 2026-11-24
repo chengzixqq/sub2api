@@ -1463,7 +1463,7 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 	upstreamReq.Header.Set("Accept", "application/json")
 	upstreamReq.Header.Set("User-Agent", defaultGrokUpstreamUserAgent())
 	applyGrokCLIHeaders(upstreamReq.Header)
-	account.ApplyHeaderOverrides(upstreamReq.Header)
+	account.ApplyHeaderOverrides(upstreamReq.Context(), upstreamReq.Header)
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -1514,19 +1514,30 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 // GetAvailableModelsWithError keeps an unavailable authorization/account lookup
 // distinct from an unmapped account, which may legitimately use static models.
 func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupID *int64, platform string) ([]string, error) {
+	catalog, err := s.getModelCatalog(ctx, groupID, platform, false)
+	return catalog.ModelIDs, err
+}
+
+// GetModelCatalog retains the authorized Anthropic accounts for request-local
+// long-context variants. Other platforms need only the ordinary model IDs.
+func (s *GatewayService) GetModelCatalog(ctx context.Context, groupID *int64, platform string) (ModelCatalog, error) {
+	return s.getModelCatalog(ctx, groupID, platform, platform == PlatformAnthropic)
+}
+
+func (s *GatewayService) getModelCatalog(ctx context.Context, groupID *int64, platform string, includeAccounts bool) (ModelCatalog, error) {
 	var policyErr error
 	ctx, policyErr = withAccountDispatchSelection(ctx, s.accountRepo, groupID)
 	if policyErr != nil {
-		return nil, policyErr
+		return ModelCatalog{}, policyErr
 	}
 	userID, _ := ctx.Value(ctxkey.UserID).(int64)
-	useSharedCache := userID <= 0
+	useSharedCache := userID <= 0 && !includeAccounts
 	cacheKey := modelsListCacheKey(groupID, platform)
 	if useSharedCache && s.modelsListCache != nil {
 		if cached, found := s.modelsListCache.Get(cacheKey); found {
 			if models, ok := cached.([]string); ok {
 				modelsListCacheHitTotal.Add(1)
-				return cloneStringSlice(models), nil
+				return ModelCatalog{ModelIDs: cloneStringSlice(models)}, nil
 			}
 		}
 	}
@@ -1542,17 +1553,17 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 	}
 
 	if err != nil {
-		return nil, err
+		return ModelCatalog{}, err
 	}
 	accounts, err = accountDispatchCandidates(ctx, s.accountRepo, groupID, platform, accounts, platform == PlatformGemini)
 	if err != nil {
-		return nil, err
+		return ModelCatalog{}, err
 	}
 	if len(accounts) == 0 {
 		if AccountDispatchHasReplacePolicy(ctx) {
-			return []string{}, nil
+			return ModelCatalog{ModelIDs: []string{}}, nil
 		}
-		return nil, nil
+		return ModelCatalog{}, nil
 	}
 
 	// Filter by platform if specified. Mixed scheduling (a gemini group routing
@@ -1568,7 +1579,12 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 		accounts = filtered
 	}
 	if len(accounts) == 0 && AccountDispatchHasReplacePolicy(ctx) {
-		return []string{}, nil
+		return ModelCatalog{ModelIDs: []string{}}, nil
+	}
+
+	var catalog ModelCatalog
+	if includeAccounts {
+		catalog.accounts = accounts
 	}
 
 	// Collect unique models from all accounts
@@ -1602,7 +1618,7 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 	if !hasAnyMapping && platform == PlatformOpenAI {
 		models := filterRetiredOpenAIModelIDs(accounts, openai.DefaultModelIDs())
 		if len(models) != len(openai.DefaultModels) {
-			return models, nil
+			return ModelCatalog{ModelIDs: models}, nil
 		}
 	}
 	if !hasAnyMapping {
@@ -1610,7 +1626,7 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
 			modelsListCacheStoreTotal.Add(1)
 		}
-		return nil, nil
+		return catalog, nil
 	}
 
 	// Convert to slice
@@ -1626,7 +1642,7 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 		// nil means "use defaults" to listing callers; an empty filtered catalog
 		// must remain authoritative instead of resurrecting retired defaults.
 		if len(models) == 0 {
-			return models, nil
+			return ModelCatalog{ModelIDs: models}, nil
 		}
 	}
 
@@ -1634,7 +1650,8 @@ func (s *GatewayService) GetAvailableModelsWithError(ctx context.Context, groupI
 		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
 		modelsListCacheStoreTotal.Add(1)
 	}
-	return cloneStringSlice(models), nil
+	catalog.ModelIDs = models
+	return catalog, nil
 }
 
 func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, groupID int64, model string) (CompositeModelOwnership, error) {

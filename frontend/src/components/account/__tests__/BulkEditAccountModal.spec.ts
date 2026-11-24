@@ -5,10 +5,11 @@ import BulkEditAccountModal from '../BulkEditAccountModal.vue'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
 import { adminAPI } from '@/api/admin'
 
-const { showError, showSuccess, translate } = vi.hoisted(() => ({
+const { showError, showSuccess, translate, authIsOwner } = vi.hoisted(() => ({
   showError: vi.fn(),
   showSuccess: vi.fn(),
-  translate: vi.fn((key: string) => key)
+  translate: vi.fn((key: string) => key),
+  authIsOwner: { value: true }
 }))
 
 vi.mock('@/stores/app', () => ({
@@ -19,11 +20,12 @@ vi.mock('@/stores/app', () => ({
   })
 }))
 
-// 弹窗通过 useWorkspacePerms 决定优先级与账号倍率两栏的显隐，
-// 并以同一判据作为提交守卫。本文件断言的是站长视角的完整 payload，
-// 故以站长身份 mock；与同文件其余 store 一致走 vi.mock，不引入真实 pinia。
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ isOwner: true, isVendor: false, workspace: null })
+  useAuthStore: () => ({
+    get isOwner() { return authIsOwner.value },
+    get isVendor() { return !authIsOwner.value },
+    workspace: null
+  })
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -89,6 +91,7 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
 
 describe('BulkEditAccountModal', () => {
   beforeEach(() => {
+    authIsOwner.value = true
     vi.mocked(adminAPI.accounts.bulkUpdate).mockReset()
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockReset()
     showError.mockReset()
@@ -242,6 +245,40 @@ describe('BulkEditAccountModal', () => {
     expect(wrapper.find('#bulk-edit-header-override-enabled').exists()).toBe(false)
   })
 
+  it.each([
+    { role: 'site administrator', isOwner: true, value: '{{group_id}}' },
+    { role: 'vendor', isOwner: false, value: 'fixed-value' }
+  ])('bulk saves header overrides allowed for a $role', async ({ isOwner, value }) => {
+    authIsOwner.value = isOwner
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
+    await wrapper.get('#bulk-edit-header-override-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-header-override-body button').trigger('click')
+
+    if (isOwner) {
+      await wrapper.get('[data-testid="header-override-variable-group_id"]').trigger('click')
+    } else {
+      expect(wrapper.find('[data-testid="header-override-variables"]').exists()).toBe(false)
+      const addRow = wrapper.findAll('button').find((button) => button.text() === 'admin.accounts.headerOverride.addRow')
+      expect(addRow).toBeDefined()
+      await addRow?.trigger('click')
+      await wrapper.get('input[placeholder="admin.accounts.headerOverride.namePlaceholder"]').setValue('x-gateway-group-id')
+      await wrapper.get('[data-testid="header-override-value"]').setValue('{{group_id}}')
+      await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+      await flushPromises()
+      expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+      expect(showError).toHaveBeenCalledWith('admin.accounts.headerOverride.variableNotAllowed')
+      await wrapper.get('[data-testid="header-override-value"]').setValue(value)
+    }
+
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      credentials: { header_override_enabled: true, header_overrides: { 'x-gateway-group-id': value } }
+    })
+    wrapper.unmount()
+  })
+
   it('全部目标为 Grok OAuth 时，第三方 base_url 正常提交', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['grok'],
@@ -280,10 +317,10 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('OpenAI 账号批量编辑可开启自动透传', async () => {
+  it.each(['oauth', 'apikey'])('OpenAI %s 仅开启自动透传时保留原有模型筛选设置', async (type) => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
-      selectedTypes: ['oauth']
+      selectedTypes: [type]
     })
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
@@ -294,8 +331,7 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
-        openai_passthrough: true,
-        openai_passthrough_model_filter: false
+        openai_passthrough: true
       }
     })
   })
@@ -900,10 +936,10 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
-  it('OpenAI 账号批量编辑可关闭自动透传', async () => {
+  it.each(['oauth', 'apikey'])('OpenAI %s 仅关闭自动透传时保留原有模型筛选设置', async (type) => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
-      selectedTypes: ['apikey']
+      selectedTypes: [type]
     })
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
@@ -914,13 +950,12 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: {
         openai_passthrough: false,
-        openai_passthrough_model_filter: false,
         openai_oauth_passthrough: false
       }
     })
   })
 
-  it('开启 OpenAI 自动透传时不再同时提交模型限制', async () => {
+  it('明确关闭模型筛选并开启 OpenAI 自动透传时不再同时提交模型限制', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],
       selectedTypes: ['oauth']
@@ -928,6 +963,7 @@ describe('BulkEditAccountModal', () => {
 
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
     await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
     await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
     await flushPromises()
@@ -946,6 +982,7 @@ describe('BulkEditAccountModal', () => {
     const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
     await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
     await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
     await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
     await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
     wrapper.findComponent({ name: 'ModelWhitelistSelector' }).vm.$emit('update:modelValue', ['qwen3.8-max'])
@@ -955,6 +992,123 @@ describe('BulkEditAccountModal', () => {
     expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
       extra: { openai_passthrough: true, openai_passthrough_model_filter: true },
       credentials: { model_mapping: { 'qwen3.8-max': 'qwen3.8-max' } }
+    })
+  })
+
+  it.each([
+    ['oauth', true],
+    ['oauth', false],
+    ['apikey', true],
+    ['apikey', false]
+  ])('can set model filtering to %s/%s without changing passthrough', async (type, enabled) => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: [type] })
+    const filter = wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]')
+    expect(filter.attributes('disabled')).toBeDefined()
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await filter.setValue(enabled)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { openai_passthrough_model_filter: enabled }
+    })
+  })
+
+  it('can update a whitelist while preserving existing passthrough model filtering', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['oauth'] })
+    await wrapper.get('#bulk-edit-openai-passthrough-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-openai-passthrough-toggle').trigger('click')
+    await wrapper.get('#bulk-edit-model-restriction-enabled').setValue(true)
+    wrapper.findComponent(ModelWhitelistSelector).vm.$emit('update:modelValue', ['qwen3.8-max'])
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      extra: { openai_passthrough: true },
+      credentials: { model_mapping: { 'qwen3.8-max': 'qwen3.8-max' } }
+    })
+    expect(wrapper.text()).not.toContain('admin.accounts.openai.modelRestrictionDisabledByPassthrough')
+  })
+
+  it('can independently disable model filtering for filtered results', async () => {
+    const wrapper = mountModal({
+      accountIds: [],
+      target: {
+        mode: 'filtered',
+        filters: { platform: 'openai', status: 'active' },
+        previewCount: 12,
+        selectedPlatforms: ['openai'],
+        selectedTypes: ['oauth', 'apikey']
+      }
+    })
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith({
+      filters: { platform: 'openai', status: 'active' },
+      extra: { openai_passthrough_model_filter: false }
+    })
+  })
+
+  it('omits model filtering after its modification checkbox is cleared', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(false)
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], { status: 'active' })
+  })
+
+  it('resets model filtering and its modification checkbox when reopened', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect((wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').element as HTMLInputElement).checked).toBe(false)
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], { status: 'active' })
+  })
+
+  it('omits model filtering when the target changes to mixed platforms', async () => {
+    const wrapper = mountModal({
+      accountIds: [],
+      target: {
+        mode: 'filtered',
+        filters: { platform: 'openai' },
+        previewCount: 12,
+        selectedPlatforms: ['openai'],
+        selectedTypes: ['apikey']
+      }
+    })
+    await wrapper.get('#bulk-edit-openai-passthrough-model-filter-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-openai-passthrough-model-filter"]').setValue(true)
+    await wrapper.setProps({
+      target: {
+        mode: 'filtered',
+        filters: { status: 'active' },
+        previewCount: 20,
+        selectedPlatforms: ['openai', 'anthropic'],
+        selectedTypes: ['apikey']
+      }
+    })
+    expect(wrapper.find('#bulk-edit-openai-passthrough-model-filter-enabled').exists()).toBe(false)
+    await wrapper.get('#bulk-edit-status-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith({
+      filters: { status: 'active' },
+      status: 'active'
     })
   })
 

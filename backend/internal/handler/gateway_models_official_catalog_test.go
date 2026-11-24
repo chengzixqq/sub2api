@@ -243,7 +243,8 @@ func TestOfficialCatalogGeminiGroupFormat(t *testing.T) {
 }
 
 func TestOfficialCatalogCompatibility(t *testing.T) {
-	// Captured before the official catalogue was added and verified unchanged after it.
+	// These snapshots cover the default catalogue responses. For an empty OpenAI group,
+	// v0.2.25 omits audio from the Codex manifest (see TestCodexCatalogAudioInput).
 	const (
 		goldenMapped             = "66610ac1d9e1b3420bad500469f054deb557ef1d101a78c7b631b54fe9bda095"
 		goldenComposite          = "66610ac1d9e1b3420bad500469f054deb557ef1d101a78c7b631b54fe9bda095"
@@ -252,7 +253,7 @@ func TestOfficialCatalogCompatibility(t *testing.T) {
 		goldenDefault            = "af2e3070df78822eb0dd8d3ee2593706588cbb8f5062da2a2d275a82afdebfe7"
 		goldenTypeSafe           = "8e47882284ade9928e65eede246dd39e046751bfbade71c2845c89a3df0c6cd3"
 		goldenOpenAIMapped       = "c54b0aba86980f0e3405a7a09a1783936110943f2d51f52dffe5307ff6c81794"
-		goldenOpenAIDefault      = "8a5ce6344f21cda45151c4e6f1cb3efeed4879ba35155455be53325d9c12dc81"
+		goldenOpenAIDefault      = "6b41721f704c79436511b4491271031c1bed7bfc932eafe8f9fb91d728037d14"
 		goldenGrok               = "41f059c20fd5a4705f53e419026b2ad6ba87dfe30e8d1e46e312d73743c47f91"
 		goldenGeminiDefault      = "66351917a5e512e0d11c59ba55ac7a00331331ef47da296ae7f986336544e69e"
 	)

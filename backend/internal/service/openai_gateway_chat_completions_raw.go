@@ -318,6 +318,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	clientCtx := c.Request.Context()
 
 	var usage OpenAIUsage
+	searchCount := 0
 	usageObserved := false
 	var firstTokenMs *int
 	clientDisconnected := false
@@ -379,6 +380,11 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
+				if account != nil && account.IsGrok() && (usageOnlyChunk || terminal.sawFinishReason) {
+					if n, reported := grokSearchCountFromUsage(gjson.Get(payload, "usage")); reported {
+						searchCount = n
+					}
+				}
 				if u := extractCCStreamUsage(payload, &usage); u != nil {
 					// Some finish frames carry an empty usage after the real snapshot.
 					if !retainOpenAIUsageAfterZero(&usage, u) {
@@ -424,6 +430,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
+			SearchCount:                   searchCount,
 			RequestID:                     requestID,
 			UpstreamHeaders:               resp.Header,
 			ClientContentDelivered:        clientContentDelivered,
@@ -587,6 +594,10 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
 		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
 	}
+	searchCount := 0
+	if account != nil && account.IsGrok() {
+		searchCount, _ = grokSearchCountFromUsage(gjson.GetBytes(respBody, "usage"))
+	}
 	respBody = applyOllamaCloudRawChatCompletionsResponse(account, respBody)
 	respBody = s.replaceModelInResponseBody(respBody, upstreamModel, originalModel)
 
@@ -602,6 +613,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	n, _ := c.Writer.Write(respBody)
 
 	return &OpenAIForwardResult{
+		SearchCount:                   searchCount,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
 		ClientContentDelivered:        bufferedOpenAIContentDelivered(c, &usage, respBody, n),

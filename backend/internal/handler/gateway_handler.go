@@ -1302,19 +1302,41 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Get available models from account configurations for the selected group platform.
-	availableModels, err := h.gatewayService.GetAvailableModelsWithError(c.Request.Context(), groupID, platform)
+	catalog, err := h.gatewayService.GetModelCatalog(c.Request.Context(), groupID, platform)
 	if err != nil {
 		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Account model catalog unavailable")
 		return
 	}
-	if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-		source := modelListingSource(platform, availableModels, defaultModelIDsForPlatform(platform))
-		h.writeModelsList(c, platform, apiKey.Group.ModelAllowlist.FilterForListing(source))
+	var group *service.Group
+	if apiKey != nil {
+		group = apiKey.Group
+	}
+	source := catalog.ModelIDs
+	if group.ModelAllowlistEnabled() {
+		source = modelListingSource(platform, source, defaultModelIDsForPlatform(platform))
+	}
+	if platform == service.PlatformAnthropic {
+		if source == nil {
+			source = claude.DefaultModelIDs()
+		}
+		variants := catalog.AnthropicLongContextVariants(group, source)
+		if catalog.ModelIDs == nil && !group.ModelAllowlistEnabled() {
+			models := append([]claude.Model(nil), claude.DefaultModels...)
+			for _, id := range variants {
+				models = append(models, claude.Model{ID: id, Type: "model", DisplayName: id, CreatedAt: "2024-01-01T00:00:00Z"})
+			}
+			h.writeClaudeModelsResponse(c, models)
+			return
+		}
+		source = append(source, variants...)
+	}
+	if group.ModelAllowlistEnabled() {
+		h.writeModelsList(c, platform, group.ModelAllowlist.FilterForListing(source))
 		return
 	}
 
-	if availableModels != nil {
-		h.writeModelsList(c, platform, availableModels)
+	if source != nil {
+		h.writeModelsList(c, platform, source)
 		return
 	}
 

@@ -43,13 +43,13 @@ export function openAIPlanTypeLabel(value?: string | null, display: 'status' | '
     case 'free': return 'Free'
     case 'go': return 'Go'
     case 'plus': return 'Plus'
-    case 'prolite': return 'Pro 5x'
-    case 'pro': return 'Pro 20x'
+    case 'prolite': return display === 'status' ? 'Pro 5x' : 'Pro 100'
+    case 'pro': return display === 'status' ? 'Pro 20x' : 'Pro 200'
     case 'promax': return 'Pro 500'
     case 'team':
-    case 'selfservebusinessusagebased': return 'Business Standard'
+    case 'selfservebusinessusagebased': return display === 'status' ? 'Business Standard' : 'Business'
     case 'business': return display === 'status' ? 'Enterprise' : 'Business'
-    case 'selfservebusinessprolite': return 'Business Premium'
+    case 'selfservebusinessprolite': return display === 'status' ? 'Business Premium' : 'Business'
     case 'enterprisecbpautomation': return display === 'status' ? 'Enterprise (Automation)' : 'Enterprise'
     case 'enterprise':
     case 'ent26':

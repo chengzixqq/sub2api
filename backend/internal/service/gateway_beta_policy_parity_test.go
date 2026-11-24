@@ -71,6 +71,9 @@ func TestContextBetaPolicyForwarding(t *testing.T) {
 						require.NoError(t, err)
 						require.NotNil(t, upstream.lastReq)
 						headers := upstream.lastReq.Header["anthropic-beta"]
+						if mode == "filter" && beta == cm && path == "/v1/messages" {
+							require.Equal(t, []string{""}, headers, "ordinary requests preserve the filtered empty header on the wire")
+						}
 						kept := gjson.GetBytes(upstream.lastBody, "context_management").Exists()
 						t.Logf("wire %q %s", headers, upstream.lastBody)
 						if mode == "managed-lines" {

@@ -95,7 +95,7 @@ func TestAccountErrorSnapshotRefreshOnce(t *testing.T) {
 			if mode == "runtime_failed" {
 				accounts.failAt = "runtime"
 			}
-			admin := service.NewAdminService(nil, nil, nil, accounts, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			admin := service.NewAdminService(nil, nil, nil, accounts, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			router := setupClearErrorRouter(admin)
 			ctx := service.WithScope(t.Context(), service.AdminScope())
 			var tx *dbent.Tx

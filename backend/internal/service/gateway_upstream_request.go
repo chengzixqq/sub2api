@@ -152,7 +152,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	)
 
 	// 账号覆写整体替代策略处理后的客户端声明。
-	body, finalBetaHeader = resolveAnthropicRequestBeta(c, account, body, finalBetaHeader, policy)
+	body, finalBetaHeader = resolveAnthropicRequestBeta(ctx, c, account, body, finalBetaHeader, policy)
 	finalBetaShouldSet = finalBetaShouldSet || finalBetaHeader != ""
 	finalBetaHeader = filterSonnet55ToolsetBeta(finalBetaHeader, body, modelID)
 
@@ -230,12 +230,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// 账号级请求头覆写（仅 anthropic/openai api_key 账号启用时生效；OAuth 路径 no-op）。
 	// 放在通用 header 逻辑之后；严格协议边界仍在下方做最终过滤。
-	account.ApplyHeaderOverrides(req.Header)
+	account.ApplyHeaderOverrides(req.Context(), req.Header)
 	// 写入最终 anthropic-beta header
 	// 注：透传分支白名单可能写入了客户端 anthropic-beta，无条件 Del 一次再按 finalBeta
 	// 决定是否 set，确保 dropSet 过滤后的结果一定覆盖客户端原始值。
 	deleteHeaderAllForms(req.Header, "anthropic-beta")
-	if finalBetaShouldSet {
+	// Preserve a filtered empty client header, but never emit an empty identity template.
+	if finalBetaShouldSet && (finalBetaHeader != "" || !headerOverrideHasVariable(account.GetHeaderOverrides()["anthropic-beta"])) {
 		setHeaderRaw(req.Header, "anthropic-beta", finalBetaHeader)
 	}
 
@@ -978,9 +979,9 @@ func clientBetaForPolicy(c *gin.Context, account *Account) string {
 // Direct forwarding preserves the client's header lines. An explicit rule can
 // still disable the extra compact-only body capability. Use the policy snapshot
 // already populated at startup, without doing a settings read on this path.
-func (s *GatewayService) resolvePassthroughRequestBeta(c *gin.Context, account *Account, body []byte, customization ClaudeCustomizationSettings) ([]byte, string) {
+func (s *GatewayService) resolvePassthroughRequestBeta(ctx context.Context, c *gin.Context, account *Account, body []byte, customization ClaudeCustomizationSettings) ([]byte, string) {
 	beta := clientBetaForPolicy(c, account)
-	if _, override := account.HeaderOverrideValue("anthropic-beta"); !override && s.settingService != nil &&
+	if _, override := account.GetHeaderOverrides()["anthropic-beta"]; !override && s.settingService != nil &&
 		customization.BetaPolicyMode != ClaudeBetaClientPassthrough && (containsContextManagementKey(body) || hasAlignmentNameEscape(body)) &&
 		containsBetaToken(clientAnthropicBetaHeader(c), claude.BetaCompact) {
 		if snapshot := s.settingService.alignmentRejectCache.Load(); snapshot != nil {
@@ -998,13 +999,13 @@ func (s *GatewayService) resolvePassthroughRequestBeta(c *gin.Context, account *
 			}
 		}
 	}
-	return resolveAnthropicRequestBeta(c, account, body, beta, betaPolicyResult{})
+	return resolveAnthropicRequestBeta(ctx, c, account, body, beta, betaPolicyResult{})
 }
 
 // Apply the account override and named context restrictions before serializing the body.
 // Without either restriction, preserve the field for validation before dispatch.
-func resolveAnthropicRequestBeta(c *gin.Context, account *Account, body []byte, beta string, policy betaPolicyResult) ([]byte, string) {
-	override, overridden := account.HeaderOverrideValue("anthropic-beta")
+func resolveAnthropicRequestBeta(ctx context.Context, c *gin.Context, account *Account, body []byte, beta string, policy betaPolicyResult) ([]byte, string) {
+	override, overridden := account.requestHeaderOverrideValue(ctx, "anthropic-beta")
 	if overridden {
 		beta = override
 	}

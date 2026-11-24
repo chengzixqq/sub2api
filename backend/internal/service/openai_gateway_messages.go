@@ -181,6 +181,16 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		responsesReq.ServiceTier = "priority"
 	}
 
+	// 3c. ChatGPT/Codex accounts whose model supports tool_search get Claude
+	// Code's ToolSearch as the native protocol, keeping deferred tools out of
+	// the top-level tools.
+	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok &&
+		string(accountCodexToolCapabilities(account, upstreamModel)["supports_search_tool"]) == "true" {
+		if err := apicompat.ApplyNativeToolSearch(&anthropicReq, responsesReq); err != nil {
+			return nil, fmt.Errorf("apply native tool_search: %w", err)
+		}
+	}
+
 	responsesReq.Model = upstreamModel
 	if responsesReq.Reasoning != nil {
 		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
@@ -223,12 +233,18 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		logFields = append(logFields, zap.Bool("compat_turn_state_attached", true))
 	}
 	logger.L().Debug("openai messages: model mapping applied", logFields...)
+	if account.Platform == PlatformOpenAI {
+		apicompat.IncludeWebSearchSources(responsesReq)
+	}
 
 	// 4. Marshal Responses request body, then apply the ChatGPT/Codex transform.
 	responsesBody, err := json.Marshal(responsesReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
+	// responsesReq lives until billing after the stream; only its scalar
+	// fields are read from here on, so drop the body-sized input.
+	responsesReq.Input = nil
 
 	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
 		var reqBody map[string]any
@@ -627,7 +643,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	finalResponse, usage, acc, prior, err := s.readOpenAICompatBufferedTerminalWithUsage(resp, c, account, "openai messages buffered", requestID, s.observeMessagesUsage)
 	defer func() {
 		if resultErr != nil && result == nil {
-			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, prior.nativeSearchCount, originalModel, billingModel, upstreamModel, startTime)
+			result = openAICompatBufferedPartialUsageResult(c, resp, finalResponse, usage, prior, originalModel, billingModel, upstreamModel, startTime)
 		}
 	}()
 	if err != nil {
@@ -705,6 +721,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	result = &OpenAIForwardResult{
 		NativeSearchCount:             prior.nativeSearchCount,
+		SearchCount:                   prior.grokSearchCount,
 		ClientContentDelivered:        delivered,
 		RequestID:                     requestID,
 		UpstreamHeaders:               resp.Header,
@@ -719,26 +736,19 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
 	}
-	// Grok /v1/messages uses Responses upstream; count native search for surcharge.
-	if account != nil && account.IsGrok() && finalResponse != nil {
-		if body, err := json.Marshal(finalResponse); err == nil {
-			if n := countGrokNativeSearchCallsFromJSONBytes(body); n > 0 {
-				result.SearchCount = n
-			}
-		}
-	}
 	return result, nil
 }
 
 // Preserve observed usage on failed buffered attempts. The handler decides
 // whether to retry and replaces this snapshot before the next attempt; only
 // the final attempt can reach failure settlement.
-func openAICompatBufferedPartialUsageResult(c *gin.Context, resp *http.Response, response *apicompat.ResponsesResponse, usage OpenAIUsage, nativeSearchCount int, originalModel, billingModel, upstreamModel string, startTime time.Time) *OpenAIForwardResult {
-	if !hasOpenAIPartialUsage(&usage) && nativeSearchCount == 0 {
+func openAICompatBufferedPartialUsageResult(c *gin.Context, resp *http.Response, response *apicompat.ResponsesResponse, usage OpenAIUsage, prior openAICompatPriorModelAudit, originalModel, billingModel, upstreamModel string, startTime time.Time) *OpenAIForwardResult {
+	if !hasOpenAIPartialUsage(&usage) && prior.nativeSearchCount == 0 && prior.grokSearchCount == 0 {
 		return nil
 	}
 	result := &OpenAIForwardResult{
-		NativeSearchCount:             nativeSearchCount,
+		NativeSearchCount:             prior.nativeSearchCount,
+		SearchCount:                   prior.grokSearchCount,
 		RequestID:                     resp.Header.Get("x-request-id"),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
@@ -841,6 +851,7 @@ func openAICompatBufferedPriorModel(event *apicompat.ResponsesStreamEvent) (stri
 // 后面的不同声明只置冲突，不按事件数量或原文长度继续保存。
 type openAICompatPriorModelAudit struct {
 	nativeSearchCount int
+	grokSearchCount   int
 	enabled           bool
 	observer          upstreamResponseModelObserver
 }
@@ -894,17 +905,23 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 ) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, openAICompatPriorModelAudit, error) {
 	acc := apicompat.NewBufferedResponseAccumulator()
 	acc.XAIServerSideSearch = account != nil && account.IsGrok()
+	outputSlots := &openAICompatOutputSlots{xaiServerSideSearch: acc.XAIServerSideSearch}
 	var usage OpenAIUsage
 	if resp == nil || resp.Body == nil {
 		return nil, usage, acc, openAICompatPriorModelAudit{}, errors.New("upstream response body is nil")
 	}
 	var searches openAINativeSearchCounter
 	countNative := openAINativeSearchPriced(c, account)
+	var grokSearch grokSearchStreamCounter
 	prior := newOpenAICompatPriorModelAudit(account)
 	recordPrior := func(payload string, event *apicompat.ResponsesStreamEvent) {
 		if countNative {
 			searches.observeConverted(payload, event)
 			prior.nativeSearchCount = searches.count()
+		}
+		if acc.XAIServerSideSearch {
+			grokSearch.observe([]byte(payload), event.Type)
+			prior.grokSearchCount = grokSearch.count
 		}
 		prior.record(event)
 	}
@@ -988,6 +1005,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 				if frame, ok := parser.Finish(); ok {
 					payload := openAICompatPayloadWithEventType(frame.Data, frame.EventType)
 					payload = string(restoreCodexToolNamesFromContext(c, []byte(payload)))
+					outputSlots.Observe([]byte(payload))
 					var event apicompat.ResponsesStreamEvent
 					if err := json.Unmarshal([]byte(payload), &event); err == nil {
 						observeUsage([]byte(payload), &event, &usage)
@@ -999,6 +1017,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 									response.Usage = event.Usage
 								}
 							}
+							outputSlots.fillTerminalOutput(event.Type, response)
 							return response, usage, acc, prior, nil
 						}
 					}
@@ -1025,6 +1044,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 			}
 			payload := openAICompatPayloadWithEventType(frame.Data, frame.EventType)
 			payload = string(restoreCodexToolNamesFromContext(c, []byte(payload)))
+			outputSlots.Observe([]byte(payload))
 
 			var event apicompat.ResponsesStreamEvent
 			if err := json.Unmarshal([]byte(payload), &event); err != nil {
@@ -1045,6 +1065,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminalWithUsage(
 						response.Usage = event.Usage
 					}
 				}
+				outputSlots.fillTerminalOutput(event.Type, response)
 				return response, usage, acc, prior, nil
 			}
 
@@ -1089,10 +1110,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	var streamFailoverErr error
 	var streamNonFailoverErr error
 	terminalEventType := ""
-	searchCount := 0
+	var grokSearch grokSearchStreamCounter
 	var nativeSearch openAINativeSearchCounter
 	countNative := openAINativeSearchPriced(c, account)
-	streamSearchSeen := make(map[string]struct{})
 	countSearch := account != nil && account.IsGrok()
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
@@ -1136,9 +1156,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			ClientDisconnect:              clientDisconnected,
 		}
 		out.NativeSearchCount = nativeSearch.count()
-		if searchCount > 0 {
-			out.SearchCount = searchCount
-		}
+		out.SearchCount = grokSearch.count
 		return out
 	}
 
@@ -1188,7 +1206,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 			c.Set(GatewayUpstreamDeliveredKey, true)
 		}
 		if countSearch {
-			searchCount = AccumulateSearchCount(searchCount, countGrokNativeSearchCallsInSSEDataDedup([]byte(payload), streamSearchSeen), "messages_stream")
+			grokSearch.observe([]byte(payload), "")
 		}
 
 		var event apicompat.ResponsesStreamEvent

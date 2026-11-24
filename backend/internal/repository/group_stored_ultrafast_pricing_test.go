@@ -120,7 +120,7 @@ func (r *storedGroupPricingRepo) CreateFromSource(_ context.Context, group *serv
 func newStoredGroupPricingAdminService(repo *storedGroupPricingRepo) service.AdminService {
 	return service.NewAdminService(
 		nil, nil, repo, nil, nil, nil, nil, nil, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 }
 

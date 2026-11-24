@@ -320,7 +320,10 @@ func (p cacheControlLimitPlan) apply(body []byte) []byte {
 			return normalizeCacheControlTTLOrder(body, p.preserveThinking)
 		}
 	}
-	out := normalizeCacheControlTTLOrder(enforceCacheControlBlockLimitScoped(body, p), p.preserveThinking)
+	out := enforceCacheControlBlockLimitScoped(body, p)
+	if bytes.Contains(body, jsonUnicodeEscapeBytes) || bytes.Contains(body, cacheTTL1hJSONBytes) {
+		out = normalizeCacheControlTTLOrder(out, p.preserveThinking)
+	}
 	if p.scope == cacheControlTrimInjectedOnly {
 		out = stripRemainingCacheControlClientMarkers(out, p.markerKey)
 	}
